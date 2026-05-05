@@ -22,7 +22,7 @@ class NoteTagSource:
 
 def collect_note_tag_sources(game_data: GameData, file_pattern: str | None = None) -> list[NoteTagSource]:
     """收集标准 `data/*.json` 中所有对象的 `note` 字段。"""
-    raw_sources = collect_native_note_tag_sources(game_data=game_data.data, file_pattern=file_pattern)
+    raw_sources = collect_native_note_tag_sources(game_data=game_data.data, file_pattern=None)
     sources: list[NoteTagSource] = []
     for index, raw_source in enumerate(raw_sources):
         source = ensure_json_object(raw_source, f"note_sources[{index}]")
@@ -31,6 +31,8 @@ def collect_note_tag_sources(game_data: GameData, file_pattern: str | None = Non
         location_prefix = source.get("location_prefix")
         if not isinstance(file_name, str) or not isinstance(note_text, str) or not isinstance(location_prefix, str):
             raise TypeError(f"note_sources[{index}] 字段类型无效")
+        if file_pattern is not None and not note_file_pattern_matches(file_name=file_name, file_pattern=file_pattern):
+            continue
         sources.append(
             NoteTagSource(
                 file_name=file_name,
