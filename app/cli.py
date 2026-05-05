@@ -1123,7 +1123,11 @@ async def run_quality_report_command(args: argparse.Namespace) -> int:
     """执行 `quality-report` 命令。"""
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
-    report = await service.quality_report(game_title=game_title)
+    with build_progress_reporter("质量报告", args) as progress:
+        report = await service.quality_report(
+            game_title=game_title,
+            callbacks=progress.status_callbacks(),
+        )
     write_report_outputs(report=report, args=args, title="翻译质量报告")
     return 1 if report.status == "error" else 0
 
@@ -1327,6 +1331,7 @@ async def run_write_terminology_command(args: argparse.Namespace) -> int:
             setting_overrides=setting_overrides,
             game_registry=handler.game_registry,
             require_complete_translation=False,
+            args=args,
         )
         with build_progress_reporter("术语写回", args) as progress:
             _ = await handler.write_terminology(
@@ -1404,6 +1409,7 @@ async def write_back_for_handler(
         setting_overrides=setting_overrides,
         game_registry=handler.game_registry,
         require_complete_translation=True,
+        args=args,
     )
     with build_progress_reporter("回写数据", args) as progress:
         return await handler.write_back(
@@ -1420,12 +1426,22 @@ async def ensure_write_back_gate(
     setting_overrides: SettingOverrides,
     game_registry: GameRegistry,
     require_complete_translation: bool,
+    args: argparse.Namespace | None = None,
 ) -> None:
     """写回前执行质量检查，避免把部分失败结果写入游戏。"""
-    report = await AgentToolkitService(game_registry=game_registry).quality_report(
-        game_title=game_title,
-        setting_overrides=setting_overrides,
-    )
+    service = AgentToolkitService(game_registry=game_registry)
+    if args is None:
+        report = await service.quality_report(
+            game_title=game_title,
+            setting_overrides=setting_overrides,
+        )
+    else:
+        with build_progress_reporter("写入前检查", args) as progress:
+            report = await service.quality_report(
+                game_title=game_title,
+                setting_overrides=setting_overrides,
+                callbacks=progress.status_callbacks(),
+            )
     blocking_errors = collect_write_back_gate_errors(
         report=report,
         require_complete_translation=require_complete_translation,
