@@ -79,17 +79,17 @@ async def load_game_data(game_path: str | Path) -> GameData:
         data[file_name] = json_value
 
         if MAP_PATTERN.fullmatch(file_name):
-            map_data[file_name] = MapData.model_validate_json(content)
+            map_data[file_name] = MapData.model_validate(json_value)
             continue
 
         if file_name == SYSTEM_FILE_NAME:
-            system = System.model_validate_json(content)
+            system = System.model_validate(json_value)
         elif file_name == COMMON_EVENTS_FILE_NAME:
-            common_events = common_events_adapter.validate_json(content)
+            common_events = common_events_adapter.validate_python(json_value)
         elif file_name == TROOPS_FILE_NAME:
-            troops = troops_adapter.validate_json(content)
+            troops = troops_adapter.validate_python(json_value)
         else:
-            base_data[file_name] = base_data_adapter.validate_json(content)
+            base_data[file_name] = base_data_adapter.validate_python(json_value)
 
     plugins_content = await _read_text_file(source_plugins_path)
     data[PLUGINS_FILE_NAME] = plugins_content
@@ -222,7 +222,9 @@ def _decode_json_value(*, content: str, source: Path) -> JsonValue:
     """把 JSON 文本解析并校验为项目允许的 JSON 值。"""
     try:
         decoded = cast(object, json.loads(content))
-        return coerce_json_value(decoded)
+        # 标准库 JSON 解码器只会产生项目 JsonValue 覆盖的基本类型、列表和字符串键对象。
+        # 这里不再二次递归复制，避免大体量游戏数据加载阶段重复消耗 CPU。
+        return cast(JsonValue, decoded)
     except TypeError as error:
         raise TypeError(f"JSON 内容不是项目允许的值类型: {source}") from error
 

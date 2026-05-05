@@ -80,7 +80,7 @@ def _write_command_item(game_data: GameData, item: TranslationItem, text_rules: 
         writable_data=game_data.writable_data,
         location_path=item.location_path,
     )
-    command = commands[command_index]
+    command = ensure_json_object(commands[command_index], item.location_path)
 
     if item.item_type == "short_text":
         _write_event_command_text_item(command=command, item=item, text_rules=text_rules)
@@ -150,7 +150,7 @@ def _write_line_commands_by_paths(
             writable_data=game_data.writable_data,
             location_path=source_line_path,
         )
-        target_command = commands[command_index]
+        target_command = ensure_json_object(commands[command_index], source_line_path)
         if target_command.get("code") != expected_code:
             raise RuntimeError(
                 f"逐行路径指向的指令类型错误: {source_line_path}"
@@ -338,7 +338,7 @@ def _locate_commands(
     *,
     writable_data: dict[str, JsonValue],
     location_path: str,
-) -> tuple[list[JsonObject], int]:
+) -> tuple[JsonArray, int]:
     """根据 `location_path` 定位到具体 RM Event List 数组。"""
     parts = location_path.split("/")
     file_name = parts[0]
@@ -351,13 +351,13 @@ def _locate_commands(
         event = ensure_json_object(events[event_id], item_context(location_path, "event"))
         pages = ensure_json_array(event["pages"], item_context(location_path, "pages"))
         page = ensure_json_object(pages[int(parts[2])], item_context(location_path, "page"))
-        commands = _ensure_command_list(page["list"], item_context(location_path, "list"))
+        commands = ensure_json_array(page["list"], item_context(location_path, "list"))
         return commands, int(parts[3])
 
     if file_name == COMMON_EVENTS_FILE_NAME:
         events = ensure_json_array(data, file_name)
         event = ensure_json_object(events[int(parts[1])], item_context(location_path, "event"))
-        commands = _ensure_command_list(event["list"], item_context(location_path, "list"))
+        commands = ensure_json_array(event["list"], item_context(location_path, "list"))
         return commands, int(parts[2])
 
     if file_name == TROOPS_FILE_NAME:
@@ -365,7 +365,7 @@ def _locate_commands(
         troop = ensure_json_object(troops[int(parts[1])], item_context(location_path, "troop"))
         pages = ensure_json_array(troop["pages"], item_context(location_path, "pages"))
         page = ensure_json_object(pages[int(parts[2])], item_context(location_path, "page"))
-        commands = _ensure_command_list(page["list"], item_context(location_path, "list"))
+        commands = ensure_json_array(page["list"], item_context(location_path, "list"))
         return commands, int(parts[3])
 
     raise ValueError(f"无法识别的事件定位路径: {location_path}")
@@ -671,15 +671,6 @@ def _write_base_item_value(
         return
 
     raise ValueError(f"无法识别的基础数据库路径: {location_path}")
-
-
-def _ensure_command_list(value: JsonValue, context: str) -> list[JsonObject]:
-    """把 JSON 值收窄为事件命令对象列表。"""
-    raw_commands = ensure_json_array(value, context)
-    commands: list[JsonObject] = []
-    for index, command in enumerate(raw_commands):
-        commands.append(ensure_json_object(command, f"{context}[{index}]"))
-    return commands
 
 
 def _ensure_command_parameters(command: JsonObject, location_path: str) -> JsonArray:

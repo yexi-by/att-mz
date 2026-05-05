@@ -6,10 +6,11 @@
 """
 
 import re
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
 from app.rmmz.control_codes import (
@@ -352,7 +353,8 @@ FIXED_FILE_NAMES: set[str] = {
 }
 
 
-class GameData(BaseModel):
+@dataclass(slots=True)
+class GameData:
     """游戏数据聚合模型。"""
 
     data: dict[str, JsonValue]
@@ -365,14 +367,12 @@ class GameData(BaseModel):
     plugins_js: list[dict[str, JsonValue]]
     writable_plugins_js: list[dict[str, JsonValue]]
 
-    @model_validator(mode="after")
-    def validate_required_files(self) -> Self:
+    def __post_init__(self) -> None:
         """确保标准核心文件已经加载。"""
         required_files = {SYSTEM_FILE_NAME, COMMON_EVENTS_FILE_NAME, TROOPS_FILE_NAME}
         missing_files = sorted(required_files.difference(self.data))
         if missing_files:
             raise ValueError(f"游戏缺少必要标准文件: {', '.join(missing_files)}")
-        return self
 
 
 __all__: list[str] = [

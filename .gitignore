@@ -10,12 +10,14 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+target/
 
 # IDE and OS files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+app/_native*.pdb
 
 # Runtime logs and generated scripts
 logs/

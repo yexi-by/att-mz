@@ -9,6 +9,8 @@ A.T.T MZ 是面向 RPG Maker MZ 日文游戏的自动汉化工具。新手只需
 - Windows PowerShell。
 - Python 3.14+。
 - `uv`。
+- Rust stable MSVC 工具链。
+- Visual Studio Build Tools 的 C++ 构建组件。
 - 一个能读取本项目文件并运行终端命令的 Agent。
 - OpenAI 兼容格式的模型服务地址和 API Key。
 - 一个 RPG Maker MZ 游戏目录，目录里通常能看到 `Game.exe`、`data/`、`js/`。
@@ -26,12 +28,34 @@ cd <项目目录>
 
 ```powershell
 uv sync
+uv run maturin develop --release
 ```
 
 生成本地配置文件：
 
 ```powershell
 Copy-Item setting.example.toml setting.toml
+```
+
+本项目的质量检查、写入前协议预演和部分 data 扫描由 PyO3 Rust 扩展提供。第一次开发环境初始化时先安装 Rust：
+
+```powershell
+rustup default stable-msvc
+rustc --version
+cargo --version
+```
+
+如果 `uv run maturin develop --release` 提示缺少链接器，安装 Visual Studio Build Tools，并勾选“使用 C++ 的桌面开发”组件。开发者改动 Rust 代码后，先运行：
+
+```powershell
+cargo test
+uv run maturin develop --release
+```
+
+Rust 原生核心默认使用逻辑 CPU 核心数。需要限制占用时，可以在运行命令前设置：
+
+```powershell
+$env:ATT_MZ_RUST_THREADS = "<线程数>"
 ```
 
 ## 2. 设置模型环境变量

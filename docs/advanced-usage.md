@@ -8,6 +8,8 @@ A.T.T MZ 是面向 RPG Maker MZ 日文游戏的命令行翻译工具。项目负
 
 - Python 3.14+
 - uv
+- Rust stable MSVC 工具链
+- Visual Studio Build Tools C++ 构建组件
 - RPG Maker MZ 标准游戏目录
 - OpenAI 兼容格式的模型服务
 
@@ -15,7 +17,25 @@ A.T.T MZ 是面向 RPG Maker MZ 日文游戏的命令行翻译工具。项目负
 
 ```bash
 uv sync
+uv run maturin develop --release
 cp setting.example.toml setting.toml
+```
+
+质量检查、写入前协议预演和部分 data 扫描通过 PyO3 原生扩展执行。开发环境需要先安装 Rust 和 MSVC 链接器：
+
+```powershell
+rustup default stable-msvc
+rustc --version
+cargo --version
+uv run maturin develop --release
+```
+
+如果扩展构建失败并提示找不到 C++ 链接器，安装 Visual Studio Build Tools，并勾选“使用 C++ 的桌面开发”。修改 Rust 源码后，使用 `cargo test` 和 `uv run maturin develop --release` 重新验证扩展。
+
+Rust 原生核心默认使用逻辑 CPU 核心数。需要限制 CPU 占用时，在运行 CLI 前设置：
+
+```powershell
+$env:ATT_MZ_RUST_THREADS = "<线程数>"
 ```
 
 模型地址和 API Key 推荐通过环境变量提供：

@@ -194,6 +194,8 @@ def normalize_translated_wrapping_punctuation(
     引号对数一致时按顺序修复。无法安全一一对应时保持原样，避免误改模型
     正常新增的中文引号。
     """
+    if not _has_preserved_wrapping_chars(lines=original_lines, text_rules=text_rules):
+        return list(translation_lines)
     normalized_lines = _normalize_translated_outer_wrapping_punctuation(
         original_lines=original_lines,
         translation_lines=translation_lines,
@@ -218,6 +220,18 @@ def normalize_translated_outer_wrapping_punctuation(
         translation_lines=translation_lines,
         text_rules=text_rules,
     )
+
+
+def _has_preserved_wrapping_chars(*, lines: list[str], text_rules: TextRules) -> bool:
+    """快速判断源文是否可能需要包裹标点修复。"""
+    wrapping_chars = {
+        char
+        for pair in text_rules.setting.preserve_wrapping_punctuation_pairs
+        for char in pair
+    }
+    if not wrapping_chars:
+        return False
+    return any(char in line for line in lines for char in wrapping_chars)
 
 
 def _normalize_translated_outer_wrapping_punctuation(

@@ -1,7 +1,7 @@
 """Note 标签规则驱动提取模块。"""
 
 from app.note_tag_text.parser import iter_note_tag_matches
-from app.note_tag_text.sources import collect_note_tag_sources
+from app.note_tag_text.sources import collect_note_tag_sources, note_file_pattern_matches
 from app.rmmz.schema import (
     GameData,
     NoteTagTextRuleRecord,
@@ -30,9 +30,12 @@ class NoteTagTextExtraction:
         """按数据库规则全量提取 Note 标签值。"""
         translation_data_map: dict[str, TranslationData] = {}
         seen_location_paths: set[str] = set()
+        all_sources = collect_note_tag_sources(game_data=self.game_data)
         for rule_record in self.rule_records:
             tag_names = set(rule_record.tag_names)
-            for source in collect_note_tag_sources(game_data=self.game_data, file_pattern=rule_record.file_name):
+            for source in all_sources:
+                if not note_file_pattern_matches(file_name=source.file_name, file_pattern=rule_record.file_name):
+                    continue
                 matches_by_tag: dict[str, list[str]] = {}
                 for match in iter_note_tag_matches(source.note_text):
                     if match.tag_name not in tag_names or match.value_span is None:

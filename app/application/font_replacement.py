@@ -395,6 +395,8 @@ def replace_font_names_in_text(
     replacement_font_name: str,
 ) -> tuple[str, int]:
     """只替换完整字体引用，避免误改玩家可见正文。"""
+    if not any(old_font_name in text for old_font_name in old_font_names):
+        return text, 0
     replaced_text, replaced_count = replace_complete_font_reference_text(
         text=text,
         old_font_names=old_font_names,

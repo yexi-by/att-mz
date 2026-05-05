@@ -31,6 +31,11 @@ from app.japanese_residual import (
     parse_japanese_residual_rule_import_text,
 )
 from app.llm import ChatMessage, LLMHandler
+from app.native_quality import (
+    collect_native_quality_details,
+    collect_native_write_protocol_details,
+    native_thread_count,
+)
 from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
 from app.plugin_text import (
     PluginTextExtraction,
@@ -39,12 +44,10 @@ from app.plugin_text import (
     export_plugins_json_file,
     parse_plugin_rule_import_text,
 )
-from app.plugin_text.write_back import write_plugin_text
 from app.rmmz import DataTextExtraction
 from app.rmmz.control_codes import (
     ControlSequenceSpan,
     CustomPlaceholderRule,
-    LITERAL_LINE_BREAK_MARKER,
     REAL_LINE_BREAK_MARKER,
     REAL_LINE_BREAK_PLACEHOLDER,
 )
@@ -61,12 +64,10 @@ from app.rmmz.schema import (
     TranslationErrorItem,
     TranslationItem,
 )
-from app.rmmz.placeholder_guard import collect_internal_placeholder_tokens
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object, ensure_json_string_list
 from app.rmmz.write_back import write_data_text
 from app.translation.line_wrap import (
-    count_line_width_chars,
     normalize_translated_wrapping_punctuation,
     split_overwide_lines,
 )
@@ -460,19 +461,19 @@ class AgentToolkitService:
             for item in quality_error_items
             if item.location_path in pending_paths
         ]
-        residual_details = _collect_residual_items(
-            active_translated_items,
-            text_rules,
-            japanese_residual_rule_set,
-        )
-        text_structure_details = _collect_text_structure_items(active_translated_items, text_rules)
-        placeholder_details = _collect_placeholder_risk_items(active_translated_items, text_rules)
-        overwide_details = _collect_overwide_line_items(active_translated_items, text_rules)
-        write_back_protocol_details = _collect_write_back_protocol_items(
-            game_data=game_data,
+        native_quality_details = collect_native_quality_details(
             items=active_translated_items,
-            active_paths=active_paths,
             text_rules=text_rules,
+            japanese_residual_rules=list(japanese_residual_rule_set.records_by_path.values()),
+        )
+        residual_details = native_quality_details.japanese_residual_items
+        text_structure_details = native_quality_details.text_structure_items
+        placeholder_details = native_quality_details.placeholder_risk_items
+        overwide_details = native_quality_details.overwide_line_items
+        write_back_protocol_details = collect_native_write_protocol_details(
+            game_data=game_data.data,
+            plugins_js=[plugin for plugin in game_data.plugins_js],
+            items=active_translated_items,
         )
         problem_paths = _collect_quality_fix_problem_paths(
             quality_error_items=quality_error_items,
@@ -625,41 +626,26 @@ class AgentToolkitService:
         ]
         for _item in quality_error_items:
             advance_progress(1)
-        japanese_residual_rule_set = JapaneseResidualRuleSet.from_records(japanese_residual_rules)
-        set_status("检查日文残留")
-        residual_items = _collect_residual_items(
-            active_translated_items,
-            text_rules,
-            japanese_residual_rule_set,
-            advance_progress=advance_progress,
-        )
-        residual_count = len(residual_items)
-        set_status("检查文本结构")
-        text_structure_items = _collect_text_structure_items(
-            active_translated_items,
-            text_rules,
-            advance_progress=advance_progress,
-        )
-        set_status("检查游戏控制符")
-        placeholder_risk_items = _collect_placeholder_risk_items(
-            active_translated_items,
-            text_rules,
-            advance_progress=advance_progress,
-        )
-        set_status("检查行宽")
-        overwide_line_items = _collect_overwide_line_items(
-            active_translated_items,
-            text_rules,
-            advance_progress=advance_progress,
-        )
-        set_status("检查写回协议")
-        write_back_protocol_items = _collect_write_back_protocol_items(
-            game_data=game_data,
+        set_status(f"调用 Rust 原生质检核心（{native_thread_count()} 线程）")
+        native_quality_details = collect_native_quality_details(
             items=active_translated_items,
-            active_paths=active_paths,
             text_rules=text_rules,
-            advance_progress=advance_progress,
+            japanese_residual_rules=japanese_residual_rules,
         )
+        advance_progress(len(active_translated_items) * 4)
+        set_status("整理日文残留")
+        residual_items = native_quality_details.japanese_residual_items
+        residual_count = len(residual_items)
+        text_structure_items = native_quality_details.text_structure_items
+        placeholder_risk_items = native_quality_details.placeholder_risk_items
+        overwide_line_items = native_quality_details.overwide_line_items
+        set_status("检查写回协议")
+        write_back_protocol_items = collect_native_write_protocol_details(
+            game_data=game_data.data,
+            plugins_js=[plugin for plugin in game_data.plugins_js],
+            items=active_translated_items,
+        )
+        advance_progress(protocol_probe_count)
         set_status("整理质量报告")
         advance_progress(1)
         error_type_counts = Counter(item.error_type for item in quality_error_items)
@@ -2678,111 +2664,6 @@ def _count_protocol_sensitive_translation_items(
     )
 
 
-def _collect_write_back_protocol_items(
-    *,
-    game_data: GameData,
-    items: list[TranslationItem],
-    active_paths: set[str],
-    text_rules: TextRules,
-    advance_progress: Callable[[int], None] | None = None,
-) -> JsonArray:
-    """在内存副本中预演写回，收集会破坏插件或事件解析结构的译文。"""
-    advance = advance_progress or _noop_advance_progress
-    probe_items = [
-        item
-        for item in items
-        if item.location_path in active_paths
-        and _is_protocol_sensitive_translation_path(item.location_path)
-    ]
-    if not probe_items:
-        return []
-
-    first_error = _probe_write_back_protocol_chunk(
-        game_data=game_data,
-        items=probe_items,
-        text_rules=text_rules,
-    )
-    if first_error is None:
-        advance(len(probe_items))
-        return []
-
-    details: JsonArray = []
-    _collect_write_back_protocol_failures(
-        game_data=game_data,
-        items=probe_items,
-        text_rules=text_rules,
-        details=details,
-        advance_progress=advance,
-    )
-    if details:
-        return details
-
-    return [{"reason": first_error}]
-
-
-def _collect_write_back_protocol_failures(
-    *,
-    game_data: GameData,
-    items: list[TranslationItem],
-    text_rules: TextRules,
-    details: JsonArray,
-    advance_progress: Callable[[int], None],
-) -> None:
-    """用分治方式定位会破坏写回协议的译文。"""
-    if not items:
-        return
-
-    error_text = _probe_write_back_protocol_chunk(
-        game_data=game_data,
-        items=items,
-        text_rules=text_rules,
-    )
-    if error_text is None:
-        advance_progress(len(items))
-        return
-
-    if len(items) == 1:
-        detail = _build_translation_item_quality_detail(items[0])
-        detail["reason"] = error_text
-        details.append(detail)
-        advance_progress(1)
-        return
-
-    midpoint = len(items) // 2
-    _collect_write_back_protocol_failures(
-        game_data=game_data,
-        items=items[:midpoint],
-        text_rules=text_rules,
-        details=details,
-        advance_progress=advance_progress,
-    )
-    _collect_write_back_protocol_failures(
-        game_data=game_data,
-        items=items[midpoint:],
-        text_rules=text_rules,
-        details=details,
-        advance_progress=advance_progress,
-    )
-
-
-def _probe_write_back_protocol_chunk(
-    *,
-    game_data: GameData,
-    items: list[TranslationItem],
-    text_rules: TextRules,
-) -> str | None:
-    """预演一组译文写回，返回协议错误文本。"""
-    reset_writable_copies(game_data)
-    try:
-        write_data_text(game_data, items, text_rules=text_rules)
-        write_plugin_text(game_data, items)
-        return None
-    except ValueError as error:
-        return str(error)
-    finally:
-        reset_writable_copies(game_data)
-
-
 def _is_protocol_sensitive_translation_path(location_path: str) -> bool:
     """判断路径是否属于需要二次解析或保留标签外壳的文本。"""
     return (
@@ -2812,100 +2693,6 @@ def _is_path_inside(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _collect_residual_items(
-    items: list[TranslationItem],
-    text_rules: TextRules,
-    japanese_residual_rule_set: JapaneseResidualRuleSet,
-    advance_progress: Callable[[int], None] | None = None,
-) -> JsonArray:
-    """收集仍存在日文残留风险的译文条目明细。"""
-    advance = advance_progress or _noop_advance_progress
-    details: JsonArray = []
-    for item in items:
-        try:
-            check_japanese_residual_for_item(
-                item=item,
-                text_rules=text_rules,
-                rule_set=japanese_residual_rule_set,
-            )
-        except ValueError as error:
-            detail = _build_translation_item_quality_detail(item)
-            detail["reason"] = str(error)
-            allowed_terms = japanese_residual_rule_set.allowed_terms_for_path(item.location_path)
-            if allowed_terms:
-                detail["allowed_terms"] = _string_lines_to_json_array(allowed_terms)
-                detail["exception_reason"] = japanese_residual_rule_set.reason_for_path(item.location_path)
-            details.append(detail)
-        finally:
-            advance(1)
-    return details
-
-
-def _collect_placeholder_risk_items(
-    items: list[TranslationItem],
-    text_rules: TextRules,
-    advance_progress: Callable[[int], None] | None = None,
-) -> JsonArray:
-    """收集占位符数量或未知控制符存在风险的译文条目明细。"""
-    advance = advance_progress or _noop_advance_progress
-    details: JsonArray = []
-    for item in items:
-        try:
-            leaked_tokens = collect_internal_placeholder_tokens(
-                lines=item.translation_lines,
-                text_rules=text_rules,
-            )
-            if leaked_tokens:
-                detail = _build_translation_item_quality_detail(item)
-                detail["reason"] = f"译文残留项目内部占位符，不能写进游戏文件: {'、'.join(sorted(leaked_tokens))}"
-                details.append(detail)
-                continue
-            cloned_item = item.model_copy(deep=True)
-            cloned_item.build_placeholders(text_rules)
-            cloned_item.translation_lines_with_placeholders = [
-                _mask_translation_controls(line=line, item=cloned_item, text_rules=text_rules)
-                for line in cloned_item.translation_lines
-            ]
-            cloned_item.verify_placeholders(text_rules)
-        except ValueError as error:
-            detail = _build_translation_item_quality_detail(item)
-            detail["reason"] = str(error)
-            details.append(detail)
-        finally:
-            advance(1)
-    return details
-
-
-def _collect_text_structure_items(
-    items: list[TranslationItem],
-    text_rules: TextRules,
-    advance_progress: Callable[[int], None] | None = None,
-) -> JsonArray:
-    """收集改动单字段结构或混入模型协议文本的译文。"""
-    advance = advance_progress or _noop_advance_progress
-    details: JsonArray = []
-    for item in items:
-        try:
-            cloned_item = item.model_copy(deep=True)
-            cloned_item.build_placeholders(text_rules)
-            translation_lines_with_placeholders = [
-                _mask_translation_controls(line=line, item=cloned_item, text_rules=text_rules)
-                for line in cloned_item.translation_lines
-            ]
-            validate_translation_text_structure(
-                item=cloned_item,
-                translation_lines=cloned_item.translation_lines,
-                translation_lines_with_placeholders=translation_lines_with_placeholders,
-            )
-        except ValueError as error:
-            detail = _build_translation_item_quality_detail(item)
-            detail["reason"] = str(error)
-            details.append(detail)
-        finally:
-            advance(1)
-    return details
 
 
 def _mask_translation_controls(*, line: str, item: TranslationItem, text_rules: TextRules) -> str:
@@ -2989,98 +2776,6 @@ def _normalize_manual_translation_lines(
         location_path=item.location_path,
         text_rules=text_rules,
     )
-
-
-def _collect_overwide_line_items(
-    items: list[TranslationItem],
-    text_rules: TextRules,
-    advance_progress: Callable[[int], None] | None = None,
-) -> JsonArray:
-    """收集超过当前行宽上限的多行显示译文明细。"""
-    advance = advance_progress or _noop_advance_progress
-    limit = text_rules.setting.long_text_line_width_limit
-    details: JsonArray = []
-    for item in items:
-        try:
-            original_text_width_limit = _original_short_text_width_limit(item=item, text_rules=text_rules)
-            for index, line, original_line in _iter_line_width_check_lines(item=item):
-                if not line:
-                    continue
-                effective_limit = limit
-                original_width: int | None = None
-                if original_line is not None:
-                    original_width = count_line_width_chars(original_line, text_rules)
-                    effective_limit = max(limit, original_width)
-                if original_text_width_limit is not None:
-                    effective_limit = max(effective_limit, original_text_width_limit)
-                width = count_line_width_chars(line, text_rules)
-                if width <= effective_limit:
-                    continue
-                detail = _build_translation_item_quality_detail(item)
-                detail["line_index"] = index
-                detail["line"] = line
-                detail["line_width"] = width
-                detail["line_width_limit"] = effective_limit
-                if original_width is not None:
-                    detail["original_line_width"] = original_width
-                    detail["configured_line_width_limit"] = limit
-                if original_text_width_limit is not None:
-                    detail["original_text_width_limit"] = original_text_width_limit
-                details.append(detail)
-        finally:
-            advance(1)
-    return details
-
-
-def _original_short_text_width_limit(*, item: TranslationItem, text_rules: TextRules) -> int | None:
-    """计算单值文本原字段本身已经承载的最大显示宽度。"""
-    if item.item_type != "short_text" or not item.original_lines:
-        return None
-    original_lines = _split_display_line_breaks(item.original_lines[0])
-    if not original_lines:
-        return None
-    return max(count_line_width_chars(line, text_rules) for line in original_lines)
-
-
-def _iter_line_width_check_lines(*, item: TranslationItem) -> list[tuple[int, str, str | None]]:
-    """返回需要按显示行宽检查的译文行。"""
-    if item.item_type == "long_text":
-        return [(index, line, None) for index, line in enumerate(item.translation_lines)]
-    if item.item_type != "short_text" or not item.translation_lines:
-        return []
-    original_has_line_break = _has_display_line_break(item.original_lines)
-    translated_text = item.translation_lines[0]
-    if not _has_display_line_break([translated_text]) and not original_has_line_break:
-        return []
-    translated_lines = _split_display_line_breaks(translated_text)
-    original_text = item.original_lines[0] if item.original_lines else ""
-    original_lines = _split_display_line_breaks(original_text)
-    results: list[tuple[int, str, str | None]] = []
-    for index, line in enumerate(translated_lines):
-        original_line = original_lines[index] if index < len(original_lines) else None
-        results.append((index, line, original_line))
-    return results
-
-
-def _has_display_line_break(lines: list[str]) -> bool:
-    """判断文本是否包含游戏显示时会分行的换行标记。"""
-    return any("\n" in line or LITERAL_LINE_BREAK_MARKER in line for line in lines)
-
-
-def _split_display_line_breaks(text: str) -> list[str]:
-    """按真实换行和字面量换行拆成游戏窗口里的显示行。"""
-    return text.replace(LITERAL_LINE_BREAK_MARKER, "\n").split("\n")
-
-
-def _build_translation_item_quality_detail(item: TranslationItem) -> JsonObject:
-    """把译文条目转换为质量报告中可定位、可修复的明细。"""
-    return {
-        "location_path": item.location_path,
-        "item_type": item.item_type,
-        "role": item.role,
-        "original_lines": _string_lines_to_json_array(item.original_lines),
-        "translation_lines": _string_lines_to_json_array(item.translation_lines),
-    }
 
 
 def _build_translation_error_quality_detail(item: TranslationErrorItem) -> JsonObject:
