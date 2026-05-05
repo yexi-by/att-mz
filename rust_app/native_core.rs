@@ -1625,6 +1625,7 @@ fn probe_protocol_entry(entry: &ProtocolEntry) -> Result<(), String> {
     if entry.mode == "none" {
         return Ok(());
     }
+    let translated_text = protocol_translation_text(entry);
     if entry.mode == "note" {
         let note_text = entry
             .note_text
@@ -1634,7 +1635,7 @@ fn probe_protocol_entry(entry: &ProtocolEntry) -> Result<(), String> {
             .tag_name
             .as_deref()
             .ok_or_else(|| format!("写入协议缺少 Note 标签: {}", entry.item.location_path))?;
-        return validate_note_tag_replacement(note_text, tag_name);
+        return validate_note_tag_replacement(note_text, tag_name, translated_text);
     }
     let current_value = entry
         .current_value
@@ -1644,12 +1645,25 @@ fn probe_protocol_entry(entry: &ProtocolEntry) -> Result<(), String> {
     validate_set_nested_value(
         current_value,
         &path_parts,
-        "回写校验",
+        translated_text,
         &entry.item.location_path,
     )
 }
 
-fn validate_note_tag_replacement(note_text: &str, tag_name: &str) -> Result<(), String> {
+fn protocol_translation_text(entry: &ProtocolEntry) -> &str {
+    entry
+        .item
+        .translation_lines
+        .first()
+        .map(String::as_str)
+        .unwrap_or("")
+}
+
+fn validate_note_tag_replacement(
+    note_text: &str,
+    tag_name: &str,
+    translated_text: &str,
+) -> Result<(), String> {
     let matches: Vec<regex::Captures<'_>> = NOTE_TAG_RE
         .captures_iter(note_text)
         .filter(|captures| {
@@ -1669,7 +1683,7 @@ fn validate_note_tag_replacement(note_text: &str, tag_name: &str) -> Result<(), 
         .name("value")
         .map(|matched| matched.as_str())
         .unwrap_or("");
-    let written_text = encode_visible_text_like(value, "回写校验")?;
+    let written_text = encode_visible_text_like(value, translated_text)?;
     ensure_encoded_text_valid(value, &written_text, &format!("Note 标签 {tag_name}"))
 }
 
@@ -1926,6 +1940,68 @@ mod tests {
         let output = scan_write_protocol_impl(&payload.to_string()).expect("协议检查应成功");
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
         assert_eq!(value, json!([]));
+    }
+
+    #[test]
+    fn protocol_scan_uses_real_plugin_translation_text() {
+        let payload = json!({
+            "entries": [
+                {
+                    "item": {
+                        "location_path": "plugins.js/0/Message",
+                        "item_type": "short_text",
+                        "role": null,
+                        "original_lines": ["原文"],
+                        "translation_lines": [r"\\V[1]"]
+                    },
+                    "mode": "nested",
+                    "current_value": "\"原文\"",
+                    "path_parts": [],
+                    "note_text": null,
+                    "tag_name": null
+                }
+            ]
+        });
+        let output = scan_write_protocol_impl(&payload.to_string()).expect("协议检查应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        assert_eq!(value.as_array().map(Vec::len), Some(1));
+        assert_eq!(value[0]["location_path"], json!("plugins.js/0/Message"));
+        assert!(
+            value[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("控制符被写成会直接显示的字面量"))
+        );
+    }
+
+    #[test]
+    fn protocol_scan_uses_real_note_translation_text() {
+        let payload = json!({
+            "entries": [
+                {
+                    "item": {
+                        "location_path": "Items.json/1/note/说明",
+                        "item_type": "short_text",
+                        "role": null,
+                        "original_lines": ["原文"],
+                        "translation_lines": [r"\\V[1]"]
+                    },
+                    "mode": "note",
+                    "current_value": null,
+                    "path_parts": [],
+                    "note_text": r#"<说明:"原文">"#,
+                    "tag_name": "说明"
+                }
+            ]
+        });
+        let output = scan_write_protocol_impl(&payload.to_string()).expect("协议检查应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        assert_eq!(value.as_array().map(Vec::len), Some(1));
+        assert_eq!(value[0]["location_path"], json!("Items.json/1/note/说明"));
+        assert!(
+            value[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("控制符被写成会直接显示的字面量"))
+        );
     }
 
     #[test]
