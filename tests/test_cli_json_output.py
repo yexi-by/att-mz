@@ -233,7 +233,9 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "--game",
             "demo",
             "--input",
-            "terminology/terms.json",
+            "terminology/field-terms.json",
+            "--glossary-input",
+            "terminology/glossary.json",
             "--json",
         ]
     )
@@ -257,7 +259,8 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
     assert namespace_optional_str(residual_args, "rules") is None
     assert namespace_optional_str(residual_import_args, "input") == "japanese-residual-rules.json"
     assert getattr(residual_import_args, "json_output") is True
-    assert namespace_optional_str(terminology_import_args, "input") == "terminology/terms.json"
+    assert namespace_optional_str(terminology_import_args, "input") == "terminology/field-terms.json"
+    assert namespace_optional_str(terminology_import_args, "glossary_input") == "terminology/glossary.json"
     assert getattr(terminology_import_args, "json_output") is True
 
 

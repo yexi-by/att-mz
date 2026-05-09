@@ -57,10 +57,11 @@ class NoteTagRuleImportSummary:
 
 @dataclass(slots=True)
 class TerminologyImportSummary:
-    """外部术语表导入任务摘要。"""
+    """外部字段译名表和正文术语表导入任务摘要。"""
 
     imported_entry_count: int
     filled_entry_count: int
+    glossary_term_count: int
 
 
 @dataclass(slots=True)

@@ -22,7 +22,7 @@ from app.rmmz.schema import (
     TranslationErrorItem,
     TranslationItem,
 )
-from app.terminology import TerminologyRegistry
+from app.terminology import TerminologyGlossary, TerminologyRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -227,6 +227,8 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     rules_path = workspace / "placeholder-rules.json"
     note_candidates_path = workspace / "note-tag-candidates.json"
     note_rules_path = workspace / "note-tag-rules.json"
+    field_terms_path = workspace / "terminology" / "field-terms.json"
+    glossary_path = workspace / "terminology" / "glossary.json"
     speaker_source_path = workspace / "terminology" / "subtasks" / "sources" / "speaker_and_actor_terms.json"
     speaker_candidate_path = workspace / "terminology" / "subtasks" / "candidates" / "speaker_and_actor_terms.json"
     item_source_path = workspace / "terminology" / "subtasks" / "sources" / "item_terms.json"
@@ -235,6 +237,8 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert rules_path.exists()
     assert note_candidates_path.exists()
     assert note_rules_path.exists()
+    assert field_terms_path.exists()
+    assert glossary_path.exists()
     assert speaker_source_path.exists()
     assert speaker_candidate_path.exists()
     assert item_source_path.exists()
@@ -242,6 +246,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert manifest_path.exists()
     rules = load_json_object(rules_path)
     note_rules = load_json_object(note_rules_path)
+    glossary = load_json_object(glossary_path)
     speaker_source = load_json_object(speaker_source_path)
     speaker_candidate = load_json_object(speaker_candidate_path)
     item_source = load_json_object(item_source_path)
@@ -258,6 +263,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     second_round = ensure_json_object(subagent_rounds[1], "manifest.workflow.subagent_rounds[1]")
     assert rules == {r"(?i)\\F\d*\[[^\]\r\n]+\]": "[CUSTOM_FACE_PORTRAIT_{index}]"}
     assert note_rules == {}
+    assert glossary == {"terms": {}}
     assert speaker_source == speaker_candidate
     assert item_source == item_candidate
     assert "村人" in speaker_names
@@ -295,7 +301,7 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
         command_codes=None,
     )
     exported_registry = TerminologyRegistry.model_validate(
-        load_json_object(seed_workspace / "terminology" / "terms.json")
+        load_json_object(seed_workspace / "terminology" / "field-terms.json")
     )
     filled_registry = TerminologyRegistry.from_category_map(
         {
@@ -309,6 +315,9 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     game_data = await load_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_terminology_registry(filled_registry)
+        await session.replace_terminology_glossary(
+            TerminologyGlossary(terms={"火の術": "火术"})
+        )
         await session.replace_plugin_text_rules(
             [
                 PluginTextRuleRecord(
@@ -348,7 +357,10 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     validation_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
     prepared_registry = TerminologyRegistry.model_validate(
-        load_json_object(workspace / "terminology" / "terms.json")
+        load_json_object(workspace / "terminology" / "field-terms.json")
+    )
+    prepared_glossary = TerminologyGlossary.model_validate(
+        load_json_object(workspace / "terminology" / "glossary.json")
     )
     plugin_rules = load_json_object(workspace / "plugin-rules.json")
     event_rules = load_json_object(workspace / "event-command-rules.json")
@@ -360,7 +372,9 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     assert report.summary["event_command_rule_count"] == 1
     assert report.summary["note_tag_rule_count"] == 1
     assert report.summary["placeholder_rule_count"] == 1
+    assert report.summary["glossary_term_count"] == 1
     assert prepared_registry == filled_registry
+    assert prepared_glossary == TerminologyGlossary(terms={"火の術": "火术"})
     assert plugin_rules == {"TestPlugin": ["$['parameters']['Message']"]}
     assert event_rules == {
         "357": [
@@ -417,12 +431,39 @@ async def test_validate_agent_workspace_reports_invalid_terminology_file(
         output_dir=workspace,
         command_codes=None,
     )
-    _ = (workspace / "terminology" / "terms.json").write_text("{}\n", encoding="utf-8")
+    _ = (workspace / "terminology" / "field-terms.json").write_text("{}\n", encoding="utf-8")
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
     assert report.status == "error"
     assert "terminology_validate_failed" in {error.code for error in report.errors}
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_reports_invalid_glossary_file(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区验收会把坏正文术语表报告成结构化错误。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir)
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    _ = (workspace / "terminology" / "glossary.json").write_text(
+        json.dumps({"terms": {"小明": "小明"}, "note": "不允许"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert report.status == "error"
+    assert "glossary_validate_failed" in {error.code for error in report.errors}
 
 
 @pytest.mark.asyncio
@@ -563,7 +604,7 @@ async def test_manual_pending_translation_export_and_import(
         original_lines = ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
         if original_lines == ["こんにちは"]:
             target_path = location_path
-            entry["translation_lines"] = ["你好"]
+            entry["translation_lines"] = ["　你好　"]
             payload[location_path] = entry
             break
     assert target_path
@@ -1150,6 +1191,79 @@ async def test_export_quality_fix_template_collects_repairable_items(
     assert placeholder_template["translation_lines"] == [r"\C[4]甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"]
     categories = ensure_json_object(report.details["problem_categories_by_path"], "problem_categories_by_path")
     assert categories[placeholder_path] == ["placeholder_risk", "overwide_line"]
+
+
+@pytest.mark.asyncio
+async def test_quality_fix_template_restores_prefilled_model_placeholders(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """修复表会把模型临时译文里的程序占位符还原为游戏原始控制符。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir)
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    template_path = tmp_path / "quality-fix-template.json"
+
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    target_path = ""
+    target_original_lines: list[str] = []
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        original_lines = [
+            line
+            for line in ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
+            if isinstance(line, str)
+        ]
+        if any(r"\C[4]" in line for line in original_lines):
+            target_path = location_path
+            target_original_lines = original_lines
+            break
+
+    assert target_path
+    async with await registry.open_game("テストゲーム") as session:
+        run_record = await session.start_translation_run(
+            total_extracted=len(payload),
+            pending_count=len(payload),
+            deduplicated_count=len(payload),
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role=None,
+                    original_lines=target_original_lines,
+                    translation_lines=[r"[RMMZ_TEXT_COLOR_4]强调[RMMZ_TEXT_COLOR_0]"],
+                    error_type="控制符不匹配",
+                    error_detail=["测试程序占位符还原"],
+                    model_response='{"translation_lines":["[RMMZ_TEXT_COLOR_4]强调[RMMZ_TEXT_COLOR_0]"]}',
+                )
+            ],
+        )
+
+    report = await service.export_quality_fix_template(
+        game_title="テストゲーム",
+        output_path=template_path,
+    )
+
+    template = load_json_object(template_path)
+    exported_entry = ensure_json_object(coerce_json_value(template[target_path]), target_path)
+    text_for_model_lines = ensure_json_array(exported_entry["text_for_model_lines"], f"{target_path}.text_for_model_lines")
+    manual_fill_note = exported_entry["manual_fill_note"]
+    assert report.status == "ok"
+    assert exported_entry["translation_lines"] == [r"\C[4]强调\C[0]"]
+    assert any(isinstance(line, str) and "[RMMZ_TEXT_COLOR_4]" in line for line in text_for_model_lines)
+    assert isinstance(manual_fill_note, str)
+    assert "text_for_model_lines 只供对照" in manual_fill_note
+    assert "游戏原始控制符" in manual_fill_note
 
 
 @pytest.mark.asyncio

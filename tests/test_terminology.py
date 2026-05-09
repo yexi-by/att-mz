@@ -13,10 +13,12 @@ from app.rmmz.schema import TranslationData, TranslationItem
 from app.rmmz.text_rules import ensure_json_array, ensure_json_object, get_default_text_rules
 from app.terminology import (
     SpeakerDialogueContext,
+    TerminologyGlossary,
     TerminologyPromptIndex,
     TerminologyRegistry,
     apply_terminology_translations,
     export_terminology_artifacts,
+    load_terminology_glossary,
     load_terminology_registry,
 )
 from app.terminology.extraction import build_speaker_sample_file_name
@@ -41,7 +43,10 @@ async def test_export_terminology_writes_terms_and_contexts(
     )
 
     registry = TerminologyRegistry.model_validate_json(
-        summary.terms_path.read_text(encoding="utf-8")
+        summary.field_terms_path.read_text(encoding="utf-8")
+    )
+    glossary = TerminologyGlossary.model_validate_json(
+        summary.glossary_path.read_text(encoding="utf-8")
     )
     assert set(registry.model_dump(mode="json")) == {
         "speaker_names",
@@ -83,6 +88,7 @@ async def test_export_terminology_writes_terms_and_contexts(
     assert "案内イベント" not in json_dump_text(registry)
     assert "これは無視される" not in json_dump_text(registry)
     assert summary.sample_file_count == len(registry.speaker_names)
+    assert glossary == TerminologyGlossary()
 
     context_payloads = [
         SpeakerDialogueContext.model_validate_json(path.read_text(encoding="utf-8"))
@@ -138,15 +144,32 @@ def test_terminology_registry_rejects_unknown_category_and_empty_source() -> Non
 
 @pytest.mark.asyncio
 async def test_load_terminology_registry_requires_all_file_categories(tmp_path: Path) -> None:
-    """外部术语表文件必须显式保留全部固定顶层类别。"""
-    terms_path = tmp_path / "terms.json"
-    _ = terms_path.write_text(
+    """外部字段译名表文件必须显式保留全部固定顶层类别。"""
+    field_terms_path = tmp_path / "field-terms.json"
+    _ = field_terms_path.write_text(
         json.dumps({"speaker_names": {"案内人": ""}}, ensure_ascii=False),
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="缺少类别"):
-        _ = await load_terminology_registry(terms_path=terms_path)
+        _ = await load_terminology_registry(field_terms_path=field_terms_path)
+
+
+@pytest.mark.asyncio
+async def test_load_terminology_glossary_validates_shape_and_values(tmp_path: Path) -> None:
+    """正文术语表只接受 terms 字段，并拒绝空译名。"""
+    extra_path = tmp_path / "extra.json"
+    _ = extra_path.write_text(json.dumps({"terms": {}, "note": "不允许"}, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="未知字段"):
+        _ = await load_terminology_glossary(glossary_path=extra_path)
+
+    empty_value_path = tmp_path / "empty-value.json"
+    _ = empty_value_path.write_text(
+        json.dumps({"terms": {"小明": ""}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="不能包含空值"):
+        _ = await load_terminology_glossary(glossary_path=empty_value_path)
 
 
 @pytest.mark.asyncio
@@ -172,14 +195,12 @@ async def test_terminology_skips_actor_name_control_variables(
         output_dir=tmp_path / "terminology",
     )
     registry = TerminologyRegistry.model_validate_json(
-        summary.terms_path.read_text(encoding="utf-8")
+        summary.field_terms_path.read_text(encoding="utf-8")
     )
 
     assert "\\n[1]：" not in registry.speaker_names
 
-    prompt_index = TerminologyPromptIndex.from_registry(
-        TerminologyRegistry(speaker_names={"\\N[1]": "玩家"})
-    )
+    prompt_index = TerminologyPromptIndex.from_glossary(TerminologyGlossary())
     assert prompt_index.entries == []
 
     reset_writable_copies(game_data)
@@ -198,11 +219,15 @@ async def test_terminology_skips_actor_name_control_variables(
 
 
 def test_translation_prompt_injects_filled_terminology() -> None:
-    """正文提示词会注入已填写的术语表。"""
-    registry = TerminologyRegistry(
-        speaker_names={"村人": "村民", "*": "*", ":": "冒号", "同名": "同名"},
-        map_display_names={"始まりの町": "起始之镇"},
-        skill_names={"火の術": "火术"},
+    """正文提示词只注入正文术语表。"""
+    glossary = TerminologyGlossary(
+        terms={
+            "村人": "村民",
+            "始まりの町": "起始之镇",
+            "火の術": "火术",
+            "*": "星号",
+            ":": "冒号",
+        },
     )
     data = TranslationData(
         display_name="始まりの町",
@@ -224,7 +249,7 @@ def test_translation_prompt_injects_filled_terminology() -> None:
             max_command_items=3,
             system_prompt="系统提示",
             text_rules=get_default_text_rules(),
-            terminology_prompt_index=TerminologyPromptIndex.from_registry(registry),
+            terminology_prompt_index=TerminologyPromptIndex.from_glossary(glossary),
         )
     )
     user_prompt = batches[0].messages[1].text
@@ -238,10 +263,75 @@ def test_translation_prompt_injects_filled_terminology() -> None:
     assert "村人 => 村民" in user_prompt
     assert "始まりの町 => 起始之镇" in user_prompt
     assert "火の術 => 火术" in user_prompt
-    assert "* => *" not in user_prompt
+    assert "* => 星号" not in user_prompt
     assert ": => 冒号" not in user_prompt
-    assert "同名 => 同名" not in user_prompt
     assert "# 正文" in user_prompt
+
+
+def test_translation_prompt_matches_normalized_term_inside_field_wrapper() -> None:
+    """正文术语表只写规范术语，字段包装形式仍可通过正文子串命中。"""
+    glossary = TerminologyGlossary(
+        terms={"小明": "小明"},
+    )
+    data = TranslationData(
+        display_name="",
+        translation_items=[
+            TranslationItem(
+                location_path="Map001.json/1/0/0",
+                item_type="long_text",
+                role=None,
+                original_lines=["/c小明今天来了。"],
+            )
+        ],
+    )
+
+    batches = list(
+        iter_translation_context_batches(
+            translation_data=data,
+            token_size=100,
+            factor=1.0,
+            max_command_items=3,
+            system_prompt="系统提示",
+            text_rules=get_default_text_rules(),
+            terminology_prompt_index=TerminologyPromptIndex.from_glossary(glossary),
+        )
+    )
+    user_prompt = batches[0].messages[1].text
+
+    assert "小明 => 小明" in user_prompt
+    assert "/c小明 => 小明" not in user_prompt
+
+
+def test_translation_prompt_matches_canonical_term_without_field_wrapper() -> None:
+    """字段译名表带控制前缀时，正文只有规范术语也能命中。"""
+    glossary = TerminologyGlossary(
+        terms={"小明": "小明"},
+    )
+    data = TranslationData(
+        display_name="",
+        translation_items=[
+            TranslationItem(
+                location_path="Map001.json/1/0/0",
+                item_type="long_text",
+                role=None,
+                original_lines=["小明今天来了。"],
+            )
+        ],
+    )
+
+    batches = list(
+        iter_translation_context_batches(
+            translation_data=data,
+            token_size=100,
+            factor=1.0,
+            max_command_items=3,
+            system_prompt="系统提示",
+            text_rules=get_default_text_rules(),
+            terminology_prompt_index=TerminologyPromptIndex.from_glossary(glossary),
+        )
+    )
+
+    assert "小明 => 小明" in batches[0].messages[1].text
 
 
 @pytest.mark.asyncio
@@ -250,7 +340,7 @@ async def test_translation_prompt_injects_same_database_entry_name(
 ) -> None:
     """翻译数据库条目正文时会注入同一条目的名称术语。"""
     game_data = await load_game_data(minimal_game_dir)
-    registry = TerminologyRegistry(skill_names={"火の術": "火术"})
+    glossary = TerminologyGlossary(terms={"火の術": "火术"})
     data = TranslationData(
         display_name="",
         translation_items=[
@@ -271,8 +361,8 @@ async def test_translation_prompt_injects_same_database_entry_name(
             max_command_items=3,
             system_prompt="系统提示",
             text_rules=get_default_text_rules(),
-            terminology_prompt_index=TerminologyPromptIndex.from_registry(
-                registry,
+            terminology_prompt_index=TerminologyPromptIndex.from_glossary(
+                glossary,
                 game_data=game_data,
             ),
         )

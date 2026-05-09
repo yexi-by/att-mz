@@ -71,6 +71,10 @@ class TextRules:
                 normalized_text = normalized_text[len(left) : len(normalized_text) - len(right)]
         return normalized_text.strip()
 
+    def normalize_translation_lines(self, lines: list[str]) -> list[str]:
+        """清理模型或人工译文行的意外首尾空白，保留行内空白。"""
+        return [line.strip() for line in lines]
+
     def replace_rm_control_sequences(
         self,
         text: str,

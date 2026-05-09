@@ -536,10 +536,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     import_terminology_parser = subparsers.add_parser(
         "import-terminology",
-        help="把外部 Agent 填写后的术语表 JSON 导入游戏数据库",
+        help="把外部 Agent 填写后的字段译名表和正文术语表导入游戏数据库",
     )
     add_optional_target_arguments(import_terminology_parser)
-    _ = import_terminology_parser.add_argument("--input", required=True, help="已填写的术语表 JSON 路径")
+    _ = import_terminology_parser.add_argument("--input", required=True, help="已填写的字段译名表 JSON 路径")
+    _ = import_terminology_parser.add_argument("--glossary-input", required=True, help="已填写的正文术语表 JSON 路径")
     _ = import_terminology_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     write_terminology_parser = subparsers.add_parser(
@@ -1283,7 +1284,7 @@ async def run_export_terminology_command(args: argparse.Namespace) -> int:
     output_dir = read_required_path_arg(args, "output_dir")
     async with HandlerSession() as handler:
         summary = await handler.export_terminology(game_title=game_title, output_dir=output_dir)
-    logger.success(f"[tag.success]术语表工程可交给外部 Agent 处理[/tag.success] 术语表 [tag.path]{summary.terms_path}[/tag.path] 上下文目录 [tag.path]{summary.contexts_dir}[/tag.path]")
+    logger.success(f"[tag.success]术语表工程可交给外部 Agent 处理[/tag.success] 字段译名表 [tag.path]{summary.field_terms_path}[/tag.path] 正文术语表 [tag.path]{summary.glossary_path}[/tag.path] 上下文目录 [tag.path]{summary.contexts_dir}[/tag.path]")
     return 0
 
 
@@ -1291,16 +1292,21 @@ async def run_import_terminology_command(args: argparse.Namespace) -> int:
     """执行 `import-terminology` 命令。"""
     game_title = await resolve_target_game_title(args)
     input_path = read_required_path_arg(args, "input")
+    glossary_input_path = read_required_path_arg(args, "glossary_input")
     try:
         async with HandlerSession() as handler:
-            summary = await handler.import_terminology(game_title=game_title, input_path=input_path)
+            summary = await handler.import_terminology(
+                game_title=game_title,
+                input_path=input_path,
+                glossary_input_path=glossary_input_path,
+            )
     except Exception as error:
         if not read_bool_arg(args, "json_output"):
             raise
         report = AgentReport.from_parts(
             errors=[issue("terminology_invalid", f"术语表导入失败: {type(error).__name__}: {error}")],
             warnings=[],
-            summary={"game": game_title, "input": str(input_path)},
+            summary={"game": game_title, "input": str(input_path), "glossary_input": str(glossary_input_path)},
             details={},
         )
         write_report_outputs(report=report, args=args, title="术语表导入报告")
@@ -1312,8 +1318,10 @@ async def run_import_terminology_command(args: argparse.Namespace) -> int:
             summary={
                 "game": game_title,
                 "input": str(input_path),
+                "glossary_input": str(glossary_input_path),
                 "imported_entry_count": summary.imported_entry_count,
                 "filled_entry_count": summary.filled_entry_count,
+                "glossary_term_count": summary.glossary_term_count,
             },
             details={},
         )

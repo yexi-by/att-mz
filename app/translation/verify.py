@@ -105,17 +105,18 @@ async def verify_translation_batch(
                 )
             )
             continue
+        normalized_model_translation_lines = text_rules.normalize_translation_lines(model_translation_lines)
 
         if item.item_type == "long_text":
             translation_lines = align_long_text_lines(
-                text="\n".join(model_translation_lines),
+                text="\n".join(normalized_model_translation_lines),
                 target_lines=len(item.original_lines),
                 location_path=item.location_path,
                 text_rules=text_rules,
                 original_lines=item.original_lines,
             )
         elif item.item_type == "array":
-            translation_lines = list(model_translation_lines)
+            translation_lines = list(normalized_model_translation_lines)
             translation_lines = normalize_translated_wrapping_punctuation(
                 original_lines=item.original_lines,
                 translation_lines=translation_lines,
@@ -136,7 +137,7 @@ async def verify_translation_batch(
                 )
                 continue
         else:
-            translation_lines = list(model_translation_lines)
+            translation_lines = list(normalized_model_translation_lines)
             translation_lines = normalize_translated_wrapping_punctuation(
                 original_lines=item.original_lines,
                 translation_lines=translation_lines,

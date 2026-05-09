@@ -80,8 +80,16 @@ from app.event_command_text import (
     parse_event_command_rule_import_text,
     resolve_event_command_codes,
 )
-from app.terminology import TerminologyCategory, TerminologyExtraction, TerminologyRegistry, export_terminology_artifacts, load_terminology_registry
-from app.terminology.files import write_terms_json
+from app.terminology import (
+    TerminologyCategory,
+    TerminologyExtraction,
+    TerminologyGlossary,
+    TerminologyRegistry,
+    export_terminology_artifacts,
+    load_terminology_glossary,
+    load_terminology_registry,
+)
+from app.terminology.files import write_field_terms_json, write_glossary_json
 from app.note_tag_text import (
     NoteTagTextExtraction,
     build_note_tag_rule_records_from_import,
@@ -1532,6 +1540,7 @@ class AgentToolkitService:
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_game_data(session)
             terminology_registry = await session.read_terminology_registry()
+            terminology_glossary = await session.read_terminology_glossary()
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
                 session=session,
                 game_data=game_data,
@@ -1548,15 +1557,17 @@ class AgentToolkitService:
             )
         terminology_summary = await export_terminology_artifacts(game_data=game_data, output_dir=target_dir / "terminology")
         if terminology_registry is not None:
-            exported_registry = await load_terminology_registry(terms_path=terminology_summary.terms_path)
+            exported_registry = await load_terminology_registry(field_terms_path=terminology_summary.field_terms_path)
             merged_registry = _merge_terminology_registry(
                 exported_registry=exported_registry,
                 stored_registry=terminology_registry,
             )
-            await write_terms_json(terminology_summary.terms_path, merged_registry)
+            await write_field_terms_json(terminology_summary.field_terms_path, merged_registry)
+        if terminology_glossary is not None:
+            await write_glossary_json(terminology_summary.glossary_path, terminology_glossary)
         terminology_subtasks_dir = target_dir / "terminology" / "subtasks"
         terminology_subtask_summary = await _write_terminology_subtask_files(
-            terms_path=terminology_summary.terms_path,
+            field_terms_path=terminology_summary.field_terms_path,
             subtasks_dir=terminology_subtasks_dir,
         )
         plugins_path = target_dir / "plugins.json"
@@ -1605,6 +1616,7 @@ class AgentToolkitService:
             "terminology_entry_count": terminology_summary.entry_count,
             "terminology_database_entry_count": terminology_summary.database_entry_count,
             "terminology_subtask_count": len(TERMINOLOGY_SUBTASK_GROUPS),
+            "glossary_term_count": terminology_glossary.term_count() if terminology_glossary is not None else 0,
             "plugin_count": len(game_data.plugins_js),
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
             "stale_plugin_rule_count": stale_plugin_rule_count,
@@ -1616,7 +1628,8 @@ class AgentToolkitService:
             "placeholder_rule_draft_count": len(placeholder_rule_drafts),
         }
         manifest_files: JsonArray = [
-            str(terminology_summary.terms_path),
+            str(terminology_summary.field_terms_path),
+            str(terminology_summary.glossary_path),
             str(terminology_summary.contexts_dir),
             str(terminology_subtasks_dir),
             str(plugins_path),
@@ -1648,15 +1661,16 @@ class AgentToolkitService:
         errors: list[AgentIssue] = []
         warnings: list[AgentIssue] = []
         details: JsonObject = {}
-        terminology_path = workspace / "terminology" / "terms.json"
+        field_terms_path = workspace / "terminology" / "field-terms.json"
+        glossary_path = workspace / "terminology" / "glossary.json"
         plugin_rules_path = workspace / "plugin-rules.json"
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
         placeholder_rules_path = workspace / "placeholder-rules.json"
-        if terminology_path.exists():
+        if field_terms_path.exists():
             registry: TerminologyRegistry | None = None
             try:
-                registry = await load_terminology_registry(terms_path=terminology_path)
+                registry = await load_terminology_registry(field_terms_path=field_terms_path)
                 async with await self.game_registry.open_game(game_title) as session:
                     game_data = await self._load_game_data(session)
                 expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
@@ -1680,7 +1694,19 @@ class AgentToolkitService:
                     "map_count": len(registry.map_display_names),
                 }
         else:
-            errors.append(issue("terminology_missing", "工作区缺少 terminology/terms.json"))
+            errors.append(issue("terminology_missing", "工作区缺少 terminology/field-terms.json"))
+        if glossary_path.exists():
+            glossary: TerminologyGlossary | None = None
+            try:
+                glossary = await load_terminology_glossary(glossary_path=glossary_path)
+            except Exception as error:
+                errors.append(issue("glossary_validate_failed", f"正文术语表结构校验失败: {type(error).__name__}: {error}"))
+            if glossary is not None:
+                details["glossary"] = {
+                    "term_count": glossary.term_count(),
+                }
+        else:
+            errors.append(issue("glossary_missing", "工作区缺少 terminology/glossary.json"))
         if plugin_rules_path.exists():
             async with aiofiles.open(plugin_rules_path, "r", encoding="utf-8") as file:
                 plugin_report = await self.validate_plugin_rules(game_title=game_title, rules_text=await file.read())
@@ -1827,6 +1853,7 @@ class AgentToolkitService:
                 event_rules = await session.read_event_command_text_rules()
                 note_tag_rules = await session.read_note_tag_text_rules()
                 terminology_registry = await session.read_terminology_registry()
+                terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
                 summary["game_registered"] = True
                 summary["plugin_rule_count"] = sum(len(rule.path_templates) for rule in plugin_rules)
@@ -1835,6 +1862,7 @@ class AgentToolkitService:
                 summary["note_tag_rule_count"] = sum(len(rule.tag_names) for rule in note_tag_rules)
                 summary["placeholder_rule_count"] = len(placeholder_rules)
                 summary["terminology_imported"] = terminology_registry is not None
+                summary["glossary_imported"] = terminology_glossary is not None
                 if not plugin_rules and stale_plugin_rule_count == 0:
                     warnings.append(issue("plugin_rules", "当前游戏尚未导入插件文本规则"))
                 if stale_plugin_rule_count:
@@ -1844,7 +1872,9 @@ class AgentToolkitService:
                 if not note_tag_rules:
                     warnings.append(issue("note_tag_rules", "当前游戏尚未导入 Note 标签文本规则"))
                 if terminology_registry is None:
-                    warnings.append(issue("terminology", "当前游戏尚未导入术语表"))
+                    warnings.append(issue("terminology", "当前游戏尚未导入字段译名表"))
+                if terminology_glossary is None:
+                    warnings.append(issue("glossary", "当前游戏尚未导入正文术语表"))
                 if not placeholder_rules:
                     warnings.append(issue("placeholder_rules", "当前游戏尚未导入自定义占位符规则"))
                 font_path = setting.write_back.replacement_font_path
@@ -2117,9 +2147,9 @@ async def _write_json_object(path: Path, payload: JsonObject) -> None:
         _ = await file.write(f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n")
 
 
-async def _write_terminology_subtask_files(*, terms_path: Path, subtasks_dir: Path) -> JsonObject:
-    """按术语字段组生成主代理派发子代理用的独立候选文件。"""
-    registry = await load_terminology_registry(terms_path=terms_path)
+async def _write_terminology_subtask_files(*, field_terms_path: Path, subtasks_dir: Path) -> JsonObject:
+    """按字段译名类别生成主代理派发子代理用的独立候选文件。"""
+    registry = await load_terminology_registry(field_terms_path=field_terms_path)
     category_map = registry.as_category_map()
     sources_dir = subtasks_dir / "sources"
     candidates_dir = subtasks_dir / "candidates"
@@ -2155,10 +2185,11 @@ def _agent_workflow_manifest(terminology_subtask_summary: JsonObject) -> JsonObj
                 "round": 1,
                 "name": "terminology_candidates",
                 "owner": "主代理",
-                "description": "主代理按术语字段拆分任务，子代理只写候选文件；主代理必须逐项审查、统一译名、亲自修改并合并回 terminology/terms.json 后才能导入数据库。",
+                "description": "主代理按字段译名类别拆分任务，子代理只写候选文件；主代理必须逐项审查、统一译名、亲自修改并合并回 terminology/field-terms.json，同时维护 terminology/glossary.json 后才能导入数据库。",
                 "subtasks": terminology_subtask_summary,
-                "final_file": "terminology/terms.json",
-                "import_command": "import-terminology --game <游戏标题> --input <工作区>/terminology/terms.json --json",
+                "final_file": "terminology/field-terms.json",
+                "glossary_file": "terminology/glossary.json",
+                "import_command": "import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json --json",
             },
             {
                 "round": 2,
@@ -2290,13 +2321,38 @@ def _build_manual_translation_template_entry(
     """把当前提取条目转换成手动填写译文表条目。"""
     cloned_item = item.model_copy(deep=True)
     cloned_item.build_placeholders(text_rules)
+    restored_translation_lines = _restore_template_translation_lines(
+        item=cloned_item,
+        translation_lines=translation_lines,
+    )
     return {
         "item_type": cloned_item.item_type,
         "role": cloned_item.role,
         "original_lines": _string_lines_to_json_array(cloned_item.original_lines),
         "text_for_model_lines": _string_lines_to_json_array(cloned_item.original_lines_with_placeholders),
-        "translation_lines": _string_lines_to_json_array(translation_lines),
+        "translation_lines": _string_lines_to_json_array(restored_translation_lines),
+        "manual_fill_note": (
+            "只改 translation_lines；text_for_model_lines 只供对照。"
+            "translation_lines 必须使用 original_lines 里的游戏原始控制符，"
+            "不得保留 [RMMZ_...] 或 [CUSTOM_...]。"
+        ),
     }
+
+
+def _restore_template_translation_lines(
+    *,
+    item: TranslationItem,
+    translation_lines: list[str],
+) -> list[str]:
+    """把修复表预填译文中的程序占位符还原为游戏原始控制符。"""
+    if not translation_lines:
+        return []
+    if not item.placeholder_map:
+        return list(translation_lines)
+
+    item.translation_lines_with_placeholders = list(translation_lines)
+    item.restore_placeholders()
+    return list(item.translation_lines)
 
 
 def _collect_quality_fix_problem_paths(
@@ -2764,9 +2820,10 @@ def _normalize_manual_translation_lines(
     text_rules: TextRules,
 ) -> list[str]:
     """手动填写的 long_text 保存前套用与写回一致的行宽兜底。"""
+    cleaned_translation_lines = text_rules.normalize_translation_lines(translation_lines)
     normalized_lines = normalize_translated_wrapping_punctuation(
         original_lines=item.original_lines,
-        translation_lines=list(translation_lines),
+        translation_lines=cleaned_translation_lines,
         text_rules=text_rules,
     )
     if item.item_type != "long_text":

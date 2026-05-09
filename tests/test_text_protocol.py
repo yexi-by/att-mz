@@ -34,14 +34,14 @@ def test_visible_text_decodes_and_reencodes_json_string_shell() -> None:
     ) == []
 
 
-def test_extraction_text_preserves_json_shell_inner_whitespace() -> None:
-    """提取入库时保留 JSON 字符串外壳里的首尾空白。"""
+def test_extraction_text_strips_json_shell_inner_boundary_whitespace() -> None:
+    """提取入库时清理 JSON 字符串外壳里的首尾空白。"""
     raw_text = json.dumps("\n　本文　\n", ensure_ascii=False)
 
     normalized_shell_text = normalize_visible_text_for_extraction(raw_text)
     normalized_plain_text = normalize_visible_text_for_extraction("　本文　")
 
-    assert normalized_shell_text == "\n　本文　\n"
+    assert normalized_shell_text == "本文"
     assert normalized_plain_text == "本文"
 
 
@@ -58,7 +58,7 @@ def test_extraction_text_applies_plain_text_normalizer_only_without_shell() -> N
         plain_text_normalizer=lambda text: text.removeprefix("「").removesuffix("」"),
     )
 
-    assert shell_text == "「本文」"
+    assert shell_text == "本文"
     assert plain_text == "本文"
 
 

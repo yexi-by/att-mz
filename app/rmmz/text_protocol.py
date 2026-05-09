@@ -43,10 +43,8 @@ def normalize_visible_text_for_extraction(
     *,
     plain_text_normalizer: Callable[[str], str] | None = None,
 ) -> str:
-    """生成提取入库用玩家文本，并保留 JSON 字符串外壳内的真实空白。"""
+    """生成提取入库用玩家文本，解开 JSON 字符串外壳后清理首尾空白。"""
     decoded = inspect_visible_text(raw_text)
-    if decoded.json_string_shell_depth > 0:
-        return decoded.text
     if plain_text_normalizer is None:
         return decoded.text.strip()
     return plain_text_normalizer(decoded.text)

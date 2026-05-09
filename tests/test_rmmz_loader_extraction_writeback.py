@@ -83,6 +83,49 @@ async def test_data_extraction_covers_core_text_sources(minimal_game_dir: Path) 
 
 
 @pytest.mark.asyncio
+async def test_data_extraction_strips_outer_whitespace_from_core_sources(minimal_game_dir: Path) -> None:
+    """标准提取入口保存清理后的玩家可见原文。"""
+    system_path = minimal_game_dir / "data" / "System.json"
+    system = ensure_json_object(_read_test_json(system_path), "System.json")
+    system["gameTitle"] = "　テストゲーム　"
+    _rewrite_json(system_path, system)
+
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents.json[1].list")
+    choice_command = ensure_json_object(commands[2], "CommonEvents.json[1].list[2]")
+    choice_parameters = ensure_json_array(choice_command["parameters"], "CommonEvents.json[1].list[2].parameters")
+    choice_parameters[0] = ["　はい　", " いいえ "]
+    _rewrite_json(common_events_path, common_events)
+
+    actors_path = minimal_game_dir / "data" / "Actors.json"
+    actors = ensure_json_array(_read_test_json(actors_path), "Actors.json")
+    actor = ensure_json_object(actors[1], "Actors.json[1]")
+    actor["profile"] = "　プロフィール　"
+    _rewrite_json(actors_path, actors)
+
+    items_path = minimal_game_dir / "data" / "Items.json"
+    items = ensure_json_array(_read_test_json(items_path), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["description"] = "　体力を回復する。　"
+    _rewrite_json(items_path, items)
+
+    game_data = await load_game_data(minimal_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    items_by_path = {
+        item.location_path: item
+        for data in extracted.values()
+        for item in data.translation_items
+    }
+
+    assert items_by_path["System.json/gameTitle"].original_lines == ["テストゲーム"]
+    assert items_by_path["CommonEvents.json/1/2"].original_lines == ["はい", "いいえ"]
+    assert items_by_path["Actors.json/1/profile"].original_lines == ["プロフィール"]
+    assert items_by_path["Items.json/1/description"].original_lines == ["体力を回復する。"]
+
+
+@pytest.mark.asyncio
 async def test_note_tag_rules_extract_and_write_back_only_target_values(minimal_game_dir: Path) -> None:
     """Note 标签只有导入规则后才进入正文提取，回写只替换目标标签值。"""
     items_path = minimal_game_dir / "data" / "Items.json"
@@ -187,7 +230,7 @@ async def test_note_tag_json_string_leaf_uses_visible_text_protocol(minimal_game
         and candidate_value.get("file_name") == "Items.json"
         and candidate_value.get("tag_name") == "拡張説明"
     )
-    assert candidate["sample_values"] == [source_note]
+    assert candidate["sample_values"] == [source_note.strip()]
 
     rule_records = build_note_tag_rule_records_from_import(
         game_data=game_data,
@@ -200,7 +243,7 @@ async def test_note_tag_json_string_leaf_uses_visible_text_protocol(minimal_game
         text_rules=get_default_text_rules(),
     ).extract_all_text()["Items.json"].translation_items
 
-    assert note_items[0].original_lines == [source_note]
+    assert note_items[0].original_lines == [source_note.strip()]
 
     translated_note = "\n　" + r"\C[2]详细说明\C[0]\n下一行" + "　\n"
     note_items[0].translation_lines = [translated_note]
@@ -213,7 +256,7 @@ async def test_note_tag_json_string_leaf_uses_visible_text_protocol(minimal_game
     assert isinstance(writable_note, str)
     assert writable_note.endswith("\n<upgrade:1,2,3>")
     tag_value = writable_note.removeprefix("<拡張説明:").split(">", maxsplit=1)[0]
-    assert json.loads(tag_value) == translated_note
+    assert json.loads(tag_value) == translated_note.strip()
 
 
 @pytest.mark.asyncio
@@ -511,7 +554,7 @@ async def test_write_data_text_splits_overwide_long_text_before_write_back(minim
 
 @pytest.mark.asyncio
 async def test_write_data_text_indents_wrapping_punctuation_continuation_lines(minimal_game_dir: Path) -> None:
-    """写回阶段为跨行引号续行补视觉缩进。"""
+    """写回阶段清理译文外层空白，并为跨行引号续行补视觉缩进。"""
     game_data = await load_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
@@ -519,7 +562,7 @@ async def test_write_data_text_indents_wrapping_punctuation_continuation_lines(m
         for candidate in extracted["CommonEvents.json"].translation_items
         if candidate.location_path == "CommonEvents.json/1/0"
     )
-    item.translation_lines = ["「甲乙丙。", "丁戊己」"]
+    item.translation_lines = ["　「甲乙丙。　", "　丁戊己」　"]
 
     reset_writable_copies(game_data)
     write_data_text(game_data, [item], text_rules=get_default_text_rules())

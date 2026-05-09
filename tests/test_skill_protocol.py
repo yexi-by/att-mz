@@ -19,7 +19,9 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`terminology/subtasks/candidates/item_terms.json`",
         "主代理必须等待全部术语候选子代理完成",
         "主代理必须严审信达雅、日文句意、中文自然度、专名统一、跨类别一致性和游戏 UI 语感",
-        "主代理必须亲自修改候选译名并合并到 `terminology/terms.json`",
+        "主代理必须亲自修改候选译名并合并到 `terminology/field-terms.json`，同时维护 `terminology/glossary.json`",
+        "`terminology/field-terms.json` 的 value 是最终写进游戏字段的完整文本",
+        "不能指望正文术语表补回来",
         "术语候选子代理任务单",
         "### 第二轮：三类外部规则",
         "`plugin-rules` 子代理",
@@ -48,7 +50,7 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json`",
         "`scan-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
         "`import-placeholder-rules --game <游戏标题> --input <规则文件> --json`",
-        "`import-terminology --game <游戏标题> --input <术语表> --json`",
+        "`import-terminology --game <游戏标题> --input <字段译名表> --glossary-input <正文术语表> --json`",
         "`import-plugin-rules --game <游戏标题> --input <规则文件> --json`",
         "`import-event-command-rules --game <游戏标题> --input <规则文件> --json`",
         "`export-note-tag-candidates --game <游戏标题> --output <文件> --json`",
@@ -74,7 +76,13 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "### 工作区 JSON 格式契约",
         "`placeholder-rules.json`：顶层必须是对象，格式为 `{正则表达式: 占位符模板}`",
         "禁止写成 `{占位符名: 正则表达式}`",
-        "`terminology/terms.json`：顶层固定为术语类别对象",
+        "`terminology/field-terms.json`：这是“字段译名表”",
+        "`terminology/glossary.json`：这是“正文术语表”",
+        "`source == translated` 是合法术语",
+        "正文术语表必须只保留 `terms` 顶层对象",
+        "字段包装形式不得写入正文术语表",
+        "字段译名表负责写回 101 名字框、地图显示名、数据库名称和系统类型等游戏字段",
+        "正文术语表负责正文翻译提示词命中",
         "`plugin-rules.json`：顶层必须是对象，格式为 `{插件名: [JSONPath, ...]}`",
         "JSONPath 必须使用括号路径语法并从 `$['parameters']` 开始",
         "禁止使用 `$.xxx` 点号路径",
@@ -86,6 +94,8 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "导入前只填写 `translation_lines` 字符串数组",
         "`long_text` 是多行对话，可以按自然语义填写，导入命令会按当前 `[text_rules]` 行宽配置自动拆短",
         "`quality-fix-template.json`：这是“检查没通过译文的修复表”",
+        "`manual_fill_note` 是填写提示，`text_for_model_lines` 只供对照",
+        "填写 `translation_lines` 时只能使用 `original_lines` 里的游戏原始控制符",
         "`reset-translations.json`：顶层必须是 `{\"location_paths\": [\"<定位路径>\"]}`",
         "`reset-translations --game <游戏标题> --all --json`",
         "完整重译不要手工导出全集路径",
@@ -111,12 +121,19 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "三类外部规则全部导入后，主代理才能重新运行 `build-placeholder-rules`",
         "亲自审查、校验、覆盖扫描并导入占位符规则",
         "任一术语候选或规则子代理未完成、失败或校验未通过，或占位符规则未最终导入，不启动翻译",
+        "### 插件依赖文本型字符串的兼容策略",
+        "项目层不阻止 101 名字框、地图显示名、数据库名称和系统类型等字段汉化",
+        "必须主动检查插件或脚本是否把 101 名字框、地图显示名、数据库名称、系统类型或其他文本型字符串当作功能触发键使用",
+        "建立“中文显示值 -> 原始触发值”的兼容映射",
+        "不得把例外游戏逻辑写进 A.T.T MZ 项目核心",
         "### 子代理上下文包",
         "不要把大 JSON 正文塞进子代理 prompt",
         "只允许写自己负责的输出文件",
         "完成后必须报告：改动文件、是否为空结果、空结果理由、未解决风险、建议主代理运行的校验命令",
         "推荐子代理 prompt 模板",
         "### 三类规则任务单模板",
+        "`docs/plugin-rules-agent-prompt.md`",
+        "`docs/event-command-rules-agent-prompt.md`",
         "`plugin-rules` 子代理任务单",
         "`event-command-rules` 子代理任务单",
         "`note-tag-rules` 子代理任务单",
@@ -166,8 +183,11 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "Skills.json",
         "Map*.json",
         "五类子代理",
-        "`terminology` 子代理：读取 `terminology/terms.json`",
-        "只写 `terminology/terms.json`",
+        "主代理必须亲自修改候选译名并合并到 `terminology/" + "terms" + ".json`",
+        "`terminology` 子代理：读取 `terminology/" + "terms" + ".json`",
+        "只写 `terminology/" + "terms" + ".json`",
+        "aliases",
+        "别名",
         "### 四类子代理任务契约",
         "主代理必须等待四类子代理全部完成",
         "四类子代理全部导入后",
@@ -184,6 +204,53 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
     ]
     for phrase in forbidden_sample_phrases:
         assert phrase not in text
+
+
+def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
+    """三类规则子代理引用的外部任务契约文档必须可直接执行。"""
+    plugin_text = (ROOT / "docs" / "plugin-rules-agent-prompt.md").read_text(encoding="utf-8")
+    event_text = (ROOT / "docs" / "event-command-rules-agent-prompt.md").read_text(encoding="utf-8")
+
+    plugin_required_phrases = [
+        "不读取项目源码、数据库或程序内部对象",
+        "`<工作区>/plugins.json`",
+        "唯一可写文件：`<工作区>/plugin-rules.json`",
+        "格式为 `{插件名: [JSONPath, ...]}`",
+        "JSONPath 必须使用括号路径语法",
+        "合法空结果是 `{}`",
+        "validate-plugin-rules",
+        "改动文件",
+        "未解决风险",
+    ]
+    for phrase in plugin_required_phrases:
+        assert phrase in plugin_text
+
+    event_required_phrases = [
+        "不读取项目源码、数据库或程序内部对象",
+        "`<工作区>/event-commands.json`",
+        "唯一可写文件：`<工作区>/event-command-rules.json`",
+        "格式为 `{指令编码字符串: [{match, paths}]}`",
+        "`match` 的键必须是参数索引字符串",
+        "没有过滤条件时，`match` 写 `{}`",
+        "JSONPath 必须使用括号路径语法",
+        "合法空结果是 `{}`",
+        "validate-event-command-rules",
+        "未解决风险",
+    ]
+    for phrase in event_required_phrases:
+        assert phrase in event_text
+
+    forbidden_real_context_phrases = [
+        "C:\\",
+        "D:\\",
+        "Users\\",
+        "测试样本",
+        "Sexual_conflict",
+        "生意気",
+    ]
+    combined_text = plugin_text + event_text
+    for phrase in forbidden_real_context_phrases:
+        assert phrase not in combined_text
 
 
 def test_text_translation_prompt_keeps_protocol_minimal() -> None:

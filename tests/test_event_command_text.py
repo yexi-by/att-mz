@@ -243,7 +243,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
     item = EventCommandTextExtraction(game_data, records).extract_all_text()[
         "CommonEvents.json"
     ].translation_items[0]
-    assert item.original_lines == [source_message]
+    assert item.original_lines == [source_message.strip()]
 
     translated_message = "\n　" + r"\C[2]任务说明\C[0]\n前往村子。" + "　\n"
     item.translation_lines = [translated_message]
@@ -257,7 +257,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
     writable_parameters = ensure_json_array(writable_command["parameters"], "CommonEvents[1].list[4].parameters")
     writable_payload = ensure_json_object(writable_parameters[3], "CommonEvents[1].list[4].parameters[3]")
     assert isinstance(writable_payload["message"], str)
-    assert json.loads(writable_payload["message"]) == translated_message
+    assert json.loads(writable_payload["message"]) == translated_message.strip()
 
 
 @pytest.mark.asyncio

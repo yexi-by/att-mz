@@ -33,7 +33,7 @@ def write_plugin_text(game_data: GameData, items: list[TranslationItem]) -> None
         )
 
         plugin_index = int(parts[1])
-        translated_text = item.translation_lines[0] if item.translation_lines else ""
+        translated_text = item.translation_lines[0].strip() if item.translation_lines else ""
         plugin = game_data.writable_plugins_js[plugin_index]
         parameters = plugin.get("parameters")
         if not isinstance(parameters, dict):

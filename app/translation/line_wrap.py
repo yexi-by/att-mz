@@ -65,7 +65,7 @@ def align_long_text_lines(
 ) -> list[str]:
     """按模型断句保留译文行，再执行行宽兜底。"""
     _ = target_lines
-    lines = text.splitlines()
+    lines = text_rules.normalize_translation_lines(text.splitlines())
     if original_lines is not None:
         lines = normalize_translated_wrapping_punctuation(
             original_lines=original_lines,
@@ -144,21 +144,23 @@ def split_overwide_single_text_value_if_needed(
             if LITERAL_LINE_BREAK_PLACEHOLDER in translation_text
             else LITERAL_LINE_BREAK_MARKER
         )
-        normalized_text = translation_text.replace(LITERAL_LINE_BREAK_PLACEHOLDER, line_break_token)
+        stripped_translation_text = translation_text.strip()
+        normalized_text = stripped_translation_text.replace(LITERAL_LINE_BREAK_PLACEHOLDER, line_break_token)
         normalized_text = normalized_text.replace(LITERAL_LINE_BREAK_MARKER, line_break_token)
         normalized_text = normalized_text.replace("\n", line_break_token)
         return line_break_token.join(
             split_overwide_lines(
-                lines=normalized_text.split(line_break_token),
+                lines=text_rules.normalize_translation_lines(normalized_text.split(line_break_token)),
                 location_path=location_path,
                 text_rules=text_rules,
             )
         )
-    if "\n" not in translation_text and not _has_embedded_line_break(original_lines):
-        return translation_text
+    stripped_translation_text = translation_text.strip()
+    if "\n" not in stripped_translation_text and not _has_embedded_line_break(original_lines):
+        return stripped_translation_text
     return "\n".join(
         split_overwide_lines(
-            lines=translation_text.split("\n"),
+            lines=text_rules.normalize_translation_lines(stripped_translation_text.split("\n")),
             location_path=location_path,
             text_rules=text_rules,
         )

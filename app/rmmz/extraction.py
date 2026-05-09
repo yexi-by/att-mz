@@ -126,12 +126,13 @@ class DataTextExtraction:
         translation_data = TranslationData(display_name=None, translation_items=[])
         system = self.game_data.system
 
-        if self._should_extract_text(system.gameTitle):
+        game_title = self._normalize_text_value(system.gameTitle)
+        if game_title is not None and self._should_extract_text(game_title):
             translation_data.translation_items.append(
                 TranslationItem(
                     location_path=f"{SYSTEM_FILE_NAME}/gameTitle",
                     item_type="short_text",
-                    original_lines=[system.gameTitle],
+                    original_lines=[game_title],
                 )
             )
 
@@ -142,24 +143,26 @@ class DataTextExtraction:
         }
         for key, text_list in terms_lists.items():
             for index, text in enumerate(text_list):
-                if text is None or not self._should_extract_text(text):
+                normalized_text = self._normalize_text_value(text)
+                if normalized_text is None or not self._should_extract_text(normalized_text):
                     continue
                 translation_data.translation_items.append(
                     TranslationItem(
                         location_path=f"{SYSTEM_FILE_NAME}/terms/{key}/{index}",
                         item_type="short_text",
-                        original_lines=[text],
+                        original_lines=[normalized_text],
                     )
                 )
 
         for key, value in system.terms.messages.items():
-            if not self._should_extract_text(value):
+            normalized_value = self._normalize_text_value(value)
+            if normalized_value is None or not self._should_extract_text(normalized_value):
                 continue
             translation_data.translation_items.append(
                 TranslationItem(
                     location_path=f"{SYSTEM_FILE_NAME}/terms/messages/{key}",
                     item_type="short_text",
-                    original_lines=[value],
+                    original_lines=[normalized_value],
                 )
             )
 
@@ -186,13 +189,14 @@ class DataTextExtraction:
                     "message4": base_item.message4,
                 }
                 for key, text in texts_to_extract.items():
-                    if not self._should_extract_text(text):
+                    normalized_text = self._normalize_text_value(text)
+                    if normalized_text is None or not self._should_extract_text(normalized_text):
                         continue
                     translation_data.translation_items.append(
                         TranslationItem(
                             location_path=f"{file_name}/{base_item.id}/{key}",
                             item_type="short_text",
-                            original_lines=[text],
+                            original_lines=[normalized_text],
                         )
                     )
 
@@ -258,7 +262,11 @@ class DataTextExtraction:
         if not isinstance(choices_value, list):
             return
 
-        original_lines = [item for item in choices_value if isinstance(item, str)]
+        original_lines = [
+            self.text_rules.normalize_extraction_text(item)
+            for item in choices_value
+            if isinstance(item, str)
+        ]
         if not self._should_extract_lines(original_lines):
             return
 
@@ -290,7 +298,16 @@ class DataTextExtraction:
         if not isinstance(text_value, str):
             return None
 
-        normalized_text = self.text_rules.normalize_extraction_text(text_value)
+        normalized_text = self._normalize_text_value(text_value)
+        if not normalized_text:
+            return None
+        return normalized_text
+
+    def _normalize_text_value(self, text: str | None) -> str | None:
+        """清理提取入口文本，空白文本返回空值供调用方跳过。"""
+        if text is None:
+            return None
+        normalized_text = self.text_rules.normalize_extraction_text(text)
         if not normalized_text:
             return None
         return normalized_text

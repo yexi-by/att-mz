@@ -11,7 +11,7 @@ from typing import Self
 
 import aiosqlite
 
-from app.terminology.schemas import TERMINOLOGY_CATEGORIES, TerminologyCategory, TerminologyRegistry
+from app.terminology.schemas import TERMINOLOGY_CATEGORIES, TerminologyCategory, TerminologyGlossary, TerminologyRegistry
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -55,6 +55,7 @@ from .sql import (
     CREATE_TRANSLATION_RUNS_TABLE,
     CREATE_TRANSLATION_TABLE,
     CREATE_TERMINOLOGY_IMPORT_STATE_TABLE,
+    CREATE_TERMINOLOGY_GLOSSARY_TERMS_TABLE,
     CREATE_TERMINOLOGY_TERMS_TABLE,
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_FILTERS,
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS,
@@ -66,6 +67,7 @@ from .sql import (
     DELETE_ALL_PLUGIN_TEXT_RULES,
     DELETE_ALL_TRANSLATION_QUALITY_ERRORS,
     DELETE_ALL_TERMINOLOGY_TERMS,
+    DELETE_ALL_TERMINOLOGY_GLOSSARY_TERMS,
     DELETE_TRANSLATION_ITEM_BY_PATH,
     DELETE_TRANSLATION_ITEMS_BY_PREFIX,
     INSERT_EVENT_COMMAND_TEXT_RULE_FILTER,
@@ -81,7 +83,9 @@ from .sql import (
     INSERT_TRANSLATION,
     METADATA_KEY,
     INSERT_TERMINOLOGY_TERM,
+    INSERT_TERMINOLOGY_GLOSSARY_TERM,
     SELECT_TERMINOLOGY_IMPORT_STATE,
+    SELECT_TERMINOLOGY_GLOSSARY_TERMS,
     SELECT_LATEST_TRANSLATION_RUN,
     SELECT_FONT_REPLACEMENT_RECORDS,
     SELECT_JAPANESE_RESIDUAL_RULES,
@@ -153,6 +157,7 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE)
     _ = await connection.execute(CREATE_TERMINOLOGY_TERMS_TABLE)
+    _ = await connection.execute(CREATE_TERMINOLOGY_GLOSSARY_TERMS_TABLE)
     _ = await connection.execute(CREATE_TERMINOLOGY_IMPORT_STATE_TABLE)
     _ = await connection.execute(CREATE_PLACEHOLDER_RULES_TABLE)
     _ = await connection.execute(CREATE_JAPANESE_RESIDUAL_RULES_TABLE)
@@ -558,7 +563,7 @@ class TargetGameSession:
         await self.connection.commit()
 
     async def read_terminology_registry(self) -> TerminologyRegistry | None:
-        """从数据库读取当前游戏已导入的术语表。"""
+        """从数据库读取当前游戏已导入的字段译名表。"""
         async with self.connection.execute(SELECT_TERMINOLOGY_TERMS) as cursor:
             rows = await cursor.fetchall()
         if not rows:
@@ -581,6 +586,44 @@ class TargetGameSession:
             translated_text = row_str(row, "translated_text", self.db_path)
             category_map[category][source_text] = translated_text
         return TerminologyRegistry.from_category_map(category_map)
+
+    async def replace_terminology_glossary(
+        self,
+        glossary: TerminologyGlossary,
+    ) -> None:
+        """用一次外部导入结果替换当前游戏的正文术语表。"""
+        _ = await self.connection.execute(DELETE_ALL_TERMINOLOGY_GLOSSARY_TERMS)
+        _ = await self.connection.execute(
+            UPSERT_TERMINOLOGY_IMPORT_STATE,
+            (TERMINOLOGY_IMPORT_STATE_KEY, 1),
+        )
+        for source_text, translated_text in glossary.terms.items():
+            _ = await self.connection.execute(
+                INSERT_TERMINOLOGY_GLOSSARY_TERM,
+                (source_text, translated_text),
+            )
+        await self.connection.commit()
+
+    async def read_terminology_glossary(self) -> TerminologyGlossary | None:
+        """从数据库读取当前游戏已导入的正文术语表。"""
+        async with self.connection.execute(SELECT_TERMINOLOGY_GLOSSARY_TERMS) as cursor:
+            term_rows = await cursor.fetchall()
+        if not term_rows:
+            async with self.connection.execute(
+                SELECT_TERMINOLOGY_IMPORT_STATE,
+                (TERMINOLOGY_IMPORT_STATE_KEY,),
+            ) as cursor:
+                state_row = await cursor.fetchone()
+            if state_row is None:
+                return None
+            return TerminologyGlossary()
+
+        return TerminologyGlossary(
+            terms={
+                row_str(row, "source_text", self.db_path): row_str(row, "translated_text", self.db_path)
+                for row in term_rows
+            },
+        )
 
     async def replace_placeholder_rules(
         self,

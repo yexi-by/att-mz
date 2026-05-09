@@ -275,6 +275,41 @@ async def test_translation_response_ignores_source_lines_and_extra_fields() -> N
 
 
 @pytest.mark.asyncio
+async def test_model_translation_lines_strip_outer_whitespace_before_save() -> None:
+    """模型译文保存前会清掉每行意外首尾空白。"""
+    text_rules = _build_text_rules(width_limit=20)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        original_lines=["こんにちは"],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=["　你好　"],
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_long_text_whitespace_cleanup_preserves_generated_quote_indent() -> None:
+    """长文本先清掉模型外层空白，再保留自动补出的引号续行缩进。"""
+    text_rules = _build_text_rules(width_limit=40)
+
+    item = await _verify_single_long_text(
+        original_lines=["「あ。", "い」"],
+        translated_text="　“甲乙丙。\n丁戊己。”　",
+        text_rules=text_rules,
+    )
+
+    assert item.translation_lines == ["「甲乙丙。", "　丁戊己。」"]
+
+
+@pytest.mark.asyncio
 async def test_translation_response_missing_id_is_recorded_as_missing_key() -> None:
     """未知 ID 被忽略后，本地未返回条目仍按漏翻处理。"""
     text_rules = _build_text_rules(width_limit=40)

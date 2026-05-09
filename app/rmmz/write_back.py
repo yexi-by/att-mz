@@ -219,13 +219,20 @@ def _prepare_long_text_write_lines(
 ) -> list[str]:
     """在写回前按当前配置再次执行长文本行宽兜底。"""
     if text_rules is None:
-        return _strip_trailing_empty_lines(list(item.translation_lines))
+        return _strip_trailing_empty_lines(
+            _normalize_translation_lines_for_write(
+                lines=item.translation_lines,
+                text_rules=None,
+            )
+    )
     translation_lines = _prepare_text_write_lines(item=item, text_rules=text_rules)
-    return _strip_trailing_empty_lines(split_overwide_lines(
-        lines=translation_lines,
-        location_path=item.location_path,
-        text_rules=text_rules,
-    ))
+    return _strip_trailing_empty_lines(
+        split_overwide_lines(
+            lines=translation_lines,
+            location_path=item.location_path,
+            text_rules=text_rules,
+        )
+    )
 
 
 def _prepare_text_write_lines(
@@ -234,11 +241,15 @@ def _prepare_text_write_lines(
     text_rules: TextRules | None,
 ) -> list[str]:
     """写回前修复源文外层包裹标点被模型改写的译文。"""
+    translation_lines = _normalize_translation_lines_for_write(
+        lines=item.translation_lines,
+        text_rules=text_rules,
+    )
     if text_rules is None:
-        return list(item.translation_lines)
+        return translation_lines
     return normalize_translated_wrapping_punctuation(
         original_lines=item.original_lines,
-        translation_lines=list(item.translation_lines),
+        translation_lines=translation_lines,
         text_rules=text_rules,
     )
 
@@ -259,6 +270,17 @@ def _strip_trailing_empty_lines(lines: list[str]) -> list[str]:
     while stripped_lines and not stripped_lines[-1]:
         _ = stripped_lines.pop()
     return stripped_lines
+
+
+def _normalize_translation_lines_for_write(
+    *,
+    lines: list[str],
+    text_rules: TextRules | None,
+) -> list[str]:
+    """写回前清理译文首尾空白，避免旧缓存或外部写入污染游戏显示。"""
+    if text_rules is None:
+        return [line.strip() for line in lines]
+    return text_rules.normalize_translation_lines(lines)
 
 
 def _insert_extra_line_commands(

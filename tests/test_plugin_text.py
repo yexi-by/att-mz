@@ -180,7 +180,7 @@ async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_g
     ].translation_items[0]
 
     assert item.location_path == "plugins.js/0/MainEvents/0/MainEventNote"
-    assert item.original_lines == [source_note]
+    assert item.original_lines == [source_note.strip()]
 
     translated_note = "\n　" + r"\C[2]目标人物的位置\C[0]\n前往村子中央。" + "　\n"
     item.translation_lines = [translated_note]
@@ -206,4 +206,4 @@ async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_g
     writable_note = writable_event["MainEventNote"]
     assert isinstance(writable_note, str)
     writable_note_raw = cast(object, json.loads(writable_note))
-    assert coerce_json_value(writable_note_raw) == translated_note
+    assert coerce_json_value(writable_note_raw) == translated_note.strip()

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.terminology import TerminologyRegistry
+from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
 from app.rmmz.schema import (
     EventCommandParameterFilter,
@@ -106,9 +106,17 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         await session.replace_terminology_registry(terminology_registry)
         assert await session.read_terminology_registry() == terminology_registry
+        terminology_glossary = TerminologyGlossary(
+            terms={"アリス": "爱丽丝"},
+        )
+        await session.replace_terminology_glossary(terminology_glossary)
+        assert await session.read_terminology_glossary() == terminology_glossary
         empty_terminology_registry = TerminologyRegistry()
         await session.replace_terminology_registry(empty_terminology_registry)
         assert await session.read_terminology_registry() == empty_terminology_registry
+        empty_terminology_glossary = TerminologyGlossary()
+        await session.replace_terminology_glossary(empty_terminology_glossary)
+        assert await session.read_terminology_glossary() == empty_terminology_glossary
 
         placeholder_rule = PlaceholderRuleRecord(
             pattern_text=r"\\F\[[^\]]+\]",

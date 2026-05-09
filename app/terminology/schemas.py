@@ -70,7 +70,7 @@ class StrictTerminologyModel(BaseModel):
 
 
 class TerminologyRegistry(StrictTerminologyModel):
-    """外部 Agent 填写的完整术语表。"""
+    """外部 Agent 填写的字段译名表。"""
 
     speaker_names: dict[str, str] = Field(default_factory=dict)
     map_display_names: dict[str, str] = Field(default_factory=dict)
@@ -158,6 +158,38 @@ class TerminologyRegistry(StrictTerminologyModel):
         return sum(len(entries) for entries in self.as_category_map().values())
 
 
+class TerminologyGlossary(StrictTerminologyModel):
+    """正文翻译提示词使用的规范术语表。"""
+
+    terms: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_glossary(self) -> Self:
+        """校验规范术语表不包含空原文和空译名。"""
+        self.terms = _normalize_required_mapping(self.terms, "terms")
+        return self
+
+    def term_count(self) -> int:
+        """统计规范术语数量。"""
+        return len(self.terms)
+
+
+def _normalize_required_mapping(entries: dict[str, str], field_name: str) -> dict[str, str]:
+    """清理术语映射首尾空白，并拒绝空键、空值和清理后重复键。"""
+    normalized_entries: dict[str, str] = {}
+    for raw_key, raw_value in entries.items():
+        key = raw_key.strip()
+        value = raw_value.strip()
+        if not key:
+            raise ValueError(f"{field_name} 不能包含空原文")
+        if not value:
+            raise ValueError(f"{field_name}.{key} 不能包含空值")
+        if key in normalized_entries:
+            raise ValueError(f"{field_name} 清理首尾空白后存在重复原文: {key}")
+        normalized_entries[key] = value
+    return normalized_entries
+
+
 class SpeakerDialogueContext(StrictTerminologyModel):
     """单个名字对应的对白样本。"""
 
@@ -176,6 +208,7 @@ class DatabaseTermContext(StrictTerminologyModel):
 __all__: list[str] = [
     "DatabaseTermContext",
     "SpeakerDialogueContext",
+    "TerminologyGlossary",
     "TerminologyCategory",
     "TerminologyRegistry",
     "TERMINOLOGY_CATEGORIES",

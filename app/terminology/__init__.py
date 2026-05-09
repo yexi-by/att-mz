@@ -4,12 +4,14 @@ from .extraction import TerminologyExtraction
 from .files import (
     TerminologyExportSummary,
     export_terminology_artifacts,
+    load_terminology_glossary,
     load_terminology_registry,
 )
 from .prompt import TerminologyPromptEntry, TerminologyPromptIndex
 from .schemas import (
     DatabaseTermContext,
     SpeakerDialogueContext,
+    TerminologyGlossary,
     TerminologyCategory,
     TerminologyRegistry,
 )
@@ -21,10 +23,12 @@ __all__: list[str] = [
     "TerminologyCategory",
     "TerminologyExportSummary",
     "TerminologyExtraction",
+    "TerminologyGlossary",
     "TerminologyPromptEntry",
     "TerminologyPromptIndex",
     "TerminologyRegistry",
     "apply_terminology_translations",
     "export_terminology_artifacts",
+    "load_terminology_glossary",
     "load_terminology_registry",
 ]

@@ -52,6 +52,7 @@ from app.terminology import (
     TerminologyRegistry,
     apply_terminology_translations,
     export_terminology_artifacts,
+    load_terminology_glossary,
     load_terminology_registry,
 )
 from app.note_tag_text import (
@@ -755,18 +756,20 @@ class TranslationHandler:
                 game_data=game_data,
                 output_dir=output_dir,
             )
-            logger.success(f"[tag.success]术语表工程导出完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 术语表 [tag.path]{summary.terms_path}[/tag.path] 上下文目录 [tag.path]{summary.contexts_dir}[/tag.path]")
+            logger.success(f"[tag.success]术语表工程导出完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 字段译名表 [tag.path]{summary.field_terms_path}[/tag.path] 正文术语表 [tag.path]{summary.glossary_path}[/tag.path] 上下文目录 [tag.path]{summary.contexts_dir}[/tag.path]")
             return summary
 
     async def import_terminology(
         self,
         game_title: str,
         input_path: Path,
+        glossary_input_path: Path,
     ) -> TerminologyImportSummary:
-        """把外部 Agent 填写后的术语表 JSON 导入当前游戏数据库。"""
+        """把外部 Agent 填写后的字段译名表和正文术语表导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
-            registry = await load_terminology_registry(terms_path=input_path)
+            registry = await load_terminology_registry(field_terms_path=input_path)
+            glossary = await load_terminology_glossary(glossary_path=glossary_input_path)
             expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
                 game_data=game_data,
             ).extract_registry_and_contexts()
@@ -775,12 +778,15 @@ class TranslationHandler:
                 expected_registry=expected_registry,
             )
             await session.replace_terminology_registry(registry)
+            await session.replace_terminology_glossary(glossary)
         imported_count = registry.total_entry_count()
         filled_count = registry.filled_entry_count()
-        logger.success(f"[tag.success]术语表导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 条目 [tag.count]{imported_count}[/tag.count] 条，已填写 [tag.count]{filled_count}[/tag.count] 条")
+        glossary_term_count = glossary.term_count()
+        logger.success(f"[tag.success]术语表导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 字段条目 [tag.count]{imported_count}[/tag.count] 条，已填写 [tag.count]{filled_count}[/tag.count] 条，正文术语 [tag.count]{glossary_term_count}[/tag.count] 条")
         return TerminologyImportSummary(
             imported_entry_count=imported_count,
             filled_entry_count=filled_count,
+            glossary_term_count=glossary_term_count,
         )
 
     async def write_terminology(
@@ -954,14 +960,14 @@ class TranslationHandler:
         session: TargetGameSession,
         game_data: GameData,
     ) -> TerminologyPromptIndex | None:
-        """读取数据库术语表，并转换为正文提示词索引。"""
-        registry = await session.read_terminology_registry()
-        if registry is None:
-            logger.info(f"[tag.skip]数据库没有已导入术语表，正文提示词不注入标准译名[/tag.skip] 游戏 [tag.count]{session.game_title}[/tag.count]")
+        """读取数据库正文术语表，并转换为正文提示词索引。"""
+        glossary = await session.read_terminology_glossary()
+        if glossary is None:
+            logger.info(f"[tag.skip]数据库没有已导入正文术语表，正文提示词不注入标准译名[/tag.skip] 游戏 [tag.count]{session.game_title}[/tag.count]")
             return None
 
-        index = TerminologyPromptIndex.from_registry(registry, game_data=game_data)
-        logger.info(f"[tag.phase]已加载术语表[/tag.phase] 游戏 [tag.count]{session.game_title}[/tag.count] 可注入译名 [tag.count]{len(index.entries)}[/tag.count] 条")
+        index = TerminologyPromptIndex.from_glossary(glossary, game_data=game_data)
+        logger.info(f"[tag.phase]已加载正文术语表[/tag.phase] 游戏 [tag.count]{session.game_title}[/tag.count] 可注入译名 [tag.count]{len(index.entries)}[/tag.count] 条")
         return index
 
     async def _read_fresh_plugin_text_rules(

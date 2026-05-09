@@ -156,6 +156,17 @@ def test_text_rules_keep_book_title_quote_during_extraction() -> None:
     assert rules.should_translate_source_text("『リコの銀行』")
 
 
+def test_text_rules_normalize_translation_lines_strips_outer_whitespace() -> None:
+    """译文保存前清理每行首尾空白，保留行内空白。"""
+    rules = get_default_text_rules()
+
+    assert rules.normalize_translation_lines(["　你好　", "甲　乙", "\t再见 "]) == [
+        "你好",
+        "甲　乙",
+        "再见",
+    ]
+
+
 def test_text_rules_can_apply_custom_placeholder_json_rules() -> None:
     """自定义正则规则会在标准 RMMZ 控制符之外保护特殊片段。"""
     rules = TextRules.from_setting(
