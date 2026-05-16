@@ -1,7 +1,7 @@
 //! 项目维护任务入口。
 //!
-//! `xtask dist` 负责准备官方工具链、构建三端 Rust CLI，并把最终可执行文件复制到
-//! 仓库根目录的 `dist/`。脚本只下载 Rust target 和 Zig 官方发布物；如果本机提供
+//! `xtask dist` 负责准备官方工具链、构建三端 Rust CLI，并把可直接交给用户使用的
+//! 发行版文件夹复制到仓库根目录的 `dist/`。脚本只下载 Rust target 和 Zig 官方发布物；如果本机提供
 //! Apple 官方 MacOSX.sdk，则会通过 `SDKROOT` 传给 macOS 链接器。没有 SDK 时，
 //! 脚本会生成最小 `libiconv` 兼容库，补齐 Rust Darwin 链接元数据需要的系统库名。
 
@@ -22,6 +22,9 @@ const LINUX_TARGET: &str = "x86_64-unknown-linux-gnu";
 const MACOS_TARGET: &str = "aarch64-apple-darwin";
 const ZIG_INDEX_URL: &str = "https://ziglang.org/download/index.json";
 const DEFAULT_ZIG_VERSION: &str = "0.15.2";
+const RELEASE_FILES: &[&str] = &["README.md", "LICENSE", "setting.example.toml"];
+const RELEASE_DIRECTORIES: &[&str] = &["fonts", "prompts", "skills"];
+const RELEASE_RUNTIME_DIRECTORIES: &[&str] = &["data", "data/db", "logs", "outputs"];
 const MACOS_ICONV_STUB_SOURCE: &str = r#"
 #include <stddef.h>
 
@@ -284,6 +287,60 @@ fn build_and_copy(target: &DistTarget, dist_dir: &Path, tools: &ToolPaths) -> Re
     fs::create_dir_all(&output_dir).context("创建目标产物目录失败")?;
     fs::copy(&source, output_dir.join(target.binary_name))
         .with_context(|| format!("复制产物失败: {}", source.display()))?;
+    copy_release_bundle_files(&output_dir)?;
+    Ok(())
+}
+
+fn copy_release_bundle_files(output_dir: &Path) -> Result<()> {
+    let root = workspace_root()?;
+    for relative_file in RELEASE_FILES {
+        copy_release_file(&root.join(relative_file), &output_dir.join(relative_file))?;
+    }
+    for relative_dir in RELEASE_DIRECTORIES {
+        copy_release_directory(&root.join(relative_dir), &output_dir.join(relative_dir))?;
+    }
+    for relative_dir in RELEASE_RUNTIME_DIRECTORIES {
+        fs::create_dir_all(output_dir.join(relative_dir))
+            .with_context(|| format!("创建发行版运行目录失败: {relative_dir}"))?;
+    }
+    Ok(())
+}
+
+fn copy_release_file(source: &Path, target: &Path) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("创建发行版文件父目录失败: {}", parent.display()))?;
+    }
+    fs::copy(source, target)
+        .with_context(|| format!("复制发行版文件失败: {}", source.display()))?;
+    Ok(())
+}
+
+fn copy_release_directory(source: &Path, target: &Path) -> Result<()> {
+    if target.exists() {
+        fs::remove_dir_all(target)
+            .with_context(|| format!("清理发行版资源目录失败: {}", target.display()))?;
+    }
+    fs::create_dir_all(target)
+        .with_context(|| format!("创建发行版资源目录失败: {}", target.display()))?;
+    for entry_result in fs::read_dir(source)
+        .with_context(|| format!("读取发行版资源目录失败: {}", source.display()))?
+    {
+        let entry = entry_result
+            .with_context(|| format!("读取发行版资源条目失败: {}", source.display()))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("读取发行版资源类型失败: {}", source_path.display()))?;
+        if file_type.is_dir() {
+            copy_release_directory(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            copy_release_file(&source_path, &target_path)?;
+        } else {
+            bail!("发行版资源包含不支持的路径类型: {}", source_path.display());
+        }
+    }
     Ok(())
 }
 

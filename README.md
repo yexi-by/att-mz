@@ -1,21 +1,23 @@
 # A.T.T MZ
 
-面向 RPG Maker MZ 日文游戏的自动汉化与迭代修复 CLI。当前交付形态是单文件 Rust 可执行程序，三端编译产物输出在仓库根目录 `dist/`。
+面向 RPG Maker MZ 日文游戏的自动汉化与迭代修复 CLI。当前交付形态是按平台拆分的发行版文件夹：文件夹内包含 Rust 可执行文件、配置示例、运行数据目录、提示词、字体和 Skill。
 
-进阶命令、Agent 协议和工作区细节见 [进阶使用技术文档](docs/advanced-usage.md)。
+Agent 执行翻译任务时，以发行版内的 `skills/att-mz/SKILL.md` 为准。
 
 ## 你需要准备
 
 | 项目 | 说明 |
 |------|------|
-| A.T.T MZ CLI | 从 `dist/` 中选择当前系统对应的可执行文件 |
+| A.T.T MZ 发行版目录 | 从 `dist/` 中选择当前系统对应的平台文件夹 |
 | 模型服务 | OpenAI 兼容格式的 API 地址与 Key |
 | 游戏目录 | RPG Maker MZ 游戏，目录内能看到 `Game.exe`、`data/`、`js/` |
-| AI Agent | Claude Code / Codex 等能读取项目文件并运行终端命令的工具 |
+| AI Agent | Claude Code / Codex 等能读取发行版文件并运行终端命令的工具 |
 
 > 建议先复制一份游戏目录作为汉化对象，不要直接在唯一原版上操作。
 
-## 可执行文件位置
+## 发行版目录
+
+`xtask dist` 会在 `dist/` 下生成三个平台目录。用户只需要解压并进入自己系统对应的目录：
 
 ```text
 dist/att-mz-windows-x86_64/att-mz.exe
@@ -23,24 +25,33 @@ dist/att-mz-linux-x86_64/att-mz
 dist/att-mz-macos-aarch64/att-mz
 ```
 
-文档中的 `<att-mz>` 表示当前系统对应的可执行文件路径。Windows 示例：
+每个平台目录同时包含：
 
-```powershell
-$attMz = "<项目目录>/dist/att-mz-windows-x86_64/att-mz.exe"
-& $attMz --help
+```text
+<发行版目录>/
+  att-mz.exe 或 att-mz
+  setting.example.toml
+  data/
+  fonts/
+  logs/
+  outputs/
+  prompts/
+  skills/
 ```
 
-开发者也可以从源码运行：
+文档中的 `<att-mz>` 表示当前发行版目录里的可执行文件。Windows 示例：
 
 ```powershell
-cargo run -p att-mz -- --help
+cd <发行版目录>
+$attMz = ".\att-mz.exe"
+& $attMz --help
 ```
 
 ## 快速开始
 
 ```powershell
-# 1. 进入项目目录
-cd <项目目录>
+# 1. 进入发行版目录
+cd <发行版目录>
 
 # 2. 生成本地配置文件
 Copy-Item setting.example.toml setting.toml
@@ -65,12 +76,12 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 ## 首次交给 Agent 的任务说明
 
-用你熟悉的 Agent 打开 `<项目目录>` 后，提交这份任务说明：
+用你熟悉的 Agent 打开 `<发行版目录>` 后，提交这份任务说明：
 
 ```text
-请使用 <项目目录>/skills/att-mz/SKILL.md 自动汉化这个 RPG Maker MZ 游戏。
+请使用 <发行版目录>/skills/att-mz/SKILL.md 自动汉化这个 RPG Maker MZ 游戏。
 
-项目目录：<项目目录>
+发行版目录：<发行版目录>
 CLI：<att-mz>
 游戏目录：<游戏目录>
 工作区：<工作区>
@@ -148,7 +159,9 @@ Start-Process -FilePath "<游戏目录>/Game.exe"
 
 字体还原会对比 `data/*.json` 与 `data_origin/*.json`、`js/plugins.js` 与 `js/plugins_origin.js`，只把候选覆盖字体名替回原件里的实际旧字体引用，不回滚已写入的译文。
 
-## 构建
+## 开发者构建
+
+以下命令只适用于源码仓库，不是普通发行版使用流程。
 
 ```powershell
 cargo fmt --all -- --check
@@ -159,6 +172,7 @@ cargo run -p xtask -- dist
 ```
 
 `xtask dist` 会准备 Rust target 和 Zig 官方工具，并输出 Windows、Linux、macOS ARM64 三端可执行文件。若 Windows 主机没有 Apple SDK，macOS 构建可能提示缺少 SDK 版本信息，但仍会输出可执行文件。
+每个平台输出目录都是可直接交给用户的发行版文件夹，会包含可执行文件、`setting.example.toml`、`data/`、`fonts/`、`prompts/`、`skills/`、`logs/` 和 `outputs/`。
 
 ## 常见提醒
 
