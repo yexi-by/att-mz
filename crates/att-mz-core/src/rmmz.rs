@@ -257,7 +257,7 @@ fn resolve_data_source_file(origin_data_dir: &Path, file_name: &str) -> PathBuf 
     }
 }
 
-fn parse_plugins_js_file(path: &Path) -> Result<Value> {
+pub(crate) fn parse_plugins_js_file(path: &Path) -> Result<Value> {
     let content = fs::read_to_string(path)
         .map_err(|error| AttMzError::io(format!("读取插件配置 {}", path.display()), error))?;
     let pattern = Regex::new(r#"(?s)var\s+\$plugins\s*=\s*(\[.*?\])\s*;\s*$"#)
@@ -269,10 +269,14 @@ fn parse_plugins_js_file(path: &Path) -> Result<Value> {
         .get(1)
         .map(|matched| matched.as_str())
         .ok_or_else(|| AttMzError::InvalidGame("plugins.js 中的 $plugins 数组为空".to_string()))?;
-    let plugins: Value = serde_json::from_str(plugins_text).map_err(|source| AttMzError::Json {
-        context: path.display().to_string(),
-        source,
-    })?;
+    let plugins: Value = match serde_json::from_str(plugins_text) {
+        Ok(value) => value,
+        Err(json_error) => json5::from_str(plugins_text).map_err(|json5_error| {
+            AttMzError::InvalidGame(format!(
+                "plugins.js 中的 $plugins 无法解析为 JSON 或 JSON5: JSON 错误: {json_error}; JSON5 错误: {json5_error}"
+            ))
+        })?,
+    };
     if !plugins.is_array() {
         return Err(AttMzError::InvalidGame(
             "plugins.js 中的 $plugins 必须是数组".to_string(),
@@ -640,6 +644,33 @@ mod tests {
         let exported = read_json_file(&output).expect("导出 JSON 应可读取");
         assert_eq!(exported[0]["name"], "TestPlugin");
         assert!(exported.is_array());
+    }
+
+    #[test]
+    fn plugins_js_accepts_json5_style_arrays() {
+        let temp = tempfile::tempdir().expect("临时目录应创建成功");
+        create_minimal_game(temp.path());
+        fs::write(
+            temp.path().join("js/plugins.js"),
+            r#"
+var $plugins = [
+  {
+    name: 'LoosePlugin',
+    status: true,
+    description: '说明',
+    parameters: {
+      Message: 'ゆるい書式',
+    },
+  },
+];
+"#,
+        )
+        .expect("plugins.js 应写入成功");
+
+        let plugins = read_plugins_json(temp.path()).expect("JSON5 风格插件应读取成功");
+
+        assert_eq!(plugins[0]["name"], "LoosePlugin");
+        assert_eq!(plugins[0]["parameters"]["Message"], "ゆるい書式");
     }
 
     #[test]

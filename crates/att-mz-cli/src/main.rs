@@ -8,11 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use att_mz_core::{
-    ActiveTextItem, AgentReport, DoctorOptions, GameRecord, GameRegistry, PlaceholderRule,
-    RuntimeSettings, TranslationRunLimits, apply_font_replacement_to_active_game,
-    build_event_command_rule_records_from_import, build_japanese_residual_rule_records_from_text,
-    build_placeholder_rule_draft_report, build_plugin_rule_records_from_import,
-    cleanup_agent_workspace, export_event_commands_json_file, export_note_tag_candidates_report,
+    ActiveTextExtractionInput, ActiveTextItem, AgentReport, DoctorOptions, GameRecord,
+    GameRegistry, PlaceholderRule, RuntimeSettings, TranslationRunLimits,
+    apply_font_replacement_to_active_game, build_event_command_rule_records_from_import,
+    build_japanese_residual_rule_records_from_text, build_placeholder_rule_draft_report,
+    build_plugin_rule_records_from_import, cleanup_agent_workspace,
+    export_event_commands_json_file, export_note_tag_candidates_report,
     export_pending_translations_report, export_plugins_json_file,
     export_quality_fix_template_report, export_terminology_report, extract_active_text_items,
     import_manual_translations_report, import_terminology_report, issue,
@@ -32,6 +33,7 @@ use att_mz_core::{
 use clap::{ArgAction, Args, Parser, Subcommand, error::ErrorKind};
 use serde_json::{Map, json};
 use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// A.T.T MZ 的 Rust 命令行参数。
 #[derive(Debug, Parser)]
@@ -895,10 +897,6 @@ struct SettingOverrideArgs {
     #[arg(long = "replacement-font-path")]
     replacement_font_path: Option<PathBuf>,
 
-    /// 事件指令参数默认编码数组。
-    #[arg(long = "event-command-default-code", action = ArgAction::Append, num_args = 1.., value_name = "CODE")]
-    event_command_default_codes: Vec<i32>,
-
     /// 提取时剥离的成对包裹标点。
     #[arg(long = "strip-wrapping-punctuation-pair", action = ArgAction::Append, num_args = 2, value_names = ["LEFT", "RIGHT"])]
     strip_wrapping_punctuation_pairs: Vec<String>,
@@ -953,7 +951,6 @@ impl SettingOverrideArgs {
             + option_presence(&self.translation_retry_delay)
             + option_presence(&self.system_prompt)
             + option_presence(&self.replacement_font_path)
-            + vector_presence(&self.event_command_default_codes)
             + vector_presence(&self.strip_wrapping_punctuation_pairs)
             + vector_presence(&self.preserve_wrapping_punctuation_pairs)
             + vector_presence(&self.allowed_japanese_chars)
@@ -1074,8 +1071,40 @@ impl SettingOverrideArgs {
             settings.text_rules.allowed_japanese_tail_chars =
                 self.allowed_japanese_tail_chars.clone();
         }
+        if !self.strip_wrapping_punctuation_pairs.is_empty() {
+            settings.text_rules.strip_wrapping_punctuation_pairs = parse_wrapping_pairs(
+                &self.strip_wrapping_punctuation_pairs,
+                "--strip-wrapping-punctuation-pair",
+            )?;
+        }
+        if !self.preserve_wrapping_punctuation_pairs.is_empty() {
+            settings.text_rules.preserve_wrapping_punctuation_pairs = parse_wrapping_pairs(
+                &self.preserve_wrapping_punctuation_pairs,
+                "--preserve-wrapping-punctuation-pair",
+            )?;
+        }
+        if !self.line_split_punctuations.is_empty() {
+            settings.text_rules.line_split_punctuations = self.line_split_punctuations.clone();
+        }
         Ok(())
     }
+}
+
+fn parse_wrapping_pairs(values: &[String], name: &str) -> Result<Vec<(String, String)>, String> {
+    let chunks = values.chunks_exact(2);
+    if !chunks.remainder().is_empty() {
+        return Err(format!("{name} 必须成对传入左右标点"));
+    }
+    let mut pairs = Vec::new();
+    for chunk in chunks {
+        let left = chunk[0].trim();
+        let right = chunk[1].trim();
+        if left.is_empty() || right.is_empty() {
+            return Err(format!("{name} 的左右标点都必须是非空字符串"));
+        }
+        pairs.push((left.to_string(), right.to_string()));
+    }
+    Ok(pairs)
 }
 
 fn positive_usize(value: u64, name: &str) -> Result<usize, String> {
@@ -2057,6 +2086,13 @@ fn run_prepare_agent_workspace_command(
             return emit_report(report, None, args.json_output, "Agent 工作区准备报告");
         }
     };
+    let text_rule_options = match load_text_rule_options(None) {
+        Ok(options) => options,
+        Err(error) => {
+            let report = workspace_invalid_report(error.to_string());
+            return emit_report(report, None, args.json_output, "Agent 工作区准备报告");
+        }
+    };
     let default_codes = if args.codes.is_empty() {
         match load_event_command_default_codes(None) {
             Ok(codes) => Some(codes),
@@ -2076,6 +2112,7 @@ fn run_prepare_agent_workspace_command(
         command_codes,
         default_codes,
         &source_text_required_pattern,
+        &text_rule_options,
     ) {
         Ok(report) => report,
         Err(error) => workspace_invalid_report(error.to_string()),
@@ -2101,11 +2138,19 @@ fn run_validate_agent_workspace_command(
             return emit_report(report, None, args.json_output, "Agent 工作区校验报告");
         }
     };
+    let text_rule_options = match load_text_rule_options(None) {
+        Ok(options) => options,
+        Err(error) => {
+            let report = workspace_invalid_report(error.to_string());
+            return emit_report(report, None, args.json_output, "Agent 工作区校验报告");
+        }
+    };
     let report = validate_agent_workspace(
         registry,
         &game_record,
         &args.workspace,
         &source_text_required_pattern,
+        &text_rule_options,
     );
     emit_report(report, None, args.json_output, "Agent 工作区校验报告")
 }
@@ -2231,12 +2276,20 @@ fn run_export_pending_translations_for_record(
             return emit_report(report, None, json_output, title);
         }
     };
+    let text_rule_options = match load_text_rule_options(None) {
+        Ok(options) => options,
+        Err(error) => {
+            let report = manual_translation_export_failed_report(error.to_string());
+            return emit_report(report, None, json_output, title);
+        }
+    };
     let report = match export_pending_translations_report(
         registry,
         game_record,
         output,
         limit,
         &source_text_required_pattern,
+        &text_rule_options,
     ) {
         Ok(report) => report,
         Err(error) => manual_translation_export_failed_report(error.to_string()),
@@ -2338,12 +2391,20 @@ fn run_reset_translations_command(registry: &GameRegistry, args: ResetTranslatio
             return emit_report(report, None, args.json_output, "重置译文报告");
         }
     };
+    let text_rule_options = match load_text_rule_options(None) {
+        Ok(options) => options,
+        Err(error) => {
+            let report = reset_translation_failed_report(input_path.as_deref(), error.to_string());
+            return emit_report(report, None, args.json_output, "重置译文报告");
+        }
+    };
     let report = match reset_translations_report(
         registry,
         &game_record,
         input_path.as_deref(),
         args.reset_all,
         &source_text_required_pattern,
+        &text_rule_options,
     ) {
         Ok(report) => report,
         Err(error) => reset_translation_failed_report(input_path.as_deref(), error.to_string()),
@@ -2380,6 +2441,13 @@ fn run_validate_japanese_residual_rules_command(
         registry,
         &game_record,
         &source_text_required_pattern,
+        &match load_text_rule_options(None) {
+            Ok(options) => options,
+            Err(error) => {
+                let report = japanese_residual_rules_invalid_report(error.to_string(), true);
+                return emit_report(report, None, args.json_output, "日文残留例外规则校验报告");
+            }
+        },
     ) {
         Ok(items) => items,
         Err(error) => {
@@ -2428,6 +2496,13 @@ fn run_import_japanese_residual_rules_command(
         registry,
         &game_record,
         &source_text_required_pattern,
+        &match load_text_rule_options(None) {
+            Ok(options) => options,
+            Err(error) => {
+                let report = japanese_residual_rules_invalid_report(error.to_string(), false);
+                return emit_report(report, None, args.json_output, "日文残留例外规则导入报告");
+            }
+        },
     ) {
         Ok(items) => items,
         Err(error) => {
@@ -2634,6 +2709,7 @@ fn execute_write_back(
         registry,
         game_record,
         &settings.source_text_required_pattern,
+        &settings.text_rules,
         confirm_font_overwrite,
         settings.replacement_font_path.as_deref(),
     ) {
@@ -2782,6 +2858,45 @@ fn run_write_terminology_command(registry: &GameRegistry, args: WriteTerminology
             setting_override_count
         );
     }
+    let gate_report = match quality_report(
+        registry,
+        &game_record,
+        &settings.source_text_required_pattern,
+        &settings.text_rules,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            error!("命令执行失败：{}", error);
+            return 1;
+        }
+    };
+    let blocking_errors = gate_report
+        .errors
+        .iter()
+        .filter(|error| {
+            [
+                "placeholder_risk",
+                "japanese_residual",
+                "text_structure",
+                "overwide_line",
+                "write_back_protocol",
+                "terminology_missing",
+                "terminology_empty_translation",
+            ]
+            .contains(&error.code.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !blocking_errors.is_empty() {
+        let report = AgentReport::from_parts(
+            blocking_errors,
+            gate_report.warnings.clone(),
+            gate_report.summary.clone(),
+            gate_report.details.clone(),
+        );
+        render_report("术语写回前检查", &report);
+        return 1;
+    }
     let mut report = match write_terminology_report(registry, &game_record) {
         Ok(report) => report,
         Err(error) => {
@@ -2838,11 +2953,22 @@ fn run_translation_status_command(registry: &GameRegistry, args: TranslationStat
             return emit_report(report, None, args.json_output, "正文翻译状态");
         }
     };
-    let report =
-        match translation_status_report(registry, &game_record, &source_text_required_pattern) {
-            Ok(report) => report,
-            Err(error) => translation_status_failed_report(error.to_string()),
-        };
+    let text_rule_options = match load_text_rule_options(None) {
+        Ok(options) => options,
+        Err(error) => {
+            let report = translation_status_failed_report(error.to_string());
+            return emit_report(report, None, args.json_output, "正文翻译状态");
+        }
+    };
+    let report = match translation_status_report(
+        registry,
+        &game_record,
+        &source_text_required_pattern,
+        &text_rule_options,
+    ) {
+        Ok(report) => report,
+        Err(error) => translation_status_failed_report(error.to_string()),
+    };
     emit_report(report, None, args.json_output, "正文翻译状态")
 }
 
@@ -2913,15 +3039,17 @@ fn load_active_text_items(
         .map_err(|error| error.to_string())?;
     let source_text_required_pattern =
         load_source_text_required_pattern(None).map_err(|error| error.to_string())?;
-    extract_active_text_items(
-        &data_files,
-        &command_snapshots,
-        &plugins,
-        &plugin_rules,
-        &event_rules,
-        &note_rules,
-        &source_text_required_pattern,
-    )
+    let text_rule_options = load_text_rule_options(None).map_err(|error| error.to_string())?;
+    extract_active_text_items(ActiveTextExtractionInput {
+        data_files: &data_files,
+        command_snapshots: &command_snapshots,
+        plugins: &plugins,
+        plugin_rules: &plugin_rules,
+        event_rules: &event_rules,
+        note_rules: &note_rules,
+        source_text_required_pattern: &source_text_required_pattern,
+        text_rules: &text_rule_options,
+    })
     .map_err(|error| error.to_string())
 }
 
@@ -3361,10 +3489,26 @@ fn render_report(title: &str, report: &AgentReport) {
 
 fn setup_logging(debug: bool, agent_mode: bool) {
     let level = if debug { "debug" } else { "info" };
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(level)
+    let log_dir = Path::new("logs");
+    let file_appender = if fs::create_dir_all(log_dir).is_ok() {
+        Some(tracing_appender::rolling::never(log_dir, "app.log"))
+    } else {
+        None
+    };
+    let console_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
-        .with_ansi(!agent_mode);
-    let _ = builder.try_init();
+        .with_ansi(!agent_mode)
+        .with_filter(EnvFilter::new(level));
+    let registry = tracing_subscriber::registry().with(console_layer);
+    if let Some(file_appender) = file_appender {
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_ansi(false)
+            .with_writer(file_appender)
+            .with_filter(EnvFilter::new("debug"));
+        let _ = registry.with(file_layer).try_init();
+    } else {
+        let _ = registry.try_init();
+    }
 }

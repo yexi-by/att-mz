@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::config::TextRuleOptions;
 use crate::error::{AttMzError, Result};
 use crate::event_command_rules::{EventCommandRuleRecord, validate_event_command_rules_report};
 use crate::note_tag_rules::{
@@ -18,8 +19,8 @@ use crate::placeholder::{
     PlaceholderRule, parse_custom_placeholder_rules_text, validate_placeholder_rules_report,
 };
 use crate::placeholder_scan::{
-    ActiveTextItem, build_placeholder_rule_draft_report, extract_active_text_items,
-    scan_placeholder_candidates_report,
+    ActiveTextExtractionInput, ActiveTextItem, build_placeholder_rule_draft_report,
+    extract_active_text_items, scan_placeholder_candidates_report,
 };
 use crate::plugin_rules::{PluginRuleRecord, build_plugin_hash, validate_plugin_rules_report};
 use crate::rmmz::{
@@ -90,6 +91,12 @@ const SYSTEM_TERM_CATEGORIES: &[(&str, &str)] = &[
     ("equipTypes", "system_equip_types"),
 ];
 
+struct WorkspaceValidationSink<'a> {
+    errors: &'a mut Vec<crate::AgentIssue>,
+    warnings: &'a mut Vec<crate::AgentIssue>,
+    details: &'a mut Map<String, Value>,
+}
+
 /// 导出外部 Agent 分析所需的临时工作区。
 ///
 /// 该函数生成术语表、插件规则、事件指令规则、Note 标签规则和占位符规则
@@ -101,6 +108,7 @@ pub fn prepare_agent_workspace(
     command_codes: Option<BTreeSet<i64>>,
     default_command_codes: Option<Vec<i64>>,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> Result<AgentReport> {
     let target_dir = absolute_path(output_dir);
     fs::create_dir_all(&target_dir)
@@ -115,15 +123,16 @@ pub fn prepare_agent_workspace(
     let placeholder_rules = registry.read_placeholder_rules(&game_record.game_title)?;
     let stored_registry = registry.read_terminology_registry(&game_record.game_title)?;
     let stored_glossary = registry.read_terminology_glossary(&game_record.game_title)?;
-    let active_items = extract_active_text_items(
-        &data_files,
-        &command_snapshots,
-        &plugins,
-        &plugin_rules,
-        &event_rules,
-        &note_tag_rules,
+    let active_items = extract_active_text_items(ActiveTextExtractionInput {
+        data_files: &data_files,
+        command_snapshots: &command_snapshots,
+        plugins: &plugins,
+        plugin_rules: &plugin_rules,
+        event_rules: &event_rules,
+        note_rules: &note_tag_rules,
         source_text_required_pattern,
-    )?;
+        text_rules,
+    })?;
 
     let terminology_dir = target_dir.join("terminology");
     let terminology = extract_terminology(&data_files, &command_snapshots);
@@ -237,6 +246,7 @@ pub fn validate_agent_workspace(
     game_record: &GameRecord,
     workspace: &Path,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> AgentReport {
     let workspace = absolute_path(workspace);
     let mut errors = Vec::new();
@@ -297,9 +307,12 @@ pub fn validate_agent_workspace(
         game_record,
         &workspace,
         source_text_required_pattern,
-        &mut errors,
-        &mut warnings,
-        &mut details,
+        text_rules,
+        WorkspaceValidationSink {
+            errors: &mut errors,
+            warnings: &mut warnings,
+            details: &mut details,
+        },
     );
 
     AgentReport::from_parts(
@@ -985,13 +998,12 @@ fn validate_workspace_placeholder_rules(
     game_record: &GameRecord,
     workspace: &Path,
     source_text_required_pattern: &str,
-    errors: &mut Vec<crate::AgentIssue>,
-    warnings: &mut Vec<crate::AgentIssue>,
-    details: &mut Map<String, Value>,
+    text_rules: &TextRuleOptions,
+    sink: WorkspaceValidationSink<'_>,
 ) {
     let path = workspace.join("placeholder-rules.json");
     if !path.exists() {
-        warnings.push(issue(
+        sink.warnings.push(issue(
             "placeholder_rules_missing",
             "工作区缺少 placeholder-rules.json",
         ));
@@ -1000,7 +1012,7 @@ fn validate_workspace_placeholder_rules(
     let rules_text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) => {
-            errors.push(issue(
+            sink.errors.push(issue(
                 "placeholder_rules_invalid",
                 format!("读取占位符规则失败: {error}"),
             ));
@@ -1010,16 +1022,16 @@ fn validate_workspace_placeholder_rules(
     let parsed_rules = match parse_custom_placeholder_rules_text(&rules_text) {
         Ok(rules) => {
             let report = validate_placeholder_rules_report(&rules, &[], "--placeholder-rules");
-            errors.extend(report.errors);
-            warnings.extend(report.warnings);
-            details.insert(
+            sink.errors.extend(report.errors);
+            sink.warnings.extend(report.warnings);
+            sink.details.insert(
                 "placeholder_rules".to_string(),
                 Value::Object(report.details),
             );
             Some(rules)
         }
         Err(error) => {
-            errors.push(issue(
+            sink.errors.push(issue(
                 "placeholder_rules_invalid",
                 format!("自定义占位符规则不可用: {error}"),
             ));
@@ -1027,21 +1039,26 @@ fn validate_workspace_placeholder_rules(
         }
     };
     let Some(rules) = parsed_rules else {
-        errors.push(issue(
+        sink.errors.push(issue(
             "placeholder_coverage_scan_failed",
             "占位符覆盖扫描失败: 自定义占位符规则不可用",
         ));
         return;
     };
-    match load_workspace_active_items(registry, game_record, source_text_required_pattern) {
+    match load_workspace_active_items(
+        registry,
+        game_record,
+        source_text_required_pattern,
+        text_rules,
+    ) {
         Ok(items) => match scan_placeholder_candidates_report(&items, &rules) {
             Ok(report) => {
-                errors.extend(report.errors.clone());
+                sink.errors.extend(report.errors.clone());
                 let uncovered_count = report
                     .summary
                     .get("uncovered_count")
                     .and_then(Value::as_u64);
-                details.insert(
+                sink.details.insert(
                     "placeholder_coverage".to_string(),
                     json!({
                         "summary": report.summary,
@@ -1050,22 +1067,22 @@ fn validate_workspace_placeholder_rules(
                 );
                 match uncovered_count {
                     Some(0) => {}
-                    Some(count) => errors.push(issue(
+                    Some(count) => sink.errors.push(issue(
                         "placeholder_coverage_uncovered",
                         format!("还有 {count} 个当前正文会使用但未被规则覆盖的游戏控制符"),
                     )),
-                    None => errors.push(issue(
+                    None => sink.errors.push(issue(
                         "placeholder_coverage_invalid",
                         "占位符候选扫描缺少有效的 uncovered_count",
                     )),
                 }
             }
-            Err(error) => errors.push(issue(
+            Err(error) => sink.errors.push(issue(
                 "placeholder_coverage_scan_failed",
                 format!("占位符覆盖扫描失败: {error}"),
             )),
         },
-        Err(error) => errors.push(issue(
+        Err(error) => sink.errors.push(issue(
             "placeholder_coverage_scan_failed",
             format!("占位符覆盖扫描失败: {error}"),
         )),
@@ -1076,6 +1093,7 @@ fn load_workspace_active_items(
     registry: &GameRegistry,
     game_record: &GameRecord,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> Result<Vec<ActiveTextItem>> {
     let data_files = read_data_json_files(&game_record.game_path)?;
     let command_snapshots = read_event_command_snapshots(&game_record.game_path)?;
@@ -1083,15 +1101,16 @@ fn load_workspace_active_items(
     let (plugin_rules, _stale_count) = read_fresh_plugin_rules(registry, game_record, &plugins)?;
     let event_rules = registry.read_event_command_text_rules(&game_record.game_title)?;
     let note_rules = registry.read_note_tag_text_rules(&game_record.game_title)?;
-    extract_active_text_items(
-        &data_files,
-        &command_snapshots,
-        &plugins,
-        &plugin_rules,
-        &event_rules,
-        &note_rules,
+    extract_active_text_items(ActiveTextExtractionInput {
+        data_files: &data_files,
+        command_snapshots: &command_snapshots,
+        plugins: &plugins,
+        plugin_rules: &plugin_rules,
+        event_rules: &event_rules,
+        note_rules: &note_rules,
         source_text_required_pattern,
-    )
+        text_rules,
+    })
 }
 
 fn read_terminology_registry_file(
@@ -1494,6 +1513,7 @@ mod tests {
             None,
             Some(vec![357]),
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
         )
         .expect("工作区应准备成功");
 
@@ -1532,6 +1552,7 @@ mod tests {
             None,
             Some(vec![357]),
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
         )
         .expect("工作区应准备成功");
         fs::write(workspace.join("placeholder-rules.json"), "{}\n").expect("规则应写入成功");
@@ -1541,6 +1562,7 @@ mod tests {
             &record,
             &workspace,
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
         );
 
         let error_codes = report

@@ -7,12 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::db::FontReplacementRecord;
 use crate::error::{AttMzError, Result};
 use crate::report::{AgentReport, issue};
+use crate::rmmz::parse_plugins_js_file;
 use crate::{GameRecord, GameRegistry};
 
 const DATA_DIRECTORY_NAME: &str = "data";
@@ -1024,30 +1024,6 @@ fn write_font_replacement_outputs(
         )?;
     }
     Ok(())
-}
-
-fn parse_plugins_js_file(path: &Path) -> Result<Value> {
-    let content = fs::read_to_string(path)
-        .map_err(|source| AttMzError::io(format!("读取插件配置 {}", path.display()), source))?;
-    let pattern = Regex::new(r#"(?s)var\s+\$plugins\s*=\s*(\[.*?\])\s*;\s*$"#)
-        .map_err(|error| AttMzError::InvalidGame(format!("插件解析正则不可用: {error}")))?;
-    let captures = pattern.captures(&content).ok_or_else(|| {
-        AttMzError::InvalidGame("plugins.js 中未找到标准 $plugins 数组".to_string())
-    })?;
-    let plugins_text = captures
-        .get(1)
-        .map(|matched| matched.as_str())
-        .ok_or_else(|| AttMzError::InvalidGame("plugins.js 中的 $plugins 数组为空".to_string()))?;
-    let plugins: Value = serde_json::from_str(plugins_text).map_err(|source| AttMzError::Json {
-        context: path.display().to_string(),
-        source,
-    })?;
-    if !plugins.is_array() {
-        return Err(AttMzError::InvalidGame(
-            "plugins.js 中的 $plugins 必须是数组".to_string(),
-        ));
-    }
-    Ok(plugins)
 }
 
 fn write_plugins_js_file(path: &Path, value: &Value) -> Result<()> {

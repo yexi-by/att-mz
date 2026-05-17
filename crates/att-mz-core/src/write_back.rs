@@ -11,6 +11,7 @@ use std::path::Path;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
+use crate::config::TextRuleOptions;
 use crate::db::TranslationItemRecord;
 use crate::error::{AttMzError, Result};
 use crate::font_replacement::{
@@ -41,11 +42,16 @@ pub fn write_back_report(
     registry: &GameRegistry,
     game_record: &GameRecord,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
     confirm_font_overwrite: bool,
     replacement_font_path: Option<&str>,
 ) -> Result<AgentReport> {
-    let active_items =
-        load_active_translation_items(registry, game_record, source_text_required_pattern)?;
+    let active_items = load_active_translation_items(
+        registry,
+        game_record,
+        source_text_required_pattern,
+        text_rules,
+    )?;
     let active_paths = active_items
         .iter()
         .map(|item| item.location_path.clone())
@@ -1294,6 +1300,7 @@ mod tests {
             &registry,
             &game_record,
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
             false,
             None,
         )

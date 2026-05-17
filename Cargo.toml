@@ -27,6 +27,10 @@ sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3.14"
 thiserror = "2.0"
+json5 = "0.4"
+jsonrepair-rs = { version = "0.2", features = ["serde"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml = "0.8"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

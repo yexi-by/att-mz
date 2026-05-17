@@ -22,13 +22,30 @@ use crate::placeholder::{
     collect_unprotected_control_sequences, mask_translation_controls, restore_placeholder_lines,
     verify_placeholder_counts,
 };
-use crate::placeholder_scan::{ActiveTextItem, extract_active_text_items};
+use crate::placeholder_scan::{
+    ActiveTextExtractionInput, ActiveTextItem, extract_active_text_items,
+};
 use crate::plugin_rules::{PluginRuleRecord, build_plugin_hash};
 use crate::report::{AgentReport, issue};
 use crate::rmmz::{read_data_json_files, read_event_command_snapshots, read_plugins_json};
 use crate::{GameRecord, GameRegistry};
 
 const MANUAL_FILL_NOTE: &str = "只改 translation_lines；text_for_model_lines 只供对照。translation_lines 必须使用 original_lines 里的游戏原始控制符，不得保留 [RMMZ_...] 或 [CUSTOM_...]。";
+const WRAPPING_CONTINUATION_INDENT: &str = "　";
+const TRANSLATED_WRAPPING_LEFT_CHARS: &[char] =
+    &['“', '‘', '「', '『', '《', '〈', '（', '(', '"', '\'', '＂'];
+const TRANSLATED_WRAPPING_RIGHT_CHARS: &[char] =
+    &['”', '’', '」', '』', '》', '〉', '）', ')', '"', '\'', '＂'];
+const TRANSLATED_WRAPPING_QUOTE_PAIRS: &[(char, char)] = &[
+    ('“', '”'),
+    ('‘', '’'),
+    ('"', '"'),
+    ('\'', '\''),
+    ('＂', '＂'),
+    ('『', '』'),
+    ('《', '》'),
+    ('〈', '〉'),
+];
 
 #[derive(Debug, Clone)]
 struct NativeQualityDetails {
@@ -38,11 +55,26 @@ struct NativeQualityDetails {
     overwide_line_items: Vec<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BoundaryChar {
+    line_index: usize,
+    byte_index: usize,
+    char_value: char,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WrappingSpan {
+    left: BoundaryChar,
+    right: BoundaryChar,
+    pair: (char, char),
+}
+
 /// 读取当前游戏实际会进入正文翻译流程的条目。
 pub fn load_active_translation_items(
     registry: &GameRegistry,
     game_record: &GameRecord,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> Result<Vec<ActiveTextItem>> {
     let data_files = read_data_json_files(&game_record.game_path)?;
     let command_snapshots = read_event_command_snapshots(&game_record.game_path)?;
@@ -51,15 +83,16 @@ pub fn load_active_translation_items(
         read_fresh_plugin_rules(registry, game_record, &plugins)?;
     let event_rules = registry.read_event_command_text_rules(&game_record.game_title)?;
     let note_rules = registry.read_note_tag_text_rules(&game_record.game_title)?;
-    extract_active_text_items(
-        &data_files,
-        &command_snapshots,
-        &plugins,
-        &plugin_rules,
-        &event_rules,
-        &note_rules,
+    extract_active_text_items(ActiveTextExtractionInput {
+        data_files: &data_files,
+        command_snapshots: &command_snapshots,
+        plugins: &plugins,
+        plugin_rules: &plugin_rules,
+        event_rules: &event_rules,
+        note_rules: &note_rules,
         source_text_required_pattern,
-    )
+        text_rules,
+    })
 }
 
 /// 读取最新正文翻译运行状态，并补充当前还没成功保存译文的数量。
@@ -67,6 +100,7 @@ pub fn translation_status_report(
     registry: &GameRegistry,
     game_record: &GameRecord,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> Result<AgentReport> {
     let Some(latest_run) = registry.read_latest_translation_run(&game_record.game_title)? else {
         return Ok(AgentReport::from_parts(
@@ -79,8 +113,12 @@ pub fn translation_status_report(
             Map::new(),
         ));
     };
-    let active_items =
-        load_active_translation_items(registry, game_record, source_text_required_pattern)?;
+    let active_items = load_active_translation_items(
+        registry,
+        game_record,
+        source_text_required_pattern,
+        text_rules,
+    )?;
     let active_paths = active_items
         .iter()
         .map(|item| item.location_path.clone())
@@ -160,10 +198,15 @@ pub fn export_pending_translations_report(
     output_path: &Path,
     limit: Option<i64>,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> Result<AgentReport> {
     let custom_rules = registry.read_placeholder_rules(&game_record.game_title)?;
-    let active_items =
-        load_active_translation_items(registry, game_record, source_text_required_pattern)?;
+    let active_items = load_active_translation_items(
+        registry,
+        game_record,
+        source_text_required_pattern,
+        text_rules,
+    )?;
     let translated_paths = registry.read_translation_location_paths(&game_record.game_title)?;
     let mut pending_items = active_items
         .into_iter()
@@ -224,15 +267,16 @@ pub fn quality_report(
     let japanese_residual_rules = registry.read_japanese_residual_rules(&game_record.game_title)?;
     let terminology_registry = registry.read_terminology_registry(&game_record.game_title)?;
     let latest_run = registry.read_latest_translation_run(&game_record.game_title)?;
-    let active_items = extract_active_text_items(
-        &data_files,
-        &command_snapshots,
-        &plugins,
-        &plugin_rules,
-        &event_rules,
-        &note_rules,
+    let active_items = extract_active_text_items(ActiveTextExtractionInput {
+        data_files: &data_files,
+        command_snapshots: &command_snapshots,
+        plugins: &plugins,
+        plugin_rules: &plugin_rules,
+        event_rules: &event_rules,
+        note_rules: &note_rules,
         source_text_required_pattern,
-    )?;
+        text_rules,
+    })?;
     let active_paths = active_items
         .iter()
         .map(|item| item.location_path.clone())
@@ -573,15 +617,16 @@ pub fn export_quality_fix_template_report(
     let event_rules = registry.read_event_command_text_rules(&game_record.game_title)?;
     let note_rules = registry.read_note_tag_text_rules(&game_record.game_title)?;
     let japanese_residual_rules = registry.read_japanese_residual_rules(&game_record.game_title)?;
-    let active_items = extract_active_text_items(
-        &data_files,
-        &command_snapshots,
-        &plugins,
-        &plugin_rules,
-        &event_rules,
-        &note_rules,
+    let active_items = extract_active_text_items(ActiveTextExtractionInput {
+        data_files: &data_files,
+        command_snapshots: &command_snapshots,
+        plugins: &plugins,
+        plugin_rules: &plugin_rules,
+        event_rules: &event_rules,
+        note_rules: &note_rules,
         source_text_required_pattern,
-    )?;
+        text_rules,
+    })?;
     let active_items_by_path = active_items
         .iter()
         .map(|item| (item.location_path.clone(), item))
@@ -757,8 +802,12 @@ pub fn import_manual_translations_report(
     };
 
     let custom_rules = registry.read_placeholder_rules(&game_record.game_title)?;
-    let active_items =
-        load_active_translation_items(registry, game_record, source_text_required_pattern)?;
+    let active_items = load_active_translation_items(
+        registry,
+        game_record,
+        source_text_required_pattern,
+        text_rules,
+    )?;
     let active_by_path = active_items
         .iter()
         .map(|item| (item.location_path.as_str(), item))
@@ -884,6 +933,7 @@ pub fn reset_translations_report(
     input_path: Option<&Path>,
     reset_all: bool,
     source_text_required_pattern: &str,
+    text_rules: &TextRuleOptions,
 ) -> Result<AgentReport> {
     if input_path.is_some() && reset_all {
         let mut summary = reset_translation_summary(input_path, "invalid", 0, 0);
@@ -928,8 +978,12 @@ pub fn reset_translations_report(
         Vec::new()
     };
 
-    let active_items =
-        load_active_translation_items(registry, game_record, source_text_required_pattern)?;
+    let active_items = load_active_translation_items(
+        registry,
+        game_record,
+        source_text_required_pattern,
+        text_rules,
+    )?;
     let active_location_paths = collect_active_translation_location_paths(&active_items);
     let active_paths = active_location_paths
         .iter()
@@ -1055,6 +1109,9 @@ fn collect_native_quality_details(
             "line_width_count_pattern": text_rules.line_width_count_pattern,
             "residual_escape_sequence_pattern": text_rules.residual_escape_sequence_pattern,
             "long_text_line_width_limit": text_rules.long_text_line_width_limit,
+            "strip_wrapping_punctuation_pairs": text_rules.strip_wrapping_punctuation_pairs,
+            "preserve_wrapping_punctuation_pairs": text_rules.preserve_wrapping_punctuation_pairs,
+            "line_split_punctuations": text_rules.line_split_punctuations,
         },
         "japanese_residual_rules": japanese_residual_rules.iter().map(|rule| json!({
             "location_path": rule.location_path,
@@ -1638,10 +1695,12 @@ pub(crate) fn normalize_manual_translation_lines(
         .iter()
         .map(|line| line.trim().to_string())
         .collect::<Vec<_>>();
+    let normalized_lines =
+        normalize_translated_wrapping_punctuation(&item.original_lines, &cleaned_lines, text_rules);
     if item.item_type != "long_text" {
-        return Ok(cleaned_lines);
+        return Ok(normalized_lines);
     }
-    split_overwide_lines(&cleaned_lines, text_rules)
+    split_overwide_lines(&normalized_lines, text_rules)
 }
 
 fn split_overwide_lines(lines: &[String], text_rules: &TextRuleOptions) -> Result<Vec<String>> {
@@ -1649,34 +1708,750 @@ fn split_overwide_lines(lines: &[String], text_rules: &TextRuleOptions) -> Resul
         AttMzError::InvalidConfig(format!("text_rules.line_width_count_pattern 无效: {error}"))
     })?;
     let mut output = Vec::new();
+    let mut active_wrapping_pair: Option<(String, String)> = None;
     for line in lines {
-        if count_line_width(line, &width_pattern) <= text_rules.long_text_line_width_limit {
+        if line.is_empty() {
             output.push(line.clone());
             continue;
         }
-        let mut current = String::new();
-        let mut current_width = 0usize;
-        for char_value in line.chars() {
-            current.push(char_value);
-            if width_pattern.is_match(&char_value.to_string()) {
-                current_width += 1;
-            }
-            if current_width >= text_rules.long_text_line_width_limit {
-                output.push(std::mem::take(&mut current));
-                current_width = 0;
-            }
-        }
-        if !current.is_empty() {
-            output.push(current);
+        let opening_pair = find_opening_wrapping_pair(line, text_rules);
+        let current_wrapping_pair = active_wrapping_pair.clone().or(opening_pair);
+        let first_line_prefix = if active_wrapping_pair.is_some() {
+            WRAPPING_CONTINUATION_INDENT
+        } else {
+            ""
+        };
+        let wrapped_tail_prefix = if current_wrapping_pair.is_some() {
+            WRAPPING_CONTINUATION_INDENT
+        } else {
+            ""
+        };
+        output.extend(split_single_overwide_line(
+            line,
+            text_rules,
+            &width_pattern,
+            first_line_prefix,
+            wrapped_tail_prefix,
+        ));
+        if let Some(pair) = current_wrapping_pair {
+            active_wrapping_pair = (!closes_wrapping_pair(line, &pair, text_rules)).then_some(pair);
+        } else {
+            active_wrapping_pair = None;
         }
     }
     Ok(output)
 }
 
+fn split_single_overwide_line(
+    line: &str,
+    text_rules: &TextRuleOptions,
+    width_pattern: &Regex,
+    first_line_prefix: &str,
+    wrapped_tail_prefix: &str,
+) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut pending_line = prepend_continuation_prefix(line, first_line_prefix);
+    while count_line_width(&pending_line, width_pattern) > text_rules.long_text_line_width_limit {
+        let split_index = find_preferred_split_position(&pending_line, text_rules, width_pattern)
+            .or_else(|| find_hard_split_position(&pending_line, text_rules, width_pattern));
+        let Some(split_index) = split_index else {
+            break;
+        };
+        if split_index == 0 || split_index >= pending_line.len() {
+            break;
+        }
+        let head = pending_line[..split_index].trim_end().to_string();
+        let tail = pending_line[split_index..].trim_start().to_string();
+        if head.is_empty() || tail.is_empty() {
+            break;
+        }
+        result.push(head);
+        pending_line = prepend_continuation_prefix(&tail, wrapped_tail_prefix);
+    }
+    result.push(pending_line);
+    result
+}
+
 fn count_line_width(text: &str, width_pattern: &Regex) -> usize {
-    text.chars()
-        .filter(|char_value| width_pattern.is_match(&char_value.to_string()))
+    let protected_spans = protected_control_spans(text);
+    text.char_indices()
+        .filter(|(byte_index, char_value)| {
+            !is_inside_span(*byte_index, &protected_spans)
+                && is_line_width_counted_char(*char_value, width_pattern)
+        })
         .count()
+}
+
+fn normalize_translated_wrapping_punctuation(
+    original_lines: &[String],
+    translation_lines: &[String],
+    text_rules: &TextRuleOptions,
+) -> Vec<String> {
+    if !has_preserved_wrapping_chars(original_lines, text_rules) {
+        return translation_lines.to_vec();
+    }
+    let normalized_lines = normalize_translated_outer_wrapping_punctuation(
+        original_lines,
+        translation_lines,
+        text_rules,
+    );
+    normalize_aligned_wrapping_spans(original_lines, &normalized_lines, text_rules)
+}
+
+fn normalize_translated_outer_wrapping_punctuation(
+    original_lines: &[String],
+    translation_lines: &[String],
+    text_rules: &TextRuleOptions,
+) -> Vec<String> {
+    let Some((source_left, source_right)) =
+        find_source_outer_wrapping_pair(original_lines, text_rules)
+    else {
+        return translation_lines.to_vec();
+    };
+    let mut normalized_lines = translation_lines.to_vec();
+    let first_boundary = find_first_visible_boundary(&normalized_lines);
+    let last_boundary = find_last_visible_boundary(&normalized_lines);
+    let (Some(first_boundary), Some(last_boundary)) = (first_boundary, last_boundary) else {
+        return normalized_lines;
+    };
+    if first_boundary.char_value != source_left
+        && TRANSLATED_WRAPPING_LEFT_CHARS.contains(&first_boundary.char_value)
+    {
+        normalized_lines[first_boundary.line_index] = replace_char_at(
+            &normalized_lines[first_boundary.line_index],
+            first_boundary.byte_index,
+            &source_left.to_string(),
+        );
+    }
+    if last_boundary.char_value != source_right
+        && TRANSLATED_WRAPPING_RIGHT_CHARS.contains(&last_boundary.char_value)
+    {
+        normalized_lines[last_boundary.line_index] = replace_char_at(
+            &normalized_lines[last_boundary.line_index],
+            last_boundary.byte_index,
+            &source_right.to_string(),
+        );
+    }
+    normalized_lines
+}
+
+fn normalize_aligned_wrapping_spans(
+    original_lines: &[String],
+    translation_lines: &[String],
+    text_rules: &TextRuleOptions,
+) -> Vec<String> {
+    let source_pairs = single_char_wrapping_pairs(&text_rules.preserve_wrapping_punctuation_pairs);
+    let source_spans = collect_wrapping_spans(original_lines, &source_pairs);
+    if source_spans.is_empty() {
+        return translation_lines.to_vec();
+    }
+    let translated_source_spans = collect_wrapping_spans(translation_lines, &source_pairs);
+    let alternative_pairs = build_alternative_wrapping_pairs(&source_pairs);
+    let translated_alternative_spans =
+        collect_wrapping_spans(translation_lines, &alternative_pairs);
+    if has_unpaired_wrapping_chars(translation_lines, &source_pairs, &translated_source_spans)
+        || has_unpaired_wrapping_chars(
+            translation_lines,
+            &alternative_pairs,
+            &translated_alternative_spans,
+        )
+    {
+        return translation_lines.to_vec();
+    }
+    let mut translated_spans = translated_source_spans;
+    translated_spans.extend(translated_alternative_spans);
+    translated_spans.sort_by_key(|span| {
+        (
+            span.left.line_index,
+            span.left.byte_index,
+            span.right.line_index,
+            span.right.byte_index,
+        )
+    });
+    if source_spans.len() != translated_spans.len() {
+        return translation_lines.to_vec();
+    }
+    let mut normalized_lines = translation_lines.to_vec();
+    for (source_span, translated_span) in source_spans.iter().zip(translated_spans.iter()) {
+        let (source_left, source_right) = source_span.pair;
+        if translated_span.left.char_value != source_left {
+            normalized_lines[translated_span.left.line_index] = replace_char_at(
+                &normalized_lines[translated_span.left.line_index],
+                translated_span.left.byte_index,
+                &source_left.to_string(),
+            );
+        }
+        if translated_span.right.char_value != source_right {
+            normalized_lines[translated_span.right.line_index] = replace_char_at(
+                &normalized_lines[translated_span.right.line_index],
+                translated_span.right.byte_index,
+                &source_right.to_string(),
+            );
+        }
+    }
+    normalized_lines
+}
+
+fn find_preferred_split_position(
+    text: &str,
+    text_rules: &TextRuleOptions,
+    width_pattern: &Regex,
+) -> Option<usize> {
+    let protected_spans = protected_control_spans(text);
+    let limit = text_rules.long_text_line_width_limit;
+    let min_preferred_width = ((limit as f64) * 0.45).floor().max(1.0) as usize;
+    let mut width = 0usize;
+    let mut before_limit_positions = Vec::new();
+    let mut preferred_before_limit_positions = Vec::new();
+    for (byte_index, char_value) in text.char_indices() {
+        if is_inside_span(byte_index, &protected_spans) {
+            continue;
+        }
+        if is_line_width_counted_char(char_value, width_pattern) {
+            width += 1;
+        }
+        let next_index = byte_index + char_value.len_utf8();
+        let is_split_punctuation = text_rules
+            .line_split_punctuations
+            .iter()
+            .any(|punctuation| punctuation == &char_value.to_string());
+        if is_split_punctuation && width >= min_preferred_width && width <= limit {
+            preferred_before_limit_positions.push(next_index);
+        }
+        if is_split_punctuation && width <= limit {
+            before_limit_positions.push(next_index);
+        }
+        if width > limit {
+            break;
+        }
+    }
+    select_split_position_with_readable_tail(
+        text,
+        if preferred_before_limit_positions.is_empty() {
+            &before_limit_positions
+        } else {
+            &preferred_before_limit_positions
+        },
+        text_rules,
+        width_pattern,
+    )
+}
+
+fn select_split_position_with_readable_tail(
+    text: &str,
+    candidates: &[usize],
+    text_rules: &TextRuleOptions,
+    width_pattern: &Regex,
+) -> Option<usize> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let min_tail_width = 4usize.min((text_rules.long_text_line_width_limit / 4).max(1));
+    for position in candidates.iter().rev() {
+        let tail = text[*position..].trim_start();
+        if count_line_width(tail, width_pattern) >= min_tail_width {
+            return Some(*position);
+        }
+    }
+    candidates.last().copied()
+}
+
+fn find_hard_split_position(
+    text: &str,
+    text_rules: &TextRuleOptions,
+    width_pattern: &Regex,
+) -> Option<usize> {
+    let protected_spans = protected_control_spans(text);
+    let mut width = 0usize;
+    for (byte_index, char_value) in text.char_indices() {
+        if is_inside_span(byte_index, &protected_spans)
+            || !is_line_width_counted_char(char_value, width_pattern)
+        {
+            continue;
+        }
+        width += 1;
+        if width < text_rules.long_text_line_width_limit {
+            continue;
+        }
+        let split_position = move_split_position_outside_protected_span(
+            byte_index + char_value.len_utf8(),
+            &protected_spans,
+        );
+        let extended_position = extend_split_position_through_trailing_punctuation(
+            text,
+            split_position,
+            text_rules,
+            &protected_spans,
+        );
+        if extended_position >= text.len()
+            && count_line_width(text, width_pattern) > text_rules.long_text_line_width_limit
+        {
+            return find_readable_hard_split_position(
+                text,
+                split_position,
+                text_rules,
+                width_pattern,
+                &protected_spans,
+            );
+        }
+        return Some(extended_position);
+    }
+    None
+}
+
+fn find_readable_hard_split_position(
+    text: &str,
+    max_position: usize,
+    text_rules: &TextRuleOptions,
+    width_pattern: &Regex,
+    protected_spans: &[(usize, usize)],
+) -> Option<usize> {
+    let min_tail_width = 4usize.min((text_rules.long_text_line_width_limit / 4).max(1));
+    let mut candidates = Vec::new();
+    for (byte_index, char_value) in text.char_indices() {
+        let position = byte_index + char_value.len_utf8();
+        if position > max_position || position >= text.len() {
+            break;
+        }
+        if is_inside_span(byte_index, protected_spans)
+            || !is_line_width_counted_char(char_value, width_pattern)
+        {
+            continue;
+        }
+        let tail = text[position..].trim_start();
+        if tail.is_empty() || starts_with_split_punctuation(tail, text_rules) {
+            continue;
+        }
+        if count_line_width(tail, width_pattern) >= min_tail_width {
+            candidates.push(position);
+        }
+    }
+    candidates.last().copied()
+}
+
+fn extend_split_position_through_trailing_punctuation(
+    text: &str,
+    position: usize,
+    text_rules: &TextRuleOptions,
+    protected_spans: &[(usize, usize)],
+) -> usize {
+    let mut next_position = position;
+    while next_position < text.len() {
+        if is_inside_span(next_position, protected_spans) {
+            break;
+        }
+        let Some(char_value) = text[next_position..].chars().next() else {
+            break;
+        };
+        if !text_rules
+            .line_split_punctuations
+            .iter()
+            .any(|punctuation| punctuation == &char_value.to_string())
+        {
+            break;
+        }
+        next_position += char_value.len_utf8();
+    }
+    next_position
+}
+
+fn starts_with_split_punctuation(text: &str, text_rules: &TextRuleOptions) -> bool {
+    text.chars().next().is_some_and(|char_value| {
+        text_rules
+            .line_split_punctuations
+            .iter()
+            .any(|punctuation| punctuation == &char_value.to_string())
+    })
+}
+
+fn is_line_width_counted_char(char_value: char, width_pattern: &Regex) -> bool {
+    let text = char_value.to_string();
+    width_pattern
+        .find(&text)
+        .is_some_and(|matched| matched.start() == 0 && matched.end() == text.len())
+}
+
+fn has_preserved_wrapping_chars(lines: &[String], text_rules: &TextRuleOptions) -> bool {
+    lines.iter().any(|line| {
+        text_rules
+            .preserve_wrapping_punctuation_pairs
+            .iter()
+            .any(|(left, right)| line.contains(left) || line.contains(right))
+    })
+}
+
+fn find_source_outer_wrapping_pair(
+    original_lines: &[String],
+    text_rules: &TextRuleOptions,
+) -> Option<(char, char)> {
+    let first_boundary = find_first_visible_boundary(original_lines)?;
+    let last_boundary = find_last_visible_boundary(original_lines)?;
+    for (left, right) in &text_rules.preserve_wrapping_punctuation_pairs {
+        let (Some(left_char), Some(right_char)) = (single_char(left), single_char(right)) else {
+            continue;
+        };
+        if first_boundary.char_value == left_char && last_boundary.char_value == right_char {
+            return Some((left_char, right_char));
+        }
+    }
+    None
+}
+
+fn find_first_visible_boundary(lines: &[String]) -> Option<BoundaryChar> {
+    for (line_index, line) in lines.iter().enumerate() {
+        if let Some(boundary) = find_visible_boundary_in_line(line, false) {
+            return Some(BoundaryChar {
+                line_index,
+                byte_index: boundary.byte_index,
+                char_value: boundary.char_value,
+            });
+        }
+    }
+    None
+}
+
+fn find_last_visible_boundary(lines: &[String]) -> Option<BoundaryChar> {
+    for (reverse_index, line) in lines.iter().rev().enumerate() {
+        if let Some(boundary) = find_visible_boundary_in_line(line, true) {
+            return Some(BoundaryChar {
+                line_index: lines.len() - reverse_index - 1,
+                byte_index: boundary.byte_index,
+                char_value: boundary.char_value,
+            });
+        }
+    }
+    None
+}
+
+fn find_visible_boundary_in_line(line: &str, reverse: bool) -> Option<BoundaryChar> {
+    let protected_spans = protected_control_spans(line);
+    if reverse {
+        return find_visible_boundary_from_right(line, &protected_spans);
+    }
+    find_visible_boundary_from_left(line, &protected_spans)
+}
+
+fn find_visible_boundary_from_left(
+    line: &str,
+    protected_spans: &[(usize, usize)],
+) -> Option<BoundaryChar> {
+    let mut index = 0usize;
+    while index < line.len() {
+        if let Some((_, end)) = find_containing_span(index, protected_spans) {
+            index = end;
+            continue;
+        }
+        let Some(char_value) = line[index..].chars().next() else {
+            break;
+        };
+        if !char_value.is_whitespace() {
+            return Some(BoundaryChar {
+                line_index: 0,
+                byte_index: index,
+                char_value,
+            });
+        }
+        index += char_value.len_utf8();
+    }
+    None
+}
+
+fn find_visible_boundary_from_right(
+    line: &str,
+    protected_spans: &[(usize, usize)],
+) -> Option<BoundaryChar> {
+    let mut index = line.len();
+    while index > 0 {
+        let Some((byte_index, char_value)) = previous_char(line, index) else {
+            break;
+        };
+        if let Some((start, _)) = find_containing_span(byte_index, protected_spans) {
+            index = start;
+            continue;
+        }
+        if !char_value.is_whitespace() {
+            return Some(BoundaryChar {
+                line_index: 0,
+                byte_index,
+                char_value,
+            });
+        }
+        index = byte_index;
+    }
+    None
+}
+
+fn collect_visible_chars(lines: &[String]) -> Vec<BoundaryChar> {
+    let mut visible_chars = Vec::new();
+    for (line_index, line) in lines.iter().enumerate() {
+        let protected_spans = protected_control_spans(line);
+        let mut index = 0usize;
+        while index < line.len() {
+            if let Some((_, end)) = find_containing_span(index, &protected_spans) {
+                index = end;
+                continue;
+            }
+            let Some(char_value) = line[index..].chars().next() else {
+                break;
+            };
+            if !char_value.is_whitespace() {
+                visible_chars.push(BoundaryChar {
+                    line_index,
+                    byte_index: index,
+                    char_value,
+                });
+            }
+            index += char_value.len_utf8();
+        }
+    }
+    visible_chars
+}
+
+fn collect_wrapping_spans(
+    lines: &[String],
+    pair_definitions: &[(char, char)],
+) -> Vec<WrappingSpan> {
+    let visible_chars = collect_visible_chars(lines);
+    let different_pairs = pair_definitions
+        .iter()
+        .copied()
+        .filter(|(left, right)| left != right)
+        .collect::<Vec<_>>();
+    let same_pairs = pair_definitions
+        .iter()
+        .copied()
+        .filter(|(left, right)| left == right)
+        .collect::<Vec<_>>();
+    let mut spans = collect_different_char_wrapping_spans(&visible_chars, &different_pairs);
+    spans.extend(collect_same_char_wrapping_spans(
+        &visible_chars,
+        &same_pairs,
+    ));
+    spans.sort_by_key(|span| {
+        (
+            span.left.line_index,
+            span.left.byte_index,
+            span.right.line_index,
+            span.right.byte_index,
+        )
+    });
+    spans
+}
+
+fn collect_different_char_wrapping_spans(
+    visible_chars: &[BoundaryChar],
+    pair_definitions: &[(char, char)],
+) -> Vec<WrappingSpan> {
+    let mut spans = Vec::new();
+    let mut stack: Vec<(BoundaryChar, (char, char))> = Vec::new();
+    for boundary in visible_chars {
+        if let Some(pair) = pair_definitions
+            .iter()
+            .copied()
+            .find(|(left, _)| *left == boundary.char_value)
+        {
+            stack.push((*boundary, pair));
+            continue;
+        }
+        if !pair_definitions
+            .iter()
+            .any(|(_, right)| *right == boundary.char_value)
+        {
+            continue;
+        }
+        let Some((left_boundary, expected_pair)) = stack.last().copied() else {
+            continue;
+        };
+        if expected_pair.1 != boundary.char_value {
+            continue;
+        }
+        let _ = stack.pop();
+        spans.push(WrappingSpan {
+            left: left_boundary,
+            right: *boundary,
+            pair: expected_pair,
+        });
+    }
+    spans
+}
+
+fn collect_same_char_wrapping_spans(
+    visible_chars: &[BoundaryChar],
+    pair_definitions: &[(char, char)],
+) -> Vec<WrappingSpan> {
+    let quote_chars = pair_definitions
+        .iter()
+        .map(|(left, _)| *left)
+        .collect::<BTreeSet<_>>();
+    let mut open_boundaries: BTreeMap<char, BoundaryChar> = BTreeMap::new();
+    let mut spans = Vec::new();
+    for boundary in visible_chars {
+        if !quote_chars.contains(&boundary.char_value) {
+            continue;
+        }
+        if let Some(open_boundary) = open_boundaries.remove(&boundary.char_value) {
+            spans.push(WrappingSpan {
+                left: open_boundary,
+                right: *boundary,
+                pair: (boundary.char_value, boundary.char_value),
+            });
+        } else {
+            open_boundaries.insert(boundary.char_value, *boundary);
+        }
+    }
+    spans
+}
+
+fn has_unpaired_wrapping_chars(
+    lines: &[String],
+    pair_definitions: &[(char, char)],
+    spans: &[WrappingSpan],
+) -> bool {
+    let wrapping_chars = pair_definitions
+        .iter()
+        .flat_map(|(left, right)| [*left, *right])
+        .collect::<BTreeSet<_>>();
+    if wrapping_chars.is_empty() {
+        return false;
+    }
+    let paired_positions = spans
+        .iter()
+        .flat_map(|span| {
+            [
+                (span.left.line_index, span.left.byte_index),
+                (span.right.line_index, span.right.byte_index),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    collect_visible_chars(lines).into_iter().any(|boundary| {
+        wrapping_chars.contains(&boundary.char_value)
+            && !paired_positions.contains(&(boundary.line_index, boundary.byte_index))
+    })
+}
+
+fn find_opening_wrapping_pair(
+    line: &str,
+    text_rules: &TextRuleOptions,
+) -> Option<(String, String)> {
+    let stripped_line = build_wrapping_check_line(line);
+    text_rules
+        .preserve_wrapping_punctuation_pairs
+        .iter()
+        .find(|(left, _)| stripped_line.starts_with(left))
+        .cloned()
+}
+
+fn closes_wrapping_pair(
+    line: &str,
+    wrapping_pair: &(String, String),
+    _text_rules: &TextRuleOptions,
+) -> bool {
+    let stripped_line = build_wrapping_check_line(line);
+    stripped_line.ends_with(&wrapping_pair.1)
+}
+
+fn build_wrapping_check_line(line: &str) -> String {
+    strip_protected_controls(line).trim().to_string()
+}
+
+fn strip_protected_controls(text: &str) -> String {
+    let spans = protected_control_spans(text);
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    let mut output = String::new();
+    let mut last_end = 0usize;
+    for (start, end) in spans {
+        if start >= last_end {
+            output.push_str(&text[last_end..start]);
+            last_end = end;
+        }
+    }
+    output.push_str(&text[last_end..]);
+    output
+}
+
+fn prepend_continuation_prefix(line: &str, prefix: &str) -> String {
+    if prefix.is_empty() || line.is_empty() || line.starts_with(prefix) {
+        return line.to_string();
+    }
+    if line.chars().next().is_some_and(char::is_whitespace) {
+        return line.to_string();
+    }
+    format!("{prefix}{line}")
+}
+
+fn build_alternative_wrapping_pairs(source_pairs: &[(char, char)]) -> Vec<(char, char)> {
+    TRANSLATED_WRAPPING_QUOTE_PAIRS
+        .iter()
+        .copied()
+        .filter(|pair| !source_pairs.contains(pair))
+        .collect()
+}
+
+fn single_char_wrapping_pairs(pairs: &[(String, String)]) -> Vec<(char, char)> {
+    pairs
+        .iter()
+        .filter_map(|(left, right)| Some((single_char(left)?, single_char(right)?)))
+        .collect()
+}
+
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let char_value = chars.next()?;
+    chars.next().is_none().then_some(char_value)
+}
+
+fn replace_char_at(text: &str, byte_index: usize, replacement: &str) -> String {
+    let Some(char_value) = text[byte_index..].chars().next() else {
+        return text.to_string();
+    };
+    let next_index = byte_index + char_value.len_utf8();
+    format!(
+        "{}{}{}",
+        &text[..byte_index],
+        replacement,
+        &text[next_index..]
+    )
+}
+
+fn protected_control_spans(text: &str) -> Vec<(usize, usize)> {
+    let Ok(pattern) = Regex::new(
+        r"\\[A-Za-z]+\d*(?:\[[^\]\r\n]{0,64}\])?|\\[{}\\$.\|!><^]|\[(?:RMMZ|CUSTOM)_[A-Z0-9_]+(?:_\d+)?\]",
+    ) else {
+        return Vec::new();
+    };
+    pattern
+        .find_iter(text)
+        .map(|matched| (matched.start(), matched.end()))
+        .collect()
+}
+
+fn is_inside_span(byte_index: usize, spans: &[(usize, usize)]) -> bool {
+    spans
+        .iter()
+        .any(|(start, end)| byte_index >= *start && byte_index < *end)
+}
+
+fn find_containing_span(byte_index: usize, spans: &[(usize, usize)]) -> Option<(usize, usize)> {
+    spans
+        .iter()
+        .copied()
+        .find(|(start, end)| byte_index >= *start && byte_index < *end)
+}
+
+fn previous_char(text: &str, end_index: usize) -> Option<(usize, char)> {
+    text[..end_index].char_indices().next_back()
+}
+
+fn move_split_position_outside_protected_span(
+    split_index: usize,
+    spans: &[(usize, usize)],
+) -> usize {
+    spans
+        .iter()
+        .find_map(|(start, end)| (split_index > *start && split_index < *end).then_some(*end))
+        .unwrap_or(split_index)
 }
 
 pub(crate) fn validate_translation_text_structure(
@@ -2040,6 +2815,7 @@ mod tests {
             location_path: "Map001.json/1/0/0".to_string(),
             item_type: "long_text".to_string(),
             role: Some("旁白".to_string()),
+            display_name: None,
             original_lines: vec![r"\F[GuideA]こんにちは\!".to_string()],
             source_line_paths: Vec::new(),
         };
@@ -2063,6 +2839,7 @@ mod tests {
             location_path: "Map001.json/1/0/0".to_string(),
             item_type: "long_text".to_string(),
             role: Some("旁白".to_string()),
+            display_name: None,
             original_lines: vec![r"\F[GuideA]こんにちは\!".to_string()],
             source_line_paths: Vec::new(),
         };
@@ -2079,6 +2856,84 @@ mod tests {
         .expect("带预填译文的模板应生成成功");
 
         assert_eq!(entry["translation_lines"][0], r"\F[GuideA]你好\!");
+    }
+
+    #[test]
+    fn long_text_split_prefers_configured_punctuation_and_preserves_wrapping() {
+        let item = ActiveTextItem {
+            location_path: "Map001.json/1/0/0".to_string(),
+            item_type: "long_text".to_string(),
+            role: Some("旁白".to_string()),
+            display_name: None,
+            original_lines: vec!["「これは長い原文」".to_string()],
+            source_line_paths: Vec::new(),
+        };
+        let options = TextRuleOptions {
+            long_text_line_width_limit: 6,
+            line_split_punctuations: vec!["，".to_string()],
+            preserve_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
+            ..TextRuleOptions::default()
+        };
+
+        let lines = normalize_manual_translation_lines(
+            &item,
+            &["“这是很长，必须切行”".to_string()],
+            &options,
+        )
+        .expect("长文本应可规范化");
+
+        assert_eq!(lines, vec!["「这是很长，", "　必须切行」"]);
+    }
+
+    #[test]
+    fn wrapping_normalization_repairs_outer_and_inner_quote_pairs() {
+        let item = ActiveTextItem {
+            location_path: "Map001.json/1/0/0".to_string(),
+            item_type: "long_text".to_string(),
+            role: Some("旁白".to_string()),
+            display_name: None,
+            original_lines: vec!["『これは「名前」です』".to_string()],
+            source_line_paths: Vec::new(),
+        };
+        let options = TextRuleOptions {
+            preserve_wrapping_punctuation_pairs: vec![
+                ("『".to_string(), "』".to_string()),
+                ("「".to_string(), "」".to_string()),
+            ],
+            ..TextRuleOptions::default()
+        };
+
+        let lines =
+            normalize_manual_translation_lines(&item, &["“这是『名字』”".to_string()], &options)
+                .expect("包裹标点应可规范化");
+
+        assert_eq!(lines, vec!["『这是「名字」』"]);
+    }
+
+    #[test]
+    fn long_text_split_keeps_tail_readable_and_protects_control_spans() {
+        let item = ActiveTextItem {
+            location_path: "Map001.json/1/0/0".to_string(),
+            item_type: "long_text".to_string(),
+            role: Some("旁白".to_string()),
+            display_name: None,
+            original_lines: vec!["長い原文".to_string()],
+            source_line_paths: Vec::new(),
+        };
+        let options = TextRuleOptions {
+            long_text_line_width_limit: 4,
+            line_split_punctuations: vec!["，".to_string()],
+            ..TextRuleOptions::default()
+        };
+
+        let lines = normalize_manual_translation_lines(
+            &item,
+            &[r"\V[123]甲乙丙丁戊，己".to_string()],
+            &options,
+        )
+        .expect("长文本应可规范化");
+
+        assert_eq!(lines, vec![r"\V[123]甲乙丙丁", "戊，己"]);
     }
 
     #[test]
@@ -2162,6 +3017,7 @@ mod tests {
             &pending_path,
             Some(1),
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
         )
         .expect("待填表应导出成功");
         assert_eq!(export_report.status, "ok");
@@ -2200,6 +3056,7 @@ mod tests {
             &pending_after_import_path,
             None,
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
         )
         .expect("导入后待填表应导出成功");
         assert_eq!(
@@ -2213,6 +3070,7 @@ mod tests {
             None,
             true,
             DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN,
+            &TextRuleOptions::default(),
         )
         .expect("译文应可重置");
         assert_eq!(reset_report.summary["reset_count"], json!(1));

@@ -28,6 +28,10 @@ pub const DEFAULT_SOURCE_TEXT_REQUIRED_PATTERN: &str =
 const DEFAULT_JAPANESE_SEGMENT_PATTERN: &str = r"[\u{3040}-\u{309F}\u{30A0}-\u{30FF}]+";
 const DEFAULT_RESIDUAL_ESCAPE_SEQUENCE_PATTERN: &str = r"\\[nrt]";
 const DEFAULT_LINE_WIDTH_COUNT_PATTERN: &str = r"\S";
+const DEFAULT_LINE_SPLIT_PUNCTUATIONS: &[&str] = &[
+    "，", "。", "、", "；", "：", "！", "？", "…", "～", "—", "♪", "♡", "）", "】", "」", "』",
+    ",", ".", ";", ":", "!", "?",
+];
 
 /// 环境变量覆盖结果。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -82,8 +86,7 @@ pub struct SettingSummary {
 
 /// 文本处理规则配置。
 ///
-/// 该结构只收敛 Rust 已迁移命令需要的文本规则字段，保持与 Python 配置
-/// 默认值一致。后续翻译和写回迁移可以继续在这里补充需要的字段。
+/// 该结构收敛正文提取、提示词组装、译文切行和质量检查共同依赖的文本规则。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextRuleOptions {
     /// 长文本自动切行时每行允许的计数字符数量。
@@ -94,6 +97,12 @@ pub struct TextRuleOptions {
     pub japanese_segment_pattern: String,
     /// 残留检查前剥离转义噪音的正则。
     pub residual_escape_sequence_pattern: String,
+    /// 提取原文时剥离的成对包裹标点。
+    pub strip_wrapping_punctuation_pairs: Vec<(String, String)>,
+    /// 译文需要按源文保留的成对包裹标点。
+    pub preserve_wrapping_punctuation_pairs: Vec<(String, String)>,
+    /// 长文本自动切行时优先断开的标点。
+    pub line_split_punctuations: Vec<String>,
     /// 混排时允许保留的日文字符。
     pub allowed_japanese_chars: Vec<String>,
     /// 混排词尾可放行的日文语气字符。
@@ -107,6 +116,15 @@ impl Default for TextRuleOptions {
             line_width_count_pattern: DEFAULT_LINE_WIDTH_COUNT_PATTERN.to_string(),
             japanese_segment_pattern: DEFAULT_JAPANESE_SEGMENT_PATTERN.to_string(),
             residual_escape_sequence_pattern: DEFAULT_RESIDUAL_ESCAPE_SEQUENCE_PATTERN.to_string(),
+            strip_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
+            preserve_wrapping_punctuation_pairs: vec![
+                ("「".to_string(), "」".to_string()),
+                ("『".to_string(), "』".to_string()),
+            ],
+            line_split_punctuations: DEFAULT_LINE_SPLIT_PUNCTUATIONS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             allowed_japanese_chars: ["っ", "ッ", "ー", "・", "。", "～", "…"]
                 .into_iter()
                 .map(str::to_string)
@@ -135,7 +153,7 @@ pub struct TranslationContextOptions {
 /// 正文翻译请求调度配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextTranslationOptions {
-    /// 并发 worker 数。Rust 迁移入口当前会读取并保留该配置，实际请求按稳定顺序执行。
+    /// 并发 worker 数；正文翻译会按该值启动并发请求调度。
     pub worker_count: usize,
     /// 每分钟请求数限制；`None` 表示不限速。
     pub rpm: Option<usize>,
@@ -367,7 +385,11 @@ pub fn load_event_command_default_codes(setting_path: Option<&Path>) -> Result<V
         });
     }
     let root = load_toml_root(&resolved_path)?;
-    let event_command_text = read_table(&root, "event_command_text")?;
+    read_event_command_default_codes_from_root(&root)
+}
+
+fn read_event_command_default_codes_from_root(root: &TomlValue) -> Result<Vec<i64>> {
+    let event_command_text = read_table(root, "event_command_text")?;
     let raw_codes = event_command_text
         .get("default_command_codes")
         .and_then(TomlValue::as_array)
@@ -473,6 +495,15 @@ pub fn load_text_rule_options(setting_path: Option<&Path>) -> Result<TextRuleOpt
     options.allowed_japanese_tail_chars =
         read_optional_text_rule_string_array(text_rules, "allowed_japanese_tail_chars")?
             .unwrap_or(options.allowed_japanese_tail_chars);
+    options.strip_wrapping_punctuation_pairs =
+        read_optional_text_rule_string_pairs(text_rules, "strip_wrapping_punctuation_pairs")?
+            .unwrap_or(options.strip_wrapping_punctuation_pairs);
+    options.preserve_wrapping_punctuation_pairs =
+        read_optional_text_rule_string_pairs(text_rules, "preserve_wrapping_punctuation_pairs")?
+            .unwrap_or(options.preserve_wrapping_punctuation_pairs);
+    options.line_split_punctuations =
+        read_optional_text_rule_string_array(text_rules, "line_split_punctuations")?
+            .unwrap_or(options.line_split_punctuations);
     Ok(options)
 }
 
@@ -685,9 +716,17 @@ fn read_request_body_extra(
             "llm.request_body_extra 必须解析为 JSON 对象".to_string(),
         ));
     };
-    if object.contains_key("stream") || object.contains_key("stream_options") {
+    if object.contains_key("stream_options") {
         return Err(AttMzError::InvalidConfig(
-            "当前流程不支持 stream=true 或 stream_options".to_string(),
+            "当前流程不支持 llm.request_body_extra.stream_options".to_string(),
+        ));
+    }
+    if let Some(stream_value) = object.get("stream")
+        && !stream_value.is_null()
+        && stream_value != &Value::Bool(false)
+    {
+        return Err(AttMzError::InvalidConfig(
+            "当前流程只允许 llm.request_body_extra.stream=false".to_string(),
         ));
     }
     Ok(object.clone())
@@ -741,6 +780,53 @@ fn read_optional_text_rule_string_array(
     Ok(Some(items))
 }
 
+fn read_optional_text_rule_string_pairs(
+    table: &toml::map::Map<String, TomlValue>,
+    key: &str,
+) -> Result<Option<Vec<(String, String)>>> {
+    let Some(value) = table.get(key) else {
+        return Ok(None);
+    };
+    let Some(array) = value.as_array() else {
+        return Err(AttMzError::InvalidConfig(format!(
+            "text_rules.{key} 必须是字符串二元数组"
+        )));
+    };
+    let mut pairs = Vec::new();
+    for item in array {
+        let Some(pair) = item.as_array() else {
+            return Err(AttMzError::InvalidConfig(format!(
+                "text_rules.{key} 每一项必须是字符串二元数组"
+            )));
+        };
+        if pair.len() != 2 {
+            return Err(AttMzError::InvalidConfig(format!(
+                "text_rules.{key} 每一项必须刚好包含两个字符串"
+            )));
+        }
+        let Some(left) = pair[0]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(AttMzError::InvalidConfig(format!(
+                "text_rules.{key} 左侧标点必须是非空字符串"
+            )));
+        };
+        let Some(right) = pair[1]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(AttMzError::InvalidConfig(format!(
+                "text_rules.{key} 右侧标点必须是非空字符串"
+            )));
+        };
+        pairs.push((left.to_string(), right.to_string()));
+    }
+    Ok(Some(pairs))
+}
+
 fn resolve_prompt_path(setting_path: &Path, prompt_file: &str) -> PathBuf {
     let prompt_path = PathBuf::from(prompt_file);
     if prompt_path.is_absolute() {
@@ -790,5 +876,91 @@ default_command_codes = [357, 999]
         let codes = load_event_command_default_codes(Some(&temp.path().join("setting.toml")))
             .expect("事件指令默认编码应加载成功");
         assert_eq!(codes, vec![357, 999]);
+    }
+
+    #[test]
+    fn text_rule_options_load_wrapping_and_split_rules() {
+        let temp = tempfile::tempdir().expect("临时目录应创建成功");
+        fs::write(
+            temp.path().join("setting.toml"),
+            r#"
+[text_rules]
+strip_wrapping_punctuation_pairs = [["「", "」"], ["『", "』"]]
+preserve_wrapping_punctuation_pairs = [["【", "】"]]
+line_split_punctuations = ["，", "。"]
+"#,
+        )
+        .expect("配置应写入成功");
+
+        let options = load_text_rule_options(Some(&temp.path().join("setting.toml")))
+            .expect("文本规则应加载成功");
+
+        assert_eq!(
+            options.strip_wrapping_punctuation_pairs,
+            vec![
+                ("「".to_string(), "」".to_string()),
+                ("『".to_string(), "』".to_string())
+            ]
+        );
+        assert_eq!(
+            options.preserve_wrapping_punctuation_pairs,
+            vec![("【".to_string(), "】".to_string())]
+        );
+        assert_eq!(
+            options.line_split_punctuations,
+            vec!["，".to_string(), "。".to_string()]
+        );
+    }
+
+    #[test]
+    fn request_body_extra_allows_explicit_non_streaming_mode() {
+        let parsed: TomlValue = toml::from_str(
+            r#"
+[llm]
+request_body_extra = "{\"stream\":false,\"temperature\":0.2}"
+"#,
+        )
+        .expect("TOML 应可解析");
+        let llm = parsed
+            .get("llm")
+            .and_then(TomlValue::as_table)
+            .expect("llm 配置段应存在");
+
+        let request_body_extra = read_request_body_extra(llm).expect("额外请求体应可读取");
+        assert_eq!(request_body_extra.get("stream"), Some(&Value::Bool(false)));
+        assert_eq!(request_body_extra.get("temperature"), Some(&json!(0.2)));
+    }
+
+    #[test]
+    fn request_body_extra_rejects_streaming_options() {
+        let parsed: TomlValue = toml::from_str(
+            r#"
+[llm]
+request_body_extra = "{\"stream\":true}"
+"#,
+        )
+        .expect("TOML 应可解析");
+        let llm = parsed
+            .get("llm")
+            .and_then(TomlValue::as_table)
+            .expect("llm 配置段应存在");
+
+        let error = read_request_body_extra(llm).expect_err("stream=true 必须被拒绝");
+        assert!(error.to_string().contains("stream=false"));
+
+        let parsed: TomlValue = toml::from_str(
+            r#"
+[llm]
+request_body_extra = "{\"stream_options\":{}}"
+"#,
+        )
+        .expect("TOML 应可解析");
+        let llm = parsed
+            .get("llm")
+            .and_then(TomlValue::as_table)
+            .expect("llm 配置段应存在");
+
+        let error = read_request_body_extra(llm).expect_err("stream_options 必须被拒绝");
+        assert!(error.to_string().contains("stream_options"));
     }
 }

@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 fancy-regex.workspace = true
+json5.workspace = true
+jsonrepair-rs.workspace = true
 rayon.workspace = true
 regex.workspace = true
 reqwest.workspace = true
@@ -16,7 +18,9 @@ serde_json.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 toml.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

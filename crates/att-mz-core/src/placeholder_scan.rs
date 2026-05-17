@@ -11,6 +11,7 @@ use fancy_regex::Regex as FancyRegex;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
+use crate::config::TextRuleOptions;
 use crate::error::{AttMzError, Result};
 use crate::event_command_rules::{EventCommandRuleRecord, extract_event_command_items};
 use crate::note_tag_rules::{NoteTagRuleRecord, extract_note_tag_items};
@@ -32,6 +33,8 @@ pub struct ActiveTextItem {
     pub item_type: String,
     /// 长文本角色；旁白或名字框文本。
     pub role: Option<String>,
+    /// 地图显示名；仅地图事件正文有值，用于模型上下文和术语筛选。
+    pub display_name: Option<String>,
     /// 当前会进入翻译流程的原文行。
     pub original_lines: Vec<String>,
     /// 原文行在游戏数据中的逐行内部位置。
@@ -53,42 +56,81 @@ pub struct PlaceholderCandidate {
     pub custom_covered: bool,
 }
 
+/// 活跃正文提取需要读取的来源和规则。
+pub struct ActiveTextExtractionInput<'a> {
+    /// 已读取的 data JSON 文件。
+    pub data_files: &'a BTreeMap<String, Value>,
+    /// 当前游戏事件指令快照。
+    pub command_snapshots: &'a [EventCommandSnapshot],
+    /// 当前游戏插件数组。
+    pub plugins: &'a [Value],
+    /// 已导入并仍然匹配当前插件结构的插件文本规则。
+    pub plugin_rules: &'a [PluginRuleRecord],
+    /// 已导入的事件指令文本规则。
+    pub event_rules: &'a [EventCommandRuleRecord],
+    /// 已导入的 Note 标签文本规则。
+    pub note_rules: &'a [NoteTagRuleRecord],
+    /// 判断源文本是否需要翻译的正则文本。
+    pub source_text_required_pattern: &'a str,
+    /// 文本提取和规范化规则。
+    pub text_rules: &'a TextRuleOptions,
+}
+
 /// 汇总当前活跃正文文本。
 pub fn extract_active_text_items(
-    data_files: &BTreeMap<String, Value>,
-    command_snapshots: &[EventCommandSnapshot],
-    plugins: &[Value],
-    plugin_rules: &[PluginRuleRecord],
-    event_rules: &[EventCommandRuleRecord],
-    note_rules: &[NoteTagRuleRecord],
-    source_text_required_pattern: &str,
+    input: ActiveTextExtractionInput<'_>,
 ) -> Result<Vec<ActiveTextItem>> {
-    let source_pattern = compile_source_pattern(source_text_required_pattern)?;
-    let mut items =
-        extract_standard_data_text_items(data_files, command_snapshots, &source_pattern)?;
+    let source_pattern = compile_source_pattern(input.source_text_required_pattern)?;
+    let mut items = extract_standard_data_text_items(
+        input.data_files,
+        input.command_snapshots,
+        &source_pattern,
+        input.text_rules,
+    )?;
 
-    for item in
-        extract_event_command_items(command_snapshots, event_rules, source_text_required_pattern)?
-    {
+    for item in extract_event_command_items(
+        input.command_snapshots,
+        input.event_rules,
+        input.source_text_required_pattern,
+    )? {
+        let original_text = normalize_extraction_text(&item.original_text, input.text_rules);
+        if !should_translate_source_lines(std::slice::from_ref(&original_text), &source_pattern) {
+            continue;
+        }
         items.push(ActiveTextItem {
             location_path: item.location_path,
             item_type: "short_text".to_string(),
             role: None,
-            original_lines: vec![item.original_text],
+            display_name: None,
+            original_lines: vec![original_text],
             source_line_paths: Vec::new(),
         });
     }
 
-    for item in extract_plugin_text_items(plugins, plugin_rules, &source_pattern)? {
+    for item in extract_plugin_text_items(
+        input.plugins,
+        input.plugin_rules,
+        &source_pattern,
+        input.text_rules,
+    )? {
         items.push(item);
     }
 
-    for item in extract_note_tag_items(data_files, note_rules, source_text_required_pattern)? {
+    for item in extract_note_tag_items(
+        input.data_files,
+        input.note_rules,
+        input.source_text_required_pattern,
+    )? {
+        let original_text = normalize_extraction_text(&item.original_text, input.text_rules);
+        if !should_translate_source_lines(std::slice::from_ref(&original_text), &source_pattern) {
+            continue;
+        }
         items.push(ActiveTextItem {
             location_path: item.location_path,
             item_type: "short_text".to_string(),
             role: None,
-            original_lines: vec![item.original_text],
+            display_name: None,
+            original_lines: vec![original_text],
             source_line_paths: Vec::new(),
         });
     }
@@ -170,16 +212,19 @@ fn extract_standard_data_text_items(
     data_files: &BTreeMap<String, Value>,
     command_snapshots: &[EventCommandSnapshot],
     source_pattern: &Regex,
+    text_rules: &TextRuleOptions,
 ) -> Result<Vec<ActiveTextItem>> {
-    let mut items = extract_standard_command_text_items(command_snapshots, source_pattern);
+    let mut items =
+        extract_standard_command_text_items(command_snapshots, source_pattern, text_rules);
     if let Some(system) = data_files.get(SYSTEM_FILE_NAME).and_then(Value::as_object) {
-        if let Some(game_title) = normalize_optional_text(system.get("gameTitle"))
+        if let Some(game_title) = normalize_optional_text(system.get("gameTitle"), text_rules)
             && should_translate_source_lines(std::slice::from_ref(&game_title), source_pattern)
         {
             items.push(ActiveTextItem {
                 location_path: format!("{SYSTEM_FILE_NAME}/gameTitle"),
                 item_type: "short_text".to_string(),
                 role: None,
+                display_name: None,
                 original_lines: vec![game_title],
                 source_line_paths: Vec::new(),
             });
@@ -188,7 +233,7 @@ fn extract_standard_data_text_items(
             for key in ["basic", "commands", "params"] {
                 if let Some(values) = terms.get(key).and_then(Value::as_array) {
                     for (index, value) in values.iter().enumerate() {
-                        if let Some(text) = normalize_optional_text(Some(value))
+                        if let Some(text) = normalize_optional_text(Some(value), text_rules)
                             && should_translate_source_lines(
                                 std::slice::from_ref(&text),
                                 source_pattern,
@@ -198,6 +243,7 @@ fn extract_standard_data_text_items(
                                 location_path: format!("{SYSTEM_FILE_NAME}/terms/{key}/{index}"),
                                 item_type: "short_text".to_string(),
                                 role: None,
+                                display_name: None,
                                 original_lines: vec![text],
                                 source_line_paths: Vec::new(),
                             });
@@ -207,7 +253,7 @@ fn extract_standard_data_text_items(
             }
             if let Some(messages) = terms.get("messages").and_then(Value::as_object) {
                 for (key, value) in messages {
-                    if let Some(text) = normalize_optional_text(Some(value))
+                    if let Some(text) = normalize_optional_text(Some(value), text_rules)
                         && should_translate_source_lines(
                             std::slice::from_ref(&text),
                             source_pattern,
@@ -217,6 +263,7 @@ fn extract_standard_data_text_items(
                             location_path: format!("{SYSTEM_FILE_NAME}/terms/messages/{key}"),
                             item_type: "short_text".to_string(),
                             role: None,
+                            display_name: None,
                             original_lines: vec![text],
                             source_line_paths: Vec::new(),
                         });
@@ -249,13 +296,14 @@ fn extract_standard_data_text_items(
                 "message3",
                 "message4",
             ] {
-                if let Some(text) = normalize_optional_text(item.get(key))
+                if let Some(text) = normalize_optional_text(item.get(key), text_rules)
                     && should_translate_source_lines(std::slice::from_ref(&text), source_pattern)
                 {
                     items.push(ActiveTextItem {
                         location_path: format!("{file_name}/{id}/{key}"),
                         item_type: "short_text".to_string(),
                         role: None,
+                        display_name: None,
                         original_lines: vec![text],
                         source_line_paths: Vec::new(),
                     });
@@ -269,6 +317,7 @@ fn extract_standard_data_text_items(
 fn extract_standard_command_text_items(
     command_snapshots: &[EventCommandSnapshot],
     source_pattern: &Regex,
+    text_rules: &TextRuleOptions,
 ) -> Vec<ActiveTextItem> {
     let mut items = Vec::new();
     let mut pending_text: Option<ActiveTextItem> = None;
@@ -300,13 +349,14 @@ fn extract_standard_command_text_items(
                     location_path: snapshot.location_path.clone(),
                     item_type: "long_text".to_string(),
                     role: Some(role.to_string()),
+                    display_name: command_display_name(snapshot),
                     original_lines: Vec::new(),
                     source_line_paths: Vec::new(),
                 });
             }
             401 => {
                 if let Some(item) = pending_text.as_mut()
-                    && let Some(text) = first_string_parameter(&snapshot.parameters)
+                    && let Some(text) = first_string_parameter(&snapshot.parameters, text_rules)
                 {
                     item.original_lines.push(text);
                     item.source_line_paths.push(snapshot.location_path.clone());
@@ -319,13 +369,14 @@ fn extract_standard_command_text_items(
                 {
                     let lines = choices
                         .iter()
-                        .filter_map(normalize_optional_text_value)
+                        .filter_map(|value| normalize_optional_text_value(value, text_rules))
                         .collect::<Vec<_>>();
                     if should_translate_source_lines(&lines, source_pattern) {
                         items.push(ActiveTextItem {
                             location_path: snapshot.location_path.clone(),
                             item_type: "array".to_string(),
                             role: Some("旁白".to_string()),
+                            display_name: command_display_name(snapshot),
                             original_lines: lines,
                             source_line_paths: Vec::new(),
                         });
@@ -334,7 +385,7 @@ fn extract_standard_command_text_items(
             }
             405 => {
                 flush_pending(&mut pending_text, &mut items, source_pattern);
-                let text = first_string_parameter(&snapshot.parameters);
+                let text = first_string_parameter(&snapshot.parameters, text_rules);
                 let adjacent = pending_scroll_parent.as_deref() == Some(&command_parent)
                     && pending_scroll_index
                         .zip(command_index)
@@ -352,6 +403,7 @@ fn extract_standard_command_text_items(
                             location_path: snapshot.location_path.clone(),
                             item_type: "long_text".to_string(),
                             role: Some("旁白".to_string()),
+                            display_name: command_display_name(snapshot),
                             original_lines: vec![text],
                             source_line_paths: vec![snapshot.location_path.clone()],
                         });
@@ -378,6 +430,7 @@ fn extract_plugin_text_items(
     plugins: &[Value],
     plugin_rules: &[PluginRuleRecord],
     source_pattern: &Regex,
+    text_rules: &TextRuleOptions,
 ) -> Result<Vec<ActiveTextItem>> {
     let mut items = Vec::new();
     for rule in plugin_rules {
@@ -399,7 +452,8 @@ fn extract_plugin_text_items(
                 let Some(leaf_value) = string_leaf_values.get(&leaf_path) else {
                     continue;
                 };
-                let normalized_value = normalize_visible_text_for_extraction(leaf_value);
+                let normalized_value =
+                    normalize_visible_text_for_extraction(leaf_value, text_rules);
                 if !should_translate_source_lines(
                     std::slice::from_ref(&normalized_value),
                     source_pattern,
@@ -410,6 +464,7 @@ fn extract_plugin_text_items(
                     location_path: jsonpath_to_plugin_location_path(&leaf_path, rule.plugin_index)?,
                     item_type: "short_text".to_string(),
                     role: None,
+                    display_name: None,
                     original_lines: vec![normalized_value],
                     source_line_paths: Vec::new(),
                 });
@@ -581,20 +636,20 @@ fn flush_pending(
     }
 }
 
-fn first_string_parameter(parameters: &Value) -> Option<String> {
+fn first_string_parameter(parameters: &Value, text_rules: &TextRuleOptions) -> Option<String> {
     parameters
         .as_array()
         .and_then(|parameters| parameters.first())
-        .and_then(normalize_optional_text_value)
+        .and_then(|value| normalize_optional_text_value(value, text_rules))
 }
 
-fn normalize_optional_text(value: Option<&Value>) -> Option<String> {
-    value.and_then(normalize_optional_text_value)
+fn normalize_optional_text(value: Option<&Value>, text_rules: &TextRuleOptions) -> Option<String> {
+    value.and_then(|value| normalize_optional_text_value(value, text_rules))
 }
 
-fn normalize_optional_text_value(value: &Value) -> Option<String> {
+fn normalize_optional_text_value(value: &Value, text_rules: &TextRuleOptions) -> Option<String> {
     value.as_str().and_then(|text| {
-        let normalized = text.trim().to_string();
+        let normalized = normalize_extraction_text(text, text_rules);
         (!normalized.is_empty()).then_some(normalized)
     })
 }
@@ -664,12 +719,33 @@ fn is_map_file_name(file_name: &str) -> bool {
             .all(|char_value| char_value.is_ascii_digit())
 }
 
-fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
+fn command_display_name(snapshot: &EventCommandSnapshot) -> Option<String> {
+    if !snapshot.location_path.starts_with("Map") {
+        return None;
+    }
+    let display_name = snapshot.display_name.trim();
+    (!display_name.is_empty()).then(|| display_name.to_string())
+}
+
+fn normalize_visible_text_for_extraction(raw_text: &str, text_rules: &TextRuleOptions) -> String {
     let mut current_text = raw_text.to_string();
     while let Ok(Value::String(decoded_text)) = serde_json::from_str::<Value>(&current_text) {
         current_text = decoded_text;
     }
-    current_text.trim().to_string()
+    normalize_extraction_text(&current_text, text_rules)
+}
+
+fn normalize_extraction_text(raw_text: &str, text_rules: &TextRuleOptions) -> String {
+    let mut text = raw_text.trim().to_string();
+    for (left, right) in &text_rules.strip_wrapping_punctuation_pairs {
+        if text.starts_with(left) && text.ends_with(right) && text.len() >= left.len() + right.len()
+        {
+            text = text[left.len()..text.len() - right.len()]
+                .trim()
+                .to_string();
+        }
+    }
+    text.trim().to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -930,6 +1006,7 @@ mod tests {
             location_path: "Map001.json/1/0/0".to_string(),
             item_type: "long_text".to_string(),
             role: Some("旁白".to_string()),
+            display_name: None,
             original_lines: lines,
             source_line_paths: Vec::new(),
         }
@@ -977,5 +1054,29 @@ mod tests {
             draft.get(r"(?i)\\MT\d*(?![A-Za-z\[])"),
             Some(&"[CUSTOM_PLUGIN_MESSAGE_TAG_{index}]".to_string())
         );
+    }
+
+    #[test]
+    fn extraction_normalization_strips_configured_wrapping_punctuation() {
+        let options = TextRuleOptions {
+            strip_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
+            ..TextRuleOptions::default()
+        };
+
+        let normalized = normalize_extraction_text(" 「こんにちは」 ", &options);
+
+        assert_eq!(normalized, "こんにちは");
+    }
+
+    #[test]
+    fn extraction_normalization_matches_main_single_pass_wrapping_strip() {
+        let options = TextRuleOptions {
+            strip_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
+            ..TextRuleOptions::default()
+        };
+
+        let normalized = normalize_extraction_text("「「こんにちは」」", &options);
+
+        assert_eq!(normalized, "「こんにちは」");
     }
 }

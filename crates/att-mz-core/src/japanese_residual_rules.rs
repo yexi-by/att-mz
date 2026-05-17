@@ -270,6 +270,7 @@ mod tests {
             location_path: "CommonEvents.json/1/0".to_string(),
             item_type: "long_text".to_string(),
             role: Some("旁白".to_string()),
+            display_name: None,
             original_lines: vec!["こんにちは".to_string()],
             source_line_paths: Vec::new(),
         }];
@@ -291,6 +292,7 @@ mod tests {
             location_path: "CommonEvents.json/1/0".to_string(),
             item_type: "long_text".to_string(),
             role: Some("旁白".to_string()),
+            display_name: None,
             original_lines: vec!["こんにちは".to_string()],
             source_line_paths: Vec::new(),
         }];

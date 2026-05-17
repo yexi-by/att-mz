@@ -67,8 +67,9 @@ pub use placeholder::{
     validate_placeholder_rules_report,
 };
 pub use placeholder_scan::{
-    ActiveTextItem, PlaceholderCandidate, build_placeholder_rule_draft_report,
-    extract_active_text_items, scan_placeholder_candidates_report,
+    ActiveTextExtractionInput, ActiveTextItem, PlaceholderCandidate,
+    build_placeholder_rule_draft_report, extract_active_text_items,
+    scan_placeholder_candidates_report,
 };
 pub use plugin_rules::{
     PluginRuleRecord, build_plugin_hash, build_plugin_rule_records_from_import,
