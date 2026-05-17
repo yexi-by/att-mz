@@ -12,6 +12,12 @@ venv/
 .ruff_cache/
 target/
 
+# 本地开发工具、临时 worktree 和跨分支构建环境
+.tools/
+
+# 发行版构建输出
+dist/
+
 # IDE and OS files
 .idea/
 .vscode/
