@@ -1,12 +1,14 @@
 """CLI 机器可读 JSON 输出测试。"""
 
 from argparse import Namespace
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import cast
 
 from main import main
-from pytest import CaptureFixture
+import pytest
+from pytest import CaptureFixture, MonkeyPatch
 
 from app.agent_toolkit import AgentReport
 from app.agent_toolkit.reports import issue
@@ -18,8 +20,21 @@ from app.cli import ensure_text_translation_not_blocked
 from app.cli import parser_command_names
 from app.cli import registered_command_names
 from app.cli import write_report_outputs
+from app.cli.commands.registry import run_list_command
 from app.application.summaries import TextTranslationSummary
 from app.rmmz.json_types import coerce_json_value, ensure_json_object
+
+
+@dataclass(frozen=True)
+class FakeRegisteredGame:
+    """供 CLI 注册列表测试使用的已注册游戏记录。"""
+
+    game_title: str
+    game_path: Path
+    content_root: Path
+    db_path: Path
+    engine_kind: str
+    engine_version: str
 
 
 def namespace_optional_str(args: object, name: str) -> str | None:
@@ -29,6 +44,49 @@ def namespace_optional_str(args: object, name: str) -> str | None:
         return None
     assert isinstance(raw_value, str)
     return raw_value
+
+
+@pytest.mark.asyncio
+async def test_list_json_includes_engine_layout_metadata(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """`list --json` 必须公开数据库保存的引擎和布局元数据。"""
+
+    class FakeRegistry:
+        """替代真实注册表，避免测试依赖全局数据库目录。"""
+
+        async def list_games(self) -> list[FakeRegisteredGame]:
+            """返回一条带完整引擎布局字段的注册记录。"""
+            return [
+                FakeRegisteredGame(
+                    game_title="示例游戏",
+                    game_path=tmp_path / "game",
+                    content_root=tmp_path / "game" / "www",
+                    db_path=tmp_path / "db" / "示例游戏.db",
+                    engine_kind="mv",
+                    engine_version="1.6.1",
+                )
+            ]
+
+    monkeypatch.setattr("app.cli.commands.registry.GameRegistry", FakeRegistry)
+
+    exit_code = await run_list_command(Namespace(json_output=True))
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    details = ensure_json_object(payload["details"], "CLI JSON 输出详情")
+    games = details["games"]
+    assert isinstance(games, list)
+    first_game = ensure_json_object(games[0], "CLI JSON 已注册游戏")
+
+    assert exit_code == 0
+    assert first_game["engine_kind"] == "mv"
+    assert first_game["engine_version"] == "1.6.1"
+    assert first_game["content_root"] == str(tmp_path / "game" / "www")
+    assert first_game["game_path"] == str(tmp_path / "game")
 
 
 def test_parser_commands_have_dispatch_handlers() -> None:

@@ -31,7 +31,10 @@ async def run_list_command(args: argparse.Namespace) -> int:
                 "games": [
                     {
                         "game_title": item.game_title,
+                        "engine_kind": item.engine_kind,
+                        "engine_version": item.engine_version,
                         "game_path": str(item.game_path),
+                        "content_root": str(item.content_root),
                         "db_path": str(item.db_path),
                     }
                     for item in items
@@ -46,10 +49,20 @@ async def run_list_command(args: argparse.Namespace) -> int:
 
     table = Table(title="已注册游戏")
     table.add_column("游戏标题", style="cyan")
+    table.add_column("引擎", style="green")
+    table.add_column("版本", style="green")
     table.add_column("游戏目录", style="blue")
+    table.add_column("内容目录", style="blue")
     table.add_column("数据库", style="magenta")
     for item in items:
-        table.add_row(item.game_title, str(item.game_path), str(item.db_path))
+        table.add_row(
+            item.game_title,
+            item.engine_kind.upper(),
+            item.engine_version,
+            str(item.game_path),
+            str(item.content_root),
+            str(item.db_path),
+        )
     console.print(table)
     return 0
 

@@ -149,6 +149,10 @@ def copy_release_resources(release_dir: Path) -> None:
             ROOT / "skills" / "att-mz-release" / "references" / "rpg-maker-mv-mz-world-knowledge.md",
             ("skills", "att-mz", "references", "rpg-maker-mv-mz-world-knowledge.md"),
         ),
+        CopySpec(
+            ROOT / "skills" / "att-mz-release" / "references" / "subtask-package-mode.md",
+            ("skills", "att-mz", "references", "subtask-package-mode.md"),
+        ),
     ]
     for spec in copy_specs:
         copy_file(spec.source, release_dir.joinpath(*spec.target_parts))

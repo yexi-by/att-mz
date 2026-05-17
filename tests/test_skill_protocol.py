@@ -13,6 +13,36 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "必须启用子代理并行处理",
         "才允许串行处理",
         "子代理轮次固定为两轮",
+        "### 子代理任务处理方式确认",
+        "主代理必须先向用户确认子代理任务处理方式",
+        "当前会话完成",
+        "外部协作任务包",
+        "混合处理",
+        "多项候选分析会消耗较多上下文和模型额度",
+        "额度有限时建议使用外部协作任务包",
+        "任务包只替代子代理执行方式，不替代主代理审核职责",
+        "用户返回的内容一律视为候选答案",
+        "`references/subtask-package-mode.md`",
+        "任务包必须拆成多个独立文件夹",
+        "建议用户提示词、结构化上下文数据、答案模板、清单",
+        "### 外部协作任务包",
+        "外部协作任务包只允许覆盖五个术语候选分组、插件规则、事件指令规则和 Note 标签规则",
+        "一个任务包文件夹只对应一个任务",
+        "包内 `context/` 目录",
+        "不读取项目源码、数据库、程序内部对象或原机器上的 `<工作区>` 路径",
+        "占位符规则最终生成、覆盖扫描和导入不得导出为普通任务包",
+        "最终术语表合并与正文术语表维护不得导出为普通任务包",
+        "正文翻译、重置译文、写进游戏文件、字体覆盖不得导出为普通任务包",
+        "只能要求在包内填写 `answer.json` 或返回 `answer.json` 内容",
+        "任务包内只能使用相对路径",
+        "可压缩、远程分发并在其他机器上完成",
+        "### 用户返回答案验收",
+        "先检查 JSON 结构和唯一写入边界",
+        "防止编造路径、误选资源、脚本、公式或内部字段",
+        "术语候选必须由主代理统一风格、去空值、查假名残留和译名冲突",
+        "规则类结果必须运行对应 `validate-* --json`",
+        "通过后才运行对应 `import-* --json`",
+        "大面积错误时要求重做或改由主代理完成，不能直接导入",
         "### 第一轮：术语候选",
         "术语表翻译必须由主代理亲自把关",
         "`terminology/subtasks/sources/speaker_and_actor_terms.json`",
@@ -269,6 +299,65 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
         assert phrase not in combined_text
 
 
+def test_subtask_package_mode_document_defines_portable_contract() -> None:
+    """外部协作任务包文档必须说明可带走任务和主代理验收边界。"""
+    text = (ROOT / "skills" / "att-mz" / "references" / "subtask-package-mode.md").read_text(encoding="utf-8")
+
+    required_phrases = [
+        "# 外部协作任务包模式",
+        "它不是新的 CLI 功能",
+        "uv run python main.py --agent-mode prepare-agent-workspace",
+        ".\\att-mz.exe --agent-mode prepare-agent-workspace",
+        "用途",
+        "输入",
+        "处理逻辑",
+        "输出格式",
+        "禁止事项",
+        "空结果",
+        "主代理验收步骤",
+        "## 固定目录结构",
+        "一个任务包文件夹只对应一个任务",
+        "不要把多个任务塞进同一个文件夹",
+        "prompt.md",
+        "manifest.json",
+        "answer-template.json",
+        "answer.json",
+        "context/",
+        "任务包文件夹必须能被压缩后远程分发",
+        "禁止写真实本机绝对路径",
+        "## 任务包清单",
+        "满配导出时，外部协作任务包是多个文件夹",
+        "terminology-speaker-and-actor/",
+        "terminology-item/",
+        "plugin-rules/",
+        "event-command-rules/",
+        "note-tag-rules/",
+        "## manifest.json 格式",
+        '"workspace_target"',
+        '"context_files"',
+        "任务包只能覆盖五个术语候选分组、插件规则、事件指令规则和 Note 标签规则",
+        "占位符规则最终生成、覆盖扫描和导入，最终术语表合并与正文术语表维护，正文翻译、重置译文、写进游戏文件和字体覆盖，都不能导出为普通任务包",
+        "用户交回任务包文件夹、压缩包或 `answer.json` 内容后",
+        "检查 `manifest.json`、`prompt.md`、`answer-template.json`、`answer.json` 和 `context/` 是否存在",
+        "把通过审核的 `answer.json` 写回 `<工作区>` 中 `manifest.json` 指定的 `workspace_target`",
+        "对规则类结果运行对应 `validate-* --json`；通过后才运行对应 `import-* --json`",
+        "不能导入规则，不能启动正文翻译，不能写进游戏文件",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+    forbidden_real_context_phrases = [
+        "C:\\",
+        "D:\\",
+        "Users\\",
+        "测试样本",
+        "Sexual_conflict",
+        "生意気",
+    ]
+    for phrase in forbidden_real_context_phrases:
+        assert phrase not in text
+
+
 def test_release_skill_uses_packaged_cli_contract() -> None:
     """发行版 Skill 必须使用随包 exe，不能泄漏源码运行协议。"""
     text = (ROOT / "skills" / "att-mz-release" / "SKILL.md").read_text(encoding="utf-8")
@@ -284,6 +373,35 @@ def test_release_skill_uses_packaged_cli_contract() -> None:
         "不直接修改数据库",
         "必须启用子代理并行处理",
         "子代理轮次固定为两轮",
+        "### 子代理任务处理方式确认",
+        "主代理必须先向用户确认子代理任务处理方式",
+        "当前会话完成",
+        "外部协作任务包",
+        "混合处理",
+        "多项候选分析会消耗较多上下文和模型额度",
+        "额度有限时建议使用外部协作任务包",
+        "任务包只替代子代理执行方式，不替代主代理审核职责",
+        "用户返回的内容一律视为候选答案",
+        "任务包必须拆成多个独立文件夹",
+        "建议用户提示词、结构化上下文数据、答案模板、清单",
+        "### 外部协作任务包",
+        "外部协作任务包只允许覆盖五个术语候选分组、插件规则、事件指令规则和 Note 标签规则",
+        "一个任务包文件夹只对应一个任务",
+        "包内 `context/` 目录",
+        "不读取项目源码、数据库、程序内部对象或原机器上的 `<工作区>` 路径",
+        "占位符规则最终生成、覆盖扫描和导入不得导出为普通任务包",
+        "最终术语表合并与正文术语表维护不得导出为普通任务包",
+        "正文翻译、重置译文、写进游戏文件、字体覆盖不得导出为普通任务包",
+        "只能要求在包内填写 `answer.json` 或返回 `answer.json` 内容",
+        "任务包内只能使用相对路径",
+        "可压缩、远程分发并在其他机器上完成",
+        "### 用户返回答案验收",
+        "先检查 JSON 结构和唯一写入边界",
+        "防止编造路径、误选资源、脚本、公式或内部字段",
+        "术语候选必须由主代理统一风格、去空值、查假名残留和译名冲突",
+        "规则类结果必须运行对应 `validate-* --json`",
+        "通过后才运行对应 `import-* --json`",
+        "大面积错误时要求重做或改由主代理完成，不能直接导入",
         "### 第一轮：术语候选",
         "### 第二轮：三类外部规则",
         "### 命令 I/O 合约",
@@ -328,9 +446,15 @@ def test_release_skill_directory_contains_required_references() -> None:
     """发行版 Skill 目录必须和开发版一样带上按需参考资料。"""
     dev_reference = ROOT / "skills" / "att-mz" / "references" / "rpg-maker-mv-mz-world-knowledge.md"
     release_reference = ROOT / "skills" / "att-mz-release" / "references" / "rpg-maker-mv-mz-world-knowledge.md"
-
     assert release_reference.exists()
     assert release_reference.read_text(encoding="utf-8") == dev_reference.read_text(encoding="utf-8")
+
+    package_reference = ROOT / "skills" / "att-mz-release" / "references" / "subtask-package-mode.md"
+    assert package_reference.exists()
+    package_text = package_reference.read_text(encoding="utf-8")
+    assert ".\\att-mz.exe --agent-mode prepare-agent-workspace" in package_text
+    assert "uv run python main.py" not in package_text
+    assert "任务包文件夹必须能被压缩后远程分发" in package_text
 
 
 def test_project_rules_require_github_workflow_releases_and_skill_sync() -> None:
@@ -357,6 +481,7 @@ def test_release_packaging_script_uses_release_skill_template() -> None:
         "RELEASE_SKILL_SOURCE",
         '"att-mz-release" / "SKILL.md"',
         '"att-mz-release" / "references"',
+        '"subtask-package-mode.md"',
         "copy_packaged_release_skill",
         '"name: att-mz-release", "name: att-mz"',
         '"skills" / "att-mz" / "SKILL.md"',
