@@ -702,18 +702,17 @@ fn read_request_body_extra(
     let Some(value) = table.get("request_body_extra") else {
         return Ok(Map::new());
     };
-    let Some(text) = value.as_str() else {
-        return Err(AttMzError::InvalidConfig(
-            "llm.request_body_extra 必须是 JSON 对象字符串".to_string(),
-        ));
+    let parsed = if let Some(text) = value.as_str() {
+        serde_json::from_str(text).map_err(|source| AttMzError::Json {
+            context: "llm.request_body_extra".to_string(),
+            source,
+        })?
+    } else {
+        toml_value_to_json(value, "llm.request_body_extra")?
     };
-    let parsed: Value = serde_json::from_str(text).map_err(|source| AttMzError::Json {
-        context: "llm.request_body_extra".to_string(),
-        source,
-    })?;
     let Some(object) = parsed.as_object() else {
         return Err(AttMzError::InvalidConfig(
-            "llm.request_body_extra 必须解析为 JSON 对象".to_string(),
+            "llm.request_body_extra 必须是 JSON 对象字符串或 TOML 对象".to_string(),
         ));
     };
     if object.contains_key("stream_options") {
@@ -730,6 +729,30 @@ fn read_request_body_extra(
         ));
     }
     Ok(object.clone())
+}
+
+fn toml_value_to_json(value: &TomlValue, context: &str) -> Result<Value> {
+    match value {
+        TomlValue::String(text) => Ok(Value::String(text.clone())),
+        TomlValue::Integer(number) => Ok(json!(number)),
+        TomlValue::Float(number) => serde_json::Number::from_f64(*number)
+            .map(Value::Number)
+            .ok_or_else(|| AttMzError::InvalidConfig(format!("{context} 包含非有限浮点数"))),
+        TomlValue::Boolean(flag) => Ok(Value::Bool(*flag)),
+        TomlValue::Datetime(datetime) => Ok(Value::String(datetime.to_string())),
+        TomlValue::Array(items) => items
+            .iter()
+            .map(|item| toml_value_to_json(item, context))
+            .collect::<Result<Vec<_>>>()
+            .map(Value::Array),
+        TomlValue::Table(table) => {
+            let mut object = Map::new();
+            for (key, item) in table {
+                object.insert(key.clone(), toml_value_to_json(item, context)?);
+            }
+            Ok(Value::Object(object))
+        }
+    }
 }
 
 fn read_optional_text_rule_string(
@@ -929,6 +952,32 @@ request_body_extra = "{\"stream\":false,\"temperature\":0.2}"
         let request_body_extra = read_request_body_extra(llm).expect("额外请求体应可读取");
         assert_eq!(request_body_extra.get("stream"), Some(&Value::Bool(false)));
         assert_eq!(request_body_extra.get("temperature"), Some(&json!(0.2)));
+    }
+
+    #[test]
+    fn request_body_extra_accepts_toml_object_values() {
+        let parsed: TomlValue = toml::from_str(
+            r#"
+[llm.request_body_extra]
+stream = false
+temperature = 0.2
+metadata = { source = "test", attempts = [1, 2] }
+"#,
+        )
+        .expect("TOML 应可解析");
+        let llm = parsed
+            .get("llm")
+            .and_then(TomlValue::as_table)
+            .expect("llm 配置段应存在");
+
+        let request_body_extra = read_request_body_extra(llm).expect("TOML 对象应可读取");
+
+        assert_eq!(request_body_extra.get("stream"), Some(&Value::Bool(false)));
+        assert_eq!(request_body_extra.get("temperature"), Some(&json!(0.2)));
+        assert_eq!(
+            request_body_extra.get("metadata"),
+            Some(&json!({"source": "test", "attempts": [1, 2]}))
+        );
     }
 
     #[test]

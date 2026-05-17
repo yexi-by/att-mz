@@ -266,6 +266,10 @@ struct ExportEventCommandsJsonCommand {
     /// 需要导出的事件指令编码数组；传入后覆盖配置文件默认编码数组。
     #[arg(long = "code", num_args = 1.., value_name = "CODE")]
     codes: Vec<i64>,
+
+    /// 与 Python CLI 保持兼容的事件指令默认编码覆盖参数。
+    #[command(flatten)]
+    event_command_defaults: EventCommandDefaultCodeOverrideArgs,
 }
 
 /// `import-event-command-rules` 命令参数。
@@ -478,9 +482,27 @@ struct PrepareAgentWorkspaceCommand {
     #[arg(long = "code", num_args = 1.., value_name = "CODE")]
     codes: Vec<i64>,
 
+    /// 与 Python CLI 保持兼容的事件指令默认编码覆盖参数。
+    #[command(flatten)]
+    event_command_defaults: EventCommandDefaultCodeOverrideArgs,
+
     /// 输出机器可读 JSON。
     #[arg(long = "json")]
     json_output: bool,
+}
+
+/// 事件指令默认编码的通用配置覆盖参数。
+#[derive(Debug, Args)]
+struct EventCommandDefaultCodeOverrideArgs {
+    /// 临时覆盖 event_command_text.default_command_codes。
+    #[arg(long = "event-command-default-code", action = ArgAction::Append, num_args = 1.., value_name = "CODE")]
+    event_command_default_codes: Vec<i64>,
+}
+
+impl EventCommandDefaultCodeOverrideArgs {
+    fn into_codes(self) -> Option<Vec<i64>> {
+        (!self.event_command_default_codes.is_empty()).then_some(self.event_command_default_codes)
+    }
 }
 
 /// `validate-agent-workspace` 命令参数。
@@ -1461,20 +1483,25 @@ fn run_export_event_commands_json_command(
     registry: &GameRegistry,
     args: ExportEventCommandsJsonCommand,
 ) -> i32 {
-    let game_record = match resolve_target_game_record(registry, args.target) {
+    let ExportEventCommandsJsonCommand {
+        target,
+        output,
+        codes,
+        event_command_defaults,
+    } = args;
+    let game_record = match resolve_target_game_record(registry, target) {
         Ok(record) => record,
         Err(error) => {
             error!("命令执行失败：{}", error);
             return 1;
         }
     };
-    let cli_codes = if args.codes.is_empty() {
-        None
-    } else {
-        Some(args.codes)
-    };
+    let cli_codes = (!codes.is_empty()).then_some(codes);
+    let override_default_codes = event_command_defaults.into_codes();
     let default_codes = if cli_codes.is_some() {
         None
+    } else if override_default_codes.is_some() {
+        override_default_codes
     } else {
         match load_event_command_default_codes(None) {
             Ok(codes) => Some(codes),
@@ -1491,7 +1518,7 @@ fn run_export_event_commands_json_command(
             return 1;
         }
     };
-    match export_event_commands_json_file(&game_record.game_path, &args.output, &codes) {
+    match export_event_commands_json_file(&game_record.game_path, &output, &codes) {
         Ok(_count) => 0,
         Err(error) => {
             error!("命令执行失败：{}", error);
@@ -2072,43 +2099,55 @@ fn run_prepare_agent_workspace_command(
     registry: &GameRegistry,
     args: PrepareAgentWorkspaceCommand,
 ) -> i32 {
-    let game_record = match resolve_target_game_record(registry, args.target) {
+    let PrepareAgentWorkspaceCommand {
+        target,
+        output_dir,
+        codes,
+        event_command_defaults,
+        json_output,
+    } = args;
+    let game_record = match resolve_target_game_record(registry, target) {
         Ok(record) => record,
         Err(error) => {
             let report = workspace_invalid_report(error);
-            return emit_report(report, None, args.json_output, "Agent 工作区准备报告");
+            return emit_report(report, None, json_output, "Agent 工作区准备报告");
         }
     };
     let source_text_required_pattern = match load_source_text_required_pattern(None) {
         Ok(pattern) => pattern,
         Err(error) => {
             let report = workspace_invalid_report(error.to_string());
-            return emit_report(report, None, args.json_output, "Agent 工作区准备报告");
+            return emit_report(report, None, json_output, "Agent 工作区准备报告");
         }
     };
     let text_rule_options = match load_text_rule_options(None) {
         Ok(options) => options,
         Err(error) => {
             let report = workspace_invalid_report(error.to_string());
-            return emit_report(report, None, args.json_output, "Agent 工作区准备报告");
+            return emit_report(report, None, json_output, "Agent 工作区准备报告");
         }
     };
-    let default_codes = if args.codes.is_empty() {
-        match load_event_command_default_codes(None) {
-            Ok(codes) => Some(codes),
-            Err(error) => {
-                let report = workspace_invalid_report(error.to_string());
-                return emit_report(report, None, args.json_output, "Agent 工作区准备报告");
+    let override_default_codes = event_command_defaults.into_codes();
+    let default_codes = if codes.is_empty() {
+        if override_default_codes.is_some() {
+            override_default_codes
+        } else {
+            match load_event_command_default_codes(None) {
+                Ok(codes) => Some(codes),
+                Err(error) => {
+                    let report = workspace_invalid_report(error.to_string());
+                    return emit_report(report, None, json_output, "Agent 工作区准备报告");
+                }
             }
         }
     } else {
         None
     };
-    let command_codes = (!args.codes.is_empty()).then(|| args.codes.into_iter().collect());
+    let command_codes = (!codes.is_empty()).then(|| codes.into_iter().collect());
     let report = match prepare_agent_workspace(
         registry,
         &game_record,
-        &args.output_dir,
+        &output_dir,
         command_codes,
         default_codes,
         &source_text_required_pattern,
@@ -2117,7 +2156,7 @@ fn run_prepare_agent_workspace_command(
         Ok(report) => report,
         Err(error) => workspace_invalid_report(error.to_string()),
     };
-    emit_report(report, None, args.json_output, "Agent 工作区准备报告")
+    emit_report(report, None, json_output, "Agent 工作区准备报告")
 }
 
 fn run_validate_agent_workspace_command(
@@ -3510,5 +3549,63 @@ fn setup_logging(debug: bool, agent_mode: bool) {
         let _ = registry.with(file_layer).try_init();
     } else {
         let _ = registry.try_init();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_event_commands_accepts_default_code_override() {
+        let cli = Cli::try_parse_from([
+            "att-mz",
+            "export-event-commands-json",
+            "--game",
+            "测试游戏",
+            "--output",
+            "event-commands.json",
+            "--event-command-default-code",
+            "101",
+            "102",
+            "--event-command-default-code",
+            "357",
+        ])
+        .expect("CLI 参数应可解析");
+
+        let Commands::ExportEventCommandsJson(args) = cli.command else {
+            panic!("应解析为 export-event-commands-json 命令");
+        };
+        assert!(args.codes.is_empty());
+        assert_eq!(
+            args.event_command_defaults.event_command_default_codes,
+            vec![101, 102, 357]
+        );
+    }
+
+    #[test]
+    fn event_command_code_still_parses_with_default_code_override() {
+        let cli = Cli::try_parse_from([
+            "att-mz",
+            "prepare-agent-workspace",
+            "--game",
+            "测试游戏",
+            "--output-dir",
+            "workspace",
+            "--code",
+            "401",
+            "--event-command-default-code",
+            "357",
+        ])
+        .expect("CLI 参数应可解析");
+
+        let Commands::PrepareAgentWorkspace(args) = cli.command else {
+            panic!("应解析为 prepare-agent-workspace 命令");
+        };
+        assert_eq!(args.codes, vec![401]);
+        assert_eq!(
+            args.event_command_defaults.event_command_default_codes,
+            vec![357]
+        );
     }
 }

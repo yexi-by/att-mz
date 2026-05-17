@@ -42,7 +42,7 @@ $env:RPG_MAKER_TOOLS_LLM_BASE_URL = "<模型服务地址>"
 $env:RPG_MAKER_TOOLS_LLM_API_KEY = "<API_KEY>"
 ```
 
-如需透传额外请求参数，在 `setting.toml` 的 `[llm]` 下配置 `request_body_extra` 为 JSON 对象字符串，该对象会原样合并到 OpenAI 兼容 Chat Completions 请求体：
+如需透传额外请求参数，在 `setting.toml` 的 `[llm]` 下配置 `request_body_extra`。它可以写成 JSON 对象字符串，也可以写成 TOML 对象；最终对象会原样合并到 OpenAI 兼容 Chat Completions 请求体：
 
 ```toml
 [llm]
@@ -52,6 +52,12 @@ request_body_extra = '''
   "thinking": {"type": "enabled"}
 }
 '''
+```
+
+```toml
+[llm.request_body_extra]
+reasoning_effort = "high"
+thinking = { type = "enabled" }
 ```
 
 当前流程依赖完整模型 JSON 响应来判断译文保存结果，配置 `stream=true` 或 `stream_options` 会直接报错。
