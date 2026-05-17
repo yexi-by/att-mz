@@ -1,7 +1,7 @@
 """
 配置加载工具模块。
 
-默认读取项目根目录下的 `setting.toml`，注入正文翻译提示词，并输出
+默认读取应用运行目录下的 `setting.toml`，注入正文翻译提示词，并输出
 适合排障的中文配置摘要。配置编辑通过直接修改 TOML 完成。
 """
 
@@ -18,6 +18,7 @@ from app.config.environment import (
 from app.config.overrides import SettingOverrides, apply_setting_overrides
 from app.config.schemas import Setting
 from app.observability.logging import logger
+from app.runtime_paths import resolve_app_path
 
 DEFAULT_SETTING_FILE_NAME = "setting.toml"
 
@@ -25,7 +26,7 @@ DEFAULT_SETTING_FILE_NAME = "setting.toml"
 def resolve_setting_path(setting_path: str | Path | None = None) -> Path:
     """解析 `setting.toml` 的绝对路径。"""
     if setting_path is None:
-        return Path(__file__).resolve().parents[2] / DEFAULT_SETTING_FILE_NAME
+        return resolve_app_path(DEFAULT_SETTING_FILE_NAME)
     return Path(setting_path).resolve()
 
 

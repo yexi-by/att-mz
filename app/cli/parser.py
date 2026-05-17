@@ -12,7 +12,7 @@ from app.cli.errors import CliArgumentParser
 
 def build_parser() -> argparse.ArgumentParser:
     """构建项目主命令行解析器。"""
-    parser = CliArgumentParser(description="RPG Maker 翻译工具命令行入口")
+    parser = CliArgumentParser(prog="att-mz", description="RPG Maker 翻译工具命令行入口")
     _ = parser.add_argument(
         "--debug",
         action="store_true",

@@ -8,6 +8,7 @@ from .repository import (
     TargetGameSession,
     build_db_path,
     ensure_db_directory,
+    resolve_default_db_directory,
 )
 
 __all__: list[str] = [
@@ -18,4 +19,5 @@ __all__: list[str] = [
     "TargetGameSession",
     "build_db_path",
     "ensure_db_directory",
+    "resolve_default_db_directory",
 ]

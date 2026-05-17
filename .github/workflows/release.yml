@@ -1,0 +1,96 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布标签，例如 v0.1.0"
+        required: true
+        type: string
+      prerelease:
+        description: "标记为预发布"
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: "创建为草稿"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Windows release
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "缺少发布标签"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "zip_name=att-mz-windows-x86_64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Install project dependencies
+        shell: pwsh
+        run: uv sync --locked --dev
+
+      - name: Type check
+        shell: pwsh
+        run: uv run basedpyright
+
+      - name: Test
+        shell: pwsh
+        run: uv run pytest
+
+      - name: Build release zip
+        shell: pwsh
+        run: uv run python scripts/build_release.py --zip-name "${{ steps.meta.outputs.zip_name }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.zip_name }}
+          path: dist/${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: A.T.T MZ ${{ steps.meta.outputs.tag }}
+          files: dist/${{ steps.meta.outputs.zip_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          generate_release_notes: true

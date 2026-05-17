@@ -28,8 +28,8 @@ from app.rmmz.text_rules import (
     ensure_json_array,
     ensure_json_object,
 )
+from app.runtime_paths import resolve_app_home_path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FONTS_DIRECTORY_NAME = "fonts"
 GAMEFONT_CSS_FILE_NAME = "gamefont.css"
 GAMEFONT_CSS_ORIGIN_FILE_NAME = "gamefont_origin.css"
@@ -127,10 +127,7 @@ def apply_font_replacement(
 
 def resolve_replacement_font_path(font_path_text: str) -> Path:
     """解析配置中的字体路径。"""
-    font_path = Path(font_path_text)
-    if not font_path.is_absolute():
-        font_path = PROJECT_ROOT / font_path
-    resolved_path = font_path.resolve()
+    resolved_path = resolve_app_home_path(font_path_text)
     if not resolved_path.exists():
         raise FileNotFoundError(f"替换字体文件不存在: {resolved_path}")
     if not resolved_path.is_file():

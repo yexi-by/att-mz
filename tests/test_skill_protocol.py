@@ -269,6 +269,106 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
         assert phrase not in combined_text
 
 
+def test_release_skill_uses_packaged_cli_contract() -> None:
+    """发行版 Skill 必须使用随包 exe，不能泄漏源码运行协议。"""
+    text = (ROOT / "skills" / "att-mz-release" / "SKILL.md").read_text(encoding="utf-8")
+
+    required_phrases = [
+        "att-mz.exe",
+        "不要读取项目源码",
+        "不要运行 `uv run python main.py`",
+        "不得直接 `import app...`",
+        "`.\u005catt-mz.exe --agent-mode <命令> ...`",
+        "`.\u005catt-mz.exe --agent-mode doctor --no-check-llm --json`",
+        "`.\u005catt-mz.exe --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json`",
+        "不直接修改数据库",
+        "必须启用子代理并行处理",
+        "子代理轮次固定为两轮",
+        "### 第一轮：术语候选",
+        "### 第二轮：三类外部规则",
+        "### 命令 I/O 合约",
+        "### 工作区 JSON 格式契约",
+        "第二轮子代理任务契约",
+        "`quality-report --json` 有错误时禁止写进游戏文件",
+        "普通写回不会覆盖字体",
+        "每轮修复都必须重新运行质量检查报告",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+    forbidden_phrases = [
+        "uv run python main.py --agent-mode",
+        "uv sync",
+        "maturin develop",
+        "必须读取项目源码",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in text
+
+
+def test_skill_names_match_source_folders() -> None:
+    """源码中的 Skill 名称必须和所在文件夹名一致。"""
+    for folder_name in ("att-mz", "att-mz-release"):
+        skill_text = (ROOT / "skills" / folder_name / "SKILL.md").read_text(encoding="utf-8")
+        assert f"name: {folder_name}" in skill_text.split("---", 2)[1]
+
+
+def test_release_skill_keeps_development_skill_structure() -> None:
+    """发行版 Skill 必须保留开发版完整章节结构，只替换运行入口。"""
+    dev_text = (ROOT / "skills" / "att-mz" / "SKILL.md").read_text(encoding="utf-8")
+    release_text = (ROOT / "skills" / "att-mz-release" / "SKILL.md").read_text(encoding="utf-8")
+    dev_headings = [line for line in dev_text.splitlines() if line.startswith("#")]
+    release_headings = [line for line in release_text.splitlines() if line.startswith("#")]
+
+    assert release_headings[0] == "# A.T.T MZ 发行版 Skill"
+    assert release_headings[1:] == dev_headings[1:]
+
+
+def test_release_skill_directory_contains_required_references() -> None:
+    """发行版 Skill 目录必须和开发版一样带上按需参考资料。"""
+    dev_reference = ROOT / "skills" / "att-mz" / "references" / "rpg-maker-mv-mz-world-knowledge.md"
+    release_reference = ROOT / "skills" / "att-mz-release" / "references" / "rpg-maker-mv-mz-world-knowledge.md"
+
+    assert release_reference.exists()
+    assert release_reference.read_text(encoding="utf-8") == dev_reference.read_text(encoding="utf-8")
+
+
+def test_project_rules_require_github_workflow_releases_and_skill_sync() -> None:
+    """项目规范必须固定 GitHub 工作流发布和双 Skill 同步更新。"""
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    required_phrases = [
+        "每次修改开发版 Skill 时，必须同步审查并更新发行版 Skill",
+        "打包脚本必须把 `skills/att-mz-release/SKILL.md` 转换为发行包内的 `skills/att-mz/SKILL.md`",
+        "每次正式发布发行版必须使用 GitHub Actions `release` 工作流生成并发布 ZIP",
+        "禁止在本机手工打包后直接上传 GitHub Release",
+        "本机只能提供源码改动、提交和工作流触发",
+        "发行版验收必须由 GitHub Actions 发布工作流执行",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+
+def test_release_packaging_script_uses_release_skill_template() -> None:
+    """发布脚本必须把发行版 Skill 作为发行包内的 att-mz Skill。"""
+    text = (ROOT / "scripts" / "build_release.py").read_text(encoding="utf-8")
+
+    required_phrases = [
+        "RELEASE_SKILL_SOURCE",
+        '"att-mz-release" / "SKILL.md"',
+        '"att-mz-release" / "references"',
+        "copy_packaged_release_skill",
+        '"name: att-mz-release", "name: att-mz"',
+        '"skills" / "att-mz" / "SKILL.md"',
+        "att-mz-windows-x86_64.zip",
+        "ensure_github_actions_environment",
+        "GITHUB_ACTIONS",
+        "发行版构建只能在 GitHub Actions release 工作流中执行",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+
 def test_text_translation_prompt_keeps_protocol_minimal() -> None:
     """正文翻译提示词只说明可见任务，不解释项目内部保护机制。"""
     text = (ROOT / "prompts" / "text_translation_system.md").read_text(encoding="utf-8")

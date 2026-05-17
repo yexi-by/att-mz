@@ -27,7 +27,8 @@ app/_native*.pdb
 
 # Runtime logs and generated scripts
 logs/
-scripts/
+scripts/*
+!scripts/build_release.py
 
 
 

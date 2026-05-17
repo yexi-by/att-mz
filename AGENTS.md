@@ -123,6 +123,17 @@
 - Skill 中的命令流程必须写清前置条件、成功判断、什么情况不能继续，以及失败后的下一步。`--json` 输出的 `status=error` 表示当前阶段不能继续，不能进入后续阶段。
 - 如果现有 Skill 无法让代理在不能阅读源码的条件下独立执行任务，应优先完善 Skill、CLI 输出或工作区说明，而不是要求代理读取源码补全理解。
 
+## 8.1 发行版 Skill 与发布规范
+
+- 源码开发任务使用 `skills/att-mz/SKILL.md`，发行版翻译任务使用 `skills/att-mz-release/SKILL.md` 作为模板；两个 Skill 的 frontmatter `name` 必须分别匹配各自文件夹名。
+- 每次修改开发版 Skill 时，必须同步审查并更新发行版 Skill；发行版 Skill 必须使用 `.\att-mz.exe --agent-mode ...` 命令，不得要求用户安装 Python、Rust、uv 或读取项目源码。
+- 每次修改发行版 Skill 时，也必须审查开发版 Skill 是否需要同步更新，避免两套任务协议语义漂移。
+- 打包脚本必须把 `skills/att-mz-release/SKILL.md` 转换为发行包内的 `skills/att-mz/SKILL.md`，并把发行包内 frontmatter `name` 写成 `att-mz`；不得把开发版 Skill 原样放入发行包。
+- 发行包不得包含源码数据库、历史日志、测试目录、Python 源码目录或 Rust 源码目录；只包含可执行文件、配置模板、README、许可证、字体、提示词、发行版 Skill、必要参考资料和空的数据/日志/输出目录。
+- 每次正式发布发行版必须使用 GitHub Actions `release` 工作流生成并发布 ZIP，禁止在本机手工打包后直接上传 GitHub Release。
+- 发行版构建脚本必须默认只允许在 GitHub Actions 环境中执行；本机只能提供源码改动、提交和工作流触发，不能作为发行版构建、压缩、冒烟测试或验收环境。
+- 发行版验收必须由 GitHub Actions 发布工作流执行 `uv run basedpyright`、`uv run pytest`、发行包构建和发行包冒烟测试。
+
 ## 9. 交付检查
 
 - 面向用户的文档、说明、示例命令、提示词模板和交付报告必须使用抽象占位符表达路径、游戏标题、临时目录和样例数据。

@@ -33,6 +33,7 @@ from app.rmmz.schema import (
 )
 from app.rmmz.loader import read_game_title, resolve_game_directory, resolve_game_layout
 from app.observability.logging import logger
+from app.runtime_paths import resolve_app_path
 
 from .rows import (
     decode_string_list,
@@ -111,23 +112,30 @@ from .sql import (
     UPSERT_TRANSLATION_RUN,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DB_DIRECTORY = PROJECT_ROOT / "data" / "db"
+DB_DIRECTORY = resolve_app_path("data", "db")
 INVALID_FILE_NAME_CHARS = set('<>:"/\\|?*')
 
 
-def ensure_db_directory(db_directory: Path = DB_DIRECTORY) -> None:
+def resolve_default_db_directory() -> Path:
+    """解析默认多游戏数据库目录。"""
+    return resolve_app_path("data", "db")
+
+
+def ensure_db_directory(db_directory: Path | None = None) -> Path:
     """确保固定数据库目录存在。"""
-    db_directory.mkdir(parents=True, exist_ok=True)
+    resolved_db_directory = db_directory if db_directory is not None else resolve_default_db_directory()
+    resolved_db_directory.mkdir(parents=True, exist_ok=True)
+    return resolved_db_directory
 
 
-def build_db_path(game_title: str, db_directory: Path = DB_DIRECTORY) -> Path:
+def build_db_path(game_title: str, db_directory: Path | None = None) -> Path:
     """根据游戏标题生成固定数据库路径。"""
     invalid_chars = sorted({char for char in game_title if char in INVALID_FILE_NAME_CHARS})
     if invalid_chars:
         joined_chars = "".join(invalid_chars)
         raise ValueError(f"游戏标题包含非法文件名字，无法创建数据库: {joined_chars}")
-    return db_directory / f"{game_title}.db"
+    resolved_db_directory = db_directory if db_directory is not None else resolve_default_db_directory()
+    return resolved_db_directory / f"{game_title}.db"
 
 
 async def open_connection(db_path: Path) -> aiosqlite.Connection:
@@ -255,13 +263,13 @@ class GameRecord:
 class GameRegistry:
     """游戏注册表，负责发现、注册和打开目标游戏数据库。"""
 
-    def __init__(self, db_directory: Path = DB_DIRECTORY) -> None:
+    def __init__(self, db_directory: Path | None = None) -> None:
         """初始化注册表。"""
-        self.db_directory: Path = db_directory
+        self.db_directory: Path = db_directory if db_directory is not None else resolve_default_db_directory()
 
     async def list_games(self) -> list[GameRecord]:
         """扫描数据库目录并读取每个数据库的元数据。"""
-        ensure_db_directory(self.db_directory)
+        _ = ensure_db_directory(self.db_directory)
         records: list[GameRecord] = []
         for db_path in sorted(self.db_directory.glob("*.db")):
             connection = await open_connection(db_path)
@@ -284,7 +292,7 @@ class GameRegistry:
 
     async def register_game(self, game_path: str | Path) -> GameRecord:
         """创建或更新单个游戏数据库绑定。"""
-        ensure_db_directory(self.db_directory)
+        _ = ensure_db_directory(self.db_directory)
         resolved_game_path = resolve_game_directory(game_path)
         layout = resolve_game_layout(resolved_game_path)
         game_title = read_game_title(resolved_game_path)
@@ -329,7 +337,7 @@ class GameRegistry:
 
     async def open_game(self, game_title: str) -> "TargetGameSession":
         """打开目标游戏数据库，返回命令级会话。"""
-        ensure_db_directory(self.db_directory)
+        _ = ensure_db_directory(self.db_directory)
         db_path = build_db_path(game_title, self.db_directory)
         if not db_path.exists():
             raise ValueError(f"未找到游戏数据库: {game_title}")

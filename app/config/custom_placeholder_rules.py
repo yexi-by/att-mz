@@ -8,6 +8,7 @@ from typing import cast
 
 from app.rmmz.control_codes import CustomPlaceholderRule
 from app.rmmz.json_types import coerce_json_value, ensure_json_object
+from app.runtime_paths import resolve_app_path
 
 
 CUSTOM_PLACEHOLDER_RULES_FILE_NAME = "custom_placeholder_rules.json"
@@ -16,7 +17,7 @@ CUSTOM_PLACEHOLDER_RULES_FILE_NAME = "custom_placeholder_rules.json"
 def resolve_custom_placeholder_rules_path(base_dir: Path | None = None) -> Path:
     """解析自定义占位符规则文件路径。"""
     if base_dir is None:
-        return Path(__file__).resolve().parents[2] / CUSTOM_PLACEHOLDER_RULES_FILE_NAME
+        return resolve_app_path(CUSTOM_PLACEHOLDER_RULES_FILE_NAME)
     return base_dir.resolve() / CUSTOM_PLACEHOLDER_RULES_FILE_NAME
 
 

@@ -22,6 +22,7 @@ from app.agent_toolkit.placeholder_scan import (
 )
 from app.agent_toolkit.reports import AgentIssue, AgentReport, issue
 from app.application.file_writer import reset_writable_copies
+from app.application.font_replacement import resolve_replacement_font_path
 from app.config import SettingOverrides, load_custom_placeholder_rules_text
 from app.config.environment import load_environment_overrides
 from app.japanese_residual import (
@@ -67,6 +68,7 @@ from app.rmmz.schema import (
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object, ensure_json_string_list
 from app.rmmz.write_back import write_data_text
+from app.runtime_paths import resolve_app_path
 from app.translation.line_wrap import (
     normalize_translated_wrapping_punctuation,
     split_overwide_lines,
@@ -1899,8 +1901,11 @@ class AgentToolkitService:
                 if not placeholder_rules:
                     warnings.append(issue("placeholder_rules", "当前游戏尚未导入自定义占位符规则"))
                 font_path = setting.write_back.replacement_font_path
-                if font_path is not None and not Path(font_path).exists():
-                    warnings.append(issue("replacement_font", "配置的候选覆盖字体文件不存在"))
+                if font_path is not None:
+                    try:
+                        _ = resolve_replacement_font_path(font_path)
+                    except (FileNotFoundError, ValueError) as error:
+                        warnings.append(issue("replacement_font", f"配置的候选覆盖字体文件不可用: {error}"))
                 translation_data_map = await self._extract_active_translation_data_map(
                     session=session,
                     game_data=game_data,
@@ -1926,12 +1931,13 @@ class AgentToolkitService:
         db_dir = self.game_registry.db_directory
         db_dir_already_exists = db_dir.exists()
         try:
-            ensure_db_directory(db_dir)
+            _ = ensure_db_directory(db_dir)
             _append_check(details, "db_dir", "ok" if db_dir_already_exists else "created")
         except Exception as error:
             errors.append(issue("db_dir", f"数据库目录创建失败: {type(error).__name__}: {error}"))
-        if not Path("logs").exists():
-            Path("logs").mkdir(exist_ok=True)
+        logs_dir = resolve_app_path("logs")
+        if not logs_dir.exists():
+            _ = logs_dir.mkdir(exist_ok=True)
         try:
             encoding = sys.stdout.encoding or ""
             details["stdout_encoding"] = encoding

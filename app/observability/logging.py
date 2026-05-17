@@ -27,6 +27,8 @@ from rich.progress import (
 from rich.text import Text
 from rich.theme import Theme
 
+from app.runtime_paths import resolve_app_home_path
+
 if TYPE_CHECKING:
     from loguru import Record
 
@@ -44,7 +46,7 @@ RICH_TAG_PATTERN = re.compile(r"\[/?[A-Za-z0-9_.# =:/-]+\]")
 
 # --- 文件日志配置 ---
 ENABLE_FILE_LOG = True
-LOG_FILE_PATH = "logs/app.log"
+LOG_FILE_PATH = resolve_app_home_path(Path("logs") / "app.log")
 LOG_FILE_LEVEL = "DEBUG"
 LOG_ROTATION = "10 MB"
 LOG_RETENTION = "1 week"
@@ -172,12 +174,19 @@ def build_file_sink_format(record: Record) -> str:
     return f"{FILE_LOG_FORMAT}\n{{exception}}"
 
 
+def resolve_log_file_path(file_path: str | Path | None = None) -> Path:
+    """解析当前文件日志路径。"""
+    if file_path is None:
+        return resolve_app_home_path(Path("logs") / "app.log")
+    return resolve_app_home_path(file_path)
+
+
 def setup_logger(
     level: str = LOG_LEVEL,
     *,
     use_console: bool = True,
     agent_mode: bool = False,
-    file_path: str | Path = LOG_FILE_PATH,
+    file_path: str | Path | None = None,
     enqueue_file_log: bool = True,
 ) -> None:
     """
@@ -229,8 +238,10 @@ def setup_logger(
         )
 
     if ENABLE_FILE_LOG:
+        resolved_file_path = resolve_log_file_path(file_path)
+        resolved_file_path.parent.mkdir(parents=True, exist_ok=True)
         _ = logger.add(
-            file_path,
+            resolved_file_path,
             level=LOG_FILE_LEVEL,
             format=build_file_sink_format,
             rotation=LOG_ROTATION,
@@ -281,5 +292,6 @@ __all__ = [
     "console",
     "get_progress",
     "logger",
+    "resolve_log_file_path",
     "setup_logger",
 ]
