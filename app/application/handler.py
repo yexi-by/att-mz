@@ -738,7 +738,14 @@ class TranslationHandler:
             )
             plugin_item_count = len(translated_items) - data_item_count
             if translated_items:
-                write_data_text(game_data, translated_items, text_rules=text_rules)
+                write_data_text(
+                    game_data,
+                    translated_items,
+                    text_rules=text_rules,
+                    speaker_name_translations=(
+                        terminology_registry.speaker_names if terminology_registry is not None else None
+                    ),
+                )
                 if data_item_count:
                     advance_progress(data_item_count)
                 write_plugin_text(game_data, translated_items)
@@ -844,15 +851,20 @@ class TranslationHandler:
                 text_rules=text_rules,
                 translated_items=translated_items,
             )
-
-            reset_writable_copies(game_data)
-            if translated_items:
-                write_data_text(game_data, translated_items, text_rules=text_rules)
-                write_plugin_text(game_data, translated_items)
-
             registry = await session.read_terminology_registry()
             if registry is None:
                 raise RuntimeError("当前游戏数据库中没有已导入术语表，请先执行 import-terminology")
+
+            reset_writable_copies(game_data)
+            if translated_items:
+                write_data_text(
+                    game_data,
+                    translated_items,
+                    text_rules=text_rules,
+                    speaker_name_translations=registry.speaker_names,
+                )
+                write_plugin_text(game_data, translated_items)
+
             written_count = apply_terminology_translations(game_data, registry)
             set_progress(0, max(written_count, 1))
             advance_progress(written_count)

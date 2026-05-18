@@ -121,6 +121,14 @@ async def test_mv_data_extraction_reads_role_from_first_401(
                     {"code": 0, "parameters": []},
                 ],
             },
+            {
+                "id": 8,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["まだやるかい？掛け金はそのままだぜ？（掛け金\\V[48])"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
         ]
     )
     _rewrite_json(common_events_path, common_events)
@@ -135,12 +143,184 @@ async def test_mv_data_extraction_reads_role_from_first_401(
 
     assert items_by_path["CommonEvents.json/1/0"].role == "旁白"
     assert items_by_path["CommonEvents.json/2/0"].role == "案内人"
+    assert items_by_path["CommonEvents.json/2/0"].original_lines == ["こんにちは」"]
+    assert items_by_path["CommonEvents.json/2/0"].source_line_paths == ["CommonEvents.json/2/1"]
     assert items_by_path["CommonEvents.json/3/0"].role == "案内人"
-    assert items_by_path["CommonEvents.json/3/0"].original_lines == ["案内人：", "次の本文です"]
+    assert items_by_path["CommonEvents.json/3/0"].original_lines == ["次の本文です"]
+    assert items_by_path["CommonEvents.json/3/0"].source_line_paths == ["CommonEvents.json/3/2"]
     assert items_by_path["CommonEvents.json/4/0"].role == "MV勇者"
+    assert items_by_path["CommonEvents.json/4/0"].original_lines == ["役者の本文です"]
     assert items_by_path["CommonEvents.json/5/0"].role == "店員"
+    assert items_by_path["CommonEvents.json/5/0"].original_lines == ["いらっしゃいませ"]
     assert items_by_path["CommonEvents.json/6/0"].role == "旁白"
+    assert items_by_path["CommonEvents.json/6/0"].original_lines == ["\\n[1]:普通の本文です"]
     assert items_by_path["CommonEvents.json/7/0"].role == "案内人"
+    assert items_by_path["CommonEvents.json/7/0"].original_lines == ["第五参数を無視します」"]
+    assert items_by_path["CommonEvents.json/8/0"].role == "旁白"
+    assert items_by_path["CommonEvents.json/8/0"].original_lines == ["まだやるかい？掛け金はそのままだぜ？（掛け金\\V[48])"]
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_game_dir: Path) -> None:
+    """MV 写回用术语表译名重建虚拟名字框，正文只写剥离后的对白。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.extend(
+        [
+            {
+                "id": 2,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["案内人："]},
+                    {"code": 401, "parameters": ["次の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 3,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["案内人「こんにちは」"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 4,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["\\n<店員>いらっしゃいませ"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 5,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["\\N[1]:役者の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+        ]
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    game_data = await load_game_data(minimal_mv_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    items_by_path = {
+        item.location_path: item
+        for data in extracted.values()
+        for item in data.translation_items
+    }
+    items_by_path["CommonEvents.json/2/0"].translation_lines = ["你好"]
+    items_by_path["CommonEvents.json/3/0"].translation_lines = ["你好」"]
+    items_by_path["CommonEvents.json/4/0"].translation_lines = ["欢迎光临"]
+    items_by_path["CommonEvents.json/5/0"].translation_lines = ["勇者正文"]
+
+    reset_writable_copies(game_data)
+    write_data_text(
+        game_data,
+        [
+            items_by_path["CommonEvents.json/2/0"],
+            items_by_path["CommonEvents.json/3/0"],
+            items_by_path["CommonEvents.json/4/0"],
+            items_by_path["CommonEvents.json/5/0"],
+        ],
+        speaker_name_translations={"案内人": "向导", "店員": "店员", "MV勇者": "勇者"},
+    )
+
+    writable_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
+    standalone_commands = ensure_json_array(
+        ensure_json_object(writable_events[2], "CommonEvents[2]")["list"],
+        "CommonEvents[2].list",
+    )
+    inline_commands = ensure_json_array(
+        ensure_json_object(writable_events[3], "CommonEvents[3]")["list"],
+        "CommonEvents[3].list",
+    )
+    yep_commands = ensure_json_array(
+        ensure_json_object(writable_events[4], "CommonEvents[4]")["list"],
+        "CommonEvents[4].list",
+    )
+    actor_commands = ensure_json_array(
+        ensure_json_object(writable_events[5], "CommonEvents[5]")["list"],
+        "CommonEvents[5].list",
+    )
+
+    assert ensure_json_array(ensure_json_object(standalone_commands[1], "standalone.speaker")["parameters"], "standalone.speaker.parameters")[0] == "向导："
+    assert ensure_json_array(ensure_json_object(standalone_commands[2], "standalone.body")["parameters"], "standalone.body.parameters")[0] == "你好"
+    assert ensure_json_array(ensure_json_object(inline_commands[1], "inline.speaker")["parameters"], "inline.speaker.parameters")[0] == "向导「你好」"
+    assert ensure_json_array(ensure_json_object(yep_commands[1], "yep.speaker")["parameters"], "yep.speaker.parameters")[0] == "\\n<店员>欢迎光临"
+    assert ensure_json_array(ensure_json_object(actor_commands[1], "actor.speaker")["parameters"], "actor.speaker.parameters")[0] == "勇者：勇者正文"
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_name_box_write_back_requires_speaker_translation(minimal_mv_game_dir: Path) -> None:
+    """MV 虚拟名字框缺少说话人译名时禁止写回。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["案内人："]},
+                {"code": 401, "parameters": ["次の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    game_data = await load_game_data(minimal_mv_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    item = next(
+        candidate
+        for candidate in extracted["CommonEvents.json"].translation_items
+        if candidate.location_path == "CommonEvents.json/2/0"
+    )
+    item.translation_lines = ["你好"]
+
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError, match="缺少术语译名"):
+        write_data_text(game_data, [item], speaker_name_translations={})
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_name_box_write_back_rejects_legacy_speaker_line_paths(minimal_mv_game_dir: Path) -> None:
+    """旧 MV 译文如果还把独立说话人行当正文，写回时必须提示完整重置。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["案内人："]},
+                {"code": 401, "parameters": ["次の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    game_data = await load_game_data(minimal_mv_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    item = next(
+        candidate
+        for candidate in extracted["CommonEvents.json"].translation_items
+        if candidate.location_path == "CommonEvents.json/2/0"
+    )
+    legacy_item = item.model_copy(deep=True)
+    legacy_item.source_line_paths = ["CommonEvents.json/2/1", "CommonEvents.json/2/2"]
+    legacy_item.translation_lines = ["向导：", "你好"]
+
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError, match="reset-translations --all"):
+        write_data_text(
+            game_data,
+            [legacy_item],
+            speaker_name_translations={"案内人": "向导"},
+        )
 
 
 def test_empty_metadata_title_falls_back_to_game_directory_name(minimal_mv_game_dir: Path) -> None:

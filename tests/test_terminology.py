@@ -23,6 +23,7 @@ from app.terminology import (
     load_terminology_registry,
 )
 from app.terminology.extraction import build_speaker_sample_file_name
+from app.terminology.files import reserve_speaker_sample_file_name
 from app.translation import iter_translation_context_batches
 
 
@@ -137,11 +138,11 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
 
 
 @pytest.mark.asyncio
-async def test_mv_terminology_collects_401_speakers_without_write_back(
+async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """MV 从正文首行收集说话人术语，但不会写回 101 第五参数。"""
+    """MV 从正文首行收集说话人术语，并写回对应虚拟名字框。"""
     common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
     common_events = ensure_json_array(
         coerce_json_value(cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))),
@@ -202,8 +203,8 @@ async def test_mv_terminology_collects_401_speakers_without_write_back(
         for path in summary.speaker_context_dir.glob("*.json")
     ]
     contexts_by_name = {context.name: context.dialogue_lines for context in contexts}
-    assert contexts_by_name["案内人"] == ["案内人「こんにちは」"]
-    assert contexts_by_name["MV勇者"] == ["\\N[1]:", "役者の本文です"]
+    assert contexts_by_name["案内人"] == ["こんにちは」"]
+    assert contexts_by_name["MV勇者"] == ["役者の本文です"]
 
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     prompt_batches = list(
@@ -222,6 +223,8 @@ async def test_mv_terminology_collects_401_speakers_without_write_back(
     prompt_text = "\n".join(batch.messages[1].text for batch in prompt_batches)
     assert "role: MV勇者" in prompt_text
     assert "MV勇者 => 勇者" in prompt_text
+    assert "\\N[1]:" not in prompt_text
+    assert "案内人「こんにちは」" not in prompt_text
 
     reset_writable_copies(game_data)
     written_count = apply_terminology_translations(
@@ -229,13 +232,21 @@ async def test_mv_terminology_collects_401_speakers_without_write_back(
         TerminologyRegistry(speaker_names={"案内人": "向导", "MV勇者": "勇者"}),
     )
 
-    assert written_count == 0
+    assert written_count == 2
     current_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
     current_event = ensure_json_object(current_events[2], "CommonEvents[2]")
     current_commands = ensure_json_array(current_event["list"], "CommonEvents[2].list")
     name_command = ensure_json_object(current_commands[0], "CommonEvents[2].list[0]")
     parameters = ensure_json_array(name_command["parameters"], "CommonEvents[2].list[0].parameters")
     assert len(parameters) == 4
+    text_command = ensure_json_object(current_commands[1], "CommonEvents[2].list[1]")
+    text_parameters = ensure_json_array(text_command["parameters"], "CommonEvents[2].list[1].parameters")
+    assert text_parameters[0] == "向导「こんにちは」"
+    actor_event = ensure_json_object(current_events[3], "CommonEvents[3]")
+    actor_commands = ensure_json_array(actor_event["list"], "CommonEvents[3].list")
+    actor_text_command = ensure_json_object(actor_commands[1], "CommonEvents[3].list[1]")
+    actor_text_parameters = ensure_json_array(actor_text_command["parameters"], "CommonEvents[3].list[1].parameters")
+    assert actor_text_parameters[0] == "勇者："
 
 
 def test_speaker_sample_file_name_uses_readable_source_name() -> None:
@@ -243,6 +254,25 @@ def test_speaker_sample_file_name_uses_readable_source_name() -> None:
     assert build_speaker_sample_file_name("パティ") == "パティ.json"
     assert build_speaker_sample_file_name("A/B") == "A／B.json"
     assert build_speaker_sample_file_name("???") == "？？？.json"
+
+
+def test_speaker_sample_file_name_reserves_case_insensitive_unique_names() -> None:
+    """对白样本文件名在 Windows 等大小写不敏感文件系统上不能互相覆盖。"""
+    used_file_names: dict[str, str] = {}
+
+    first_name = reserve_speaker_sample_file_name(
+        preferred_file_name="Crimson_Blood_Succubus.json",
+        speaker_name="Crimson Blood Succubus",
+        used_file_names=used_file_names,
+    )
+    second_name = reserve_speaker_sample_file_name(
+        preferred_file_name="Crimson_Blood_succubus.json",
+        speaker_name="Crimson Blood succubus",
+        used_file_names=used_file_names,
+    )
+
+    assert first_name == "Crimson_Blood_Succubus.json"
+    assert second_name == "Crimson_Blood_succubus__2.json"
 
 
 def test_terminology_import_shape_validation_rejects_changed_keys() -> None:

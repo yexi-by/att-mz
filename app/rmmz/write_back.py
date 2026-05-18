@@ -18,6 +18,7 @@ from app.rmmz.schema import (
 )
 from app.rmmz.placeholder_guard import ensure_no_internal_placeholder_tokens
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, ensure_json_array, ensure_json_object
+from app.rmmz.speaker import MvVirtualSpeaker, parse_mv_virtual_speaker_line
 from app.rmmz.text_protocol import (
     decode_json_container_text,
     encode_json_container_like,
@@ -30,7 +31,12 @@ from app.translation.line_wrap import (
 )
 
 
-def write_data_text(game_data: GameData, items: list[TranslationItem], text_rules: TextRules | None = None) -> None:
+def write_data_text(
+    game_data: GameData,
+    items: list[TranslationItem],
+    text_rules: TextRules | None = None,
+    speaker_name_translations: dict[str, str] | None = None,
+) -> None:
     """将最终翻译文本写回 `data/` 目录游戏数据的内存副本。"""
     command_items: list[TranslationItem] = []
     for item in items:
@@ -54,7 +60,12 @@ def write_data_text(game_data: GameData, items: list[TranslationItem], text_rule
         _write_base_item(game_data=game_data, item=item, text_rules=text_rules)
 
     for item in sorted(command_items, key=_command_item_sort_key, reverse=True):
-        _write_command_item(game_data=game_data, item=item, text_rules=text_rules)
+        _write_command_item(
+            game_data=game_data,
+            item=item,
+            text_rules=text_rules,
+            speaker_name_translations=speaker_name_translations,
+        )
 
 
 def _command_item_sort_key(item: TranslationItem) -> tuple[str, tuple[int, ...], int]:
@@ -74,7 +85,12 @@ def _command_item_sort_key(item: TranslationItem) -> tuple[str, tuple[int, ...],
     raise ValueError(f"无法识别的事件定位路径: {anchor_path}")
 
 
-def _write_command_item(game_data: GameData, item: TranslationItem, text_rules: TextRules | None) -> None:
+def _write_command_item(
+    game_data: GameData,
+    item: TranslationItem,
+    text_rules: TextRules | None,
+    speaker_name_translations: dict[str, str] | None,
+) -> None:
     """将事件指令相关译文写回数据副本。"""
     commands, command_index = _locate_commands(
         writable_data=game_data.writable_data,
@@ -89,11 +105,11 @@ def _write_command_item(game_data: GameData, item: TranslationItem, text_rules: 
     if item.item_type == "long_text":
         command_code = command.get("code")
         if command_code == Code.NAME:
-            _write_line_commands_by_paths(
+            _write_name_text_item(
                 game_data=game_data,
                 item=item,
-                expected_code=Code.TEXT,
                 text_rules=text_rules,
+                speaker_name_translations=speaker_name_translations,
             )
             return
 
@@ -123,6 +139,98 @@ def _write_command_item(game_data: GameData, item: TranslationItem, text_rules: 
     raise ValueError(f"事件指令 item_type 无法处理: {item.item_type}")
 
 
+def _write_name_text_item(
+    *,
+    game_data: GameData,
+    item: TranslationItem,
+    text_rules: TextRules | None,
+    speaker_name_translations: dict[str, str] | None,
+) -> None:
+    """写回普通名字框后的长文本，MV 会先重建虚拟名字框。"""
+    if game_data.layout.engine_kind == "mv":
+        virtual_speaker = _find_mv_virtual_speaker_for_name_command(game_data=game_data, item=item)
+        if virtual_speaker is not None:
+            _write_mv_virtual_name_text_item(
+                game_data=game_data,
+                item=item,
+                text_rules=text_rules,
+                speaker_name_translations=speaker_name_translations,
+                virtual_speaker=virtual_speaker,
+            )
+            return
+
+    _write_line_commands_by_paths(
+        game_data=game_data,
+        item=item,
+        expected_code=Code.TEXT,
+        text_rules=text_rules,
+    )
+
+
+def _write_mv_virtual_name_text_item(
+    *,
+    game_data: GameData,
+    item: TranslationItem,
+    text_rules: TextRules | None,
+    speaker_name_translations: dict[str, str] | None,
+    virtual_speaker: tuple[str, MvVirtualSpeaker],
+) -> None:
+    """按 MV 虚拟名字框协议重建说话人行并写回剥离后的正文。"""
+    speaker_line_path, speaker = virtual_speaker
+    if not speaker.body_text and speaker_line_path in item.source_line_paths:
+        raise ValueError(
+            "当前 MV 译文仍包含说话人行，请先执行 reset-translations --all 后重新提取和翻译。"
+        )
+
+    translated_speaker = _read_mv_translated_speaker(
+        speaker_name_translations=speaker_name_translations,
+        source_speaker=speaker.speaker,
+        location_path=item.location_path,
+    )
+    translation_lines = _prepare_long_text_write_lines(item=item, text_rules=text_rules)
+    _ensure_mv_translation_body_is_clean(
+        source_speaker=speaker.speaker,
+        translated_speaker=translated_speaker,
+        translation_lines=translation_lines,
+        location_path=item.location_path,
+    )
+
+    if speaker.body_text:
+        if not translation_lines:
+            raise ValueError(f"MV 内联说话人正文缺少译文: {item.location_path}")
+        _write_text_command_first_parameter(
+            game_data=game_data,
+            source_line_path=speaker_line_path,
+            translated_text=speaker.render(
+                translated_speaker=translated_speaker,
+                translated_body=translation_lines[0],
+            ),
+        )
+        _write_prepared_line_commands_by_paths(
+            game_data=game_data,
+            item=item,
+            expected_code=Code.TEXT,
+            source_line_paths=item.source_line_paths[1:],
+            insertion_anchor_path=speaker_line_path,
+            translation_lines=translation_lines[1:],
+        )
+        return
+
+    _write_text_command_first_parameter(
+        game_data=game_data,
+        source_line_path=speaker_line_path,
+        translated_text=speaker.render(translated_speaker=translated_speaker),
+    )
+    _write_prepared_line_commands_by_paths(
+        game_data=game_data,
+        item=item,
+        expected_code=Code.TEXT,
+        source_line_paths=item.source_line_paths,
+        insertion_anchor_path=speaker_line_path,
+        translation_lines=translation_lines,
+    )
+
+
 def _write_line_commands_by_paths(
     *,
     game_data: GameData,
@@ -134,15 +242,35 @@ def _write_line_commands_by_paths(
     if not item.source_line_paths:
         raise ValueError(f"长文本缺少逐行写回路径: {item.location_path}")
 
-    existing_line_count = len(item.source_line_paths)
     translation_lines = _prepare_long_text_write_lines(
         item=item,
         text_rules=text_rules,
     )
+    _write_prepared_line_commands_by_paths(
+        game_data=game_data,
+        item=item,
+        expected_code=expected_code,
+        source_line_paths=item.source_line_paths,
+        insertion_anchor_path=item.source_line_paths[-1],
+        translation_lines=translation_lines,
+    )
+
+
+def _write_prepared_line_commands_by_paths(
+    *,
+    game_data: GameData,
+    item: TranslationItem,
+    expected_code: Code,
+    source_line_paths: list[str],
+    insertion_anchor_path: str,
+    translation_lines: list[str],
+) -> None:
+    """把已经预处理好的译文逐行写回指定事件指令路径。"""
+    existing_line_count = len(source_line_paths)
     write_line_count = min(existing_line_count, len(translation_lines))
 
     for source_line_path, translated_text in zip(
-        item.source_line_paths[:write_line_count],
+        source_line_paths[:write_line_count],
         translation_lines[:write_line_count],
         strict=True,
     ):
@@ -162,7 +290,7 @@ def _write_line_commands_by_paths(
             writable_data=game_data.writable_data,
             item=item,
             expected_code=expected_code,
-            surplus_source_line_paths=item.source_line_paths[len(translation_lines) :],
+            surplus_source_line_paths=source_line_paths[len(translation_lines) :],
         )
         return
 
@@ -174,6 +302,7 @@ def _write_line_commands_by_paths(
         writable_data=game_data.writable_data,
         item=item,
         expected_code=expected_code,
+        insertion_anchor_path=source_line_paths[-1] if source_line_paths else insertion_anchor_path,
         extra_lines=extra_lines,
     )
 
@@ -283,23 +412,126 @@ def _normalize_translation_lines_for_write(
     return text_rules.normalize_translation_lines(lines)
 
 
+def _find_mv_virtual_speaker_for_name_command(
+    *,
+    game_data: GameData,
+    item: TranslationItem,
+) -> tuple[str, MvVirtualSpeaker] | None:
+    """定位 MV `101` 后首条非空 `401` 中的虚拟名字框。"""
+    commands, command_index = _locate_commands(
+        writable_data=game_data.writable_data,
+        location_path=item.location_path,
+    )
+    next_index = command_index + 1
+    while next_index < len(commands):
+        command = ensure_json_object(commands[next_index], _command_path_from_index(item.location_path, next_index))
+        if command.get("code") != Code.TEXT:
+            break
+        text = _read_first_parameter_text(command)
+        if text is None or not text.strip():
+            next_index += 1
+            continue
+        virtual_speaker = parse_mv_virtual_speaker_line(text=text, game_data=game_data)
+        if virtual_speaker is None:
+            return None
+        return _command_path_from_index(item.location_path, next_index), virtual_speaker
+    return None
+
+
+def _command_path_from_index(location_path: str, command_index: int) -> str:
+    """用同一事件列表路径和新的指令下标生成定位路径。"""
+    parts = location_path.split("/")
+    parts[-1] = str(command_index)
+    return "/".join(parts)
+
+
+def _read_first_parameter_text(command: JsonObject) -> str | None:
+    """读取事件指令第一个字符串参数。"""
+    parameters = command.get("parameters")
+    if not isinstance(parameters, list) or not parameters:
+        return None
+    first_parameter = parameters[0]
+    if not isinstance(first_parameter, str):
+        return None
+    return first_parameter
+
+
+def _read_mv_translated_speaker(
+    *,
+    speaker_name_translations: dict[str, str] | None,
+    source_speaker: str,
+    location_path: str,
+) -> str:
+    """读取 MV 虚拟名字框说话人的术语译名，缺失时立即阻止写回。"""
+    if speaker_name_translations is None:
+        raise ValueError(f"MV 说话人 {source_speaker} 缺少术语译名，请先导入 speaker_names: {location_path}")
+    translated_speaker = speaker_name_translations.get(source_speaker, "").strip()
+    if not translated_speaker:
+        raise ValueError(f"MV 说话人 {source_speaker} 缺少术语译名，请先导入 speaker_names: {location_path}")
+    return translated_speaker
+
+
+def _ensure_mv_translation_body_is_clean(
+    *,
+    source_speaker: str,
+    translated_speaker: str,
+    translation_lines: list[str],
+    location_path: str,
+) -> None:
+    """阻止正文译文把虚拟名字框说话人再次塞进正文。"""
+    if not translation_lines:
+        return
+    first_line = translation_lines[0].strip()
+    forbidden_prefixes = (
+        f"{source_speaker}:",
+        f"{source_speaker}：",
+        f"{source_speaker}「",
+        f"{source_speaker}（",
+        f"{translated_speaker}:",
+        f"{translated_speaker}：",
+        f"{translated_speaker}「",
+        f"{translated_speaker}（",
+    )
+    if first_line.startswith(forbidden_prefixes):
+        raise ValueError(
+            f"MV 译文正文仍包含说话人前缀，请先执行 reset-translations --all 后重新翻译: {location_path}"
+        )
+
+
+def _write_text_command_first_parameter(
+    *,
+    game_data: GameData,
+    source_line_path: str,
+    translated_text: str,
+) -> None:
+    """定位指定 `401` 并写入第一个参数。"""
+    commands, command_index = _locate_commands(
+        writable_data=game_data.writable_data,
+        location_path=source_line_path,
+    )
+    target_command = ensure_json_object(commands[command_index], source_line_path)
+    if target_command.get("code") != Code.TEXT:
+        raise RuntimeError(f"虚拟名字框路径指向的指令类型错误: {source_line_path}")
+    _write_first_parameter(target_command, translated_text)
+
+
 def _insert_extra_line_commands(
     *,
     writable_data: dict[str, JsonValue],
     item: TranslationItem,
     expected_code: Code,
+    insertion_anchor_path: str,
     extra_lines: list[str],
 ) -> None:
     """把模型额外输出的长文本行插入原事件列表。"""
     _ensure_source_paths_share_command_list(item.source_line_paths, item.location_path)
-    last_source_path = item.source_line_paths[-1]
     command_array, command_index = _locate_command_array(
         writable_data=writable_data,
-        location_path=last_source_path,
+        location_path=insertion_anchor_path,
     )
-    base_command = ensure_json_object(command_array[command_index], last_source_path)
+    base_command = ensure_json_object(command_array[command_index], insertion_anchor_path)
     if base_command.get("code") != expected_code:
-        raise RuntimeError(f"额外行插入锚点指令类型错误: {last_source_path}")
+        raise RuntimeError(f"额外行插入锚点指令类型错误: {insertion_anchor_path}")
 
     for offset, translated_text in enumerate(extra_lines, start=1):
         command_array.insert(

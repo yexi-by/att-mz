@@ -4,7 +4,7 @@ import re
 
 from app.rmmz.game_data import BaseItem, EventCommand
 from app.rmmz.schema import Code, GameData
-from app.rmmz.speaker import parse_mv_speaker_from_first_text
+from app.rmmz.speaker import parse_mv_virtual_speaker_line
 
 from .schemas import (
     DatabaseTermContext,
@@ -214,19 +214,24 @@ class TerminologyExtraction:
             if command.code != Code.NAME:
                 continue
             lines = collect_following_dialogue_lines(commands, command_index)
-            first_line = first_non_empty_dialogue_line(lines)
-            if first_line is None:
+            first_line_index = first_non_empty_dialogue_line_index(lines)
+            if first_line_index is None:
                 continue
-            speaker_result = parse_mv_speaker_from_first_text(
-                text=first_line,
+            virtual_speaker = parse_mv_virtual_speaker_line(
+                text=lines[first_line_index],
                 game_data=self.game_data,
             )
-            if speaker_result is None:
+            if virtual_speaker is None:
                 continue
-            source_text = speaker_result.speaker
+            source_text = virtual_speaker.speaker
             if not is_translatable_terminology_source(source_text):
                 continue
-            dialogue_map.setdefault(source_text, []).extend(lines)
+            body_lines = _build_mv_virtual_speaker_context_lines(
+                lines=lines,
+                first_line_index=first_line_index,
+                first_body_text=virtual_speaker.body_text,
+            )
+            dialogue_map.setdefault(source_text, []).extend(body_lines)
 
 
 def build_speaker_sample_file_name(name: str) -> str:
@@ -310,6 +315,28 @@ def first_non_empty_dialogue_line(lines: list[str]) -> str | None:
     return None
 
 
+def first_non_empty_dialogue_line_index(lines: list[str]) -> int | None:
+    """读取连续对白中第一条非空文本的下标。"""
+    for index, line in enumerate(lines):
+        if line.strip():
+            return index
+    return None
+
+
+def _build_mv_virtual_speaker_context_lines(
+    *,
+    lines: list[str],
+    first_line_index: int,
+    first_body_text: str,
+) -> list[str]:
+    """剥离 MV 虚拟名字框后生成给术语 Agent 阅读的对白样本。"""
+    context_lines: list[str] = []
+    if first_body_text:
+        context_lines.append(first_body_text)
+    context_lines.extend(lines[first_line_index + 1 :])
+    return context_lines
+
+
 __all__: list[str] = [
     "ACTOR_NAME_CONTROL_PATTERN",
     "BASE_NAME_CATEGORIES",
@@ -321,6 +348,7 @@ __all__: list[str] = [
     "build_speaker_sample_file_name",
     "collect_following_dialogue_lines",
     "first_non_empty_dialogue_line",
+    "first_non_empty_dialogue_line_index",
     "is_translatable_terminology_source",
     "read_name_box_text",
 ]

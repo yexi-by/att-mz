@@ -64,13 +64,11 @@ async def export_terminology_artifacts(
     await write_glossary_json(glossary_path, TerminologyGlossary())
     sample_file_names: dict[str, str] = {}
     for context in speaker_contexts:
-        sample_file_name = build_speaker_sample_file_name(context.name)
-        previous_name = sample_file_names.get(sample_file_name)
-        if previous_name is not None and previous_name != context.name:
-            raise ValueError(
-                f"对白样本文件名冲突: {previous_name} / {context.name} -> {sample_file_name}"
+        sample_file_name = reserve_speaker_sample_file_name(
+            preferred_file_name=build_speaker_sample_file_name(context.name),
+            speaker_name=context.name,
+            used_file_names=sample_file_names,
         )
-        sample_file_names[sample_file_name] = context.name
         await write_speaker_context_json(sample_dir / sample_file_name, context)
 
     database_context_path = contexts_dir / DATABASE_CONTEXT_FILE_NAME
@@ -154,6 +152,29 @@ def sanitize_game_title_for_path(game_title: str) -> str:
     if normalized:
         return normalized
     return "untitled_game"
+
+
+def reserve_speaker_sample_file_name(
+    *,
+    preferred_file_name: str,
+    speaker_name: str,
+    used_file_names: dict[str, str],
+) -> str:
+    """为对白样本保留跨平台唯一文件名，避免大小写不敏感文件系统覆盖。"""
+    stem = Path(preferred_file_name).stem
+    suffix = Path(preferred_file_name).suffix
+    candidate = preferred_file_name
+    index = 2
+    while True:
+        key = candidate.casefold()
+        previous_speaker_name = used_file_names.get(key)
+        if previous_speaker_name is None:
+            used_file_names[key] = speaker_name
+            return candidate
+        if previous_speaker_name == speaker_name:
+            return candidate
+        candidate = f"{stem}__{index}{suffix}"
+        index += 1
 
 
 def validate_terms_json_category_keys(payload: Mapping[str, object], path: Path) -> None:

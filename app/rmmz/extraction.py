@@ -14,7 +14,7 @@ from app.rmmz.schema import (
     TranslationData,
     TranslationItem,
 )
-from app.rmmz.speaker import parse_mv_speaker_from_first_text
+from app.rmmz.speaker import parse_mv_virtual_speaker_line
 from app.rmmz.text_rules import TextRules
 from app.rmmz.commands import iter_all_commands
 
@@ -250,12 +250,15 @@ class DataTextExtraction:
                 and current_item.role == NARRATION_ROLE
                 and not current_item.original_lines
             ):
-                speaker_result = parse_mv_speaker_from_first_text(
+                virtual_speaker = parse_mv_virtual_speaker_line(
                     text=text,
                     game_data=self.game_data,
                 )
-                if speaker_result is not None:
-                    current_item.role = speaker_result.speaker
+                if virtual_speaker is not None:
+                    current_item.role = virtual_speaker.speaker
+                    if not virtual_speaker.body_text:
+                        return
+                    text = virtual_speaker.body_text
             current_item.original_lines.append(text)
             current_item.source_line_paths.append(location_path)
 
