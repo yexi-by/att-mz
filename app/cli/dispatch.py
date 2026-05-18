@@ -29,14 +29,17 @@ from app.cli.commands.rules import (
 )
 from app.cli.commands.terminology import run_export_terminology_command, run_import_terminology_command
 from app.cli.commands.translation import (
+    run_audit_coverage_command,
     run_export_pending_translations_command,
     run_export_quality_fix_template_command,
-    run_export_untranslated_translations_command,
     run_import_manual_translations_command,
     run_quality_report_command,
     run_reset_translations_command,
+    run_scan_plugin_source_text_command,
+    run_text_scope_command,
     run_translate_command,
     run_translation_status_command,
+    run_verify_feedback_text_command,
 )
 from app.cli.commands.workspace import (
     run_cleanup_agent_workspace_command,
@@ -74,8 +77,11 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "validate-agent-workspace": run_validate_agent_workspace_command,
     "cleanup-agent-workspace": run_cleanup_agent_workspace_command,
     "quality-report": run_quality_report_command,
+    "text-scope": run_text_scope_command,
+    "audit-coverage": run_audit_coverage_command,
+    "verify-feedback-text": run_verify_feedback_text_command,
+    "scan-plugin-source-text": run_scan_plugin_source_text_command,
     "export-pending-translations": run_export_pending_translations_command,
-    "export-untranslated-translations": run_export_untranslated_translations_command,
     "export-quality-fix-template": run_export_quality_fix_template_command,
     "import-manual-translations": run_import_manual_translations_command,
     "reset-translations": run_reset_translations_command,

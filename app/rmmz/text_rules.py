@@ -282,9 +282,21 @@ class TextRules:
             return True
         if re.search(r"\.(?:png|jpe?g|webp|gif|ogg|m4a|mp3|wav|webm|json|js|css|html|ttf|otf|woff2?|rpgmvp|rpgmvo|rpgmvm)$", lowered_text):
             return True
-        if re.search(r"[$;{}]|=>|\b(?:var|let|const|function|return|this|console|math)\b", lowered_text):
+        if self._looks_like_english_script_punctuation(stripped_text):
             return True
-        if re.search(r"[+\-*/<>=]=?|&&|\|\|", stripped_text) and not re.search(r"\s[A-Za-z]{2,}\s", stripped_text):
+        if re.search(r"\bthis\s*(?:\.[A-Za-z_$]|\[)", stripped_text, flags=re.IGNORECASE):
+            return True
+        if re.search(r"\b(?:console|math)\s*\.", stripped_text, flags=re.IGNORECASE):
+            return True
+        if re.search(r"\b(?:var|let|const)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=", stripped_text):
+            return True
+        if re.search(r"\bfunction(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(", stripped_text):
+            return True
+        if re.search(r"\breturn\b.*(?:[;=<>+\-*/]|\b(?:true|false|null|undefined)\b)", stripped_text):
+            return True
+        if re.search(r"\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+\s*\(", stripped_text):
+            return True
+        if re.search(r"[+\-*/<>=]=?|&&|\|\|", stripped_text) and len(re.findall(r"[A-Za-z]{2,}", stripped_text)) < 2:
             return True
         if re.fullmatch(r"[A-Za-z0-9_./\\:-]+", stripped_text):
             if re.search(r"\d", stripped_text) and not re.search(r"\s", stripped_text):
@@ -293,6 +305,29 @@ class TextRules:
                 return True
             if re.search(r"[a-z][A-Z]", stripped_text):
                 return True
+        return False
+
+    def _looks_like_english_script_punctuation(self, text: str) -> bool:
+        """只在符号呈现明确脚本结构时排除，避免误伤自然英文说明。"""
+        if re.search(r"\$\{[^}]+\}", text):
+            return True
+        if re.search(r"\$[A-Za-z_$][A-Za-z0-9_$]*(?:\s*(?:\.|\[|\())", text):
+            return True
+        if re.search(
+            r"(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>\s*(?:[{(]|[A-Za-z_$][A-Za-z0-9_$]*\s*[+*/<>=])",
+            text,
+        ):
+            return True
+        if re.search(
+            r"\{[^{}]*(?:\b(?:var|let|const|return|function|if|for|while)\b|[A-Za-z_$][A-Za-z0-9_$]*\s*:|[A-Za-z_$][A-Za-z0-9_$]*\s*=|;)[^{}]*\}",
+            text,
+        ):
+            return True
+        if re.search(
+            r"(?:\b(?:return|var|let|const|throw|break|continue)\b|[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]+\])*\s*(?:[-+*/]?=)|\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+\s*\([^)]*\))[^.;!?]*;",
+            text,
+        ):
+            return True
         return False
 
 

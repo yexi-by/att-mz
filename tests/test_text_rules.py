@@ -17,8 +17,9 @@ from app.rmmz.control_codes import (
     LITERAL_LINE_BREAK_PLACEHOLDER,
     REAL_LINE_BREAK_PLACEHOLDER,
 )
-from app.rmmz.schema import TranslationItem
+from app.rmmz.schema import SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import TextRules, get_default_text_rules
+from app.source_residual import SourceResidualRuleSet, check_source_residual_for_item
 from app.translation.text_structure import validate_translation_text_structure
 
 
@@ -165,10 +166,25 @@ def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> No
     assert rules.should_translate_source_text("Are you really going in there?")
     assert rules.should_translate_source_text("Open the old chest")
     assert rules.should_translate_source_text("Inventory")
+    assert rules.should_translate_source_text("With this rope...")
+    assert rules.should_translate_source_text("Command your nano-suit to inject this...")
+    assert rules.should_translate_source_text("Although it looks strange, this weapon works.")
+    assert rules.should_translate_source_text("Return to town")
+    assert rules.should_translate_source_text("Let me handle this.")
+    assert rules.should_translate_source_text("Pay $5 to enter.")
+    assert rules.should_translate_source_text("Go east; then open the gate.")
+    assert rules.should_translate_source_text("Use {item} to continue.")
+    assert rules.should_translate_source_text("Look => move")
     assert not rules.should_translate_source_text("img/pictures/Actor1.png")
     assert not rules.should_translate_source_text("audio/se/Decision1.ogg")
     assert not rules.should_translate_source_text("damageFormula")
     assert not rules.should_translate_source_text("a.hpRate() >= 0.5")
+    assert not rules.should_translate_source_text("this._window.visible = true")
+    assert not rules.should_translate_source_text("return a.hpRate() >= 0.5;")
+    assert not rules.should_translate_source_text("Math.max(a.atk, b.def)")
+    assert not rules.should_translate_source_text("$gameVariables.value(1)")
+    assert not rules.should_translate_source_text("const payload = {name: value};")
+    assert not rules.should_translate_source_text("(value) => value + 1")
     assert not rules.should_translate_source_text("true")
     assert not rules.should_translate_source_text("123")
 
@@ -197,6 +213,168 @@ def test_english_source_residual_allows_default_ui_abbreviations() -> None:
 
     rules.check_source_residual(["HP 恢复 10 点"])
     rules.check_source_residual(["OK"])
+
+
+def test_structural_source_residual_rule_only_masks_protocol_terms() -> None:
+    """结构性源文例外只放行协议词，显示文本仍会被残留检查拦截。"""
+    rules = get_default_text_rules()
+    rule_set = SourceResidualRuleSet.from_records(
+        [
+            SourceResidualRuleRecord(
+                rule_id="structural:0",
+                rule_type="structural",
+                pattern_text=r"^(?P<protocol>なまえ):(?P<visible>.*)$",
+                allowed_terms=["なまえ"],
+                check_group="visible",
+                reason="protocol_label",
+            )
+        ]
+    )
+    protocol_only_item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["なまえ:こんにちは"],
+        translation_lines=["なまえ:你好"],
+    )
+    leaked_visible_item = protocol_only_item.model_copy(
+        update={"translation_lines": ["なまえ:こんにちは"]}
+    )
+    leaked_allowed_term_in_visible_item = protocol_only_item.model_copy(
+        update={"translation_lines": ["なまえ:なまえ"]}
+    )
+    empty_visible_group_item = protocol_only_item.model_copy(
+        update={"translation_lines": ["なまえ:"]}
+    )
+
+    check_source_residual_for_item(
+        item=protocol_only_item,
+        text_rules=rules,
+        rule_set=rule_set,
+    )
+    with pytest.raises(ValueError, match="日文残留"):
+        check_source_residual_for_item(
+            item=leaked_visible_item,
+            text_rules=rules,
+            rule_set=rule_set,
+        )
+    with pytest.raises(ValueError, match="日文残留"):
+        check_source_residual_for_item(
+            item=leaked_allowed_term_in_visible_item,
+            text_rules=rules,
+            rule_set=rule_set,
+        )
+    with pytest.raises(ValueError, match="日文残留"):
+        check_source_residual_for_item(
+            item=empty_visible_group_item,
+            text_rules=rules,
+            rule_set=rule_set,
+        )
+
+
+def test_structural_source_residual_rule_respects_ignore_case() -> None:
+    """英文结构性协议词例外遵守源文残留大小写忽略配置。"""
+    rules = TextRules.from_setting(
+        TextRulesSetting(
+            source_language="en",
+            source_residual_label="英文",
+            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_residual_terms_ignore_case=True,
+        )
+    )
+    rule_set = SourceResidualRuleSet.from_records(
+        [
+            SourceResidualRuleRecord(
+                rule_id="structural:0",
+                rule_type="structural",
+                pattern_text=r"^(?P<protocol>label):(?P<visible>.*)$",
+                allowed_terms=["LABEL"],
+                check_group="visible",
+                reason="protocol_label",
+            )
+        ]
+    )
+    protocol_only_item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["LABEL:Hello"],
+        translation_lines=["label:你好"],
+    )
+    leaked_visible_item = protocol_only_item.model_copy(
+        update={"translation_lines": ["label:label"]}
+    )
+
+    check_source_residual_for_item(
+        item=protocol_only_item,
+        text_rules=rules,
+        rule_set=rule_set,
+    )
+    with pytest.raises(ValueError, match="英文残留"):
+        check_source_residual_for_item(
+            item=leaked_visible_item,
+            text_rules=rules,
+            rule_set=rule_set,
+        )
+
+
+def test_structural_source_residual_rule_rejects_corrupt_records() -> None:
+    """数据库里的损坏结构性例外规则不能被静默忽略。"""
+    with pytest.raises(ValueError, match="正则损坏"):
+        _ = SourceResidualRuleSet.from_records(
+            [
+                SourceResidualRuleRecord(
+                    rule_id="structural:broken",
+                    rule_type="structural",
+                    pattern_text="[",
+                    allowed_terms=["LABEL"],
+                    check_group="visible",
+                    reason="broken",
+                )
+            ]
+        )
+
+    with pytest.raises(ValueError, match="缺少命名分组"):
+        _ = SourceResidualRuleSet.from_records(
+            [
+                SourceResidualRuleRecord(
+                    rule_id="structural:missing_group",
+                    rule_type="structural",
+                    pattern_text=r"^(?P<protocol>label):(?P<visible>.*)$",
+                    allowed_terms=["LABEL"],
+                    check_group="missing",
+                    reason="broken",
+                )
+            ]
+        )
+
+
+def test_position_source_residual_rule_rejects_corrupt_records() -> None:
+    """数据库里的损坏位置例外规则不能被静默忽略。"""
+    with pytest.raises(ValueError, match="缺少内部位置"):
+        _ = SourceResidualRuleSet.from_records(
+            [
+                SourceResidualRuleRecord(
+                    rule_id="position:broken",
+                    rule_type="position",
+                    location_path="",
+                    allowed_terms=["Alice"],
+                    reason="broken",
+                )
+            ]
+        )
+
+    with pytest.raises(ValueError, match="缺少允许保留"):
+        _ = SourceResidualRuleSet.from_records(
+            [
+                SourceResidualRuleRecord(
+                    rule_id="position:broken",
+                    rule_type="position",
+                    location_path="Map001.json/1/0/0",
+                    allowed_terms=[],
+                    reason="broken",
+                )
+            ]
+        )
 
 
 def test_text_rules_keep_book_title_quote_during_extraction() -> None:

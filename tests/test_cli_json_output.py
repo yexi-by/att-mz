@@ -373,7 +373,7 @@ def test_partial_write_back_gate_only_blocks_saved_translation_risks() -> None:
     """标准名写回只拦截会写入游戏文件的危险译文。"""
     report = AgentReport.from_parts(
         errors=[
-            issue("pending_translations", "存在还没成功保存译文的文本"),
+            issue("coverage_missing_translation", "存在还没成功保存译文的文本"),
             issue("source_residual", "发现译文存在源文残留风险"),
             issue("text_structure", "发现译文改动了游戏文本结构"),
             issue("llm_failures", "模型运行存在故障"),
@@ -398,7 +398,7 @@ def test_partial_write_back_gate_only_blocks_saved_translation_risks() -> None:
         )
     }
 
-    assert full_gate_codes == {"pending_translations", "source_residual", "text_structure", "llm_failures"}
+    assert full_gate_codes == {"coverage_missing_translation", "source_residual", "text_structure", "llm_failures"}
     assert partial_gate_codes == {"source_residual", "text_structure"}
 
 
@@ -459,12 +459,12 @@ def test_json_progress_reports_to_stderr_without_polluting_stdout(
 
 
 def test_manual_translation_export_commands_are_black_box_friendly() -> None:
-    """人工补译导出命令同时支持全量入口和分批限制。"""
+    """人工补译导出命令用同一入口支持全量和分批限制。"""
     parser = build_parser()
 
     all_args = parser.parse_args(
         [
-            "export-untranslated-translations",
+            "export-pending-translations",
             "--game",
             "demo",
             "--output",
@@ -487,6 +487,7 @@ def test_manual_translation_export_commands_are_black_box_friendly() -> None:
 
     assert namespace_optional_str(all_args, "game") == "demo"
     assert namespace_optional_str(all_args, "output") == "pending-translations.json"
+    assert getattr(all_args, "limit") is None
     assert getattr(all_args, "json_output") is True
     assert namespace_optional_str(limited_args, "game") == "demo"
     assert getattr(limited_args, "limit") == 20

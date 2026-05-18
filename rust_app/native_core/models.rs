@@ -97,10 +97,14 @@ pub(crate) struct NativeCustomPlaceholderRule {
     pub(crate) placeholder_template: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NativeSourceResidualRule {
+    pub(crate) rule_id: String,
+    pub(crate) rule_type: String,
     pub(crate) location_path: String,
+    pub(crate) pattern_text: String,
     pub(crate) allowed_terms: Vec<String>,
+    pub(crate) check_group: String,
     pub(crate) reason: String,
 }
 

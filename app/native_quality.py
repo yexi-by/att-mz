@@ -62,8 +62,12 @@ def collect_native_quality_details(
         "text_rules": _build_text_rules_payload(text_rules),
         "source_residual_rules": [
             {
+                "rule_id": record.rule_id,
+                "rule_type": record.rule_type,
                 "location_path": record.location_path,
+                "pattern_text": record.pattern_text,
                 "allowed_terms": list(record.allowed_terms),
+                "check_group": record.check_group,
                 "reason": record.reason,
             }
             for record in source_residual_rules

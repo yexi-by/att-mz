@@ -190,29 +190,10 @@ async def run_import_placeholder_rules_command(args: argparse.Namespace) -> int:
     """执行 `import-placeholder-rules` 命令。"""
     game_title = await resolve_target_game_title(args)
     rules_text = await read_required_text_source_arg(args, "rules", "input")
-    try:
-        async with HandlerSession() as handler:
-            imported_rule_count = await handler.import_placeholder_rules(game_title=game_title, rules_text=rules_text)
-    except Exception as error:
-        if not read_bool_arg(args, "json_output"):
-            raise
-        report = AgentReport.from_parts(
-            errors=[issue("placeholder_rules_invalid", f"自定义占位符规则导入失败: {type(error).__name__}: {error}")],
-            warnings=[],
-            summary={"game": game_title},
-            details={},
-        )
-        write_report_outputs(report=report, args=args, title="自定义占位符规则导入报告")
-        return 1
-    if read_bool_arg(args, "json_output"):
-        report = AgentReport.from_parts(
-            errors=[],
-            warnings=[] if imported_rule_count else [issue("placeholder_rules_empty", "已导入空自定义占位符规则")],
-            summary={"game": game_title, "imported_rule_count": imported_rule_count},
-            details={},
-        )
-        write_report_outputs(report=report, args=args, title="自定义占位符规则导入报告")
-    return 0
+    service = AgentToolkitService()
+    report = await service.import_placeholder_rules(game_title=game_title, rules_text=rules_text)
+    write_report_outputs(report=report, args=args, title="自定义占位符规则导入报告")
+    return 1 if report.status == "error" else 0
 
 
 async def run_validate_plugin_rules_command(args: argparse.Namespace) -> int:

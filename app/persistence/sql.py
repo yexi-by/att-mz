@@ -46,8 +46,12 @@ CREATE_PLACEHOLDER_RULES_TABLE = f"""
 CREATE_SOURCE_RESIDUAL_RULES_TABLE = f"""
 --sql
     CREATE TABLE IF NOT EXISTS [{SOURCE_RESIDUAL_RULES_TABLE_NAME}] (
-        location_path TEXT PRIMARY KEY,
+        rule_id       TEXT PRIMARY KEY,
+        rule_type     TEXT NOT NULL,
+        location_path TEXT NOT NULL,
+        pattern_text  TEXT NOT NULL,
         allowed_terms TEXT NOT NULL,
+        check_group   TEXT NOT NULL,
         reason        TEXT NOT NULL
     )
 ;
@@ -326,8 +330,8 @@ INSERT_PLACEHOLDER_RULE = f"""
 INSERT_SOURCE_RESIDUAL_RULE = f"""
 --sql
     INSERT OR REPLACE INTO [{SOURCE_RESIDUAL_RULES_TABLE_NAME}]
-    (location_path, allowed_terms, reason)
-    VALUES (?, ?, ?)
+    (rule_id, rule_type, location_path, pattern_text, allowed_terms, check_group, reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -506,9 +510,9 @@ SELECT_PLACEHOLDER_RULES = f"""
 
 SELECT_SOURCE_RESIDUAL_RULES = f"""
 --sql
-    SELECT location_path, allowed_terms, reason
+    SELECT rule_id, rule_type, location_path, pattern_text, allowed_terms, check_group, reason
     FROM [{SOURCE_RESIDUAL_RULES_TABLE_NAME}]
-    ORDER BY location_path
+    ORDER BY rule_type, rule_id
 ;
 """
 

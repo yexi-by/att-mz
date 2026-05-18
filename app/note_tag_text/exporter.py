@@ -23,7 +23,7 @@ class NoteTagCandidateExport:
     details: JsonObject
 
     def to_json_payload(self) -> JsonObject:
-        """转换成与 AgentReport 兼容的 JSON 对象。"""
+        """转换成 AgentReport 使用的 JSON 对象。"""
         return {
             "status": "ok",
             "errors": [],

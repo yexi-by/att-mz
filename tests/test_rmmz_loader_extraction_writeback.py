@@ -202,6 +202,35 @@ async def test_english_visible_401_short_fragment_is_extracted(
 
 
 @pytest.mark.asyncio
+async def test_english_description_with_this_is_extracted(minimal_english_game_dir: Path) -> None:
+    """英文说明里的自然语言 this 不能被当作脚本协议噪音过滤。"""
+    items_path = minimal_english_game_dir / "data" / "Items.json"
+    items = ensure_json_array(_read_test_json(items_path), "Items.json")
+    item = ensure_json_object(items[1], "Items[1]")
+    item["description"] = "With this rope, you can cross the old bridge."
+    _rewrite_json(items_path, items)
+
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(
+            source_language="en",
+            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_text_exclusion_profile="english_protocol_noise",
+        )
+    )
+    game_data = await load_game_data(minimal_english_game_dir)
+    extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
+    items_by_path = {
+        item.location_path: item
+        for data in extracted.values()
+        for item in data.translation_items
+    }
+
+    assert items_by_path["Items.json/1/description"].original_lines == [
+        "With this rope, you can cross the old bridge."
+    ]
+
+
+@pytest.mark.asyncio
 async def test_write_back_keeps_english_visible_401_short_fragment(
     minimal_game_dir: Path,
     tmp_path: Path,

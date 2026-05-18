@@ -154,6 +154,39 @@ def build_parser() -> argparse.ArgumentParser:
     _ = quality_report_parser.add_argument("--output", help="写出 JSON 报告文件")
     _ = quality_report_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
+    text_scope_parser = subparsers.add_parser(
+        "text-scope",
+        help="输出当前游戏统一文本清单",
+    )
+    add_optional_target_arguments(text_scope_parser)
+    _ = text_scope_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = text_scope_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    audit_coverage_parser = subparsers.add_parser(
+        "audit-coverage",
+        help="审计规则命中、文本清单、已保存译文和写入范围是否一致",
+    )
+    add_optional_target_arguments(audit_coverage_parser)
+    _ = audit_coverage_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = audit_coverage_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    verify_feedback_parser = subparsers.add_parser(
+        "verify-feedback-text",
+        help="写入游戏文件后按反馈原文清单反查真实文件残留",
+    )
+    add_optional_target_arguments(verify_feedback_parser)
+    _ = verify_feedback_parser.add_argument("--input", required=True, help="反馈原文清单 JSON 文件")
+    _ = verify_feedback_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = verify_feedback_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    scan_plugin_source_parser = subparsers.add_parser(
+        "scan-plugin-source-text",
+        help="扫描插件源码硬编码文本候选，只输出候选不判断语义",
+    )
+    add_optional_target_arguments(scan_plugin_source_parser)
+    _ = scan_plugin_source_parser.add_argument("--output", required=True, help="插件源码候选 JSON 输出文件")
+    _ = scan_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
     export_pending_parser = subparsers.add_parser(
         "export-pending-translations",
         help="导出还没成功保存译文的正文条目；不传 --limit 时导出全部",
@@ -162,14 +195,6 @@ def build_parser() -> argparse.ArgumentParser:
     _ = export_pending_parser.add_argument("--output", required=True, help="手动填写译文表输出文件")
     _ = export_pending_parser.add_argument("--limit", type=int, help="最多导出的待填写条目数；省略则导出全部")
     _ = export_pending_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
-
-    export_untranslated_parser = subparsers.add_parser(
-        "export-untranslated-translations",
-        help="一次导出全部还没成功保存译文的正文原文结构，供 Agent 填写 translation_lines，也就是中文译文行",
-    )
-    add_optional_target_arguments(export_untranslated_parser)
-    _ = export_untranslated_parser.add_argument("--output", required=True, help="全部未翻译正文 JSON 输出文件")
-    _ = export_untranslated_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_quality_fix_parser = subparsers.add_parser(
         "export-quality-fix-template",

@@ -87,6 +87,9 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`references/rpg-maker-mv-mz-world-knowledge.md`",
         "翻译任务中，只按 CLI 输出、工作区 JSON、游戏目录和用户明确提供的信息判断",
         "所有业务数据进出只走 CLI、`<工作区>` JSON、CLI 已保存到当前游戏状态的规则和游戏目录文件",
+        "### 源码排障边界",
+        "工具排障任务允许阅读 A.T.T MZ 源码、测试和命令注册逻辑来定位原因",
+        "排障后若需要继续翻译，必须回到黑盒流程",
         "### 执行前需要知道什么",
         "RPG Maker MV/MZ",
         "不需要知道：源码、程序内部数据、模型提示词怎样生成、占位符怎样恢复",
@@ -107,14 +110,18 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`export-note-tag-candidates --game <游戏标题> --output <文件> --json`",
         "`validate-note-tag-rules --game <游戏标题> --input <规则文件> --json`",
         "`import-note-tag-rules --game <游戏标题> --input <规则文件> --json`",
+        "`text-scope --game <游戏标题> --json`",
+        "`audit-coverage --game <游戏标题> --json`",
         "`quality-report --game <游戏标题> --json`",
         "`export-quality-fix-template --game <游戏标题> --output <文件> --json`",
         "生成可填写的修复表",
-        "`export-untranslated-translations --game <游戏标题> --output <文件> --json`",
-        "一次导出全部还没成功保存译文的原文，生成可填写的译文表",
+        "`export-pending-translations --game <游戏标题> --output <文件> --json`",
+        "导出可填写的译文表",
         "不传 `--limit` 时导出全部",
         "`validate-source-residual-rules --game <游戏标题> --input <规则文件> --json`",
         "`import-source-residual-rules --game <游戏标题> --input <规则文件> --json`",
+        "`verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json`",
+        "`scan-plugin-source-text --game <游戏标题> --output <候选文件> --json`",
         "日文和英文游戏都使用通用源文残留命令",
         "禁止全局关闭源文残留检测",
         "`write-back --game <游戏标题> --json`",
@@ -129,7 +136,7 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "## 5. 试玩反馈迭代流程",
         "试玩反馈是正式翻译流程的一部分",
         "先向用户收集最小可定位信息",
-        "每轮反馈修复都必须走“导出可填写文件或规则文件 -> 修改 -> validate/import -> quality-report -> 用户确认是否再次写进游戏文件”的闭环",
+        "每轮反馈修复都必须走“反馈清单 -> 补规则或补译文 -> audit-coverage -> quality-report -> 用户确认是否再次写进游戏文件 -> verify-feedback-text”的闭环",
         "用户试玩反馈不是翻译失败本身",
         "把第一版可试玩汉化结果包装成“百分百完成”",
         "### 工作区 JSON 格式契约",
@@ -163,7 +170,10 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "完整重译不要手工导出全集路径",
         "已导入规则回填文件",
         "禁止用空 `translation_lines` 当重置信号",
-        "`source-residual-rules.json`：这是“允许保留源文的例外表”。顶层是 `{location_path: {allowed_terms, reason}}`",
+        "`source-residual-rules.json`：这是“允许保留源文的例外表”。顶层是 `{position_rules, structural_rules}`",
+        "`position_rules` 按文本在游戏里的内部位置放行",
+        "`structural_rules` 只能遮蔽协议词",
+        "显示文本仍会继续做分组源文残留检查",
         "`allowed_terms` 是允许原样保留的源语言片段字符串数组",
         "英文游戏默认允许少量 UI 缩写",
         "禁止在 `pending-translations.json` 内新增例外字段",
@@ -180,15 +190,16 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "第二轮子代理任务契约",
         "格式为 `{正则表达式: 占位符模板}`",
         "格式为 `[{plugin_index, plugin_name, paths}]`",
+        '正确输出: [{"plugin_index": 0, "plugin_name": "DemoPlugin", "paths": ["$[\'parameters\'][\'message\']", "$[\'parameters\'][\'entries\'][*][\'label\']"]}]',
         "主代理必须等待三类规则子代理全部完成",
         "三类外部规则全部导入后，主代理才能重新运行 `build-placeholder-rules`",
         "亲自审查、校验、覆盖扫描并导入占位符规则",
         "任一术语候选或规则子代理未完成、失败或校验未通过，或占位符规则未最终导入，不启动翻译",
-        "### 插件依赖文本型字符串的兼容策略",
+        "### 插件文本触发键处理契约",
         "项目层不阻止地图显示名、数据库名称、系统类型，以及 MZ 标准名字框等字段汉化",
         "必须主动检查插件或脚本是否把名字框、地图显示名、数据库名称、系统类型或其他文本型字符串当作功能触发键使用",
         "MV 说话人字段通常要从插件或文本规则里确认，不能默认补写 `101.parameters[4]`",
-        "建立“中文显示值 -> 原始触发值”的兼容映射",
+        "让“中文显示值 -> 原始触发值”的关系留在游戏侧",
         "不得把例外游戏逻辑写进 A.T.T MZ 项目核心",
         "### 子代理上下文包",
         "不要把大 JSON 正文塞进子代理 prompt",
@@ -256,6 +267,7 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "aliases",
         "别名",
         "格式为 `{插件名: [JSONPath, ...]}`",
+        '正确输出: {"DemoPlugin"',
         "对象格式，key 是插件名",
         "### 四类子代理任务契约",
         "主代理必须等待四类子代理全部完成",
@@ -275,6 +287,7 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "import-japanese-residual-rules",
         "默认 `ja`",
         "默认日文",
+        "`write-terminology` 等长任务",
     ]
     for phrase in forbidden_sample_phrases:
         assert phrase not in text
@@ -291,6 +304,7 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
         "唯一可写文件：`<工作区>/plugin-rules.json`",
         "格式为 `[{plugin_index, plugin_name, paths}]`",
         "`plugin_index` 必须是插件在 `plugins.json` 数组中的下标",
+        "该导出命令不提供 `--json` 摘要",
         "合法空结果是 `[]`",
         "JSONPath 必须使用括号路径语法",
         "validate-plugin-rules",
@@ -307,6 +321,7 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
         "MZ 工作区通常导出 `357` 插件命令",
         "唯一可写文件：`<工作区>/event-command-rules.json`",
         "格式为 `{指令编码字符串: [{match, paths}]}`",
+        "该导出命令不提供 `--json` 摘要",
         "`match` 的键必须是参数索引字符串",
         "没有过滤条件时，`match` 写 `{}`",
         "JSONPath 必须使用括号路径语法",
@@ -327,6 +342,46 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
     ]
     combined_text = plugin_text + event_text
     for phrase in forbidden_real_context_phrases:
+        assert phrase not in combined_text
+
+    forbidden_command_phrases = [
+        "export-plugins-json --json",
+        "export-event-commands-json --json",
+    ]
+    for phrase in forbidden_command_phrases:
+        assert phrase not in combined_text
+
+
+def test_documentation_uses_current_feedback_cli_names() -> None:
+    """文档和 Skill 不得保留已废弃的反馈闭环命令名。"""
+    checked_paths = [
+        ROOT / "README.md",
+        ROOT / "docs" / "advanced-usage.md",
+        ROOT / "docs" / "release-readme.md",
+        ROOT / "docs" / "feedback-iteration-repair-plan.md",
+        ROOT / "skills" / "att-mz" / "SKILL.md",
+        ROOT / "skills" / "att-mz-release" / "SKILL.md",
+    ]
+    combined_text = "\n".join(path.read_text(encoding="utf-8") for path in checked_paths)
+
+    required_phrases = [
+        "audit-coverage",
+        "verify-feedback-text",
+        "scan-plugin-source-text",
+        "export-terminology",
+        "write-terminology",
+        "不支持 `--json`",
+    ]
+    for phrase in required_phrases:
+        assert phrase in combined_text
+
+    forbidden_phrases = [
+        "audit-write-coverage",
+        "verify-written-files",
+        "`write-terminology` 等长任务",
+        "write-terminology` 等长任务",
+    ]
+    for phrase in forbidden_phrases:
         assert phrase not in combined_text
 
 
@@ -437,6 +492,8 @@ def test_release_skill_uses_packaged_cli_contract() -> None:
         "### 第二轮：三类外部规则",
         "### 命令 I/O 合约",
         "### 工作区 JSON 格式契约",
+        "### 源码排障边界",
+        "需要阅读或修改 A.T.T MZ 项目源码时，必须切换到源码仓库和开发版 Skill",
         "MV 的 `speaker_names` 是虚拟名字框说话人术语：由 CLI 从每个对话块首条非空 `401` 正文识别",
         "MV 的 `speaker_names` 虽然放在字段译名表里，但表示虚拟名字框说话人术语，只能写回对应 `401` 说话人行或名字标签",
         "第二轮子代理任务契约",

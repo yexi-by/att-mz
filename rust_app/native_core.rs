@@ -94,6 +94,68 @@ mod tests {
     }
 
     #[test]
+    fn quality_scan_rejects_unknown_source_residual_rule_type() {
+        let payload = json!({
+            "items": [],
+            "text_rules": english_text_rules(),
+            "source_residual_rules": [
+                {
+                    "rule_id": "broken:1",
+                    "rule_type": "legacy",
+                    "location_path": "Map001.json/1/0/0",
+                    "pattern_text": "",
+                    "allowed_terms": [],
+                    "check_group": "",
+                    "reason": "损坏测试"
+                }
+            ]
+        });
+        let error = scan_quality_impl(&payload.to_string()).expect_err("未知规则类型必须报错");
+        assert!(error.contains("源文保留规则类型无效"));
+    }
+
+    #[test]
+    fn quality_scan_rejects_corrupt_position_source_residual_rule() {
+        let missing_path_payload = json!({
+            "items": [],
+            "text_rules": english_text_rules(),
+            "source_residual_rules": [
+                {
+                    "rule_id": "position:missing_path",
+                    "rule_type": "position",
+                    "location_path": "",
+                    "pattern_text": "",
+                    "allowed_terms": ["Alice"],
+                    "check_group": "",
+                    "reason": "损坏测试"
+                }
+            ]
+        });
+        let missing_path_error = scan_quality_impl(&missing_path_payload.to_string())
+            .expect_err("位置规则缺少内部位置必须报错");
+        assert!(missing_path_error.contains("位置源文保留规则缺少内部位置"));
+
+        let empty_terms_payload = json!({
+            "items": [],
+            "text_rules": english_text_rules(),
+            "source_residual_rules": [
+                {
+                    "rule_id": "position:empty_terms",
+                    "rule_type": "position",
+                    "location_path": "Map001.json/1/0/0",
+                    "pattern_text": "",
+                    "allowed_terms": [],
+                    "check_group": "",
+                    "reason": "损坏测试"
+                }
+            ]
+        });
+        let empty_terms_error = scan_quality_impl(&empty_terms_payload.to_string())
+            .expect_err("位置规则缺少允许片段必须报错");
+        assert!(empty_terms_error.contains("位置源文保留规则缺少允许保留的源文片段"));
+    }
+
+    #[test]
     fn quality_scan_keeps_real_line_breaks_inside_short_text() {
         let payload = json!({
             "items": [

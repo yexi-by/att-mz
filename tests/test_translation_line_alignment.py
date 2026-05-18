@@ -13,7 +13,7 @@ from app.rmmz.control_codes import (
 )
 from app.rmmz.schema import ItemType, TranslationErrorItem, TranslationItem
 from app.rmmz.text_rules import TextRules
-from app.translation.line_wrap import (
+from app.rmmz.text_layout import (
     align_long_text_lines,
     count_line_width_chars,
     split_overwide_lines,

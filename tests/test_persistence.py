@@ -14,6 +14,7 @@ from app.rmmz.schema import (
     LlmFailureRecord,
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
+    SourceResidualRuleRecord,
     TranslationErrorItem,
     TranslationItem,
 )
@@ -135,6 +136,16 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         await session.replace_placeholder_rules([placeholder_rule])
         assert await session.read_placeholder_rules() == [placeholder_rule]
 
+        source_residual_rule = SourceResidualRuleRecord(
+            rule_id="position:Map001.json/1/0/0",
+            rule_type="position",
+            location_path="Map001.json/1/0/0",
+            allowed_terms=["Alice"],
+            reason="专名保留",
+        )
+        await session.replace_source_residual_rules([source_residual_rule])
+        assert await session.read_source_residual_rules() == [source_residual_rule]
+
         run_record = await session.start_translation_run(
             total_extracted=10,
             pending_count=4,
@@ -205,8 +216,35 @@ async def test_register_game_updates_source_language_setting(
 
 
 @pytest.mark.asyncio
+async def test_source_residual_rule_type_must_be_known(minimal_game_dir: Path, tmp_path: Path) -> None:
+    """数据库里的源文残留例外规则类型损坏时必须立刻报错。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            """
+            INSERT INTO source_residual_rules
+            (rule_id, rule_type, location_path, pattern_text, allowed_terms, check_group, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "broken:1",
+                "legacy",
+                "Map001.json/1/0/0",
+                "",
+                "[]",
+                "",
+                "损坏测试",
+            ),
+        )
+        await session.connection.commit()
+        with pytest.raises(RuntimeError, match="rule_type"):
+            _ = await session.read_source_residual_rules()
+
+
+@pytest.mark.asyncio
 async def test_open_game_requires_language_settings_without_creating_empty_table(tmp_path: Path) -> None:
-    """缺少语言设置的旧库会直接报错，运行时不会写入空语言表。"""
+    """缺少语言设置的数据库会直接报错，运行时不会写入空语言表。"""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
     db_path = db_dir / "Legacy.db"

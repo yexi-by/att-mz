@@ -35,12 +35,10 @@ from app.native_quality import (
 from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
 from app.plugin_text import (
     PluginTextExtraction,
-    build_plugin_hash,
     build_plugin_rule_records_from_import,
     export_plugins_json_file,
     parse_plugin_rule_import_text,
 )
-from app.rmmz import DataTextExtraction
 from app.rmmz.control_codes import (
     ControlSequenceSpan,
     CustomPlaceholderRule,
@@ -61,10 +59,12 @@ from app.rmmz.schema import (
     TranslationItem,
 )
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
+from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object, ensure_json_string_list
+from app.rmmz.loader import load_active_game_data
 from app.rmmz.write_back import write_data_text
 from app.runtime_paths import resolve_app_path
-from app.translation.line_wrap import (
+from app.rmmz.text_layout import (
     normalize_translated_wrapping_punctuation,
     split_overwide_lines,
 )
@@ -100,6 +100,13 @@ from app.source_residual import (
     build_source_residual_rule_records_from_import,
     check_source_residual_for_item,
     parse_source_residual_rule_import_text,
+)
+from app.text_scope import (
+    TextScopeEntry,
+    TextScopeResult,
+    TextScopeService,
+    collect_translation_data_paths,
+    read_fresh_plugin_text_rules,
 )
 
 type LlmCheckFunc = Callable[[LLMHandler, str], Awaitable[None]]
@@ -396,7 +403,18 @@ class AgentToolkitService:
         sample_details: JsonArray = []
         for sample_text in sample_texts:
             try:
-                sample_details.append(_preview_placeholder_sample(text_rules, sample_text))
+                sample_preview = _preview_placeholder_sample(text_rules, sample_text)
+                sample_details.append(sample_preview)
+                if _placeholder_preview_loses_visible_source_text(
+                    text_rules=text_rules,
+                    sample_preview=sample_preview,
+                ):
+                    errors.append(
+                        issue(
+                            "placeholder_rule_loses_translatable_text",
+                            "占位符规则把含源语言正文的样本文本整体遮蔽，模型将看不到需要翻译的内容",
+                        )
+                    )
             except Exception as error:
                 errors.append(
                     issue(
@@ -423,6 +441,218 @@ class AgentToolkitService:
             },
         )
 
+    async def import_placeholder_rules(self, *, game_title: str, rules_text: str) -> AgentReport:
+        """校验并导入当前游戏专用自定义占位符规则。"""
+        validation_report = await self.validate_placeholder_rules(
+            game_title=game_title,
+            custom_placeholder_rules_text=rules_text,
+            sample_texts=[],
+        )
+        if validation_report.errors:
+            return AgentReport.from_parts(
+                errors=validation_report.errors,
+                warnings=validation_report.warnings,
+                summary={
+                    "game": game_title,
+                    "imported_rule_count": 0,
+                    "validated_rule_count": validation_report.summary.get("rule_count", 0),
+                    "sample_count": validation_report.summary.get("sample_count", 0),
+                },
+                details={
+                    "validation": {
+                        "summary": validation_report.summary,
+                        "details": validation_report.details,
+                    }
+                },
+            )
+
+        custom_rules = load_custom_placeholder_rules_text(rules_text)
+        rule_records = [
+            PlaceholderRuleRecord(
+                pattern_text=rule.pattern_text,
+                placeholder_template=rule.placeholder_template,
+            )
+            for rule in custom_rules
+        ]
+        async with await self.game_registry.open_game(game_title) as session:
+            await session.replace_placeholder_rules(rule_records)
+        return AgentReport.from_parts(
+            errors=[],
+            warnings=validation_report.warnings
+            if rule_records
+            else [
+                *validation_report.warnings,
+                issue("placeholder_rules_empty", "已导入空自定义占位符规则"),
+            ],
+            summary={
+                "game": game_title,
+                "imported_rule_count": len(rule_records),
+                "validated_rule_count": validation_report.summary.get("rule_count", len(rule_records)),
+                "sample_count": validation_report.summary.get("sample_count", 0),
+            },
+            details={
+                "validation": {
+                    "summary": validation_report.summary,
+                    "details": validation_report.details,
+                }
+            },
+        )
+
+    async def text_scope(self, *, game_title: str) -> AgentReport:
+        """输出当前游戏统一文本清单。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            game_data = await self._load_game_data(session)
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+                translated_items=translated_items,
+            )
+        translated_paths = {item.location_path for item in translated_items}
+        inactive_entries = [
+            entry
+            for entry in scope.entries
+            if not entry.enters_translation
+        ]
+        unwritable_entries = scope.unwritable_entries
+        errors = _text_scope_blocking_errors(scope)
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=[],
+            summary={
+                "entry_count": len(scope.entries),
+                "extractable_count": len(scope.active_paths),
+                "translated_count": len(translated_paths & scope.active_paths),
+                "writable_count": len(scope.writable_paths),
+                "unwritable_count": len(unwritable_entries),
+                "inactive_rule_hit_count": len(inactive_entries),
+                "stale_plugin_rule_count": len(scope.stale_plugin_rules),
+                "write_back_probe_failed": bool(scope.write_back_probe_error),
+            },
+            details={
+                "entries": scope.entries_json(),
+                "unwritable_items": [entry.to_json_object() for entry in unwritable_entries],
+                "stale_plugin_rules": scope.stale_plugin_rules_json(),
+                "write_back_probe_error": scope.write_back_probe_error,
+            },
+        )
+
+    async def audit_coverage(self, *, game_title: str) -> AgentReport:
+        """审计规则命中、文本清单、已保存译文和写入范围是否一致。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            game_data = await self._load_game_data(session)
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+                translated_items=translated_items,
+            )
+        return _build_coverage_report(
+            scope=scope,
+            translated_items=translated_items,
+            text_rules=text_rules,
+        )
+
+    async def verify_feedback_text(self, *, game_title: str, input_path: Path) -> AgentReport:
+        """按反馈原文清单反查真实游戏文件中是否仍残留对应文本。"""
+        try:
+            feedback_texts = await _read_feedback_texts(input_path)
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[issue("feedback_text_file", f"反馈原文清单不可读: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={"input": str(input_path), "feedback_text_count": 0, "occurrence_count": 0},
+                details={},
+            )
+        async with await self.game_registry.open_game(game_title) as session:
+            game_data = await self._load_game_data(session)
+            active_game_data = await self._load_active_game_data(session)
+        occurrences = await _collect_feedback_text_occurrences(
+            game_data=active_game_data,
+            feedback_texts=feedback_texts,
+        )
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+                translated_items=translated_items,
+            )
+        classified_occurrences = _classify_feedback_occurrences(
+            occurrences=occurrences,
+            scope=scope,
+        )
+        gap_counts = _count_feedback_gap_types(classified_occurrences)
+        errors: list[AgentIssue] = []
+        if occurrences:
+            errors.append(issue("feedback_text_still_exists", f"真实游戏文件中仍存在 {len(occurrences)} 处反馈原文"))
+        if scope.stale_plugin_rules:
+            errors.append(issue("stale_plugin_rules", f"发现 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导出并导入插件规则"))
+        if scope.write_back_probe_error:
+            errors.append(issue("write_probe_failed", scope.write_back_probe_error))
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=[],
+            summary={
+                "input": str(input_path),
+                "feedback_text_count": len(feedback_texts),
+                "occurrence_count": len(occurrences),
+                "rule_gap_count": gap_counts.get("rule_gap", 0),
+                "translation_gap_count": gap_counts.get("translation_gap", 0),
+                "write_gap_count": gap_counts.get("write_gap", 0),
+                "plugin_source_hardcoded_count": gap_counts.get("plugin_source_hardcoded", 0),
+            },
+            details={
+                "occurrences": classified_occurrences,
+                "stale_plugin_rules": scope.stale_plugin_rules_json(),
+                "write_back_probe_error": scope.write_back_probe_error,
+            },
+        )
+
+    async def scan_plugin_source_text(self, *, game_title: str, output_path: Path) -> AgentReport:
+        """扫描插件源码中的硬编码文本候选，只输出候选不自动判断语义。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            game_data = await self._load_game_data(session)
+        candidates = await _collect_plugin_source_text_candidates(game_data.layout.js_dir)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(output_path, "w", encoding="utf-8") as file:
+            _ = await file.write(f"{json.dumps(candidates, ensure_ascii=False, indent=2)}\n")
+        warnings: list[AgentIssue] = []
+        if not candidates:
+            warnings.append(issue("plugin_source_text_empty", "没有扫描到插件源码硬编码文本候选"))
+        return AgentReport.from_parts(
+            errors=[],
+            warnings=warnings,
+            summary={
+                "candidate_count": len(candidates),
+                "output": str(output_path),
+            },
+            details={
+                "candidates": candidates[:50],
+            },
+        )
+
     async def export_quality_fix_template(
         self,
         *,
@@ -441,18 +671,19 @@ class AgentToolkitService:
                 custom_placeholder_rules=custom_rules,
             )
             game_data = await self._load_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
                 session=session,
                 game_data=game_data,
                 text_rules=text_rules,
+                translated_items=translated_items,
             )
+            blocking_errors = _text_scope_blocking_errors(scope)
             active_items = {
                 item.location_path: item
-                for translation_data in translation_data_map.values()
-                for item in translation_data.translation_items
+                for item in scope.active_items()
             }
-            active_paths = set(active_items)
-            translated_items = await session.read_translated_items()
+            active_paths = scope.writable_paths
             translated_by_path = {item.location_path: item for item in translated_items}
             translated_paths = set(translated_by_path)
             active_translated_items = [
@@ -465,20 +696,57 @@ class AgentToolkitService:
                 quality_error_items: list[TranslationErrorItem] = []
             else:
                 quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
-            source_residual_rule_set = SourceResidualRuleSet.from_records(
-                await session.read_source_residual_rules()
-            )
+            source_residual_rules = await session.read_source_residual_rules()
 
+        if blocking_errors:
+            return AgentReport.from_parts(
+                errors=blocking_errors,
+                warnings=[],
+                summary={
+                    "exported_count": 0,
+                    "output": str(output_path),
+                    "quality_error_count": 0,
+                    "source_residual_count": 0,
+                    "text_structure_count": 0,
+                    "placeholder_risk_count": 0,
+                    "overwide_line_count": 0,
+                    "write_back_protocol_count": 0,
+                },
+                details={
+                    "coverage": {
+                        "stale_plugin_rules": scope.stale_plugin_rules_json(),
+                        "write_back_probe_error": scope.write_back_probe_error,
+                        "unwritable_items": [entry.to_json_object() for entry in scope.unwritable_entries],
+                    }
+                },
+            )
         pending_paths = active_paths - translated_paths
         quality_error_items = [
             item
             for item in quality_error_items
             if item.location_path in pending_paths
         ]
+        source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules)
+        if source_residual_rule_errors:
+            return AgentReport.from_parts(
+                errors=source_residual_rule_errors,
+                warnings=[],
+                summary={
+                    "exported_count": 0,
+                    "output": str(output_path),
+                    "quality_error_count": len(quality_error_items),
+                    "source_residual_count": 0,
+                    "text_structure_count": 0,
+                    "placeholder_risk_count": 0,
+                    "overwide_line_count": 0,
+                    "write_back_protocol_count": 0,
+                },
+                details={},
+            )
         native_quality_details = collect_native_quality_details(
             items=active_translated_items,
             text_rules=text_rules,
-            source_residual_rules=list(source_residual_rule_set.records_by_path.values()),
+            source_residual_rules=source_residual_rules,
         )
         residual_details = native_quality_details.source_residual_items
         text_structure_details = native_quality_details.text_structure_items
@@ -588,36 +856,107 @@ class AgentToolkitService:
             source_residual_rules = await session.read_source_residual_rules()
             terminology_registry = await session.read_terminology_registry()
             latest_run = await session.read_latest_translation_run()
-            translation_data_map = await self._extract_active_translation_data_map(
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
                 session=session,
                 game_data=game_data,
                 text_rules=text_rules,
+                translated_items=translated_items,
             )
-            active_paths = {
-                item.location_path
-                for translation_data in translation_data_map.values()
-                for item in translation_data.translation_items
-            }
-            translated_items = await session.read_translated_items()
+            active_paths = scope.active_paths
+            writable_paths = scope.writable_paths
             translated_paths = {item.location_path for item in translated_items}
             active_translated_items = [
                 item
                 for item in translated_items
                 if item.location_path in active_paths
             ]
-            pending_paths = active_paths - translated_paths
-            stale_paths = translated_paths - active_paths
+            pending_paths = writable_paths - translated_paths
+            stale_paths = translated_paths - writable_paths
             stale_source_residual_rule_paths = {
                 rule.location_path
                 for rule in source_residual_rules
-                if rule.location_path not in active_paths
+                if rule.rule_type == "position" and rule.location_path not in active_paths
             }
+            coverage_report = _build_coverage_report(
+                scope=scope,
+                translated_items=translated_items,
+                text_rules=text_rules,
+            )
             if latest_run is None:
                 quality_error_items: list[TranslationErrorItem] = []
                 llm_failures: list[LlmFailureRecord] = []
             else:
                 quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
+
+        run_quality_error_count = len(quality_error_items)
+        quality_error_items = [
+            item
+            for item in quality_error_items
+            if item.location_path in pending_paths
+        ]
+        source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules)
+        filled_terminology_count = 0
+        total_terminology_count = 0
+        empty_terminology_count = 0
+        if terminology_registry is not None:
+            total_terminology_count = terminology_registry.total_entry_count()
+            filled_terminology_count = terminology_registry.filled_entry_count()
+            empty_terminology_count = total_terminology_count - filled_terminology_count
+
+        coverage_blocking_errors = _coverage_hard_stop_errors(coverage_report)
+        if coverage_blocking_errors or source_residual_rule_errors:
+            errors.extend(coverage_report.errors)
+            warnings.extend(coverage_report.warnings)
+            errors.extend(source_residual_rule_errors)
+            set_progress(1, 1)
+            set_status("覆盖审计未通过，质量报告已停止")
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=warnings,
+                summary={
+                    "extractable_count": len(active_paths),
+                    "translated_count": len(translated_paths & active_paths),
+                    "pending_count": len(pending_paths),
+                    "stale_translation_count": len(stale_paths),
+                    "unwritable_count": len(scope.unwritable_entries),
+                    "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
+                    "stale_plugin_rule_count": stale_plugin_rule_count,
+                    "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
+                    "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
+                    "source_language": session.source_language,
+                    "target_language": session.target_language,
+                    "source_residual_rule_count": len(source_residual_rules),
+                    "stale_source_residual_rule_count": len(stale_source_residual_rule_paths),
+                    "terminology_total_count": total_terminology_count,
+                    "terminology_filled_count": filled_terminology_count,
+                    "terminology_empty_count": empty_terminology_count,
+                    "latest_run_id": latest_run.run_id if latest_run is not None else "",
+                    "latest_run_status": latest_run.status if latest_run is not None else "",
+                    "llm_failure_count": len(llm_failures),
+                    "quality_error_count": len(quality_error_items),
+                    "run_quality_error_count": run_quality_error_count,
+                    "model_response_error_count": sum(1 for item in quality_error_items if item.model_response.strip()),
+                    "source_residual_count": 0,
+                    "text_structure_count": 0,
+                    "placeholder_risk_count": 0,
+                    "overwide_line_count": 0,
+                    "write_back_protocol_count": 0,
+                    "writable_translation_count": len(translated_paths & writable_paths),
+                },
+                details={
+                    "error_type_counts": dict(Counter(item.error_type for item in quality_error_items)),
+                    "llm_failure_counts": dict(Counter(failure.category for failure in llm_failures)),
+                    "quality_error_items": [_build_translation_error_quality_detail(item) for item in quality_error_items],
+                    "source_residual_items": [],
+                    "text_structure_items": [],
+                    "placeholder_risk_items": [],
+                    "overwide_line_items": [],
+                    "write_back_protocol_items": [],
+                    "coverage": coverage_report.details,
+                },
+            )
 
         protocol_probe_count = _count_protocol_sensitive_translation_items(
             items=active_translated_items,
@@ -635,13 +974,7 @@ class AgentToolkitService:
         set_status(report_status)
         advance_progress(1)
 
-        run_quality_error_count = len(quality_error_items)
         set_status("整理模型检查失败记录")
-        quality_error_items = [
-            item
-            for item in quality_error_items
-            if item.location_path in pending_paths
-        ]
         for _item in quality_error_items:
             advance_progress(1)
         set_status(f"调用 Rust 原生质检核心（{native_thread_count()} 线程）")
@@ -650,19 +983,22 @@ class AgentToolkitService:
             text_rules=text_rules,
             source_residual_rules=source_residual_rules,
         )
-        advance_progress(len(active_translated_items) * 4)
-        set_status("整理源文残留")
         residual_items = native_quality_details.source_residual_items
-        residual_count = len(residual_items)
         text_structure_items = native_quality_details.text_structure_items
         placeholder_risk_items = native_quality_details.placeholder_risk_items
         overwide_line_items = native_quality_details.overwide_line_items
+        advance_progress(len(active_translated_items) * 4)
+        set_status("整理源文残留")
+        residual_count = len(residual_items)
         set_status("检查写回协议")
-        write_back_protocol_items = collect_native_write_protocol_details(
-            game_data=game_data.data,
-            plugins_js=[plugin for plugin in game_data.plugins_js],
-            items=active_translated_items,
-        )
+        if scope.write_back_probe_error:
+            write_back_protocol_items: JsonArray = []
+        else:
+            write_back_protocol_items = collect_native_write_protocol_details(
+                game_data=game_data.data,
+                plugins_js=[plugin for plugin in game_data.plugins_js],
+                items=active_translated_items,
+            )
         advance_progress(protocol_probe_count)
         set_status("整理质量报告")
         advance_progress(1)
@@ -676,23 +1012,15 @@ class AgentToolkitService:
             if item.model_response.strip()
         )
         llm_failure_counts = Counter(failure.category for failure in llm_failures)
-        filled_terminology_count = 0
-        total_terminology_count = 0
-        empty_terminology_count = 0
-        if terminology_registry is not None:
-            total_terminology_count = terminology_registry.total_entry_count()
-            filled_terminology_count = terminology_registry.filled_entry_count()
-            empty_terminology_count = total_terminology_count - filled_terminology_count
-
         advance_progress(1)
+        errors.extend(coverage_report.errors)
+        warnings.extend(coverage_report.warnings)
         if llm_failures and pending_paths:
             errors.append(issue("llm_failures", f"最新翻译运行存在 {len(llm_failures)} 条模型运行故障"))
         elif llm_failures:
             warnings.append(issue("historical_llm_failures", f"最新翻译运行记录过 {len(llm_failures)} 条模型故障，但当前没有正文因此无法继续"))
         if quality_error_items:
             errors.append(issue("translation_quality_errors", f"最新翻译运行有 {len(quality_error_items)} 条模型翻了但项目检查没通过的译文"))
-        if pending_paths:
-            errors.append(issue("pending_translations", f"存在 {len(pending_paths)} 条正文还没成功保存译文"))
         if placeholder_risk_items:
             errors.append(issue("placeholder_risk", f"发现 {len(placeholder_risk_items)} 条译文里的游戏控制符可能被改坏"))
         if residual_count:
@@ -707,12 +1035,8 @@ class AgentToolkitService:
             errors.append(issue("terminology_missing", "当前游戏尚未导入术语表"))
         elif empty_terminology_count:
             errors.append(issue("terminology_empty_translation", f"术语表还有 {empty_terminology_count} 个词条没有填写译名"))
-        if stale_paths:
-            warnings.append(issue("stale_cache", f"发现 {len(stale_paths)} 条不在当前提取范围内的已保存译文"))
-        if stale_plugin_rule_count:
-            warnings.append(issue("stale_plugin_rules", f"发现 {stale_plugin_rule_count} 个过期插件规则，已从本轮质量统计中排除"))
         if stale_source_residual_rule_paths:
-            warnings.append(issue("stale_source_residual_rules", f"发现 {len(stale_source_residual_rule_paths)} 条不在当前提取范围内的源文残留例外规则"))
+            errors.append(issue("stale_source_residual_rules", f"发现 {len(stale_source_residual_rule_paths)} 条不在当前提取范围内的源文残留例外规则"))
 
         set_progress(total_progress_steps, total_progress_steps)
         set_status("质量报告已完成")
@@ -723,7 +1047,8 @@ class AgentToolkitService:
                 "extractable_count": len(active_paths),
                 "translated_count": len(translated_paths & active_paths),
                 "pending_count": len(pending_paths),
-                "stale_cache_count": len(stale_paths),
+                "stale_translation_count": len(stale_paths),
+                "unwritable_count": len(scope.unwritable_entries),
                 "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
                 "stale_plugin_rule_count": stale_plugin_rule_count,
                 "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
@@ -746,7 +1071,7 @@ class AgentToolkitService:
                 "placeholder_risk_count": len(placeholder_risk_items),
                 "overwide_line_count": len(overwide_line_items),
                 "write_back_protocol_count": len(write_back_protocol_items),
-                "writable_translation_count": len(translated_paths & active_paths),
+                "writable_translation_count": len(translated_paths & writable_paths),
             },
             details={
                 "error_type_counts": dict(error_type_counts),
@@ -757,6 +1082,7 @@ class AgentToolkitService:
                 "placeholder_risk_items": placeholder_risk_items,
                 "overwide_line_items": overwide_line_items,
                 "write_back_protocol_items": write_back_protocol_items,
+                "coverage": coverage_report.details,
             },
         )
 
@@ -838,18 +1164,31 @@ class AgentToolkitService:
             )
             text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
             game_data = await self._load_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
                 session=session,
                 game_data=game_data,
                 text_rules=text_rules,
+                translated_items=translated_items,
             )
-            translated_paths = await session.read_translation_location_paths()
+            translated_paths = {item.location_path for item in translated_items}
+        blocking_errors = _text_scope_blocking_errors(scope)
+        if blocking_errors:
+            return AgentReport.from_parts(
+                errors=blocking_errors,
+                warnings=[],
+                summary={
+                    "pending_exported_count": 0,
+                    "output": str(output_path),
+                },
+                details={},
+            )
 
         pending_items = [
             item
-            for translation_data in translation_data_map.values()
+            for translation_data in scope.translation_data_map.values()
             for item in translation_data.translation_items
-            if item.location_path not in translated_paths
+            if item.location_path in scope.writable_paths and item.location_path not in translated_paths
         ]
         if limit is not None:
             pending_items = pending_items[: max(limit, 0)]
@@ -903,18 +1242,31 @@ class AgentToolkitService:
             )
             text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
             game_data = await self._load_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
+            translated_items = await session.read_translated_items()
+            scope = await TextScopeService().build(
                 session=session,
                 game_data=game_data,
                 text_rules=text_rules,
+                translated_items=translated_items,
             )
-            source_residual_rule_set = SourceResidualRuleSet.from_records(
-                await session.read_source_residual_rules()
-            )
+            blocking_errors = _text_scope_blocking_errors(scope)
+            if blocking_errors:
+                return AgentReport.from_parts(
+                    errors=blocking_errors,
+                    warnings=[],
+                    summary={
+                        "input": str(input_path),
+                        "imported_count": 0,
+                        "error_count": len(blocking_errors),
+                    },
+                    details={},
+                )
+            source_residual_rules = await session.read_source_residual_rules()
             active_items = {
                 item.location_path: item
-                for translation_data in translation_data_map.values()
+                for translation_data in scope.translation_data_map.values()
                 for item in translation_data.translation_items
+                if item.location_path in scope.writable_paths
             }
 
             for location_path, raw_entry in payload.items():
@@ -935,7 +1287,7 @@ class AgentToolkitService:
                         item=item,
                         translation_lines=translation_lines,
                         text_rules=text_rules,
-                        source_residual_rule_set=source_residual_rule_set,
+                        source_residual_rules=source_residual_rules,
                     )
                     valid_items.append(cloned_item)
                 except Exception as error:
@@ -1085,6 +1437,7 @@ class AgentToolkitService:
                 )
                 text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
                 game_data = await self._load_game_data(session)
+                translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_note_tag_rule_records_from_import(
                 game_data=game_data,
                 import_file=import_file,
@@ -1100,6 +1453,10 @@ class AgentToolkitService:
                 for translation_data in extracted_map.values()
                 for item in translation_data.translation_items
             ]
+            unwritable_items = _collect_write_protocol_unwritable_items(
+                game_data=game_data,
+                extracted_items=extracted_items,
+            )
             try:
                 _preview_event_command_write_back(
                     game_data=game_data,
@@ -1122,23 +1479,26 @@ class AgentToolkitService:
                     "status": "error",
                     "reason": f"{type(error).__name__}: {error}",
                 }
+            if unwritable_items:
+                errors.append(issue("note_tag_write_back_unwritable", f"Note 标签规则存在 {len(unwritable_items)} 个不可写命中项"))
+            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
             details["rules"] = [
                 {
                     "file_name": record.file_name,
                     "tag_count": len(record.tag_names),
                     "tag_names": list(record.tag_names),
-                    "hit_count": sum(
-                        1
-                        for item in extracted_items
-                        if _note_tag_item_matches_rule(item=item, rule_record=record)
-                    ),
-                    "samples": _first_original_line_samples(
-                        item
-                        for item in extracted_items
-                        if _note_tag_item_matches_rule(item=item, rule_record=record)
+                    **_build_rule_metric_detail(
+                        record_items=record_items,
+                        translated_paths=translated_paths,
+                        unwritable_items_by_path=unwritable_items_by_path,
                     ),
                 }
                 for record in records
+                for record_items in [[
+                    item
+                    for item in extracted_items
+                    if _note_tag_item_matches_rule(item=item, rule_record=record)
+                ]]
             ]
             if not records:
                 warnings.append(issue("note_tag_rules_empty", "Note 标签规则为空"))
@@ -1146,6 +1506,8 @@ class AgentToolkitService:
             errors.append(issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}"))
             records = []
             extracted_items = []
+            translated_paths = set()
+            unwritable_items = []
         return AgentReport.from_parts(
             errors=errors,
             warnings=warnings,
@@ -1153,6 +1515,10 @@ class AgentToolkitService:
                 "file_count": len(records),
                 "tag_count": sum(len(record.tag_names) for record in records),
                 "hit_count": len(extracted_items),
+                "extractable_count": len(extracted_items),
+                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
+                "writable_count": len(extracted_items) - len(unwritable_items),
+                "unwritable_count": len(unwritable_items),
             },
             details=details,
         )
@@ -1175,14 +1541,14 @@ class AgentToolkitService:
                     text_rules=text_rules,
                 )
                 old_records = await session.read_note_tag_text_rules()
-                old_note_paths = _collect_translation_paths(
+                old_note_paths = collect_translation_data_paths(
                     NoteTagTextExtraction(
                         game_data=game_data,
                         rule_records=old_records,
                         text_rules=text_rules,
                     ).extract_all_text()
                 )
-                new_note_paths = _collect_translation_paths(
+                new_note_paths = collect_translation_data_paths(
                     NoteTagTextExtraction(
                         game_data=game_data,
                         rule_records=records,
@@ -1232,8 +1598,12 @@ class AgentToolkitService:
             )
             details["rules"] = [
                 {
+                    "rule_id": record.rule_id,
+                    "rule_type": record.rule_type,
                     "location_path": record.location_path,
+                    "pattern": record.pattern_text,
                     "allowed_terms": list(record.allowed_terms),
+                    "check_group": record.check_group,
                     "reason": record.reason,
                 }
                 for record in records
@@ -1248,6 +1618,8 @@ class AgentToolkitService:
             warnings=warnings,
             summary={
                 "rule_count": len(records),
+                "position_rule_count": sum(1 for record in records if record.rule_type == "position"),
+                "structural_rule_count": sum(1 for record in records if record.rule_type == "structural"),
                 "term_count": sum(len(record.allowed_terms) for record in records),
             },
             details=details,
@@ -1266,7 +1638,7 @@ class AgentToolkitService:
             return AgentReport.from_parts(
                 errors=[issue("source_residual_rules_invalid", f"源文残留例外规则不可导入: {type(error).__name__}: {error}")],
                 warnings=[],
-                summary={"rule_count": 0, "term_count": 0},
+                summary={"rule_count": 0, "position_rule_count": 0, "structural_rule_count": 0, "term_count": 0},
                 details={},
             )
         return AgentReport.from_parts(
@@ -1274,13 +1646,19 @@ class AgentToolkitService:
             warnings=[] if records else [issue("source_residual_rules_empty", "已导入空源文残留例外规则")],
             summary={
                 "rule_count": len(records),
+                "position_rule_count": sum(1 for record in records if record.rule_type == "position"),
+                "structural_rule_count": sum(1 for record in records if record.rule_type == "structural"),
                 "term_count": sum(len(record.allowed_terms) for record in records),
             },
             details={
                 "rules": [
                     {
+                        "rule_id": record.rule_id,
+                        "rule_type": record.rule_type,
                         "location_path": record.location_path,
+                        "pattern": record.pattern_text,
                         "allowed_terms": list(record.allowed_terms),
+                        "check_group": record.check_group,
                         "reason": record.reason,
                     }
                     for record in records
@@ -1412,9 +1790,14 @@ class AgentToolkitService:
             import_file = parse_plugin_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
                 game_data = await self._load_game_data(session)
+                translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_plugin_rule_records_from_import(game_data=game_data, import_file=import_file)
-            text_rules = TextRules.from_setting(setting.text_rules)
+            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
             extracted_map = PluginTextExtraction(
                 game_data,
                 plugin_rule_records=records,
@@ -1425,6 +1808,13 @@ class AgentToolkitService:
                 for translation_data in extracted_map.values()
                 for item in translation_data.translation_items
             ]
+            unwritable_items = _collect_write_protocol_unwritable_items(
+                game_data=game_data,
+                extracted_items=extracted_items,
+            )
+            if unwritable_items:
+                errors.append(issue("plugin_rules_unwritable", f"插件规则存在 {len(unwritable_items)} 个不可写命中项"))
+            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
             details["rules"] = [
                 {
                     "plugin_index": record.plugin_index,
@@ -1432,18 +1822,18 @@ class AgentToolkitService:
                     "plugin_hash": record.plugin_hash,
                     "path_count": len(record.path_templates),
                     "paths": list(record.path_templates),
-                    "hit_count": sum(
-                        1
-                        for item in extracted_items
-                        if item.location_path.startswith(f"{PLUGINS_FILE_NAME}/{record.plugin_index}/")
-                    ),
-                    "samples": _first_original_line_samples(
-                        item
-                        for item in extracted_items
-                        if item.location_path.startswith(f"{PLUGINS_FILE_NAME}/{record.plugin_index}/")
+                    **_build_rule_metric_detail(
+                        record_items=record_items,
+                        translated_paths=translated_paths,
+                        unwritable_items_by_path=unwritable_items_by_path,
                     ),
                 }
                 for record in records
+                for record_items in [[
+                    item
+                    for item in extracted_items
+                    if item.location_path.startswith(f"{PLUGINS_FILE_NAME}/{record.plugin_index}/")
+                ]]
             ]
             if not records:
                 warnings.append(issue("plugin_rules_empty", "插件规则为空"))
@@ -1452,12 +1842,20 @@ class AgentToolkitService:
         except Exception as error:
             errors.append(issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}"))
             records = []
+            extracted_items = []
+            translated_paths = set()
+            unwritable_items = []
         return AgentReport.from_parts(
             errors=errors,
             warnings=warnings,
             summary={
                 "plugin_count": len(records),
                 "rule_count": sum(len(record.path_templates) for record in records),
+                "hit_count": len(extracted_items),
+                "extractable_count": len(extracted_items),
+                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
+                "writable_count": len(extracted_items) - len(unwritable_items),
+                "unwritable_count": len(unwritable_items),
             },
             details=details,
         )
@@ -1471,9 +1869,14 @@ class AgentToolkitService:
             import_file = parse_event_command_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
                 game_data = await self._load_game_data(session)
+                translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
-            text_rules = TextRules.from_setting(setting.text_rules)
+            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
             extracted_map = EventCommandTextExtraction(
                 game_data,
                 rule_records=records,
@@ -1484,6 +1887,10 @@ class AgentToolkitService:
                 for translation_data in extracted_map.values()
                 for item in translation_data.translation_items
             ]
+            unwritable_items = _collect_write_protocol_unwritable_items(
+                game_data=game_data,
+                extracted_items=extracted_items,
+            )
             try:
                 _preview_event_command_write_back(
                     game_data=game_data,
@@ -1506,6 +1913,9 @@ class AgentToolkitService:
                     "status": "error",
                     "reason": f"{type(error).__name__}: {error}",
                 }
+            if unwritable_items:
+                errors.append(issue("event_command_rules_unwritable", f"事件指令规则存在 {len(unwritable_items)} 个不可写命中项"))
+            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
             rule_details: JsonArray = []
             for record in records:
                 record_extracted_map = EventCommandTextExtraction(
@@ -1524,8 +1934,11 @@ class AgentToolkitService:
                         "match_count": len(record.parameter_filters),
                         "path_count": len(record.path_templates),
                         "paths": list(record.path_templates),
-                        "hit_count": len(record_items),
-                        "samples": _first_original_line_samples(record_items),
+                        **_build_rule_metric_detail(
+                            record_items=record_items,
+                            translated_paths=translated_paths,
+                            unwritable_items_by_path=unwritable_items_by_path,
+                        ),
                     }
                 )
             details["rules"] = rule_details
@@ -1536,12 +1949,20 @@ class AgentToolkitService:
         except Exception as error:
             errors.append(issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}"))
             records = []
+            extracted_items = []
+            translated_paths = set()
+            unwritable_items = []
         return AgentReport.from_parts(
             errors=errors,
             warnings=warnings,
             summary={
                 "rule_group_count": len(records),
                 "path_rule_count": sum(len(record.path_templates) for record in records),
+                "hit_count": len(extracted_items),
+                "extractable_count": len(extracted_items),
+                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
+                "writable_count": len(extracted_items) - len(unwritable_items),
+                "unwritable_count": len(unwritable_items),
             },
             details=details,
         )
@@ -1976,6 +2397,10 @@ class AgentToolkitService:
         session.set_game_data(game_data)
         return game_data
 
+    async def _load_active_game_data(self, session: TargetGameSession) -> GameData:
+        """加载当前激活游戏文件，供真实文件反查使用。"""
+        return await load_active_game_data(session.game_path)
+
     async def _extract_active_translation_data_map(
         self,
         *,
@@ -1983,27 +2408,14 @@ class AgentToolkitService:
         game_data: GameData,
         text_rules: TextRules,
     ) -> dict[str, TranslationData]:
-        """按当前数据库规则提取本轮有效正文条目。"""
-        plugin_rules, _stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
+        """按当前数据库规则提取本轮正文条目，不执行写入探针。"""
+        scope = await TextScopeService().build(
             session=session,
             game_data=game_data,
+            text_rules=text_rules,
+            include_write_probe=False,
         )
-        event_rules = await session.read_event_command_text_rules()
-        note_tag_rules = await session.read_note_tag_text_rules()
-        translation_data_map = DataTextExtraction(game_data, text_rules).extract_all_text()
-        _merge_translation_data_map(
-            translation_data_map,
-            EventCommandTextExtraction(game_data, event_rules, text_rules).extract_all_text(),
-        )
-        _merge_translation_data_map(
-            translation_data_map,
-            PluginTextExtraction(game_data, plugin_rules, text_rules).extract_all_text(),
-        )
-        _merge_translation_data_map(
-            translation_data_map,
-            NoteTagTextExtraction(game_data, note_tag_rules, text_rules).extract_all_text(),
-        )
-        return translation_data_map
+        return scope.translation_data_map
 
     async def _build_source_residual_rule_records(
         self,
@@ -2046,19 +2458,11 @@ class AgentToolkitService:
         game_data: GameData,
     ) -> tuple[list[PluginTextRuleRecord], int]:
         """读取仍匹配当前 `plugins.js` 的插件规则，并统计过期规则。"""
-        plugin_rules = await session.read_plugin_text_rules()
-        fresh_rules: list[PluginTextRuleRecord] = []
-        stale_count = 0
-        for rule in plugin_rules:
-            if rule.plugin_index >= len(game_data.plugins_js):
-                stale_count += 1
-                continue
-            plugin_hash = build_plugin_hash(game_data.plugins_js[rule.plugin_index])
-            if rule.plugin_hash != plugin_hash:
-                stale_count += 1
-                continue
-            fresh_rules.append(rule)
-        return fresh_rules, stale_count
+        fresh_rules, stale_rules = await read_fresh_plugin_text_rules(
+            session=session,
+            game_data=game_data,
+        )
+        return fresh_rules, len(stale_rules)
 
     async def _resolve_custom_rules(
         self,
@@ -2555,32 +2959,428 @@ def _preview_placeholder_sample(text_rules: TextRules, sample_text: str) -> Json
     }
 
 
+def _placeholder_preview_loses_visible_source_text(
+    *,
+    text_rules: TextRules,
+    sample_preview: JsonObject,
+) -> bool:
+    """判断占位符替换是否把可翻译源语言文本整体遮蔽。"""
+    original_text = sample_preview.get("original_text")
+    text_for_model = sample_preview.get("text_for_model")
+    if not isinstance(original_text, str) or not isinstance(text_for_model, str):
+        return False
+    if not text_rules.should_translate_source_text(original_text):
+        return False
+    model_visible_text = text_rules.placeholder_token_pattern.sub("", text_for_model)
+    model_visible_text = text_rules.strip_rm_control_sequences(model_visible_text)
+    return not text_rules.should_translate_source_text(model_visible_text)
+
+
+def _build_coverage_report(
+    *,
+    scope: TextScopeResult,
+    translated_items: list[TranslationItem],
+    text_rules: TextRules,
+) -> AgentReport:
+    """根据统一文本清单生成覆盖审计报告。"""
+    errors: list[AgentIssue] = []
+    warnings: list[AgentIssue] = []
+    translated_paths = {item.location_path for item in translated_items}
+    active_paths = scope.active_paths
+    writable_paths = scope.writable_paths
+
+    if scope.write_back_probe_error:
+        errors.append(issue("write_probe_failed", scope.write_back_probe_error))
+
+    if scope.stale_plugin_rules:
+        errors.append(issue("stale_plugin_rules", f"发现 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导出并导入插件规则"))
+
+    active_unwritable_items: JsonArray = [
+        entry.to_json_object()
+        for entry in scope.entries
+        if entry.enters_translation and not entry.can_write_back
+    ]
+    if active_unwritable_items:
+        errors.append(issue("coverage_unwritable", f"发现 {len(active_unwritable_items)} 条当前文本无法写进游戏文件"))
+
+    unwritable_rule_items: JsonArray = []
+    for entry in scope.entries:
+        if entry.enters_translation:
+            continue
+        if entry.source_type == "standard_data":
+            continue
+        if not text_rules.should_translate_source_lines(entry.original_lines):
+            continue
+        unwritable_rule_items.append(entry.to_json_object())
+    if unwritable_rule_items:
+        errors.append(issue("rule_hits_unwritable", f"发现 {len(unwritable_rule_items)} 条规则命中文本没有进入当前可写范围"))
+
+    missing_translation_paths = sorted(writable_paths - translated_paths)
+    if missing_translation_paths:
+        errors.append(issue("coverage_missing_translation", f"存在 {len(missing_translation_paths)} 条当前可写文本还没成功保存译文"))
+
+    stale_translation_paths = sorted(translated_paths - writable_paths)
+    if stale_translation_paths:
+        errors.append(issue("stale_saved_translations", f"发现 {len(stale_translation_paths)} 条已保存译文不在当前可写范围内"))
+
+    inactive_rule_hits: JsonArray = [
+        entry.to_json_object()
+        for entry in scope.entries
+        if not entry.enters_translation and entry.source_type != "standard_data"
+    ]
+    return AgentReport.from_parts(
+        errors=errors,
+        warnings=warnings,
+        summary={
+            "rule_hit_count": sum(1 for entry in scope.entries if entry.source_type != "standard_data"),
+            "extractable_count": len(active_paths),
+            "translated_count": len(translated_paths & active_paths),
+            "writable_count": len(writable_paths),
+            "pending_count": len(missing_translation_paths),
+            "unwritable_count": len(active_unwritable_items),
+            "unwritable_rule_hit_count": len(unwritable_rule_items),
+            "stale_translation_count": len(stale_translation_paths),
+            "stale_plugin_rule_count": len(scope.stale_plugin_rules),
+            "write_back_probe_failed": bool(scope.write_back_probe_error),
+        },
+        details={
+            "unwritable_items": active_unwritable_items,
+            "unwritable_rule_items": unwritable_rule_items,
+            "inactive_rule_hits": inactive_rule_hits,
+            "pending_location_paths": _string_lines_to_json_array(missing_translation_paths),
+            "stale_translation_paths": _string_lines_to_json_array(stale_translation_paths),
+            "stale_plugin_rules": scope.stale_plugin_rules_json(),
+            "write_back_probe_error": scope.write_back_probe_error,
+        },
+    )
+
+
+def _validate_source_residual_rule_records(records: Sequence[SourceResidualRuleRecord]) -> list[AgentIssue]:
+    """校验数据库中的源文残留例外规则仍可执行。"""
+    try:
+        _ = SourceResidualRuleSet.from_records(records)
+    except ValueError as error:
+        return [issue("source_residual_rules_invalid", f"源文残留例外规则已损坏: {error}")]
+    return []
+
+
+def _coverage_hard_stop_errors(report: AgentReport) -> list[AgentIssue]:
+    """筛出会让后续质检失去可信写入前提的覆盖审计错误。"""
+    hard_stop_codes = {
+        "write_probe_failed",
+        "stale_plugin_rules",
+        "coverage_unwritable",
+        "rule_hits_unwritable",
+        "stale_saved_translations",
+    }
+    return [error for error in report.errors if error.code in hard_stop_codes]
+
+
+def _text_scope_blocking_errors(scope: TextScopeResult) -> list[AgentIssue]:
+    """把统一文本范围中的执行阻断项转换成稳定业务错误。"""
+    errors: list[AgentIssue] = []
+    if scope.write_back_probe_error:
+        errors.append(issue("write_probe_failed", scope.write_back_probe_error))
+    if scope.stale_plugin_rules:
+        errors.append(issue("stale_plugin_rules", f"发现 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导出并导入插件规则"))
+    if scope.unwritable_entries:
+        errors.append(issue("coverage_unwritable", f"发现 {len(scope.unwritable_entries)} 条当前文本无法写进游戏文件，请先运行 audit-coverage 查看明细"))
+    return errors
+
+
+async def _read_feedback_texts(input_path: Path) -> list[str]:
+    """读取反馈原文清单，支持字符串数组或包含 texts 字段的对象。"""
+    async with aiofiles.open(input_path, "r", encoding="utf-8-sig") as file:
+        raw_text = await file.read()
+    decoded_raw = cast(object, json.loads(raw_text))
+    decoded = coerce_json_value(decoded_raw)
+    if isinstance(decoded, list):
+        texts = [item for item in decoded if isinstance(item, str) and item.strip()]
+    elif isinstance(decoded, dict):
+        raw_texts = decoded.get("texts")
+        if not isinstance(raw_texts, list):
+            raise TypeError("反馈原文清单对象必须包含 texts 字符串数组")
+        texts = [item for item in raw_texts if isinstance(item, str) and item.strip()]
+    else:
+        raise TypeError("反馈原文清单顶层必须是字符串数组或包含 texts 的对象")
+    unique_texts: list[str] = []
+    seen_texts: set[str] = set()
+    for text in texts:
+        normalized_text = text.strip()
+        if normalized_text in seen_texts:
+            continue
+        unique_texts.append(normalized_text)
+        seen_texts.add(normalized_text)
+    if not unique_texts:
+        raise ValueError("反馈原文清单不能为空")
+    return unique_texts
+
+
+async def _collect_feedback_text_occurrences(
+    *,
+    game_data: GameData,
+    feedback_texts: list[str],
+) -> JsonArray:
+    """按游戏文件结构扫描反馈原文残留。"""
+    occurrences: JsonArray = []
+    for file_name, data in game_data.data.items():
+        file_path = game_data.layout.data_dir / file_name
+        content = await _read_text_for_line_lookup(file_path)
+        for path_parts, raw_text in _iter_json_string_leaves(data):
+            visible_text = normalize_visible_text_for_extraction(raw_text)
+            for feedback_text in feedback_texts:
+                if feedback_text not in visible_text:
+                    continue
+                occurrences.append(
+                    {
+                        "text": feedback_text,
+                        "file": str(file_path),
+                        "line": _line_number_for_structured_text(
+                            content=content,
+                            raw_text=raw_text,
+                            visible_text=visible_text,
+                        ),
+                        "category": "游戏数据文件仍存在反馈原文",
+                        "json_path": _format_json_path(path_parts),
+                    }
+                )
+    plugins_content = await _read_text_for_line_lookup(game_data.layout.plugins_path)
+    for plugin_index, plugin in enumerate(game_data.plugins_js):
+        for path_parts, raw_text in _iter_json_string_leaves(plugin):
+            visible_text = normalize_visible_text_for_extraction(raw_text)
+            for feedback_text in feedback_texts:
+                if feedback_text not in visible_text:
+                    continue
+                occurrences.append(
+                    {
+                        "text": feedback_text,
+                        "file": str(game_data.layout.plugins_path),
+                        "line": _line_number_for_structured_text(
+                            content=plugins_content,
+                            raw_text=raw_text,
+                            visible_text=visible_text,
+                        ),
+                        "category": "插件参数或插件配置仍存在反馈原文",
+                        "json_path": _format_json_path([plugin_index, *path_parts]),
+                    }
+                )
+    plugin_source_candidates = await _collect_plugin_source_text_candidates(game_data.layout.js_dir)
+    for candidate in plugin_source_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_text = candidate.get("text")
+        if not isinstance(candidate_text, str):
+            continue
+        for feedback_text in feedback_texts:
+            if feedback_text not in candidate_text:
+                continue
+            occurrences.append(
+                {
+                    "text": feedback_text,
+                    "file": candidate.get("file", ""),
+                    "line": candidate.get("line", 0),
+                    "category": "插件源码硬编码文本候选",
+                    "api": candidate.get("api", ""),
+                    "structural_flags": candidate.get("structural_flags", []),
+                }
+            )
+    return occurrences
+
+
+async def _read_text_for_line_lookup(file_path: Path) -> str:
+    """读取文本文件内容，供结构化命中补充行号。"""
+    if not file_path.is_file():
+        return ""
+    async with aiofiles.open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+        return await file.read()
+
+
+def _iter_json_string_leaves(value: JsonValue) -> Iterable[tuple[list[str | int], str]]:
+    """遍历 JSON 值里的全部字符串叶子。"""
+    if isinstance(value, str):
+        yield [], value
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from (
+                ([index, *path_parts], text)
+                for path_parts, text in _iter_json_string_leaves(item)
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from (
+                ([key, *path_parts], text)
+                for path_parts, text in _iter_json_string_leaves(item)
+            )
+
+
+def _line_number_for_structured_text(
+    *,
+    content: str,
+    raw_text: str,
+    visible_text: str,
+) -> int:
+    """根据原始字符串或 JSON 编码字符串尽量定位文件行号。"""
+    if not content:
+        return 0
+    candidates = [
+        raw_text,
+        visible_text,
+        json.dumps(raw_text, ensure_ascii=False),
+        json.dumps(visible_text, ensure_ascii=False),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        index = content.find(candidate)
+        if index >= 0:
+            return content.count("\n", 0, index) + 1
+    return 0
+
+
+def _format_json_path(path_parts: Sequence[str | int]) -> str:
+    """把结构化路径格式化成排障用 JSONPath。"""
+    path_text = "$"
+    for part in path_parts:
+        if isinstance(part, int):
+            path_text += f"[{part}]"
+        else:
+            path_text += f"[{json.dumps(part, ensure_ascii=False)}]"
+    return path_text
+
+
+def _classify_feedback_occurrences(
+    *,
+    occurrences: JsonArray,
+    scope: TextScopeResult,
+) -> JsonArray:
+    """按统一文本清单把反馈反查结果归类为结构性缺口。"""
+    classified: JsonArray = []
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict):
+            continue
+        occurrence_object = {key: value for key, value in occurrence.items()}
+        feedback_text = occurrence_object.get("text")
+        category = occurrence_object.get("category")
+        if not isinstance(feedback_text, str):
+            occurrence_object["gap_type"] = "rule_gap"
+            occurrence_object["gap_label"] = "规则缺口"
+            occurrence_object["matching_location_paths"] = []
+            classified.append(occurrence_object)
+            continue
+        if category == "插件源码硬编码文本候选":
+            occurrence_object["gap_type"] = "plugin_source_hardcoded"
+            occurrence_object["gap_label"] = "插件源码硬编码"
+            occurrence_object["matching_location_paths"] = []
+            classified.append(occurrence_object)
+            continue
+        matched_entries = _scope_entries_containing_text(scope=scope, text=feedback_text)
+        gap_type, gap_label = _feedback_gap_from_scope_entries(matched_entries)
+        occurrence_object["gap_type"] = gap_type
+        occurrence_object["gap_label"] = gap_label
+        occurrence_object["matching_location_paths"] = [
+            entry.location_path
+            for entry in matched_entries[:10]
+        ]
+        classified.append(occurrence_object)
+    return classified
+
+
+def _count_feedback_gap_types(occurrences: JsonArray) -> Counter[str]:
+    """统计反馈反查结果中的结构性缺口类型。"""
+    counter: Counter[str] = Counter()
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict):
+            continue
+        gap_type = occurrence.get("gap_type")
+        if isinstance(gap_type, str):
+            counter[gap_type] += 1
+    return counter
+
+
+def _scope_entries_containing_text(*, scope: TextScopeResult, text: str) -> list[TextScopeEntry]:
+    """查找统一文本清单中包含反馈原文的结构位置。"""
+    return [
+        entry
+        for entry in scope.entries
+        if any(text in line for line in entry.original_lines)
+    ]
+
+
+def _feedback_gap_from_scope_entries(entries: list[TextScopeEntry]) -> tuple[str, str]:
+    """根据文本清单命中情况判断反馈原文残留的结构性原因。"""
+    if not entries:
+        return "rule_gap", "规则缺口"
+    active_entries = [entry for entry in entries if entry.enters_translation]
+    if not active_entries:
+        return "rule_gap", "规则缺口"
+    if any(not entry.can_write_back for entry in active_entries):
+        return "write_gap", "写入缺口"
+    if any(not entry.translated for entry in active_entries):
+        return "translation_gap", "译文缺口"
+    return "write_gap", "写入缺口"
+
+
+PLUGIN_SOURCE_TEXT_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?P<api>drawText(?:Ex)?|setText|addCommand)\s*\(\s*(?P<quote>['\"])(?P<text>(?:\\.|(?!\2).){2,120})(?P=quote)",
+    re.DOTALL,
+)
+
+
+async def _collect_plugin_source_text_candidates(js_dir: Path) -> JsonArray:
+    """扫描插件源码中常见 UI 文本 API 的字符串参数候选。"""
+    plugin_dir = js_dir / "plugins"
+    if not plugin_dir.is_dir():
+        return []
+    candidates: JsonArray = []
+    for file_path in sorted(plugin_dir.glob("*.js"), key=lambda path: path.name):
+        async with aiofiles.open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+            content = await file.read()
+        for match in PLUGIN_SOURCE_TEXT_PATTERN.finditer(content):
+            text = _unescape_js_candidate_text(match.group("text")).strip()
+            if not text:
+                continue
+            candidates.append(
+                {
+                    "file": str(file_path),
+                    "line": content.count("\n", 0, match.start()) + 1,
+                    "api": match.group("api"),
+                    "text": text,
+                    "structural_flags": _plugin_source_text_structural_flags(text),
+                }
+            )
+    return candidates
+
+
+def _unescape_js_candidate_text(text: str) -> str:
+    """只处理候选展示需要的常见 JavaScript 字符串转义。"""
+    return (
+        text.replace(r"\n", "\n")
+        .replace(r"\t", "\t")
+        .replace(r"\'", "'")
+        .replace(r'\"', '"')
+        .replace(r"\\", "\\")
+    )
+
+
+def _plugin_source_text_structural_flags(text: str) -> JsonArray:
+    """给源码字符串候选附加结构提示，不据此丢弃候选。"""
+    flags: JsonArray = []
+    lowered_text = text.lower()
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text):
+        flags.append("number_like")
+    if re.search(r"\.(?:png|jpg|jpeg|webp|ogg|m4a|mp3|json|js)$", lowered_text):
+        flags.append("resource_path_like")
+    if re.fullmatch(r"[A-Za-z0-9_./:-]+", text) and ("_" in text or "/" in text):
+        flags.append("identifier_or_path_like")
+    return flags
+
+
 def _current_python_major_minor() -> tuple[int, int]:
     """读取当前 Python 主次版本号。"""
     version_parts = platform.python_version_tuple()
     return int(version_parts[0]), int(version_parts[1])
-
-
-def _merge_translation_data_map(
-    target: dict[str, TranslationData],
-    source: dict[str, TranslationData],
-) -> None:
-    """合并两个文件维度翻译数据映射。"""
-    for file_name, translation_data in source.items():
-        existing_data = target.get(file_name)
-        if existing_data is not None:
-            existing_data.translation_items.extend(translation_data.translation_items)
-        else:
-            target[file_name] = translation_data
-
-
-def _collect_translation_paths(translation_data_map: dict[str, TranslationData]) -> set[str]:
-    """收集翻译数据中的全部定位路径。"""
-    return {
-        item.location_path
-        for translation_data in translation_data_map.values()
-        for item in translation_data.translation_items
-    }
 
 
 CUSTOM_MARKER_WITH_PARAMS_PATTERN: re.Pattern[str] = re.compile(
@@ -2763,6 +3563,27 @@ def _first_original_line_samples(items: Iterable[TranslationItem], limit: int = 
     return samples
 
 
+def _build_rule_metric_detail(
+    *,
+    record_items: Sequence[TranslationItem],
+    translated_paths: set[str],
+    unwritable_items_by_path: dict[str, JsonArray],
+) -> JsonObject:
+    """生成单条外部规则的命中、保存和可写统计。"""
+    return {
+        "hit_count": len(record_items),
+        "extractable_count": len(record_items),
+        "translated_count": sum(1 for item in record_items if item.location_path in translated_paths),
+        "writable_count": sum(1 for item in record_items if item.location_path not in unwritable_items_by_path),
+        "unwritable_items": [
+            item
+            for extracted_item in record_items
+            for item in unwritable_items_by_path.get(extracted_item.location_path, [])
+        ],
+        "samples": _first_original_line_samples(record_items),
+    }
+
+
 def _note_tag_item_matches_rule(*, item: TranslationItem, rule_record: NoteTagTextRuleRecord) -> bool:
     """判断 Note 标签译文条目是否来自指定规则。"""
     parts = item.location_path.split("/")
@@ -2782,7 +3603,7 @@ def _preview_event_command_write_back(
     extracted_items: list[TranslationItem],
     text_rules: TextRules,
 ) -> None:
-    """用规则命中项做内存回写预演，提前暴露路径不兼容问题。"""
+    """用规则命中项做内存回写预演，提前暴露路径结构问题。"""
     if not extracted_items:
         return
     probe_items: list[TranslationItem] = []
@@ -2796,6 +3617,39 @@ def _preview_event_command_write_back(
         write_data_text(game_data, probe_items, text_rules=text_rules)
     finally:
         reset_writable_copies(game_data)
+
+
+def _collect_write_protocol_unwritable_items(
+    *,
+    game_data: GameData,
+    extracted_items: list[TranslationItem],
+) -> JsonArray:
+    """用统一写入协议检查规则命中项是否具备结构性写入位置。"""
+    if not extracted_items:
+        return []
+    probe_items: list[TranslationItem] = []
+    for item in extracted_items:
+        probe_item = item.model_copy(deep=True)
+        probe_item.translation_lines = _build_write_back_probe_lines(item)
+        probe_items.append(probe_item)
+    return collect_native_write_protocol_details(
+        game_data=game_data.data,
+        plugins_js=[plugin for plugin in game_data.plugins_js],
+        items=probe_items,
+    )
+
+
+def _json_items_by_location_path(items: JsonArray) -> dict[str, JsonArray]:
+    """按定位路径索引 JSON 明细，供规则级报告复用。"""
+    indexed: dict[str, JsonArray] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        location_path = item.get("location_path")
+        if not isinstance(location_path, str):
+            continue
+        indexed.setdefault(location_path, []).append(item)
+    return indexed
 
 
 def _build_write_back_probe_lines(item: TranslationItem) -> list[str]:
@@ -2872,7 +3726,7 @@ def _prepare_manual_translation_item(
     item: TranslationItem,
     translation_lines: list[str],
     text_rules: TextRules,
-    source_residual_rule_set: SourceResidualRuleSet | None = None,
+    source_residual_rules: list[SourceResidualRuleRecord] | None = None,
 ) -> TranslationItem:
     """把手动译文校验成可保存的正文译文条目。"""
     if not translation_lines or not any(line.strip() for line in translation_lines):
@@ -2904,6 +3758,7 @@ def _prepare_manual_translation_item(
     )
     cloned_item.verify_placeholders(text_rules)
     cloned_item.translation_lines = list(normalized_translation_lines)
+    source_residual_rule_set = SourceResidualRuleSet.from_records(source_residual_rules or [])
     check_source_residual_for_item(
         item=cloned_item,
         text_rules=text_rules,

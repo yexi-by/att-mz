@@ -3,7 +3,7 @@
 //! 本模块负责并行收集源文残留、文本结构、占位符风险和行宽问题。
 
 use rayon::prelude::*;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ pub fn scan_quality_impl(payload_json: &str) -> Result<String, String> {
     let payload: QualityPayload = serde_json::from_str(payload_json)
         .map_err(|error| format!("Rust 质检输入 JSON 解析失败: {error}"))?;
     let rules = Arc::new(compile_rules(payload.text_rules)?);
-    let residual_rules = Arc::new(index_residual_rules(payload.source_residual_rules));
+    let residual_rules = Arc::new(index_residual_rules(payload.source_residual_rules)?);
     let items = Arc::new(payload.items);
 
     let output = run_with_optional_pool(|| {
@@ -66,27 +66,98 @@ pub fn scan_quality_impl(payload_json: &str) -> Result<String, String> {
         .map_err(|error| format!("Rust 质检输出 JSON 序列化失败: {error}"))
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct IndexedResidualRules {
+    pub(crate) position_rules: HashMap<String, NativeSourceResidualRule>,
+    pub(crate) structural_rules: Vec<CompiledStructuralResidualRule>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledStructuralResidualRule {
+    pub(crate) pattern: Regex,
+    pub(crate) allowed_terms: Vec<String>,
+    pub(crate) check_group: String,
+}
+
 pub(crate) fn index_residual_rules(
     records: Vec<NativeSourceResidualRule>,
-) -> HashMap<String, NativeSourceResidualRule> {
-    records
-        .into_iter()
-        .map(|record| (record.location_path.clone(), record))
-        .collect()
+) -> Result<IndexedResidualRules, String> {
+    let mut position_rules = HashMap::new();
+    let mut structural_rules = Vec::new();
+    for record in records {
+        match record.rule_type.as_str() {
+            "structural" => {
+                if record.pattern_text.is_empty() || record.check_group.is_empty() {
+                    return Err(format!(
+                        "结构性源文保留规则缺少 pattern_text 或 check_group: {}",
+                        record.rule_id
+                    ));
+                }
+                let pattern = Regex::new(&record.pattern_text).map_err(|error| {
+                    format!(
+                        "结构性源文保留规则正则损坏: {}: {error}",
+                        record.pattern_text
+                    )
+                })?;
+                if !pattern
+                    .capture_names()
+                    .any(|name| name == Some(record.check_group.as_str()))
+                {
+                    return Err(format!(
+                        "结构性源文保留规则缺少命名分组: {}",
+                        record.check_group
+                    ));
+                }
+                structural_rules.push(CompiledStructuralResidualRule {
+                    pattern,
+                    allowed_terms: record.allowed_terms,
+                    check_group: record.check_group,
+                });
+            }
+            "position" => {
+                if record.location_path.is_empty() {
+                    return Err(format!("位置源文保留规则缺少内部位置: {}", record.rule_id));
+                }
+                if record.allowed_terms.is_empty() {
+                    return Err(format!(
+                        "位置源文保留规则缺少允许保留的源文片段: {}",
+                        record.rule_id
+                    ));
+                }
+                position_rules.insert(record.location_path.clone(), record);
+            }
+            unknown_rule_type => {
+                return Err(format!(
+                    "源文保留规则类型无效: {}: {}",
+                    record.rule_id, unknown_rule_type
+                ));
+            }
+        }
+    }
+    Ok(IndexedResidualRules {
+        position_rules,
+        structural_rules,
+    })
 }
 
 pub(crate) fn collect_residual_detail(
     item: &NativeTranslationItem,
     rules: &CompiledRules,
-    residual_rules: &HashMap<String, NativeSourceResidualRule>,
+    residual_rules: &IndexedResidualRules,
 ) -> Option<Value> {
     let allowed_terms = residual_rules
+        .position_rules
         .get(&item.location_path)
         .map(|rule| rule.allowed_terms.as_slice())
         .unwrap_or(&[]);
     let checked_lines = mask_allowed_terms(
         &item.translation_lines,
         allowed_terms,
+        rules.source_residual_terms_ignore_case,
+    );
+    let checked_lines = mask_structural_terms(
+        &checked_lines,
+        &residual_rules.structural_rules,
         rules.source_residual_terms_ignore_case,
     );
     let checked_lines = mask_allowed_terms(
@@ -99,7 +170,7 @@ pub(crate) fn collect_residual_detail(
         Err(reason) => {
             let mut detail = base_detail(item);
             detail.insert("reason".to_string(), json!(reason));
-            if let Some(rule) = residual_rules.get(&item.location_path)
+            if let Some(rule) = residual_rules.position_rules.get(&item.location_path)
                 && !rule.allowed_terms.is_empty()
             {
                 detail.insert("allowed_terms".to_string(), json!(rule.allowed_terms));
@@ -108,6 +179,110 @@ pub(crate) fn collect_residual_detail(
             Some(Value::Object(detail))
         }
     }
+}
+
+pub(crate) fn mask_structural_terms(
+    lines: &[String],
+    structural_rules: &[CompiledStructuralResidualRule],
+    ignore_case: bool,
+) -> Vec<String> {
+    if structural_rules.is_empty() {
+        return lines.to_vec();
+    }
+    lines
+        .iter()
+        .map(|line| mask_structural_terms_in_line(line, structural_rules, ignore_case))
+        .collect()
+}
+
+fn mask_structural_terms_in_line(
+    line: &str,
+    structural_rules: &[CompiledStructuralResidualRule],
+    ignore_case: bool,
+) -> String {
+    let mut masked = line.to_string();
+    for rule in structural_rules {
+        masked = mask_one_structural_rule_in_line(&masked, rule, ignore_case);
+    }
+    masked
+}
+
+fn mask_one_structural_rule_in_line(
+    line: &str,
+    rule: &CompiledStructuralResidualRule,
+    ignore_case: bool,
+) -> String {
+    let mut mask_ranges = Vec::new();
+    for captures in rule.pattern.captures_iter(line) {
+        let Some(full_match) = captures.get(0) else {
+            continue;
+        };
+        let Some(group_match) = captures.name(&rule.check_group) else {
+            continue;
+        };
+        if group_match.as_str().trim().is_empty() {
+            continue;
+        }
+        let outside_ranges = [
+            (full_match.start(), group_match.start()),
+            (group_match.end(), full_match.end()),
+        ];
+        for term in &rule.allowed_terms {
+            mask_ranges.extend(find_term_ranges_outside_group(
+                line,
+                term,
+                &outside_ranges,
+                ignore_case,
+            ));
+        }
+    }
+    replace_byte_ranges_with_spaces(line, &mask_ranges)
+}
+
+fn find_term_ranges_outside_group(
+    line: &str,
+    term: &str,
+    outside_ranges: &[(usize, usize)],
+    ignore_case: bool,
+) -> Vec<(usize, usize)> {
+    if term.is_empty() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let Ok(pattern) = RegexBuilder::new(&regex::escape(term))
+        .case_insensitive(ignore_case)
+        .build()
+    else {
+        return ranges;
+    };
+    for (start, end) in outside_ranges {
+        if *start >= *end || *end > line.len() {
+            continue;
+        }
+        let segment = &line[*start..*end];
+        for term_match in pattern.find_iter(segment) {
+            ranges.push((*start + term_match.start(), *start + term_match.end()));
+        }
+    }
+    ranges
+}
+
+fn replace_byte_ranges_with_spaces(line: &str, ranges: &[(usize, usize)]) -> String {
+    if ranges.is_empty() {
+        return line.to_string();
+    }
+    line.char_indices()
+        .map(|(index, char_value)| {
+            if ranges
+                .iter()
+                .any(|(start, end)| index >= *start && index < *end)
+            {
+                ' '
+            } else {
+                char_value
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn mask_allowed_terms(

@@ -13,7 +13,7 @@ from pydantic import BaseModel, RootModel
 from app.rmmz.schema import ErrorType, TranslationErrorItem, TranslationItem
 from app.rmmz.text_rules import ControlSequenceSpan, TextRules
 from app.source_residual import SourceResidualRuleSet, check_source_residual_for_item
-from app.translation.line_wrap import (
+from app.rmmz.text_layout import (
     align_long_text_lines,
     normalize_translated_wrapping_punctuation,
 )

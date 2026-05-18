@@ -25,7 +25,7 @@ from app.rmmz.text_protocol import (
     encode_visible_text_like,
     ensure_encoded_text_valid,
 )
-from app.translation.line_wrap import (
+from app.rmmz.text_layout import (
     normalize_translated_wrapping_punctuation,
     split_overwide_lines,
 )
@@ -864,7 +864,7 @@ def _locate_note_owner(
 
 
 def _find_json_object_by_id(values: JsonArray, item_id: int) -> JsonObject | None:
-    """在数组中按 id 字段查找对象，兼容少数索引与 id 不一致的数据。"""
+    """在数组中按 id 字段查找对象，支持索引与 id 不一致的数据。"""
     for value in values:
         if not isinstance(value, dict):
             continue

@@ -230,7 +230,7 @@ def jsonpath_to_path_parts(path: str) -> list[str | int]:
 
 
 def jsonpath_to_location_path(*, json_path: str, plugin_index: int) -> str:
-    """把插件级 JSONPath 转成回写兼容的 `location_path`。"""
+    """把插件级 JSONPath 转成回写使用的 `location_path`。"""
     path_parts = jsonpath_to_path_parts(json_path)
     if not path_parts or path_parts[0] != "parameters":
         raise ValueError(f"插件路径必须从 parameters 开始: {json_path}")

@@ -68,7 +68,7 @@
 
 - `add-game` 会重新解析游戏布局并覆盖当前记录。
 - 数据库文件名对应的游戏标题必须和 `metadata.game_title` 一致。
-- 旧库若缺少 `engine_kind`、`content_root` 或 `engine_version`，当前代码会拒绝打开。
+- 数据库若缺少 `engine_kind`、`content_root` 或 `engine_version`，当前代码会拒绝打开。
 
 ### `language_settings`
 
@@ -84,7 +84,7 @@
 
 - `add-game --source-language ja|en` 会覆盖当前语言档案；源语言参数必须显式传入。
 - 项目不做自动语言检测，注册前必须确认当前游戏是日文还是英文。
-- 缺少语言档案时当前代码会拒绝打开数据库；旧库需要通过独立迁移脚本先写入语言设置。
+- 缺少语言档案时当前代码会拒绝打开数据库；需要保留既有数据库时，先用独立脚本补齐语言设置。
 
 ### `translation_items`
 
@@ -247,14 +247,19 @@
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
-| `location_path` | `TEXT` | 主键 | 文本在游戏里的内部位置 |
+| `rule_id` | `TEXT` | 主键 | 规则稳定标识 |
+| `rule_type` | `TEXT` | 非空 | 规则类型，只能是 `position` 或 `structural` |
+| `location_path` | `TEXT` | 非空 | 位置例外绑定的文本在游戏里的内部位置；结构性例外为空字符串 |
+| `pattern_text` | `TEXT` | 非空 | 结构性例外的正则；位置例外为空字符串 |
 | `allowed_terms` | `TEXT` | 非空 | JSON 字符串数组，允许保留的源语言片段 |
+| `check_group` | `TEXT` | 非空 | 结构性例外中继续检查显示文本的命名分组；位置例外为空字符串 |
 | `reason` | `TEXT` | 非空 | 保留原因 |
 
 维护规则：
 
 - `import-source-residual-rules` 会整体替换此表内容。
 - `import-source-residual-rules` 是唯一的源文保留例外导入入口，日文和英文游戏共用同一套流程。
+- 位置例外只按内部位置放行明确源文片段；结构性例外只能遮蔽协议词，显示文本分组仍继续做源文残留检查。
 - 例外规则只用于确需保留的片段，不能用来掩盖整句漏翻。
 
 ### `font_replacement_records`
@@ -365,11 +370,11 @@ erDiagram
     event_command_text_rule_groups ||--o{ event_command_text_rule_paths : "group_key"
 ```
 
-其他表通过业务流程关联，不依赖数据库外键。例如 `translation_items.location_path`、`source_residual_rules.location_path` 和 `translation_quality_errors.location_path` 都使用同一种文本内部位置字符串，但数据库层不强制建立外键。
+其他表通过业务流程关联，不依赖数据库外键。例如 `translation_items.location_path`、位置类 `source_residual_rules.location_path` 和 `translation_quality_errors.location_path` 都使用同一种文本内部位置字符串，但数据库层不强制建立外键。
 
 ## 维护规则
 
 - 新增表或字段时，先更新 `app/persistence/sql.py` 和读写仓库，再补测试，最后同步本文档。
-- 需要迁移已有数据库文件时，写一次性脚本处理；确认完成后删除脚本，不把一次性兼容迁移逻辑留在正式代码路径里。
+- 需要调整已有数据库文件时，写一次性脚本处理；确认完成后删除脚本，不把一次性数据修正逻辑留在正式代码路径里。
 - 外部 Agent 不直接读写数据库。需要规则、术语或译文时，通过 CLI 导出 JSON，修改后再走 validate/import 命令。
 - 文档示例只能使用 `<游戏标题>`、`<游戏目录>`、`<游戏内容目录>` 等占位符，不能写入真实本机路径或真实样本名。

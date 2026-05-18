@@ -40,6 +40,44 @@ async def run_quality_report_command(args: argparse.Namespace) -> int:
     return 1 if report.status == "error" else 0
 
 
+async def run_text_scope_command(args: argparse.Namespace) -> int:
+    """执行 `text-scope` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    service = AgentToolkitService()
+    report = await service.text_scope(game_title=game_title)
+    write_report_outputs(report=report, args=args, title="统一文本清单")
+    return 1 if report.status == "error" else 0
+
+
+async def run_audit_coverage_command(args: argparse.Namespace) -> int:
+    """执行 `audit-coverage` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    service = AgentToolkitService()
+    report = await service.audit_coverage(game_title=game_title)
+    write_report_outputs(report=report, args=args, title="覆盖审计报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_verify_feedback_text_command(args: argparse.Namespace) -> int:
+    """执行 `verify-feedback-text` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    input_path = read_required_path_arg(args, "input")
+    service = AgentToolkitService()
+    report = await service.verify_feedback_text(game_title=game_title, input_path=input_path)
+    write_report_outputs(report=report, args=args, title="反馈原文反查报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_scan_plugin_source_text_command(args: argparse.Namespace) -> int:
+    """执行 `scan-plugin-source-text` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    output_path = read_required_path_arg(args, "output")
+    service = AgentToolkitService()
+    report = await service.scan_plugin_source_text(game_title=game_title, output_path=output_path)
+    write_report_outputs(report=report, args=args, title="插件源码候选扫描报告", write_output_file=False)
+    return 1 if report.status == "error" else 0
+
+
 async def run_export_pending_translations_command(args: argparse.Namespace) -> int:
     """执行 `export-pending-translations` 命令。"""
     game_title = await resolve_target_game_title(args)
@@ -52,20 +90,6 @@ async def run_export_pending_translations_command(args: argparse.Namespace) -> i
         limit=limit,
     )
     write_report_outputs(report=report, args=args, title="手动填写译文表导出报告", write_output_file=False)
-    return 1 if report.status == "error" else 0
-
-
-async def run_export_untranslated_translations_command(args: argparse.Namespace) -> int:
-    """执行 `export-untranslated-translations` 命令。"""
-    game_title = await resolve_target_game_title(args)
-    output_path = read_required_path_arg(args, "output")
-    service = AgentToolkitService()
-    report = await service.export_pending_translations(
-        game_title=game_title,
-        output_path=output_path,
-        limit=None,
-    )
-    write_report_outputs(report=report, args=args, title="全部未翻译正文导出报告", write_output_file=False)
     return 1 if report.status == "error" else 0
 
 

@@ -3,6 +3,7 @@
 from .extraction import DataTextExtraction
 from .loader import (
     GameDataManager,
+    load_active_game_data,
     load_game_data,
     read_game_title,
     resolve_game_directory,
@@ -13,6 +14,7 @@ from .loader import (
 __all__: list[str] = [
     "DataTextExtraction",
     "GameDataManager",
+    "load_active_game_data",
     "load_game_data",
     "read_game_title",
     "resolve_game_directory",

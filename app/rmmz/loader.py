@@ -50,10 +50,20 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 
 
 async def load_game_data(game_path: str | Path) -> GameData:
-    """从 RPG Maker 游戏根目录加载标准数据文件并构造 `GameData`。"""
+    """从 RPG Maker 游戏根目录加载翻译源数据，原件留档存在时优先读取留档。"""
+    return await _load_game_data(game_path, use_origin_backups=True)
+
+
+async def load_active_game_data(game_path: str | Path) -> GameData:
+    """从 RPG Maker 游戏根目录加载当前激活文件，不读取原件留档。"""
+    return await _load_game_data(game_path, use_origin_backups=False)
+
+
+async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) -> GameData:
+    """按指定来源策略加载标准数据文件并构造 `GameData`。"""
     layout = resolve_game_layout(game_path)
     source_data_dir = layout.data_dir
-    source_plugins_path = layout.source_plugins_path
+    source_plugins_path = layout.source_plugins_path if use_origin_backups else layout.plugins_path
     origin_data_dir = layout.data_origin_dir
 
     valid_files = sorted(
@@ -68,7 +78,13 @@ async def load_game_data(game_path: str | Path) -> GameData:
 
     file_contents = await asyncio.gather(
         *(
-            _read_text_file(resolve_data_source_file(active_file_path=file_path, origin_data_dir=origin_data_dir))
+            _read_text_file(
+                resolve_data_source_file(
+                    active_file_path=file_path,
+                    origin_data_dir=origin_data_dir,
+                    use_origin_backup=use_origin_backups,
+                )
+            )
             for file_path in valid_files
         )
     )
@@ -277,8 +293,10 @@ def resolve_game_source_paths(game_root: Path) -> tuple[Path, Path, bool]:
     return layout.data_dir, layout.source_plugins_path, layout.has_origin_backup
 
 
-def resolve_data_source_file(*, active_file_path: Path, origin_data_dir: Path) -> Path:
+def resolve_data_source_file(*, active_file_path: Path, origin_data_dir: Path, use_origin_backup: bool = True) -> Path:
     """解析单个 data 文件的读取来源，原件留档存在时优先读取留档。"""
+    if not use_origin_backup:
+        return active_file_path
     origin_file_path = origin_data_dir / active_file_path.name
     if origin_file_path.exists():
         return origin_file_path
@@ -362,6 +380,7 @@ def _parse_plugins_js_text(plugins_content: str) -> list[dict[str, JsonValue]]:
 
 __all__: list[str] = [
     "GameDataManager",
+    "load_active_game_data",
     "load_game_data",
     "read_game_title",
     "read_game_title_from_package",

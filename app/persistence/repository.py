@@ -3,7 +3,6 @@
 import hashlib
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -27,6 +26,7 @@ from app.rmmz.schema import (
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
+    SourceResidualRuleType,
     TranslationErrorItem,
     TranslationItem,
     TranslationRunRecord,
@@ -34,7 +34,6 @@ from app.rmmz.schema import (
 )
 from app.rmmz.loader import read_game_title, resolve_game_directory, resolve_game_layout
 from app.observability.logging import logger
-from app.runtime_paths import resolve_app_path
 
 from .rows import (
     decode_string_list,
@@ -43,6 +42,8 @@ from .rows import (
     row_optional_str,
     row_str,
 )
+from .paths import DB_DIRECTORY, build_db_path, ensure_db_directory, resolve_default_db_directory
+from .records import GameMetadata, GameRecord, LanguageSettings
 from .sql import (
     CHECK_CONNECTION_READABLE,
     CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE,
@@ -116,32 +117,6 @@ from .sql import (
     UPSERT_TERMINOLOGY_IMPORT_STATE,
     UPSERT_TRANSLATION_RUN,
 )
-
-DB_DIRECTORY = resolve_app_path("data", "db")
-INVALID_FILE_NAME_CHARS = set('<>:"/\\|?*')
-
-
-def resolve_default_db_directory() -> Path:
-    """解析默认多游戏数据库目录。"""
-    return resolve_app_path("data", "db")
-
-
-def ensure_db_directory(db_directory: Path | None = None) -> Path:
-    """确保固定数据库目录存在。"""
-    resolved_db_directory = db_directory if db_directory is not None else resolve_default_db_directory()
-    resolved_db_directory.mkdir(parents=True, exist_ok=True)
-    return resolved_db_directory
-
-
-def build_db_path(game_title: str, db_directory: Path | None = None) -> Path:
-    """根据游戏标题生成固定数据库路径。"""
-    invalid_chars = sorted({char for char in game_title if char in INVALID_FILE_NAME_CHARS})
-    if invalid_chars:
-        joined_chars = "".join(invalid_chars)
-        raise ValueError(f"游戏标题包含非法文件名字，无法创建数据库: {joined_chars}")
-    resolved_db_directory = db_directory if db_directory is not None else resolve_default_db_directory()
-    return resolved_db_directory / f"{game_title}.db"
-
 
 async def open_connection(db_path: Path) -> aiosqlite.Connection:
     """打开 SQLite 连接并设置统一行工厂。"""
@@ -222,25 +197,6 @@ async def write_language_settings(
     await connection.commit()
 
 
-@dataclass(slots=True)
-class GameMetadata:
-    """数据库中保存的游戏绑定元数据。"""
-
-    game_title: str
-    game_path: Path
-    engine_kind: EngineKind
-    content_root: Path
-    engine_version: str
-
-
-@dataclass(slots=True)
-class LanguageSettings:
-    """数据库中保存的当前游戏语言设置。"""
-
-    source_language: SourceLanguage
-    target_language: TargetLanguage
-
-
 async def read_metadata(connection: aiosqlite.Connection, db_path: Path) -> GameMetadata:
     """从元数据表恢复游戏标题和游戏根目录。"""
     try:
@@ -280,37 +236,23 @@ async def read_metadata(connection: aiosqlite.Connection, db_path: Path) -> Game
 
 
 async def read_language_settings(connection: aiosqlite.Connection, db_path: Path) -> LanguageSettings:
-    """读取当前游戏语言设置；缺失时要求先执行一次性迁移。"""
+    """读取当前游戏语言设置；缺失时要求先补齐语言档案。"""
     try:
         async with connection.execute(SELECT_LANGUAGE_SETTINGS, (LANGUAGE_SETTINGS_KEY,)) as cursor:
             row = await cursor.fetchone()
     except aiosqlite.Error as error:
         raise RuntimeError(
-            f"数据库缺少语言设置表，请先运行一次性迁移脚本把旧库标记为日文游戏: {db_path}"
+            f"数据库缺少语言设置表，请先用独立脚本为该数据库写入语言档案: {db_path}"
         ) from error
     if row is None:
         raise RuntimeError(
-            f"数据库缺少语言设置记录，请先运行一次性迁移脚本把旧库标记为日文游戏: {db_path}"
+            f"数据库缺少语言设置记录，请先用独立脚本为该数据库写入语言档案: {db_path}"
         )
     source_language = parse_source_language(row_str(row, "source_language", db_path))
     target_language = row_str(row, "target_language", db_path).strip()
     if target_language != DEFAULT_TARGET_LANGUAGE:
         raise RuntimeError(f"数据库 target_language 非法: {db_path}")
     return LanguageSettings(source_language=source_language, target_language=DEFAULT_TARGET_LANGUAGE)
-
-
-@dataclass(slots=True)
-class GameRecord:
-    """单个已注册游戏的数据库元数据。"""
-
-    game_title: str
-    game_path: Path
-    db_path: Path
-    engine_kind: EngineKind
-    content_root: Path
-    engine_version: str
-    source_language: SourceLanguage
-    target_language: TargetLanguage
 
 
 class GameRegistry:
@@ -820,8 +762,12 @@ class TargetGameSession:
             _ = await self.connection.execute(
                 INSERT_SOURCE_RESIDUAL_RULE,
                 (
+                    rule.rule_id,
+                    rule.rule_type,
                     rule.location_path,
+                    rule.pattern_text,
                     json.dumps(rule.allowed_terms, ensure_ascii=False),
+                    rule.check_group,
                     rule.reason,
                 ),
             )
@@ -833,11 +779,15 @@ class TargetGameSession:
             rows = await cursor.fetchall()
         return [
             SourceResidualRuleRecord(
+                rule_id=row_str(row, "rule_id", self.db_path),
+                rule_type=parse_source_residual_rule_type(row_str(row, "rule_type", self.db_path), self.db_path),
                 location_path=row_str(row, "location_path", self.db_path),
+                pattern_text=row_str(row, "pattern_text", self.db_path),
                 allowed_terms=decode_string_list(
                     row_str(row, "allowed_terms", self.db_path),
                     "allowed_terms",
                 ),
+                check_group=row_str(row, "check_group", self.db_path),
                 reason=row_str(row, "reason", self.db_path),
             )
             for row in rows
@@ -1183,6 +1133,13 @@ def parse_error_type(value: str, db_path: Path) -> ErrorType:
     raise RuntimeError(f"数据库字段 error_type 不是有效译文检查错误类型: {db_path}")
 
 
+def parse_source_residual_rule_type(value: str, db_path: Path) -> SourceResidualRuleType:
+    """校验并收窄数据库中的源文残留例外规则类型。"""
+    if value == "position" or value == "structural":
+        return value
+    raise RuntimeError(f"数据库字段 rule_type 不是有效源文残留例外规则类型: {db_path}")
+
+
 def parse_terminology_category(value: str, db_path: Path) -> TerminologyCategory:
     """校验并收窄数据库中的术语类别。"""
     if value in TERMINOLOGY_CATEGORIES:
@@ -1199,4 +1156,5 @@ __all__: list[str] = [
     "TargetGameSession",
     "build_db_path",
     "ensure_db_directory",
+    "resolve_default_db_directory",
 ]

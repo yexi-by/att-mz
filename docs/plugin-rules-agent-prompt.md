@@ -6,7 +6,7 @@
 
 - 只读文件：`<工作区>/plugins.json`。
 - 任务参数：`<项目目录>`、`<工作区>`、`<游戏标题>`。
-- 可参考命令结果：主代理提供的 `export-plugins-json --json` 输出摘要。
+- 可参考信息：主代理可说明 `export-plugins-json` 已成功生成 `<工作区>/plugins.json`；该导出命令不提供 `--json` 摘要。
 
 ## 逻辑
 

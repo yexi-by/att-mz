@@ -96,11 +96,11 @@ A.T.T MZ 推荐按这个顺序跑：
 4. Agent 审查术语、插件文本、事件指令文本和 Note 标签文本。
 5. Agent 校验并导入必须原样保留的游戏控制符规则。
 6. `translate --max-batches 1` 做小批量翻译。
-7. `quality-report` 检查译文质量。
+7. `text-scope` 查看统一文本清单，`audit-coverage` 审计规则命中、已保存译文和实际可写范围，`quality-report` 检查译文本身质量。
 8. 修复质量问题后继续全量 `translate`。
-9. 写回前再次运行 `quality-report`。
+9. 写回前再次运行 `audit-coverage` 和 `quality-report`。
 10. 用户确认后执行 `write-back`，生成第一版可试玩汉化结果。
-11. 根据试玩反馈继续修复并再次写回。
+11. 根据试玩反馈继续修复；写回后用 `verify-feedback-text` 反查反馈原文是否仍在真实游戏文件中。
 
 ## 常用命令
 
@@ -111,7 +111,11 @@ A.T.T MZ 推荐按这个顺序跑：
 | 注册英文游戏 | `uv run python main.py --agent-mode add-game --path <游戏目录> --source-language en --json` |
 | 准备 Agent 工作区 | `uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json` |
 | 小批量翻译 | `uv run python main.py --agent-mode translate --game <游戏标题> --max-batches 1 --json` |
+| 查看统一文本清单 | `uv run python main.py --agent-mode text-scope --game <游戏标题> --json` |
+| 审计覆盖范围 | `uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json` |
 | 查看质量报告 | `uv run python main.py --agent-mode quality-report --game <游戏标题> --json` |
+| 反查反馈原文 | `uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json` |
+| 扫描插件源码候选 | `uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <候选文件> --json` |
 | 写进游戏文件 | `uv run python main.py --agent-mode write-back --game <游戏标题> --json` |
 | 用户允许后覆盖字体 | `uv run python main.py --agent-mode write-back --game <游戏标题> --confirm-font-overwrite --json` |
 | 还原项目覆盖过的字体引用 | `uv run python main.py --agent-mode restore-font --game <游戏标题> --json` |
@@ -152,13 +156,14 @@ Start-Process -FilePath "<游戏目录>/Game.exe"
 
 请认真试玩一段流程，重点看对话、菜单、物品技能说明、任务提示、插件界面、按钮文字、窗口换行、字体显示和图片文字。遇到漏翻、误翻、称呼不统一、显示不下、语气不自然或仍有源文残留的地方，把截图、场景、当前译文和你期望的表达反馈给 Agent。
 
-如果游戏启动后仍显示大量原始源语言文本，先重新运行质量检查：
+如果游戏启动后仍显示大量原始源语言文本，先重新运行覆盖审计和质量检查：
 
 ```powershell
+uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
 uv run python main.py --agent-mode quality-report --game <游戏标题> --json
 ```
 
-如果报告里还有没成功保存译文的文本、源文残留、游戏控制符风险或窗口放不下的行，按报告继续修复后再写回。
+如果报告里还有没成功保存译文的文本、源文残留、游戏控制符风险或窗口放不下的行，按报告继续修复后再写回。写回后，把反馈原文整理成字符串数组或 `{"texts": [...]}`，运行 `verify-feedback-text` 确认这些原文不再出现在真实 `data/*.json`、插件配置或插件源码中；插件源码命中只作为候选，需另走游戏侧专用处理流程。
 
 ## 开发检查
 
