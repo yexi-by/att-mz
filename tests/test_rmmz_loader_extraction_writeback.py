@@ -205,6 +205,7 @@ async def test_english_visible_401_short_fragment_is_extracted(
 async def test_write_back_keeps_english_visible_401_short_fragment(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """写回前过滤不能再次跳过已经保存的英文短断句正文。"""
     common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
@@ -220,6 +221,19 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
         }
     )
     _rewrite_json(common_events_path, common_events)
+
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="en")
