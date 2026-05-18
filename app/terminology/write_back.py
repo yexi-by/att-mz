@@ -8,6 +8,7 @@ from app.rmmz.schema import (
     SYSTEM_FILE_NAME,
     TROOPS_FILE_NAME,
 )
+from app.rmmz.speaker import MvVirtualSpeaker, parse_mv_virtual_speaker_line
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, ensure_json_array, ensure_json_object
 
 from .extraction import BASE_NAME_CATEGORIES, SYSTEM_TERM_CATEGORIES, is_translatable_terminology_source
@@ -15,7 +16,7 @@ from .schemas import TerminologyRegistry
 
 
 def apply_terminology_translations(game_data: GameData, registry: TerminologyRegistry) -> int:
-    """把术语表译名写入名字框、地图显示名、数据库名称和系统类型。"""
+    """把术语表译名写入可稳定定位的游戏字段。"""
     written_count = 0
     written_count += _write_map_display_names(game_data=game_data, translations=registry.map_display_names)
     written_count += _write_speaker_names(game_data=game_data, translations=registry.speaker_names)
@@ -49,12 +50,16 @@ def _write_map_display_names(*, game_data: GameData, translations: dict[str, str
 
 
 def _write_speaker_names(*, game_data: GameData, translations: dict[str, str]) -> int:
-    """按 MZ 原名字框写回译名。"""
-    if game_data.layout.engine_kind != "mz":
-        return 0
-
+    """按当前引擎写回名字框或 MV 虚拟名字框译名。"""
     clean_translations = _filled_translations(translations)
     if not clean_translations:
+        return 0
+    if game_data.layout.engine_kind == "mv":
+        return _write_mv_virtual_speaker_names(
+            game_data=game_data,
+            translations=clean_translations,
+        )
+    if game_data.layout.engine_kind != "mz":
         return 0
 
     written_count = 0
@@ -71,6 +76,146 @@ def _write_speaker_names(*, game_data: GameData, translations: dict[str, str]) -
             continue
         if file_name == TROOPS_FILE_NAME:
             written_count += _write_troop_speaker_names(data=data, translations=clean_translations)
+    return written_count
+
+
+def _write_mv_virtual_speaker_names(
+    *,
+    game_data: GameData,
+    translations: dict[str, str],
+) -> int:
+    """写回 MV `401` 首行协议抽象出的虚拟名字框。"""
+    written_count = 0
+    for file_name, data in game_data.writable_data.items():
+        if MAP_PATTERN.fullmatch(file_name) is not None:
+            written_count += _write_mv_map_speaker_names(
+                game_data=game_data,
+                file_name=file_name,
+                data=data,
+                translations=translations,
+            )
+            continue
+        if file_name == COMMON_EVENTS_FILE_NAME:
+            written_count += _write_mv_common_event_speaker_names(
+                game_data=game_data,
+                data=data,
+                translations=translations,
+            )
+            continue
+        if file_name == TROOPS_FILE_NAME:
+            written_count += _write_mv_troop_speaker_names(
+                game_data=game_data,
+                data=data,
+                translations=translations,
+            )
+    return written_count
+
+
+def _write_mv_map_speaker_names(
+    *,
+    game_data: GameData,
+    file_name: str,
+    data: JsonValue,
+    translations: dict[str, str],
+) -> int:
+    """写回地图事件中的 MV 虚拟名字框。"""
+    written_count = 0
+    map_object = ensure_json_object(data, file_name)
+    events = ensure_json_array(map_object["events"], f"{file_name}.events")
+    for event_index, event in enumerate(events):
+        if event is None:
+            continue
+        event_object = ensure_json_object(event, f"{file_name}.events[{event_index}]")
+        pages = ensure_json_array(event_object["pages"], f"{file_name}.events[{event_index}].pages")
+        for page_index, page in enumerate(pages):
+            page_object = ensure_json_object(page, f"{file_name}.events[{event_index}].pages[{page_index}]")
+            commands = _ensure_command_list(
+                page_object["list"],
+                f"{file_name}.events[{event_index}].pages[{page_index}].list",
+            )
+            written_count += _write_mv_virtual_speaker_names_to_commands(
+                game_data=game_data,
+                commands=commands,
+                translations=translations,
+            )
+    return written_count
+
+
+def _write_mv_common_event_speaker_names(
+    *,
+    game_data: GameData,
+    data: JsonValue,
+    translations: dict[str, str],
+) -> int:
+    """写回公共事件中的 MV 虚拟名字框。"""
+    written_count = 0
+    events = ensure_json_array(data, COMMON_EVENTS_FILE_NAME)
+    for event_index, event in enumerate(events):
+        if event is None:
+            continue
+        event_object = ensure_json_object(event, f"{COMMON_EVENTS_FILE_NAME}[{event_index}]")
+        commands = _ensure_command_list(event_object["list"], f"{COMMON_EVENTS_FILE_NAME}[{event_index}].list")
+        written_count += _write_mv_virtual_speaker_names_to_commands(
+            game_data=game_data,
+            commands=commands,
+            translations=translations,
+        )
+    return written_count
+
+
+def _write_mv_troop_speaker_names(
+    *,
+    game_data: GameData,
+    data: JsonValue,
+    translations: dict[str, str],
+) -> int:
+    """写回敌群事件中的 MV 虚拟名字框。"""
+    written_count = 0
+    troops = ensure_json_array(data, TROOPS_FILE_NAME)
+    for troop_index, troop in enumerate(troops):
+        if troop is None:
+            continue
+        troop_object = ensure_json_object(troop, f"{TROOPS_FILE_NAME}[{troop_index}]")
+        pages = ensure_json_array(troop_object["pages"], f"{TROOPS_FILE_NAME}[{troop_index}].pages")
+        for page_index, page in enumerate(pages):
+            page_object = ensure_json_object(page, f"{TROOPS_FILE_NAME}[{troop_index}].pages[{page_index}]")
+            commands = _ensure_command_list(page_object["list"], f"{TROOPS_FILE_NAME}[{troop_index}].pages[{page_index}].list")
+            written_count += _write_mv_virtual_speaker_names_to_commands(
+                game_data=game_data,
+                commands=commands,
+                translations=translations,
+            )
+    return written_count
+
+
+def _write_mv_virtual_speaker_names_to_commands(
+    *,
+    game_data: GameData,
+    commands: list[JsonObject],
+    translations: dict[str, str],
+) -> int:
+    """写回单个事件指令列表中的 MV 虚拟名字框。"""
+    written_count = 0
+    for command_index, command in enumerate(commands):
+        if command.get("code") != Code.NAME:
+            continue
+        speaker_command = _find_mv_virtual_speaker_command(
+            game_data=game_data,
+            commands=commands,
+            command_index=command_index,
+        )
+        if speaker_command is None:
+            continue
+        speaker_line, virtual_speaker = speaker_command
+        translated_speaker = translations.get(virtual_speaker.speaker)
+        if translated_speaker is None:
+            continue
+        translated_text = virtual_speaker.render(
+            translated_speaker=translated_speaker,
+            translated_body=virtual_speaker.body_text if virtual_speaker.body_text else None,
+        )
+        _write_command_first_parameter(speaker_line, translated_text)
+        written_count += 1
     return written_count
 
 
@@ -149,6 +294,49 @@ def _write_speaker_names_to_commands(
         parameters[4] = translated_text
         written_count += 1
     return written_count
+
+
+def _find_mv_virtual_speaker_command(
+    *,
+    game_data: GameData,
+    commands: list[JsonObject],
+    command_index: int,
+) -> tuple[JsonObject, MvVirtualSpeaker] | None:
+    """读取 `101` 后首条非空 `401` 并解析 MV 虚拟名字框。"""
+    next_index = command_index + 1
+    while next_index < len(commands):
+        command = commands[next_index]
+        if command.get("code") != Code.TEXT:
+            break
+        text = _read_command_first_parameter(command)
+        if text is None or not text.strip():
+            next_index += 1
+            continue
+        virtual_speaker = parse_mv_virtual_speaker_line(text=text, game_data=game_data)
+        if virtual_speaker is None:
+            return None
+        return command, virtual_speaker
+    return None
+
+
+def _read_command_first_parameter(command: JsonObject) -> str | None:
+    """读取事件指令第一个字符串参数。"""
+    parameters = command.get("parameters")
+    if not isinstance(parameters, list) or not parameters:
+        return None
+    first_parameter = parameters[0]
+    if not isinstance(first_parameter, str):
+        return None
+    return first_parameter
+
+
+def _write_command_first_parameter(command: JsonObject, text: str) -> None:
+    """写入事件指令第一个参数。"""
+    parameters = _ensure_command_parameters(command)
+    if parameters:
+        parameters[0] = text
+    else:
+        parameters.append(text)
 
 
 def _write_base_database_terms(*, game_data: GameData, registry: TerminologyRegistry) -> int:

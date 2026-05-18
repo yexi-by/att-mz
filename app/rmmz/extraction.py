@@ -14,6 +14,7 @@ from app.rmmz.schema import (
     TranslationData,
     TranslationItem,
 )
+from app.rmmz.speaker import parse_mv_virtual_speaker_line
 from app.rmmz.text_rules import TextRules
 from app.rmmz.commands import iter_all_commands
 
@@ -214,7 +215,7 @@ class DataTextExtraction:
     ) -> None:
         """处理 NAME 指令，并创建后续长文本容器。"""
         role = NARRATION_ROLE
-        if len(command.parameters) >= 5:
+        if self.game_data.layout.engine_kind == "mz" and len(command.parameters) >= 5:
             role_value = command.parameters[4]
             if isinstance(role_value, str) and role_value.strip():
                 role = role_value.strip()
@@ -244,6 +245,20 @@ class DataTextExtraction:
 
         text = self._extract_text_value(command)
         if text is not None:
+            if (
+                self.game_data.layout.engine_kind == "mv"
+                and current_item.role == NARRATION_ROLE
+                and not current_item.original_lines
+            ):
+                virtual_speaker = parse_mv_virtual_speaker_line(
+                    text=text,
+                    game_data=self.game_data,
+                )
+                if virtual_speaker is not None:
+                    current_item.role = virtual_speaker.speaker
+                    if not virtual_speaker.body_text:
+                        return
+                    text = virtual_speaker.body_text
             current_item.original_lines.append(text)
             current_item.source_line_paths.append(location_path)
 
@@ -322,17 +337,38 @@ class DataTextExtraction:
         """判断多行原文是否至少包含一处需要翻译的源语言字符。"""
         return self.text_rules.should_translate_source_lines(lines)
 
+    def _should_extract_visible_command_lines(self, lines: list[str]) -> bool:
+        """判断事件正文是否包含源语言字符。
+
+        `401` 对话正文和 `405` 滚动正文会直接显示给玩家，不能套用英文协议噪音
+        过滤，否则 `But-` 这类短断句会被误判成代码片段而漏翻。
+        """
+        return any(self._contains_required_source_text(line) for line in lines)
+
+    def _contains_required_source_text(self, text: str) -> bool:
+        """只按源语言字符规则判断文本是否需要翻译。"""
+        normalized_text = self.text_rules.normalize_extraction_text(text)
+        if not normalized_text:
+            return False
+        return self.text_rules.source_text_required_pattern.search(normalized_text) is not None
+
+    def _should_keep_translation_item(self, item: TranslationItem) -> bool:
+        """判断提取条目是否保留到正文翻译流程。"""
+        if item.item_type == "long_text" and item.source_line_paths:
+            return self._should_extract_visible_command_lines(item.original_lines)
+        return self._should_extract_lines(item.original_lines)
+
     def _filter_translation_data_map(
         self,
         translation_data_map: dict[str, TranslationData],
     ) -> dict[str, TranslationData]:
-        """移除整条原文都不含源语言字符的条目。"""
+        """移除不需要进入正文翻译流程的条目。"""
         filtered_map: dict[str, TranslationData] = {}
         for file_name, translation_data in translation_data_map.items():
             filtered_items = [
                 item
                 for item in translation_data.translation_items
-                if self._should_extract_lines(item.original_lines)
+                if self._should_keep_translation_item(item)
             ]
             if not filtered_items:
                 continue

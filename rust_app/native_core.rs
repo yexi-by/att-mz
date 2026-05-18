@@ -42,13 +42,55 @@ mod tests {
     fn minimal_text_rules() -> Value {
         json!({
             "custom_placeholder_rules": [],
-            "allowed_japanese_chars": [],
-            "allowed_japanese_tail_chars": [],
-            "japanese_segment_pattern": r"[\p{Hiragana}\p{Katakana}\p{Han}ー]+",
+            "source_residual_allowed_chars": [],
+            "source_residual_allowed_tail_chars": [],
+            "source_residual_segment_pattern": r"[\p{Hiragana}\p{Katakana}\p{Han}ー]+",
+            "source_residual_label": "日文",
+            "allowed_source_residual_terms": [],
+            "source_residual_terms_ignore_case": false,
             "line_width_count_pattern": r"[^\s]",
             "residual_escape_sequence_pattern": r"\\[A-Za-z0-9_]+\[[^\]]*\]",
             "long_text_line_width_limit": 999
         })
+    }
+
+    fn english_text_rules() -> Value {
+        json!({
+            "custom_placeholder_rules": [],
+            "source_residual_allowed_chars": [],
+            "source_residual_allowed_tail_chars": [],
+            "source_residual_segment_pattern": r"[A-Za-z][A-Za-z0-9'’_-]*",
+            "source_residual_label": "英文",
+            "allowed_source_residual_terms": ["HP", "MP", "TP", "OK"],
+            "source_residual_terms_ignore_case": true,
+            "line_width_count_pattern": r"[^\s]",
+            "residual_escape_sequence_pattern": r"\\[A-Za-z0-9_]+\[[^\]]*\]",
+            "long_text_line_width_limit": 999
+        })
+    }
+
+    #[test]
+    fn quality_scan_reports_source_residual_as_segments() {
+        let payload = json!({
+            "items": [
+                {
+                    "location_path": "Map001.json/1/0/0",
+                    "item_type": "long_text",
+                    "role": null,
+                    "original_lines": ["Hello Alice"],
+                    "translation_lines": ["你好 Alice"]
+                }
+            ],
+            "text_rules": english_text_rules(),
+            "source_residual_rules": []
+        });
+        let output = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let reason = value["source_residual_items"][0]["reason"]
+            .as_str()
+            .expect("残留明细应包含原因");
+        assert!(reason.contains("Alice"));
+        assert!(!reason.contains("'A', 'l'"));
     }
 
     #[test]
@@ -64,7 +106,7 @@ mod tests {
                 }
             ],
             "text_rules": minimal_text_rules(),
-            "japanese_residual_rules": []
+            "source_residual_rules": []
         });
         let output = scan_quality_impl(&payload.to_string()).expect("质检应成功");
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");

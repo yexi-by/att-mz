@@ -4,6 +4,7 @@ import re
 
 from app.rmmz.game_data import BaseItem, EventCommand
 from app.rmmz.schema import Code, GameData
+from app.rmmz.speaker import parse_mv_virtual_speaker_line
 
 from .schemas import (
     DatabaseTermContext,
@@ -57,7 +58,7 @@ class TerminologyExtraction:
     def extract_registry_and_contexts(
         self,
     ) -> tuple[TerminologyRegistry, list[SpeakerDialogueContext], list[DatabaseTermContext]]:
-        """提取完整术语表、名字框对白样本和数据库术语上下文。"""
+        """提取完整术语表、说话人对白样本和数据库术语上下文。"""
         speaker_dialogue_map = self._collect_speaker_dialogue_map()
         contexts = [
             SpeakerDialogueContext(name=name, dialogue_lines=lines)
@@ -135,10 +136,13 @@ class TerminologyExtraction:
         return TerminologyRegistry.from_category_map(category_map), database_contexts
 
     def _collect_speaker_dialogue_map(self) -> dict[str, list[str]]:
-        """按 MZ 名字框原文聚合后续对白。"""
-        if self.game_data.layout.engine_kind != "mz":
-            return {}
+        """按当前引擎的说话人来源聚合后续对白。"""
+        if self.game_data.layout.engine_kind == "mv":
+            return self._collect_mv_speaker_dialogue_map()
+        return self._collect_mz_speaker_dialogue_map()
 
+    def _collect_mz_speaker_dialogue_map(self) -> dict[str, list[str]]:
+        """按 MZ 名字框原文聚合后续对白。"""
         dialogue_map: dict[str, list[str]] = {}
 
         for map_data in self.game_data.map_data.values():
@@ -161,6 +165,30 @@ class TerminologyExtraction:
 
         return dialogue_map
 
+    def _collect_mv_speaker_dialogue_map(self) -> dict[str, list[str]]:
+        """按 MV `401` 正文首行协议聚合说话人与对白。"""
+        dialogue_map: dict[str, list[str]] = {}
+
+        for map_data in self.game_data.map_data.values():
+            for event in map_data.events:
+                if event is None:
+                    continue
+                for page in event.pages:
+                    self._append_mv_page_dialogue(dialogue_map, page.commands)
+
+        for common_event in self.game_data.common_events:
+            if common_event is None:
+                continue
+            self._append_mv_page_dialogue(dialogue_map, common_event.commands)
+
+        for troop in self.game_data.troops:
+            if troop is None:
+                continue
+            for page in troop.pages:
+                self._append_mv_page_dialogue(dialogue_map, page.commands)
+
+        return dialogue_map
+
     def _append_page_dialogue(
         self,
         dialogue_map: dict[str, list[str]],
@@ -175,6 +203,35 @@ class TerminologyExtraction:
                 continue
             lines = collect_following_dialogue_lines(commands, command_index)
             dialogue_map.setdefault(source_text, []).extend(lines)
+
+    def _append_mv_page_dialogue(
+        self,
+        dialogue_map: dict[str, list[str]],
+        commands: list[EventCommand],
+    ) -> None:
+        """从 MV 单个事件页的正文首行收集说话人与对白。"""
+        for command_index, command in enumerate(commands):
+            if command.code != Code.NAME:
+                continue
+            lines = collect_following_dialogue_lines(commands, command_index)
+            first_line_index = first_non_empty_dialogue_line_index(lines)
+            if first_line_index is None:
+                continue
+            virtual_speaker = parse_mv_virtual_speaker_line(
+                text=lines[first_line_index],
+                game_data=self.game_data,
+            )
+            if virtual_speaker is None:
+                continue
+            source_text = virtual_speaker.speaker
+            if not is_translatable_terminology_source(source_text):
+                continue
+            body_lines = _build_mv_virtual_speaker_context_lines(
+                lines=lines,
+                first_line_index=first_line_index,
+                first_body_text=virtual_speaker.body_text,
+            )
+            dialogue_map.setdefault(source_text, []).extend(body_lines)
 
 
 def build_speaker_sample_file_name(name: str) -> str:
@@ -250,6 +307,36 @@ def collect_following_dialogue_lines(commands: list[EventCommand], command_index
     return lines
 
 
+def first_non_empty_dialogue_line(lines: list[str]) -> str | None:
+    """读取连续对白中的第一条非空文本。"""
+    for line in lines:
+        if line.strip():
+            return line
+    return None
+
+
+def first_non_empty_dialogue_line_index(lines: list[str]) -> int | None:
+    """读取连续对白中第一条非空文本的下标。"""
+    for index, line in enumerate(lines):
+        if line.strip():
+            return index
+    return None
+
+
+def _build_mv_virtual_speaker_context_lines(
+    *,
+    lines: list[str],
+    first_line_index: int,
+    first_body_text: str,
+) -> list[str]:
+    """剥离 MV 虚拟名字框后生成给术语 Agent 阅读的对白样本。"""
+    context_lines: list[str] = []
+    if first_body_text:
+        context_lines.append(first_body_text)
+    context_lines.extend(lines[first_line_index + 1 :])
+    return context_lines
+
+
 __all__: list[str] = [
     "ACTOR_NAME_CONTROL_PATTERN",
     "BASE_NAME_CATEGORIES",
@@ -260,6 +347,8 @@ __all__: list[str] = [
     "TerminologyExtraction",
     "build_speaker_sample_file_name",
     "collect_following_dialogue_lines",
+    "first_non_empty_dialogue_line",
+    "first_non_empty_dialogue_line_index",
     "is_translatable_terminology_source",
     "read_name_box_text",
 ]
