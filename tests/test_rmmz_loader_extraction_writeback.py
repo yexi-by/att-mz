@@ -8,6 +8,7 @@ import pytest
 
 from app.application.file_writer import reset_writable_copies
 from app.application.file_writer import write_game_files
+from app.application.handler import TranslationHandler
 from app.application.font_replacement import (
     apply_font_replacement,
     read_plugins_js_file,
@@ -16,9 +17,11 @@ from app.application.font_replacement import (
 from app.config.schemas import TextRulesSetting
 from app.note_tag_text import NoteTagTextExtraction, build_note_tag_rule_records_from_import
 from app.note_tag_text.exporter import collect_note_tag_candidates
+from app.llm import LLMHandler
+from app.persistence import GameRegistry
 from app.rmmz import DataTextExtraction, load_game_data, read_game_title, resolve_game_layout
 from app.rmmz.control_codes import CustomPlaceholderRule
-from app.rmmz.schema import NoteTagTextRuleRecord, PLUGINS_FILE_NAME
+from app.rmmz.schema import NoteTagTextRuleRecord, PLUGINS_FILE_NAME, TranslationItem
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.rmmz.write_back import write_data_text
 
@@ -109,7 +112,7 @@ async def test_mv_data_extraction_reads_role_from_first_401(
                 "id": 6,
                 "list": [
                     {"code": 101, "parameters": [0, 0, 0, 2]},
-                    {"code": 401, "parameters": ["\\n[1]:普通の本文です"]},
+                    {"code": 401, "parameters": ["\\n[999]:普通の本文です"]},
                     {"code": 0, "parameters": []},
                 ],
             },
@@ -153,11 +156,107 @@ async def test_mv_data_extraction_reads_role_from_first_401(
     assert items_by_path["CommonEvents.json/5/0"].role == "店員"
     assert items_by_path["CommonEvents.json/5/0"].original_lines == ["いらっしゃいませ"]
     assert items_by_path["CommonEvents.json/6/0"].role == "旁白"
-    assert items_by_path["CommonEvents.json/6/0"].original_lines == ["\\n[1]:普通の本文です"]
+    assert items_by_path["CommonEvents.json/6/0"].original_lines == ["\\n[999]:普通の本文です"]
     assert items_by_path["CommonEvents.json/7/0"].role == "案内人"
     assert items_by_path["CommonEvents.json/7/0"].original_lines == ["第五参数を無視します」"]
     assert items_by_path["CommonEvents.json/8/0"].role == "旁白"
     assert items_by_path["CommonEvents.json/8/0"].original_lines == ["まだやるかい？掛け金はそのままだぜ？（掛け金\\V[48])"]
+
+
+@pytest.mark.asyncio
+async def test_english_visible_401_short_fragment_is_extracted(
+    minimal_game_dir: Path,
+) -> None:
+    """英文 `401` 短断句也是玩家可见正文，不能按协议噪音跳过。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 3,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2, "Adriel"]},
+                {"code": 401, "parameters": ["But-"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(
+            source_text_required_pattern=r"[A-Za-z]+",
+            source_text_exclusion_profile="english_protocol_noise",
+        )
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
+    items_by_path = {
+        item.location_path: item
+        for data in extracted.values()
+        for item in data.translation_items
+    }
+
+    assert items_by_path["CommonEvents.json/3/0"].role == "Adriel"
+    assert items_by_path["CommonEvents.json/3/0"].original_lines == ["But-"]
+    assert items_by_path["CommonEvents.json/3/0"].source_line_paths == ["CommonEvents.json/3/1"]
+
+
+@pytest.mark.asyncio
+async def test_write_back_keeps_english_visible_401_short_fragment(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """写回前过滤不能再次跳过已经保存的英文短断句正文。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 3,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2, "Adriel"]},
+                {"code": 401, "parameters": ["But-"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="en")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/3/0",
+                    item_type="long_text",
+                    role="Adriel",
+                    original_lines=["But-"],
+                    source_line_paths=["CommonEvents.json/3/1"],
+                    translation_lines=["但是——"],
+                )
+            ]
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        _ = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    written_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    written_commands = ensure_json_array(
+        ensure_json_object(written_events[3], "CommonEvents[3]")["list"],
+        "CommonEvents[3].list",
+    )
+    written_line = ensure_json_array(
+        ensure_json_object(written_commands[1], "CommonEvents[3].list[1]")["parameters"],
+        "CommonEvents[3].list[1].parameters",
+    )[0]
+
+    assert written_line == "但是——"
 
 
 @pytest.mark.asyncio

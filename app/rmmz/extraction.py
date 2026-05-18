@@ -337,17 +337,38 @@ class DataTextExtraction:
         """判断多行原文是否至少包含一处需要翻译的源语言字符。"""
         return self.text_rules.should_translate_source_lines(lines)
 
+    def _should_extract_visible_command_lines(self, lines: list[str]) -> bool:
+        """判断事件正文是否包含源语言字符。
+
+        `401` 对话正文和 `405` 滚动正文会直接显示给玩家，不能套用英文协议噪音
+        过滤，否则 `But-` 这类短断句会被误判成代码片段而漏翻。
+        """
+        return any(self._contains_required_source_text(line) for line in lines)
+
+    def _contains_required_source_text(self, text: str) -> bool:
+        """只按源语言字符规则判断文本是否需要翻译。"""
+        normalized_text = self.text_rules.normalize_extraction_text(text)
+        if not normalized_text:
+            return False
+        return self.text_rules.source_text_required_pattern.search(normalized_text) is not None
+
+    def _should_keep_translation_item(self, item: TranslationItem) -> bool:
+        """判断提取条目是否保留到正文翻译流程。"""
+        if item.item_type == "long_text" and item.source_line_paths:
+            return self._should_extract_visible_command_lines(item.original_lines)
+        return self._should_extract_lines(item.original_lines)
+
     def _filter_translation_data_map(
         self,
         translation_data_map: dict[str, TranslationData],
     ) -> dict[str, TranslationData]:
-        """移除整条原文都不含源语言字符的条目。"""
+        """移除不需要进入正文翻译流程的条目。"""
         filtered_map: dict[str, TranslationData] = {}
         for file_name, translation_data in translation_data_map.items():
             filtered_items = [
                 item
                 for item in translation_data.translation_items
-                if self._should_extract_lines(item.original_lines)
+                if self._should_keep_translation_item(item)
             ]
             if not filtered_items:
                 continue

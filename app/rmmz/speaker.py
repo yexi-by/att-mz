@@ -16,7 +16,7 @@ type MvSpeakerStyle = Literal[
 ]
 
 ACTOR_NAME_PREFIX_PATTERN: re.Pattern[str] = re.compile(
-    r"^(?P<control>\\N\[(?P<actor_id>\d+)\])\s*[:：]\s*(?P<body>.*)$",
+    r"^(?P<control>\\[Nn]\[(?P<actor_id>\d+)\])\s*[:：]\s*(?P<body>.*)$",
 )
 YEP_NAME_BOX_PATTERN: re.Pattern[str] = re.compile(
     r"^(?P<command>\\(?:n(?:c|r)?|r))<(?P<speaker>[^>\r\n]{1,80})>(?P<body>.*)$",

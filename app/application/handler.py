@@ -932,7 +932,7 @@ class TranslationHandler:
         text_rules: TextRules,
         translated_items: list[TranslationItem],
     ) -> list[TranslationItem]:
-        """仅保留当前提取规则仍认为需要翻译的译文条目。"""
+        """仅保留当前提取规则仍能定位写回位置的译文条目。"""
         game_title = session.game_title
         writable_paths = await self._collect_extractable_translation_paths(
             session=session,
@@ -949,7 +949,6 @@ class TranslationHandler:
             item
             for item in translated_items
             if item.location_path in writable_paths
-            and text_rules.should_translate_source_lines(item.original_lines)
         ]
         skipped_count = len(translated_items) - len(writable_items)
         if skipped_count:

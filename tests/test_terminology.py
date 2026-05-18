@@ -171,7 +171,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
                 "id": 4,
                 "list": [
                     {"code": 101, "parameters": [0, 0, 0, 2]},
-                    {"code": 401, "parameters": ["\\n[1]:普通の本文です"]},
+                    {"code": 401, "parameters": ["\\n[999]:普通の本文です"]},
                     {"code": 0, "parameters": []},
                 ],
             },
@@ -195,7 +195,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
         "MV勇者": "",
         "案内人": "",
     }
-    assert "\\n[1]" not in registry.speaker_names
+    assert "\\n[999]" not in registry.speaker_names
     assert summary.sample_file_count == 2
 
     contexts = [
