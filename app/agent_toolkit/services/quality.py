@@ -18,6 +18,7 @@ from .common import (
     TranslationErrorItem,
     _build_coverage_report,
     _build_manual_translation_template_entry,
+    _build_quality_error_category_counts,
     _build_quality_fix_categories_by_path,
     _build_translation_error_quality_detail,
     _collect_active_translation_location_paths,
@@ -96,6 +97,8 @@ class QualityAgentMixin:
                 summary={
                     "exported_count": 0,
                     "output": str(output_path),
+                    "quality_error_items_count": 0,
+                    "quality_error_category_counts": _build_quality_error_category_counts([]),
                     "quality_error_count": 0,
                     "source_residual_count": 0,
                     "text_structure_count": 0,
@@ -125,6 +128,8 @@ class QualityAgentMixin:
                 summary={
                     "exported_count": 0,
                     "output": str(output_path),
+                    "quality_error_items_count": len(quality_error_items),
+                    "quality_error_category_counts": _build_quality_error_category_counts(quality_error_items),
                     "quality_error_count": len(quality_error_items),
                     "source_residual_count": 0,
                     "text_structure_count": 0,
@@ -197,6 +202,8 @@ class QualityAgentMixin:
             summary={
                 "exported_count": len(problem_paths),
                 "output": str(output_path),
+                "quality_error_items_count": len(quality_error_items),
+                "quality_error_category_counts": _build_quality_error_category_counts(quality_error_items),
                 "quality_error_count": len(quality_error_items),
                 "source_residual_count": _count_active_quality_details(residual_details, active_paths),
                 "text_structure_count": _count_active_quality_details(text_structure_details, active_paths),

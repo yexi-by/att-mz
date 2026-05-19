@@ -18,7 +18,7 @@ from app.observability.logging import logger
 from .font_records import FontRecordSessionMixin
 from .rows import row_str
 from .paths import DB_DIRECTORY, build_db_path, ensure_db_directory, resolve_default_db_directory
-from .records import GameMetadata, GameRecord, LanguageSettings
+from .records import GameMetadata, GameRecord, LanguageSettings, RuleReviewStateRecord
 from .rule_records import RuleRecordSessionMixin
 from .run_records import RunRecordSessionMixin
 from .session_utils import build_event_command_group_key, current_timestamp_text
@@ -34,6 +34,7 @@ from .sql import (
     CREATE_NOTE_TAG_TEXT_RULES_TABLE,
     CREATE_PLACEHOLDER_RULES_TABLE,
     CREATE_PLUGIN_TEXT_RULES_TABLE,
+    CREATE_RULE_REVIEW_STATES_TABLE,
     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
     CREATE_TRANSLATION_RUNS_TABLE,
@@ -85,6 +86,7 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_TERMINOLOGY_IMPORT_STATE_TABLE)
     _ = await connection.execute(CREATE_PLACEHOLDER_RULES_TABLE)
     _ = await connection.execute(CREATE_SOURCE_RESIDUAL_RULES_TABLE)
+    _ = await connection.execute(CREATE_RULE_REVIEW_STATES_TABLE)
     _ = await connection.execute(CREATE_FONT_REPLACEMENT_RECORDS_TABLE)
     _ = await connection.execute(CREATE_TRANSLATION_RUNS_TABLE)
     _ = await connection.execute(CREATE_LLM_FAILURES_TABLE)
@@ -411,6 +413,7 @@ __all__: list[str] = [
     "GameRecord",
     "GameRegistry",
     "LanguageSettings",
+    "RuleReviewStateRecord",
     "TargetGameSession",
     "build_event_command_group_key",
     "build_db_path",

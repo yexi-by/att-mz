@@ -30,6 +30,7 @@ from .common import (
     parse_note_tag_rule_import_text,
     parse_plugin_rule_import_text,
 )
+from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, note_tag_rule_scope_hash
 
 
 class RuleValidationAgentMixin:
@@ -208,6 +209,14 @@ class RuleValidationAgentMixin:
                 if stale_paths:
                     deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
                 await session.replace_note_tag_text_rules(records)
+                if records:
+                    await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+                else:
+                    await session.replace_rule_review_state(
+                        rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+                        scope_hash=note_tag_rule_scope_hash(game_data),
+                        reviewed_empty=True,
+                    )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],

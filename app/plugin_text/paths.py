@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.rmmz.text_rules import JsonValue
+from app.rmmz.text_rules import JsonObject, JsonValue
 from app.rmmz.text_protocol import decode_json_container_text
 
 JSON_INDEX_SEGMENT_PATTERN: re.Pattern[str] = re.compile(r"\[\d+\]")
@@ -193,6 +193,28 @@ def expand_rule_to_leaf_paths(
     return matched_paths
 
 
+def build_json_string_leaf_path_hint(
+    *,
+    path_template: str,
+    resolved_leaves: list[ResolvedLeaf],
+) -> str | None:
+    """为误指向 JSON 字符串容器的规则生成内部叶子路径提示。"""
+    descendant_leaves = [
+        leaf
+        for leaf in resolved_leaves
+        if leaf.value_type == "string"
+        and leaf.from_json_string
+        and jsonpath_template_is_ancestor(template_path=path_template, actual_path=leaf.path)
+    ]
+    if not descendant_leaves:
+        return None
+
+    candidate_templates = sorted(build_allowed_templates(descendant_leaves))
+    preview = "、".join(candidate_templates[:5])
+    suffix = "" if len(candidate_templates) <= 5 else f" 等 {len(candidate_templates)} 条候选"
+    return f"该字段疑似是 JSON 字符串容器，请把规则写到解析后的内部字符串叶子，例如: {preview}{suffix}"
+
+
 def jsonpath_matches_template(*, template_path: str, actual_path: str) -> bool:
     """判断精确路径是否匹配某条模板路径。"""
     template_parts = jsonpath_to_path_parts(template_path)
@@ -201,6 +223,26 @@ def jsonpath_matches_template(*, template_path: str, actual_path: str) -> bool:
         return False
 
     for template_part, actual_part in zip(template_parts, actual_parts, strict=True):
+        if template_part == "*":
+            if not isinstance(actual_part, int):
+                return False
+            continue
+        if template_part != actual_part:
+            return False
+    return True
+
+
+def jsonpath_template_is_ancestor(*, template_path: str, actual_path: str) -> bool:
+    """判断模板路径是否是某个实际叶子路径的祖先。"""
+    try:
+        template_parts = jsonpath_to_path_parts(template_path)
+        actual_parts = jsonpath_to_path_parts(actual_path)
+    except ValueError:
+        return False
+    if len(template_parts) >= len(actual_parts):
+        return False
+
+    for template_part, actual_part in zip(template_parts, actual_parts, strict=False):
         if template_part == "*":
             if not isinstance(actual_part, int):
                 return False
@@ -260,11 +302,65 @@ def unescape_jsonpath_key(key: str) -> str:
     return key.replace("\\'", "'").replace("\\\\", "\\")
 
 
+def collect_plugin_json_string_leaf_candidates(
+    *,
+    plugin_index: int,
+    plugin_name: str,
+    plugin: dict[str, JsonValue],
+) -> list[JsonObject]:
+    """列出插件参数 JSON 字符串容器内的字符串叶子候选。"""
+    parameters = plugin.get("parameters")
+    if not isinstance(parameters, dict):
+        return []
+
+    candidates: list[JsonObject] = []
+    for parameter_name, raw_value in parameters.items():
+        if not isinstance(raw_value, str):
+            continue
+        container = try_parse_container_string(raw_value)
+        if container is None:
+            continue
+        container_path = f"$['parameters'][{quote_jsonpath_key(parameter_name)}]"
+        leaves = [
+            leaf
+            for leaf in resolve_json_leaves(value=container, root_path=container_path)
+            if leaf.value_type == "string"
+        ]
+        if not leaves:
+            continue
+        path_candidates: list[JsonValue] = [
+            candidate
+            for candidate in sorted(build_allowed_templates(leaves))
+        ]
+        samples: list[JsonValue] = [
+            {
+                "path": leaf.path,
+                "text": leaf.value,
+            }
+            for leaf in leaves[:10]
+            if isinstance(leaf.value, str)
+        ]
+        candidates.append(
+            {
+                "plugin_index": plugin_index,
+                "plugin_name": plugin_name,
+                "container_path": container_path,
+                "leaf_count": len(leaves),
+                "string_leaf_path_candidates": path_candidates,
+                "samples": samples,
+            }
+        )
+    return candidates
+
+
 __all__: list[str] = [
     "ResolvedLeaf",
     "build_allowed_templates",
+    "build_json_string_leaf_path_hint",
+    "collect_plugin_json_string_leaf_candidates",
     "expand_rule_to_leaf_paths",
     "jsonpath_matches_template",
+    "jsonpath_template_is_ancestor",
     "jsonpath_to_location_path",
     "jsonpath_to_event_command_location_path",
     "jsonpath_to_path_parts",

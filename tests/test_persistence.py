@@ -8,6 +8,7 @@ import pytest
 
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
+from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -145,6 +146,18 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         await session.replace_source_residual_rules([source_residual_rule])
         assert await session.read_source_residual_rules() == [source_residual_rule]
+
+        await session.replace_rule_review_state(
+            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+            scope_hash="hash-before",
+            reviewed_empty=True,
+        )
+        review_state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
+        assert review_state is not None
+        assert review_state.scope_hash == "hash-before"
+        assert review_state.reviewed_empty is True
+        await session.delete_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
+        assert await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN) is None
 
         run_record = await session.start_translation_run(
             total_extracted=10,

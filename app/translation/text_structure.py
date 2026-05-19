@@ -62,18 +62,18 @@ def collect_translation_text_structure_errors(
         errors.append(f"单字段文本必须只提供 1 条中文译文行，当前提供 {len(translation_lines)} 条")
         return errors
 
-    original_real_break_count = _count_real_line_breaks(
+    original_real_break_count = count_real_line_breaks(
         item.original_lines_with_placeholders or item.original_lines
     )
     placeholder_lines = translation_lines_with_placeholders or translation_lines
-    translation_real_break_count = _count_real_line_breaks(placeholder_lines)
+    translation_real_break_count = count_real_line_breaks(placeholder_lines)
     if original_real_break_count != translation_real_break_count:
         errors.append(
             f"译文真实换行数量不一致（原文 {original_real_break_count} 个，译文 {translation_real_break_count} 个）"
         )
 
-    original_literal_break_count = _count_literal_line_breaks(item.original_lines_with_placeholders or item.original_lines)
-    translation_literal_break_count = _count_literal_line_breaks(placeholder_lines)
+    original_literal_break_count = count_literal_line_breaks(item.original_lines_with_placeholders or item.original_lines)
+    translation_literal_break_count = count_literal_line_breaks(placeholder_lines)
     if original_literal_break_count != translation_literal_break_count:
         errors.append(
             f"译文字面量换行标记数量不一致（原文 {original_literal_break_count} 个，译文 {translation_literal_break_count} 个）"
@@ -103,7 +103,7 @@ def _collect_artifact_errors(*, item: TranslationItem, translation_lines: list[s
     return errors
 
 
-def _count_real_line_breaks(lines: list[str]) -> int:
+def count_real_line_breaks(lines: list[str]) -> int:
     """统计字段内容中的真实换行数量。"""
     if not lines:
         return 0
@@ -113,7 +113,7 @@ def _count_real_line_breaks(lines: list[str]) -> int:
     )
 
 
-def _count_literal_line_breaks(lines: list[str]) -> int:
+def count_literal_line_breaks(lines: list[str]) -> int:
     """统计字段内容中的字面量换行标记数量。"""
     return sum(
         line.count(LITERAL_LINE_BREAK_MARKER) + line.count(LITERAL_LINE_BREAK_PLACEHOLDER)
@@ -123,5 +123,7 @@ def _count_literal_line_breaks(lines: list[str]) -> int:
 
 __all__: list[str] = [
     "collect_translation_text_structure_errors",
+    "count_literal_line_breaks",
+    "count_real_line_breaks",
     "validate_translation_text_structure",
 ]

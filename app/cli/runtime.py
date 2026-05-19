@@ -17,6 +17,7 @@ from app.application.handler import (
 )
 from app.cli.arguments import (
     read_bool_arg,
+    read_optional_bool_arg,
     read_optional_float_arg,
     read_optional_int_arg,
     read_optional_int_list_arg,
@@ -249,6 +250,10 @@ def build_setting_overrides(args: argparse.Namespace) -> SettingOverrides:
         text_translation_retry_delay=read_optional_int_arg(
             args,
             "translation_retry_delay",
+        ),
+        text_translation_include_source_lines=read_optional_bool_arg(
+            args,
+            "include_source_lines",
         ),
         text_translation_system_prompt=read_optional_str_arg(args, "system_prompt"),
         write_back_replacement_font_path=read_optional_str_arg(

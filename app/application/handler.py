@@ -62,6 +62,14 @@ from app.note_tag_text import (
 )
 from app.persistence import GameRegistry, TargetGameSession
 from app.persistence.repository import current_timestamp_text
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    event_command_rule_scope_hash,
+    note_tag_rule_scope_hash,
+    plugin_rule_scope_hash,
+)
 from app.plugin_text import (
     build_plugin_rule_records_from_import,
     export_plugins_json_file,
@@ -225,13 +233,27 @@ class TranslationHandler:
                 for rule in await session.read_plugin_text_rules()
             }
             deleted_translation_items = 0
+            stale_prefixes: set[str] = set()
             for rule_record in rule_records:
                 old_rule = old_rules.get(rule_record.plugin_index)
                 if self._should_refresh_plugin_translation_items(old_rule, rule_record):
-                    deleted_translation_items += await session.delete_translation_items_by_prefixes(
-                        [f"{PLUGINS_FILE_NAME}/{rule_record.plugin_index}/"],
-                    )
+                    stale_prefixes.add(f"{PLUGINS_FILE_NAME}/{rule_record.plugin_index}/")
+            new_plugin_indexes = {rule.plugin_index for rule in rule_records}
+            for plugin_index in sorted(set(old_rules) - new_plugin_indexes):
+                stale_prefixes.add(f"{PLUGINS_FILE_NAME}/{plugin_index}/")
+            if stale_prefixes:
+                deleted_translation_items = await session.delete_translation_items_by_prefixes(
+                    sorted(stale_prefixes),
+                )
             await session.replace_plugin_text_rules(rule_records)
+            if rule_records:
+                await session.delete_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
+            else:
+                await session.replace_rule_review_state(
+                    rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+                    scope_hash=plugin_rule_scope_hash(game_data),
+                    reviewed_empty=True,
+                )
         imported_rule_count = sum(len(record.path_templates) for record in rule_records)
         logger.success(f"[tag.success]插件规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 插件 [tag.count]{len(rule_records)}[/tag.count] 个，规则 [tag.count]{imported_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         return PluginRuleImportSummary(
@@ -332,13 +354,37 @@ class TranslationHandler:
                 for rule in await session.read_event_command_text_rules()
             }
             deleted_translation_items = 0
+            stale_prefixes: set[str] = set()
             for rule_record in rule_records:
-                old_rule = old_rules.get(event_command_rule_key(rule_record))
+                rule_key = event_command_rule_key(rule_record)
+                old_rule = old_rules.get(rule_key)
                 if self._should_refresh_event_command_translation_items(old_rule, rule_record):
-                    deleted_translation_items += await session.delete_translation_items_by_prefixes(
+                    if old_rule is not None:
+                        stale_prefixes.update(
+                            self._event_command_rule_prefixes(game_data=game_data, rule_record=old_rule),
+                        )
+                    stale_prefixes.update(
                         self._event_command_rule_prefixes(game_data=game_data, rule_record=rule_record),
                     )
+            new_rule_keys = {event_command_rule_key(rule) for rule in rule_records}
+            for rule_key, old_rule in old_rules.items():
+                if rule_key not in new_rule_keys:
+                    stale_prefixes.update(
+                        self._event_command_rule_prefixes(game_data=game_data, rule_record=old_rule),
+                    )
+            if stale_prefixes:
+                deleted_translation_items = await session.delete_translation_items_by_prefixes(
+                    sorted(stale_prefixes),
+                )
             await session.replace_event_command_text_rules(rule_records)
+            if rule_records:
+                await session.delete_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
+            else:
+                await session.replace_rule_review_state(
+                    rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+                    scope_hash=event_command_rule_scope_hash(game_data),
+                    reviewed_empty=True,
+                )
         imported_path_rule_count = sum(len(record.path_templates) for record in rule_records)
         logger.success(f"[tag.success]事件指令规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 规则组 [tag.count]{len(rule_records)}[/tag.count] 个，路径规则 [tag.count]{imported_path_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         return EventCommandRuleImportSummary(
@@ -395,6 +441,14 @@ class TranslationHandler:
             if stale_paths and (changed_rule_count or removed_rule_count):
                 deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
             await session.replace_note_tag_text_rules(rule_records)
+            if rule_records:
+                await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+            else:
+                await session.replace_rule_review_state(
+                    rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+                    scope_hash=note_tag_rule_scope_hash(game_data),
+                    reviewed_empty=True,
+                )
         imported_tag_count = sum(len(record.tag_names) for record in rule_records)
         logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{len(rule_records)}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         return NoteTagRuleImportSummary(

@@ -22,9 +22,11 @@ worker_count = 200
 rpm = 200
 retry_count = 3
 retry_delay = 2
+include_source_lines = false
 system_prompt_file = "prompts/text_translation_system.md"
 # 注册游戏时必须显式使用 `add-game --source-language ja|en`；运行时会自动切换到对应提示词。
 # 如果这里填写自定义提示词文件，语言档案不会覆盖该文件；CLI 的 --system-prompt 仍是最高优先级。
+# 默认不要求模型输出原文对照，排障时可改为 true 或在命令行临时传 `--include-source-lines`。
 
 [event_command_text]
 default_command_codes = [357]

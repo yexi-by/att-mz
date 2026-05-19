@@ -10,7 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 from app.rmmz.schema import GameData, PluginTextRuleRecord
 from app.rmmz.text_rules import JsonValue, coerce_json_value
 
-from .common import build_plugin_hash, expand_rule_to_leaf_paths, extract_plugin_name, resolve_plugin_leaves
+from .common import (
+    build_json_string_leaf_path_hint,
+    build_plugin_hash,
+    expand_rule_to_leaf_paths,
+    extract_plugin_name,
+    resolve_plugin_leaves,
+)
 
 
 class StrictPluginRuleModel(BaseModel):
@@ -119,8 +125,13 @@ def build_plugin_rule_record(
             resolved_leaves=resolved_leaves,
         )
         if not matched_paths:
+            hint = build_json_string_leaf_path_hint(
+                path_template=path_template,
+                resolved_leaves=resolved_leaves,
+            )
+            hint_suffix = "" if hint is None else f"。{hint}"
             raise ValueError(
-                f"插件 {plugin_name} 的路径没有命中当前插件字符串叶子: {path_template}"
+                f"插件 {plugin_name} 的路径没有命中当前插件字符串叶子: {path_template}{hint_suffix}"
             )
         accepted_paths.append(path_template)
 

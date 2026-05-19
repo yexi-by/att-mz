@@ -7,7 +7,11 @@ from typing import ClassVar, cast
 import aiofiles
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from app.plugin_text.paths import expand_rule_to_leaf_paths, resolve_event_command_leaves
+from app.plugin_text.paths import (
+    build_json_string_leaf_path_hint,
+    expand_rule_to_leaf_paths,
+    resolve_event_command_leaves,
+)
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.game_data import EventCommand
 from app.rmmz.schema import (
@@ -114,15 +118,25 @@ def build_event_command_rule_record(
 
     accepted_paths: list[str] = []
     for path_template in normalize_path_templates(path_templates):
-        if not any(
-            expand_rule_to_leaf_paths(
+        matched_path_found = False
+        hint: str | None = None
+        for command in matched_commands:
+            resolved_leaves = resolve_event_command_leaves(command.parameters)
+            if expand_rule_to_leaf_paths(
                 path_template=path_template,
-                resolved_leaves=resolve_event_command_leaves(command.parameters),
-            )
-            for command in matched_commands
-        ):
+                resolved_leaves=resolved_leaves,
+            ):
+                matched_path_found = True
+                break
+            if hint is None:
+                hint = build_json_string_leaf_path_hint(
+                    path_template=path_template,
+                    resolved_leaves=resolved_leaves,
+                )
+        if not matched_path_found:
+            hint_suffix = "" if hint is None else f"。{hint}"
             raise ValueError(
-                f"事件指令 {command_code} 的路径没有命中字符串叶子: {path_template}"
+                f"事件指令 {command_code} 的路径没有命中字符串叶子: {path_template}{hint_suffix}"
             )
         accepted_paths.append(path_template)
 

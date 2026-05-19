@@ -242,6 +242,44 @@ async def test_model_artifacts_are_recorded_as_text_structure_errors(translation
 
 
 @pytest.mark.asyncio
+async def test_translation_response_accepts_minimal_output_protocol() -> None:
+    """模型只返回 ID、角色和中文译文行时仍可正常保存译文。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        role="村人",
+        original_lines=["こんにちは"],
+    )
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+    ai_result = json.dumps(
+        [
+            {
+                "id": item.location_path,
+                "role": item.role,
+                "translation_lines": ["你好"],
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    await verify_translation_batch(
+        ai_result=ai_result,
+        items=[item],
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
+    assert error_queue.empty()
+    result = await right_queue.get()
+    assert result is not None
+    assert result[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
 async def test_translation_response_ignores_source_lines_and_extra_fields() -> None:
     """模型返回的原文对照和额外字段不参与业务校验。"""
     text_rules = _build_text_rules(width_limit=40)

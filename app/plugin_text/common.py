@@ -11,6 +11,8 @@ import json
 from app.rmmz.text_rules import JsonValue
 from app.plugin_text.paths import (
     ResolvedLeaf,
+    build_json_string_leaf_path_hint,
+    collect_plugin_json_string_leaf_candidates,
     expand_rule_to_leaf_paths,
     jsonpath_matches_template,
     jsonpath_to_location_path,
@@ -41,8 +43,10 @@ def build_plugins_file_hash(plugins: list[dict[str, JsonValue]]) -> str:
 
 __all__: list[str] = [
     "ResolvedLeaf",
+    "build_json_string_leaf_path_hint",
     "build_plugin_hash",
     "build_plugins_file_hash",
+    "collect_plugin_json_string_leaf_candidates",
     "expand_rule_to_leaf_paths",
     "extract_plugin_name",
     "jsonpath_matches_template",

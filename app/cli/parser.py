@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _ = translate_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮翻译摘要 JSON")
     add_translation_limit_arguments(translate_parser)
-    add_setting_override_arguments(translate_parser)
+    add_setting_override_arguments(translate_parser, include_source_lines_output=True)
 
     write_back_parser = subparsers.add_parser("write-back", help="把译文回写到游戏目录")
     add_optional_target_arguments(write_back_parser)
@@ -320,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="明确允许最终写回用配置字体覆盖游戏字体引用",
     )
-    add_setting_override_arguments(run_all_parser)
+    add_setting_override_arguments(run_all_parser, include_source_lines_output=True)
 
     build_placeholder_parser = subparsers.add_parser(
         "build-placeholder-rules",
@@ -416,8 +416,12 @@ def add_translation_limit_arguments(parser: argparse.ArgumentParser) -> None:
     _ = group.add_argument("--stop-on-rate-limit-count", type=int, help="模型限流故障达到该次数时停止本轮")
 
 
-def add_setting_override_arguments(parser: argparse.ArgumentParser) -> None:
-    """为正文翻译命令增加 `setting.toml` 等价覆盖参数。"""
+def add_setting_override_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_source_lines_output: bool = False,
+) -> None:
+    """为支持配置覆盖的命令增加 `setting.toml` 等价参数。"""
     group = parser.add_argument_group("配置覆盖")
     _ = group.add_argument("--llm-model", help="正文模型名称")
     _ = group.add_argument("--llm-timeout", type=int, help="正文模型请求超时秒数")
@@ -428,6 +432,22 @@ def add_setting_override_arguments(parser: argparse.ArgumentParser) -> None:
     _ = group.add_argument("--translation-rpm", help="正文翻译 RPM；传 none 表示不限速")
     _ = group.add_argument("--translation-retry-count", type=int, help="可恢复错误重试次数")
     _ = group.add_argument("--translation-retry-delay", type=int, help="可恢复错误重试间隔秒数")
+    if include_source_lines_output:
+        source_lines_group = group.add_mutually_exclusive_group()
+        _ = source_lines_group.add_argument(
+            "--include-source-lines",
+            action="store_true",
+            default=None,
+            dest="include_source_lines",
+            help="要求模型输出原文对照字段",
+        )
+        _ = source_lines_group.add_argument(
+            "--no-source-lines",
+            action="store_false",
+            default=None,
+            dest="include_source_lines",
+            help="要求模型不要输出原文对照字段",
+        )
     _ = group.add_argument("--system-prompt", help="正文翻译系统提示词文本")
     _ = group.add_argument("--replacement-font-path", help="用户确认覆盖字体后使用的候选字体路径")
     _ = group.add_argument(

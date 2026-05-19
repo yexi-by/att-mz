@@ -157,6 +157,14 @@ def copy_release_resources(release_dir: Path) -> None:
             ROOT / "skills" / "att-mz-release" / "references" / "translation-rule-examples.md",
             ("skills", "att-mz", "references", "translation-rule-examples.md"),
         ),
+        CopySpec(
+            ROOT / "skills" / "att-mz-release" / "references" / "plugin-rules-agent-task.md",
+            ("skills", "att-mz", "references", "plugin-rules-agent-task.md"),
+        ),
+        CopySpec(
+            ROOT / "skills" / "att-mz-release" / "references" / "event-command-rules-agent-task.md",
+            ("skills", "att-mz", "references", "event-command-rules-agent-task.md"),
+        ),
     ]
     for spec in copy_specs:
         copy_file(spec.source, release_dir.joinpath(*spec.target_parts))

@@ -56,6 +56,7 @@ class TextTranslationSetting(StrictBaseModel):
     rpm: int | None = Field(default=None, gt=0, title="每分钟请求数")
     retry_count: int = Field(ge=0, title="请求重试次数")
     retry_delay: int = Field(ge=0, title="请求重试间隔")
+    include_source_lines: bool = Field(default=False, title="模型输出原文对照")
     system_prompt_file: str = Field(title="提示词文件")
     system_prompt: str = Field(title="提示词内容")
 

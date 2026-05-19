@@ -13,7 +13,7 @@
 ## 输出
 
 - `att-mz-windows-x86_64.zip`。
-- 发行包内的 `att-mz.exe`、`README.md`、`setting.toml`、`skills/att-mz/SKILL.md`、字体、提示词和空数据目录。
+- 发行包内的 `att-mz.exe`、`README.md`、`setting.toml`、`skills/att-mz/SKILL.md`、Skill references、字体、提示词和空数据目录。
 - CI 中的类型检查、测试、构建和冒烟测试结果。
 
 ## 失败策略

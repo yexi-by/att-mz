@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.language import SourceLanguage, TargetLanguage
+from app.rule_review import RuleReviewDomain
 from app.rmmz.schema import EngineKind
 
 
@@ -40,3 +41,13 @@ class GameRecord:
     engine_version: str
     source_language: SourceLanguage
     target_language: TargetLanguage
+
+
+@dataclass(slots=True)
+class RuleReviewStateRecord:
+    """数据库中保存的外部规则空结果审查状态。"""
+
+    rule_domain: RuleReviewDomain
+    scope_hash: str
+    reviewed_empty: bool
+    updated_at: str

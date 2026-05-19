@@ -212,8 +212,8 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "完成后必须报告：改动文件、是否为空结果、空结果理由、未解决风险、建议主代理运行的校验命令",
         "推荐子代理 prompt 模板",
         "### 三类规则任务单模板",
-        "`docs/plugin-rules-agent-prompt.md`",
-        "`docs/event-command-rules-agent-prompt.md`",
+        "`references/plugin-rules-agent-task.md`",
+        "`references/event-command-rules-agent-task.md`",
         "`plugin-rules` 子代理任务单",
         "`event-command-rules` 子代理任务单",
         "`note-tag-rules` 子代理任务单",
@@ -377,10 +377,20 @@ def test_translation_rule_examples_are_progressive_references_not_skill_rules() 
         assert phrase in text
 
 
-def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
-    """三类规则子代理引用的外部任务契约文档必须可直接执行。"""
-    plugin_text = (ROOT / "docs" / "plugin-rules-agent-prompt.md").read_text(encoding="utf-8")
-    event_text = (ROOT / "docs" / "event-command-rules-agent-prompt.md").read_text(encoding="utf-8")
+def test_rule_agent_task_references_exist_and_define_cli_contracts() -> None:
+    """三类规则子代理引用的 Skill 任务契约必须可直接执行。"""
+    plugin_text = (
+        ROOT / "skills" / "att-mz" / "references" / "plugin-rules-agent-task.md"
+    ).read_text(encoding="utf-8")
+    event_text = (
+        ROOT / "skills" / "att-mz" / "references" / "event-command-rules-agent-task.md"
+    ).read_text(encoding="utf-8")
+    release_plugin_text = (
+        ROOT / "skills" / "att-mz-release" / "references" / "plugin-rules-agent-task.md"
+    ).read_text(encoding="utf-8")
+    release_event_text = (
+        ROOT / "skills" / "att-mz-release" / "references" / "event-command-rules-agent-task.md"
+    ).read_text(encoding="utf-8")
 
     plugin_required_phrases = [
         "不读取项目源码、数据库或程序内部对象",
@@ -423,6 +433,16 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
     for phrase in event_required_phrases:
         assert phrase in event_text
 
+    release_required_phrases = [
+        "`<发行版目录>`",
+        r".\att-mz.exe --agent-mode validate-plugin-rules",
+        r".\att-mz.exe --agent-mode validate-event-command-rules",
+    ]
+    release_combined_text = release_plugin_text + release_event_text
+    for phrase in release_required_phrases:
+        assert phrase in release_combined_text
+    assert "uv run python main.py" not in release_combined_text
+
     forbidden_real_context_phrases = [
         "C:\\",
         "D:\\",
@@ -431,7 +451,7 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
         "Sexual_conflict",
         "生意気",
     ]
-    combined_text = plugin_text + event_text
+    combined_text = plugin_text + event_text + release_combined_text
     for phrase in forbidden_real_context_phrases:
         assert phrase not in combined_text
 
@@ -450,6 +470,27 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
     ]
     for phrase in forbidden_event_prompt_phrases:
         assert phrase not in event_text
+
+
+def test_docs_do_not_own_agent_task_contracts() -> None:
+    """Agent 可执行契约必须归入 Skill，docs 只保留人类文档。"""
+    docs_paths = list((ROOT / "docs").rglob("*.md"))
+    forbidden_name_fragments = [
+        "agent-prompt",
+        "agent-task",
+    ]
+    for path in docs_paths:
+        for fragment in forbidden_name_fragments:
+            assert fragment not in path.name
+
+    skill_texts = [
+        (ROOT / "skills" / "att-mz" / "SKILL.md").read_text(encoding="utf-8"),
+        (ROOT / "skills" / "att-mz-release" / "SKILL.md").read_text(encoding="utf-8"),
+    ]
+    for text in skill_texts:
+        assert "`docs/plugin-rules-agent-prompt.md`" not in text
+        assert "`docs/event-command-rules-agent-prompt.md`" not in text
+        assert "以参考文档的输入、逻辑、输出和校验边界为准" not in text
 
 
 def test_documentation_uses_current_feedback_cli_names() -> None:
@@ -661,6 +702,13 @@ def test_project_rules_require_github_workflow_releases_and_skill_sync() -> None
     text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     required_phrases = [
+        "## 8.1 Skill 与 docs 边界",
+        "Skill 是给 Agent 执行任务看的契约",
+        "`docs/` 是给正常人类阅读的文档",
+        "不得把子代理任务单、agent prompt、黑盒执行契约",
+        "不得要求 Agent 从 `docs/` 复制任务契约",
+        "不得声明 `docs/` 覆盖 Skill",
+        "发行版 Skill references 必须随发行包复制",
         "每次修改开发版 Skill 时，必须同步审查并更新发行版 Skill",
         "打包脚本必须把 `skills/att-mz-release/SKILL.md` 转换为发行包内的 `skills/att-mz/SKILL.md`",
         "每次正式发布发行版必须使用 GitHub Actions `release` 工作流生成并发布 ZIP",
@@ -682,6 +730,8 @@ def test_release_packaging_script_uses_release_skill_template() -> None:
         '"att-mz-release" / "references"',
         '"subtask-package-mode.md"',
         '"translation-rule-examples.md"',
+        '"plugin-rules-agent-task.md"',
+        '"event-command-rules-agent-task.md"',
         "copy_packaged_release_skill",
         '"name: att-mz-release", "name: att-mz"',
         '"skills" / "att-mz" / "SKILL.md"',

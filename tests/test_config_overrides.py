@@ -67,6 +67,7 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
         text_translation_rpm_is_set=True,
         text_translation_retry_count=5,
         text_translation_retry_delay=3,
+        text_translation_include_source_lines=True,
         text_translation_system_prompt="直接传入的系统提示词",
         event_command_default_codes=[357, 355],
         strip_wrapping_punctuation_pairs=[("《", "》")],
@@ -95,8 +96,10 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
     assert setting.text_translation.rpm is None
     assert setting.text_translation.retry_count == 5
     assert setting.text_translation.retry_delay == 3
+    assert setting.text_translation.include_source_lines is True
     assert setting.text_translation.system_prompt_file == "<cli>"
-    assert setting.text_translation.system_prompt == "直接传入的系统提示词"
+    assert setting.text_translation.system_prompt.startswith("直接传入的系统提示词")
+    assert "必须额外包含 `source_lines`" in setting.text_translation.system_prompt
     assert setting.event_command_text.default_command_codes == [357, 355]
     assert setting.text_rules.strip_wrapping_punctuation_pairs == [("《", "》")]
     assert setting.text_rules.preserve_wrapping_punctuation_pairs == [("『", "』")]
@@ -125,6 +128,79 @@ def test_english_language_profile_selects_public_prompt(monkeypatch: pytest.Monk
     assert "translated_text" not in system_prompt
     assert "位置:" not in system_prompt
     assert "文件名" not in system_prompt
+
+
+def test_default_output_protocol_disables_source_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认提示词要求模型不要输出原文对照字段。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+
+    setting = load_setting(setting_path=ROOT / "setting.example.toml")
+    system_prompt = setting.text_translation.system_prompt
+
+    assert setting.text_translation.include_source_lines is False
+    assert "每个数组元素必须包含 `id`、`role`、`translation_lines`" in system_prompt
+    assert "不要输出 `source_lines`" in system_prompt
+    assert "{{输出字段列表}}" not in system_prompt
+    assert "本轮输出协议补充" not in system_prompt
+    assert '"source_lines"' not in system_prompt
+
+
+def test_builtin_prompt_template_can_enable_source_lines_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """内置提示词模板开启后会在输出格式原位要求原文对照字段。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+
+    setting = load_setting(
+        setting_path=ROOT / "setting.example.toml",
+        overrides=SettingOverrides(text_translation_include_source_lines=True),
+    )
+    system_prompt = setting.text_translation.system_prompt
+
+    assert setting.text_translation.include_source_lines is True
+    assert "每个数组元素必须包含 `id`、`role`、`source_lines`、`translation_lines`" in system_prompt
+    assert '`source_lines` 尽量原样复制输入原文，用于人工对照。' in system_prompt
+    assert '"source_lines": ["<输入原文>"],' in system_prompt
+    assert "{{输出字段列表}}" not in system_prompt
+    assert "本轮输出协议补充" not in system_prompt
+
+
+def test_custom_prompt_without_template_can_enable_source_lines_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自定义提示词缺少模板时仍追加协议，避免开关静默失效。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        text_translation_extra="include_source_lines = true",
+    )
+
+    setting = load_setting(setting_path=setting_path)
+
+    assert setting.text_translation.include_source_lines is True
+    assert setting.text_translation.system_prompt.startswith("系统提示词")
+    assert "必须额外包含 `source_lines`" in setting.text_translation.system_prompt
+
+
+def test_default_prompt_files_do_not_request_source_lines() -> None:
+    """默认提示词文件不要求模型回传原文，开关补充负责动态声明。"""
+    prompt_paths = [
+        ROOT / "prompts" / "text_translation_system.md",
+        ROOT / "prompts" / "text_translation_en_to_zh_system.md",
+    ]
+
+    for prompt_path in prompt_paths:
+        text = prompt_path.read_text(encoding="utf-8")
+        assert "{{输出字段列表}}" in text
+        assert "{{原文对照规则}}" in text
+        assert "{{原文对照示例行}}" in text
+        assert "`source_lines`" not in text
+        assert '"source_lines"' not in text
 
 
 def test_load_setting_applies_environment_llm_connection_overrides(
@@ -222,7 +298,12 @@ def test_load_setting_rejects_streaming_llm_request_body_extra(
         _ = load_setting(setting_path=setting_path)
 
 
-def _write_minimal_setting(tmp_path: Path, *, request_body_extra_text: str) -> Path:
+def _write_minimal_setting(
+    tmp_path: Path,
+    *,
+    request_body_extra_text: str,
+    text_translation_extra: str = "",
+) -> Path:
     """写入只包含配置加载测试所需字段的设置文件。"""
     setting_path = tmp_path / "setting.toml"
     _ = (tmp_path / "prompt.txt").write_text("系统提示词", encoding="utf-8")
@@ -245,6 +326,7 @@ worker_count = 1
 rpm = 10
 retry_count = 1
 retry_delay = 1
+{text_translation_extra}
 system_prompt_file = "prompt.txt"
 
 [event_command_text]

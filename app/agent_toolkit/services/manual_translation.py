@@ -6,12 +6,14 @@ from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
+    JsonArray,
     JsonObject,
     Path,
     TextRules,
     TextScopeService,
     TranslationItem,
     _build_manual_translation_template_entry,
+    _build_translation_line_break_count_detail,
     _prepare_manual_translation_item,
     _text_scope_blocking_errors,
     aiofiles,
@@ -114,6 +116,7 @@ class ManualTranslationAgentMixin:
             )
 
         errors: list[AgentIssue] = []
+        invalid_items: JsonArray = []
         valid_items: list[TranslationItem] = []
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
@@ -152,13 +155,18 @@ class ManualTranslationAgentMixin:
 
             for location_path, raw_entry in payload.items():
                 if not isinstance(raw_entry, dict):
-                    errors.append(issue("manual_translation_entry", f"{location_path} 必须是 JSON 对象"))
+                    message = f"{location_path} 必须是 JSON 对象"
+                    errors.append(issue("manual_translation_entry", message))
+                    invalid_items.append({"location_path": location_path, "message": message})
                     continue
                 entry = ensure_json_object(raw_entry, f"{location_path}")
                 item = active_items.get(location_path)
                 if item is None:
-                    errors.append(issue("manual_translation_location", f"{location_path} 不在当前可提取文本范围内"))
+                    message = f"{location_path} 不在当前可提取文本范围内"
+                    errors.append(issue("manual_translation_location", message))
+                    invalid_items.append({"location_path": location_path, "message": message})
                     continue
+                translation_lines: list[str] | None = None
                 try:
                     raw_lines_value = entry.get("translation_lines")
                     if raw_lines_value is None:
@@ -172,10 +180,27 @@ class ManualTranslationAgentMixin:
                     )
                     valid_items.append(cloned_item)
                 except Exception as error:
+                    error_message = f"{type(error).__name__}: {error}"
+                    invalid_detail: JsonObject = {
+                        "location_path": location_path,
+                        "message": error_message,
+                    }
+                    if translation_lines is not None:
+                        try:
+                            invalid_detail.update(
+                                _build_translation_line_break_count_detail(
+                                    item=item,
+                                    translation_lines=translation_lines,
+                                    text_rules=text_rules,
+                                )
+                            )
+                        except Exception as detail_error:
+                            invalid_detail["line_break_detail_error"] = f"{type(detail_error).__name__}: {detail_error}"
+                    invalid_items.append(invalid_detail)
                     errors.append(
                         issue(
                             "manual_translation_invalid",
-                            f"{location_path} 手动填写译文不可用: {type(error).__name__}: {error}",
+                            f"{location_path} 手动填写译文不可用: {error_message}",
                         )
                     )
 
@@ -188,7 +213,7 @@ class ManualTranslationAgentMixin:
                         "imported_count": 0,
                         "error_count": len(errors),
                     },
-                    details={},
+                    details={"invalid_items": invalid_items},
                 )
 
             await session.write_translation_items(valid_items)

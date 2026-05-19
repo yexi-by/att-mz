@@ -109,12 +109,12 @@
 - 外部代理在导出文件和导入文件之间可以使用自身工具、临时脚本或子代理处理数据；本项目只强制要求导出和导入必须使用本项目 CLI，并由本项目校验命令验收。
 - 如果使用子代理并行处理术语候选、插件规则、事件指令规则或 Note 标签规则，主代理必须按两轮执行：第一轮先收集术语候选并亲自严审、修改、合并和导入术语表；第二轮再处理插件规则、事件指令规则和 Note 标签规则。占位符规则必须由主代理在两轮子代理任务完成后亲自处理。
 - 处理 `terminology` 目录时，优先使用 `skills/att-mz/SKILL.md` 中的术语候选任务契约。
-- 处理 `plugins.json` 时，优先使用 `docs/plugin-rules-agent-prompt.md` 中的参考提示词。
-- 处理 `event-commands.json` 时，优先使用 `docs/event-command-rules-agent-prompt.md` 中的参考提示词。
+- 处理 `plugins.json` 时，优先使用 `skills/att-mz/references/plugin-rules-agent-task.md` 中的子代理任务契约。
+- 处理 `event-commands.json` 时，优先使用 `skills/att-mz/references/event-command-rules-agent-task.md` 中的子代理任务契约。
 
 ## 8. Skill 编写规范
 
-- 编写或修改 `SKILL.md` 时，正常翻译流程和外部协作任务必须写成可直接执行的黑盒任务契约：假设执行者不能阅读项目源码，不能理解数据库表结构，不能依赖内部实现细节，只能依赖 Skill 文档、CLI、`--json` 输出、工作区文件、用户输入和任务文件完成工作。开发版 Skill 的工具排障例外只允许按第 8.1 节执行，不能反向污染正常翻译任务契约。
+- 编写或修改 `SKILL.md` 时，正常翻译流程和外部协作任务必须写成可直接执行的黑盒任务契约：假设执行者不能阅读项目源码，不能理解数据库表结构，不能依赖内部实现细节，只能依赖 Skill 文档、CLI、`--json` 输出、工作区文件、用户输入和任务文件完成工作。开发版 Skill 的工具排障例外只允许按第 8.2 节执行，不能反向污染正常翻译任务契约。
 - Skill 不是项目说明书，也不是变更记录。Skill 必须是任务执行契约，写清代理在当前任务中拿什么输入、按什么逻辑处理、交付什么输出。
 - Skill 中每个核心阶段、外部文件格式、子代理任务和关键命令，都必须能回答：
   - **输入**：读取哪些文件、命令输出、用户信息、工作区文件和只读范围。
@@ -125,7 +125,16 @@
 - Skill 中的命令流程必须写清前置条件、成功判断、什么情况不能继续，以及失败后的下一步。`--json` 输出的 `status=error` 表示当前阶段不能继续，不能进入后续阶段。
 - 如果现有 Skill 无法让代理在不能阅读源码的条件下独立执行正常翻译或外部协作任务，应优先完善 Skill、CLI 输出或工作区说明，而不是要求代理读取源码补全理解。
 
-## 8.1 发行版 Skill 与发布规范
+## 8.1 Skill 与 docs 边界
+
+- Skill 是给 Agent 执行任务看的契约。凡是会被 Agent 复制、派发、执行、校验或作为黑盒流程依据的内容，必须放在 `skills/<技能名>/SKILL.md` 或 `skills/<技能名>/references/`。
+- `docs/` 是给正常人类阅读的文档。README、使用指南、开发说明、设计说明、排障说明和发布说明可以放在 `docs/`，但不得把子代理任务单、agent prompt、黑盒执行契约、唯一可写文件约束或校验流程的权威版本放在 `docs/`。
+- 人类文档可以概述 Agent 会做什么，也可以指向 Skill 文件；但不得要求 Agent 从 `docs/` 复制任务契约，不得声明 `docs/` 覆盖 Skill，不得让 `docs/` 成为翻译流程的运行依赖。
+- 开发版 Agent 契约使用 `skills/att-mz/`，发行版 Agent 契约使用 `skills/att-mz-release/`；两者语义必须一致，差异只允许来自命令入口、可访问资源和排障边界。
+- 发行版 Skill references 必须随发行包复制，且只能使用 `.\att-mz.exe --agent-mode ...` 命令；不得要求用户安装 Python、Rust、uv 或读取源码。
+- 涉及 Skill、README、docs 或发布脚本的改动，必须检查是否出现 “Agent 契约放在 docs 里” 或 “docs 覆盖 Skill” 的倒置关系，并用测试固定边界。
+
+## 8.2 发行版 Skill 与发布规范
 
 - 源码开发任务使用 `skills/att-mz/SKILL.md`，发行版翻译任务使用 `skills/att-mz-release/SKILL.md` 作为模板；两个 Skill 的 frontmatter `name` 必须分别匹配各自文件夹名。
 - 开发版 Skill 面向源码仓库内的开发、排障、协议审查和本地翻译流程，默认命令是 `uv run python main.py --agent-mode ...`。当用户明确要求修工具、审查 CLI 行为、排查 Skill/CLI 契约冲突或定位合法输入反复失败的原因时，允许阅读项目源码、测试和命令注册逻辑；但正常游戏翻译任务仍必须优先按 CLI、工作区 JSON、游戏目录和用户输入执行，禁止直接手改数据库或绕过校验写进游戏文件。

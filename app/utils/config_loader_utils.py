@@ -23,6 +23,32 @@ from app.observability.logging import logger
 from app.runtime_paths import resolve_app_path
 
 DEFAULT_SETTING_FILE_NAME = "setting.toml"
+PROMPT_RESPONSE_FIELDS_MARKER = "{{输出字段列表}}"
+PROMPT_SOURCE_LINES_RULE_MARKER = "{{原文对照规则}}"
+PROMPT_SOURCE_LINES_EXAMPLE_MARKER = "{{原文对照示例行}}"
+PROMPT_TEMPLATE_MARKERS: tuple[str, str, str] = (
+    PROMPT_RESPONSE_FIELDS_MARKER,
+    PROMPT_SOURCE_LINES_RULE_MARKER,
+    PROMPT_SOURCE_LINES_EXAMPLE_MARKER,
+)
+SOURCE_LINES_ENABLED_FIELDS = "`id`、`role`、`source_lines`、`translation_lines`"
+SOURCE_LINES_DISABLED_FIELDS = "`id`、`role`、`translation_lines`"
+SOURCE_LINES_ENABLED_RULE = "`source_lines` 尽量原样复制输入原文，用于人工对照。"
+SOURCE_LINES_DISABLED_RULE = "不要输出 `source_lines`；只输出本轮要求字段。"
+SOURCE_LINES_ENABLED_EXAMPLE_LINE = '    "source_lines": ["<输入原文>"],'
+SOURCE_LINES_DISABLED_EXAMPLE_LINE = ""
+SOURCE_LINES_ENABLED_FALLBACK_PROTOCOL = """
+
+# 本轮输出协议补充
+
+- 每个 JSON 数组元素必须额外包含 `source_lines`，按输入原文逐行复制，用于人工对照。
+"""
+SOURCE_LINES_DISABLED_FALLBACK_PROTOCOL = """
+
+# 本轮输出协议补充
+
+- 每个 JSON 数组元素不要输出 `source_lines`，只输出 `id`、`role`、`translation_lines`。
+"""
 
 
 def resolve_setting_path(setting_path: str | Path | None = None) -> Path:
@@ -44,14 +70,15 @@ def load_setting(
         raw_config=raw_config,
         source_language=source_language,
     )
+    apply_setting_overrides(raw_config=raw_config, overrides=overrides)
+    environment_overrides = load_environment_overrides()
+    apply_environment_overrides(raw_config=raw_config, overrides=environment_overrides)
     _inject_prompt_texts(
         raw_config=raw_config,
         base_dir=resolved_setting_path.parent,
         overrides=overrides,
     )
-    apply_setting_overrides(raw_config=raw_config, overrides=overrides)
-    environment_overrides = load_environment_overrides()
-    apply_environment_overrides(raw_config=raw_config, overrides=environment_overrides)
+    _append_text_translation_output_protocol(raw_config)
     raw_config_snapshot = copy.deepcopy(raw_config)
 
     setting = Setting.model_validate(raw_config)
@@ -112,6 +139,67 @@ def _inject_text_translation_prompt_text(
     text_translation["system_prompt"] = _read_prompt_text(base_dir, prompt_file)
 
 
+def _append_text_translation_output_protocol(raw_config: dict[str, object]) -> None:
+    """按本轮开关追加正文翻译输出协议。"""
+    text_translation = _read_config_section(raw_config, "text_translation")
+    include_source_lines = _read_include_source_lines(text_translation)
+    system_prompt = text_translation.get("system_prompt")
+    if not isinstance(system_prompt, str) or not system_prompt.strip():
+        raise ValueError("配置文件中缺少 text_translation.system_prompt 配置项")
+    text_translation["system_prompt"] = _render_text_translation_prompt_template(
+        system_prompt=system_prompt,
+        include_source_lines=include_source_lines,
+    )
+
+
+def _render_text_translation_prompt_template(
+    *,
+    system_prompt: str,
+    include_source_lines: bool,
+) -> str:
+    """渲染正文翻译提示词里的输出协议模板。"""
+    marker_hits = [marker for marker in PROMPT_TEMPLATE_MARKERS if marker in system_prompt]
+    if not marker_hits:
+        protocol = (
+            SOURCE_LINES_ENABLED_FALLBACK_PROTOCOL
+            if include_source_lines
+            else SOURCE_LINES_DISABLED_FALLBACK_PROTOCOL
+        )
+        return system_prompt.rstrip() + protocol
+    if len(marker_hits) != len(PROMPT_TEMPLATE_MARKERS):
+        missing_markers = [
+            marker for marker in PROMPT_TEMPLATE_MARKERS if marker not in system_prompt
+        ]
+        raise ValueError(
+            "正文翻译提示词模板缺少必要占位符: "
+            + "、".join(missing_markers)
+        )
+
+    if include_source_lines:
+        response_fields = SOURCE_LINES_ENABLED_FIELDS
+        source_lines_rule = SOURCE_LINES_ENABLED_RULE
+        source_lines_example_line = SOURCE_LINES_ENABLED_EXAMPLE_LINE
+    else:
+        response_fields = SOURCE_LINES_DISABLED_FIELDS
+        source_lines_rule = SOURCE_LINES_DISABLED_RULE
+        source_lines_example_line = SOURCE_LINES_DISABLED_EXAMPLE_LINE
+
+    rendered_prompt = system_prompt.replace(PROMPT_RESPONSE_FIELDS_MARKER, response_fields)
+    rendered_prompt = rendered_prompt.replace(PROMPT_SOURCE_LINES_RULE_MARKER, source_lines_rule)
+    return rendered_prompt.replace(
+        PROMPT_SOURCE_LINES_EXAMPLE_MARKER,
+        source_lines_example_line,
+    )
+
+
+def _read_include_source_lines(text_translation: dict[str, object]) -> bool:
+    """读取模型是否输出原文对照的开关。"""
+    raw_value = text_translation.get("include_source_lines", False)
+    if not isinstance(raw_value, bool):
+        raise ValueError("配置文件中 text_translation.include_source_lines 必须是布尔值")
+    return raw_value
+
+
 def _read_config_section(raw_config: dict[str, object], section_name: str) -> dict[str, object]:
     """读取并收窄顶层配置段。"""
     section = raw_config.get(section_name)
@@ -159,6 +247,7 @@ def _build_setting_summary(
         f"源语言: [tag.count]{source_language}[/tag.count] / 目标语言 [tag.count]zh-Hans[/tag.count]",
         f"正文切块: 目标 [tag.count]{setting.translation_context.token_size}[/tag.count] token，换算系数 [tag.count]{setting.translation_context.factor}[/tag.count]，同角色最多连续 [tag.count]{setting.translation_context.max_command_items}[/tag.count] 条",
         f"正文翻译: [tag.count]{setting.text_translation.worker_count}[/tag.count] 个 worker，RPM [tag.count]{setting.text_translation.rpm or '不限'}[/tag.count]，失败重试 [tag.count]{setting.text_translation.retry_count}[/tag.count] 次，间隔 [tag.count]{setting.text_translation.retry_delay}[/tag.count] 秒",
+        f"模型输出原文对照: [tag.count]{'开启' if setting.text_translation.include_source_lines else '关闭'}[/tag.count]",
         f"事件指令参数: 旧默认编码 [tag.count]{', '.join(map(str, setting.event_command_text.default_command_codes))}[/tag.count]，按引擎默认 [tag.count]{engine_code_label}[/tag.count]",
         f"候选覆盖字体: [tag.path]{setting.write_back.replacement_font_path or '未配置'}[/tag.path]",
         f"文本规则: 行切分标点 [tag.count]{len(setting.text_rules.line_split_punctuations)}[/tag.count] 个，长文本宽度 [tag.count]{setting.text_rules.long_text_line_width_limit}[/tag.count]，提取剥离标点 [tag.count]{len(setting.text_rules.strip_wrapping_punctuation_pairs)}[/tag.count] 组，译文保形标点 [tag.count]{len(setting.text_rules.preserve_wrapping_punctuation_pairs)}[/tag.count] 组",

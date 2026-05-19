@@ -18,6 +18,7 @@ class SettingOverrides:
     text_translation_rpm_is_set: bool = False
     text_translation_retry_count: int | None = None
     text_translation_retry_delay: int | None = None
+    text_translation_include_source_lines: bool | None = None
     text_translation_system_prompt: str | None = None
     event_command_default_codes: list[int] | None = None
     write_back_replacement_font_path: str | None = None
@@ -45,6 +46,7 @@ class SettingOverrides:
                 self.text_translation_rpm_is_set,
                 self.text_translation_retry_count is not None,
                 self.text_translation_retry_delay is not None,
+                self.text_translation_include_source_lines is not None,
                 self.text_translation_system_prompt is not None,
                 self.event_command_default_codes is not None,
                 self.write_back_replacement_font_path is not None,
@@ -93,6 +95,11 @@ def apply_setting_overrides(
         text_translation["rpm"] = overrides.text_translation_rpm
     _set_if_present(text_translation, "retry_count", overrides.text_translation_retry_count)
     _set_if_present(text_translation, "retry_delay", overrides.text_translation_retry_delay)
+    _set_if_present(
+        text_translation,
+        "include_source_lines",
+        overrides.text_translation_include_source_lines,
+    )
     if overrides.text_translation_system_prompt is not None:
         text_translation["system_prompt"] = overrides.text_translation_system_prompt
         text_translation["system_prompt_file"] = "<cli>"

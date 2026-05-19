@@ -37,7 +37,9 @@ from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
 from app.plugin_text import (
     PluginTextExtraction,
     build_plugin_rule_records_from_import,
+    collect_plugin_json_string_leaf_candidates,
     export_plugins_json_file,
+    extract_plugin_name,
     parse_plugin_rule_import_text,
 )
 from app.rmmz.control_codes import (
@@ -69,7 +71,11 @@ from app.rmmz.text_layout import (
     normalize_translated_wrapping_punctuation,
     split_overwide_lines,
 )
-from app.translation.text_structure import validate_translation_text_structure
+from app.translation.text_structure import (
+    count_literal_line_breaks,
+    count_real_line_breaks,
+    validate_translation_text_structure,
+)
 from app.utils.config_loader_utils import load_setting, resolve_setting_path
 from app.event_command_text import (
     EventCommandTextExtraction,
@@ -546,6 +552,21 @@ def _plugin_rule_records_to_import_json(records: Sequence[PluginTextRuleRecord])
     ]
 
 
+def _collect_plugin_json_string_leaf_candidate_details(game_data: GameData) -> JsonArray:
+    """生成插件 JSON 字符串参数内部字符串叶子候选。"""
+    candidates: JsonArray = []
+    for plugin_index, plugin in enumerate(game_data.plugins_js):
+        plugin_name = extract_plugin_name(plugin, plugin_index)
+        candidates.extend(
+            collect_plugin_json_string_leaf_candidates(
+                plugin_index=plugin_index,
+                plugin_name=plugin_name,
+                plugin=plugin,
+            )
+        )
+    return candidates
+
+
 def _note_tag_rule_records_to_import_json(records: Sequence[NoteTagTextRuleRecord]) -> JsonObject:
     """把数据库 Note 标签规则还原为外部 Agent 可编辑的导入 JSON。"""
     payload: JsonObject = {}
@@ -666,6 +687,29 @@ def _restore_template_translation_lines(
     return list(item.translation_lines)
 
 
+def _build_translation_line_break_count_detail(
+    *,
+    item: TranslationItem,
+    translation_lines: list[str],
+    text_rules: TextRules,
+) -> JsonObject:
+    """生成手工填写译文失败时需要对照的换行数量统计。"""
+    cloned_item = item.model_copy(deep=True)
+    cloned_item.build_placeholders(text_rules)
+    normalized_lines = text_rules.normalize_translation_lines(translation_lines)
+    translation_lines_with_placeholders = [
+        _mask_translation_controls(line=line, item=cloned_item, text_rules=text_rules)
+        for line in normalized_lines
+    ]
+    original_lines = cloned_item.original_lines_with_placeholders or cloned_item.original_lines
+    return {
+        "expected_real_line_break_count": count_real_line_breaks(original_lines),
+        "actual_real_line_break_count": count_real_line_breaks(translation_lines_with_placeholders),
+        "expected_literal_line_break_count": count_literal_line_breaks(original_lines),
+        "actual_literal_line_break_count": count_literal_line_breaks(translation_lines_with_placeholders),
+    }
+
+
 def _collect_quality_fix_problem_paths(
     *,
     quality_error_items: list[TranslationErrorItem],
@@ -710,6 +754,36 @@ def _build_quality_fix_categories_by_path(
         location_path: _string_lines_to_json_array(path_categories)
         for location_path, path_categories in categories.items()
     }
+
+
+def _build_quality_error_category_counts(quality_error_items: list[TranslationErrorItem]) -> JsonObject:
+    """按手工修复视角统计最新翻译运行中的质量错误类别。"""
+    category_counts: dict[str, int] = {
+        "source_residual": 0,
+        "text_structure": 0,
+        "placeholder_risk": 0,
+        "missing_translation": 0,
+        "model_response_error": 0,
+        "other": 0,
+    }
+    for item in quality_error_items:
+        category_counts[_quality_error_category(item.error_type)] += 1
+    return {key: value for key, value in category_counts.items()}
+
+
+def _quality_error_category(error_type: str) -> str:
+    """把模型检查失败原因归并为稳定摘要类别。"""
+    if error_type == "源文残留":
+        return "source_residual"
+    if error_type in {"文本结构不匹配", "选项行数不匹配"}:
+        return "text_structure"
+    if error_type == "控制符不匹配":
+        return "placeholder_risk"
+    if error_type == "AI漏翻":
+        return "missing_translation"
+    if error_type == "模型返回不可解析":
+        return "model_response_error"
+    return "other"
 
 
 def _append_quality_detail_categories(
@@ -1696,7 +1770,9 @@ __all__: list[str] = [
     'ensure_db_directory',
     'PluginTextExtraction',
     'build_plugin_rule_records_from_import',
+    'collect_plugin_json_string_leaf_candidates',
     'export_plugins_json_file',
+    'extract_plugin_name',
     'parse_plugin_rule_import_text',
     'ControlSequenceSpan',
     'CustomPlaceholderRule',
@@ -1727,6 +1803,8 @@ __all__: list[str] = [
     'resolve_app_path',
     'normalize_translated_wrapping_punctuation',
     'split_overwide_lines',
+    'count_literal_line_breaks',
+    'count_real_line_breaks',
     'validate_translation_text_structure',
     'load_setting',
     'resolve_setting_path',
@@ -1784,6 +1862,7 @@ __all__: list[str] = [
     '_agent_workflow_manifest',
     '_merge_terminology_registry',
     '_plugin_rule_records_to_import_json',
+    '_collect_plugin_json_string_leaf_candidate_details',
     '_note_tag_rule_records_to_import_json',
     '_event_command_rule_records_to_import_json',
     '_event_rule_filter_sort_key',
@@ -1792,7 +1871,10 @@ __all__: list[str] = [
     '_read_reset_translation_location_paths',
     '_build_manual_translation_template_entry',
     '_restore_template_translation_lines',
+    '_build_translation_line_break_count_detail',
     '_collect_quality_fix_problem_paths',
+    '_build_quality_error_category_counts',
+    '_quality_error_category',
     '_build_quality_fix_categories_by_path',
     '_append_quality_detail_categories',
     '_append_unique_active_path',

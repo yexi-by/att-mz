@@ -2,6 +2,7 @@
 
 import json
 
+from app.rule_review import RuleReviewDomain, parse_rule_review_domain
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -11,9 +12,10 @@ from app.rmmz.schema import (
     SourceResidualRuleRecord,
 )
 
+from .records import RuleReviewStateRecord
 from .rows import decode_string_list, row_int, row_str
 from .session_base import SessionMixinBase
-from .session_utils import build_event_command_group_key, parse_source_residual_rule_type
+from .session_utils import build_event_command_group_key, current_timestamp_text, parse_source_residual_rule_type
 from .sql import (
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_FILTERS,
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS,
@@ -22,6 +24,7 @@ from .sql import (
     DELETE_ALL_PLACEHOLDER_RULES,
     DELETE_ALL_PLUGIN_TEXT_RULES,
     DELETE_ALL_SOURCE_RESIDUAL_RULES,
+    DELETE_RULE_REVIEW_STATE,
     INSERT_EVENT_COMMAND_TEXT_RULE_FILTER,
     INSERT_EVENT_COMMAND_TEXT_RULE_GROUP,
     INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
@@ -35,7 +38,9 @@ from .sql import (
     SELECT_NOTE_TAG_TEXT_RULES,
     SELECT_PLACEHOLDER_RULES,
     SELECT_PLUGIN_TEXT_RULES,
+    SELECT_RULE_REVIEW_STATE,
     SELECT_SOURCE_RESIDUAL_RULES,
+    UPSERT_RULE_REVIEW_STATE,
 )
 
 
@@ -240,3 +245,44 @@ class RuleRecordSessionMixin(SessionMixinBase):
             )
             for row in rows
         ]
+
+    async def replace_rule_review_state(
+        self,
+        *,
+        rule_domain: RuleReviewDomain,
+        scope_hash: str,
+        reviewed_empty: bool,
+    ) -> None:
+        """保存外部规则已审查为空的状态。"""
+        _ = await self.connection.execute(
+            UPSERT_RULE_REVIEW_STATE,
+            (
+                rule_domain,
+                scope_hash,
+                1 if reviewed_empty else 0,
+                current_timestamp_text(),
+            ),
+        )
+        await self.connection.commit()
+
+    async def delete_rule_review_state(self, *, rule_domain: RuleReviewDomain) -> None:
+        """删除某类外部规则的空结果审查状态。"""
+        _ = await self.connection.execute(DELETE_RULE_REVIEW_STATE, (rule_domain,))
+        await self.connection.commit()
+
+    async def read_rule_review_state(
+        self,
+        *,
+        rule_domain: RuleReviewDomain,
+    ) -> RuleReviewStateRecord | None:
+        """读取某类外部规则的空结果审查状态。"""
+        async with self.connection.execute(SELECT_RULE_REVIEW_STATE, (rule_domain,)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return RuleReviewStateRecord(
+            rule_domain=parse_rule_review_domain(row_str(row, "rule_domain", self.db_path)),
+            scope_hash=row_str(row, "scope_hash", self.db_path),
+            reviewed_empty=row_int(row, "reviewed_empty", self.db_path) == 1,
+            updated_at=row_str(row, "updated_at", self.db_path),
+        )

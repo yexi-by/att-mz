@@ -1,9 +1,12 @@
 """插件文本翻译模块导出入口。"""
 
 from .common import (
+    build_json_string_leaf_path_hint,
     build_plugin_hash,
     build_plugins_file_hash,
+    collect_plugin_json_string_leaf_candidates,
     expand_rule_to_leaf_paths,
+    extract_plugin_name,
     jsonpath_to_location_path,
     resolve_plugin_leaves,
 )
@@ -21,11 +24,14 @@ __all__: list[str] = [
     "PluginRuleImportFile",
     "PluginRuleSpec",
     "PluginTextExtraction",
+    "build_json_string_leaf_path_hint",
     "build_plugin_hash",
     "build_plugin_rule_records_from_import",
     "build_plugins_file_hash",
+    "collect_plugin_json_string_leaf_candidates",
     "export_plugins_json_file",
     "expand_rule_to_leaf_paths",
+    "extract_plugin_name",
     "jsonpath_to_location_path",
     "load_plugin_rule_import_file",
     "parse_plugin_rule_import_text",

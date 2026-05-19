@@ -23,6 +23,15 @@ from .common import (
     scan_placeholder_candidates,
     sys,
 )
+from app.persistence import RuleReviewStateRecord
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    event_command_rule_scope_hash,
+    note_tag_rule_scope_hash,
+    plugin_rule_scope_hash,
+)
 
 
 class DoctorAgentMixin:
@@ -129,6 +138,21 @@ class DoctorAgentMixin:
                 )
                 event_rules = await session.read_event_command_text_rules()
                 note_tag_rules = await session.read_note_tag_text_rules()
+                plugin_review_state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
+                event_review_state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
+                note_review_state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+                plugin_rules_reviewed_empty, plugin_rules_review_state_stale = _rule_review_empty_state(
+                    state=plugin_review_state,
+                    current_scope_hash=plugin_rule_scope_hash(game_data),
+                )
+                event_rules_reviewed_empty, event_rules_review_state_stale = _rule_review_empty_state(
+                    state=event_review_state,
+                    current_scope_hash=event_command_rule_scope_hash(game_data),
+                )
+                note_rules_reviewed_empty, note_rules_review_state_stale = _rule_review_empty_state(
+                    state=note_review_state,
+                    current_scope_hash=note_tag_rule_scope_hash(game_data),
+                )
                 terminology_registry = await session.read_terminology_registry()
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
@@ -139,17 +163,32 @@ class DoctorAgentMixin:
                 summary["stale_plugin_rule_count"] = stale_plugin_rule_count
                 summary["event_command_rule_count"] = sum(len(rule.path_templates) for rule in event_rules)
                 summary["note_tag_rule_count"] = sum(len(rule.tag_names) for rule in note_tag_rules)
+                summary["plugin_rules_reviewed_empty"] = plugin_rules_reviewed_empty
+                summary["plugin_rules_review_state_stale"] = plugin_rules_review_state_stale
+                summary["event_command_rules_reviewed_empty"] = event_rules_reviewed_empty
+                summary["event_command_rules_review_state_stale"] = event_rules_review_state_stale
+                summary["note_tag_rules_reviewed_empty"] = note_rules_reviewed_empty
+                summary["note_tag_rules_review_state_stale"] = note_rules_review_state_stale
                 summary["placeholder_rule_count"] = len(placeholder_rules)
                 summary["terminology_imported"] = terminology_registry is not None
                 summary["glossary_imported"] = terminology_glossary is not None
                 if not plugin_rules and stale_plugin_rule_count == 0:
-                    warnings.append(issue("plugin_rules", "当前游戏尚未导入插件文本规则"))
+                    if plugin_rules_review_state_stale:
+                        warnings.append(issue("plugin_rules_review_state_stale", "插件文本规则曾确认为空，但当前插件配置已变化，请重新导出并检查插件规则"))
+                    elif not plugin_rules_reviewed_empty:
+                        warnings.append(issue("plugin_rules", "当前游戏尚未导入插件文本规则"))
                 if stale_plugin_rule_count:
                     warnings.append(issue("stale_plugin_rules", f"发现 {stale_plugin_rule_count} 个过期插件规则，请重新导出并导入插件规则"))
                 if not event_rules:
-                    warnings.append(issue("event_command_rules", "当前游戏尚未导入事件指令文本规则"))
+                    if event_rules_review_state_stale:
+                        warnings.append(issue("event_command_rules_review_state_stale", "事件指令文本规则曾确认为空，但当前事件指令参数已变化，请重新导出并检查事件指令规则"))
+                    elif not event_rules_reviewed_empty:
+                        warnings.append(issue("event_command_rules", "当前游戏尚未导入事件指令文本规则"))
                 if not note_tag_rules:
-                    warnings.append(issue("note_tag_rules", "当前游戏尚未导入 Note 标签文本规则"))
+                    if note_rules_review_state_stale:
+                        warnings.append(issue("note_tag_rules_review_state_stale", "Note 标签规则曾确认为空，但当前 Note 文本已变化，请重新导出并检查 Note 标签规则"))
+                    elif not note_rules_reviewed_empty:
+                        warnings.append(issue("note_tag_rules", "当前游戏尚未导入 Note 标签文本规则"))
                 if terminology_registry is None:
                     warnings.append(issue("terminology", "当前游戏尚未导入字段译名表"))
                 if terminology_glossary is None:
@@ -202,3 +241,15 @@ class DoctorAgentMixin:
                 warnings.append(issue("stdout_encoding", "当前 stdout 不是 UTF-8，建议使用 --agent-mode 或 --json"))
         except Exception as error:
             warnings.append(issue("stdout_encoding", f"终端编码检查失败: {type(error).__name__}: {error}"))
+
+
+def _rule_review_empty_state(
+    *,
+    state: RuleReviewStateRecord | None,
+    current_scope_hash: str,
+) -> tuple[bool, bool]:
+    """判断空规则审查状态是否仍适用于当前输入范围。"""
+    if state is None or not state.reviewed_empty:
+        return False, False
+    state_stale = state.scope_hash != current_scope_hash
+    return not state_stale, state_stale

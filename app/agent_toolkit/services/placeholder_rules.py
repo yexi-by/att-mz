@@ -293,8 +293,16 @@ class PlaceholderRuleAgentMixin:
                 text_rules=empty_rules,
             )
         candidates = scan_placeholder_candidates(translation_data_map, empty_rules)
+        uncovered_count_before_draft = count_uncovered_candidates(candidates)
         manual_boundary_markers = _joined_text_boundary_markers(candidates)
         draft_rules = _build_custom_placeholder_rule_draft(candidates)
+        draft_custom_rules = load_custom_placeholder_rules_text(json.dumps(draft_rules, ensure_ascii=False))
+        draft_text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=draft_custom_rules,
+        )
+        draft_preview_candidates = scan_placeholder_candidates(translation_data_map, draft_text_rules)
+        uncovered_count_after_draft_preview = count_uncovered_candidates(draft_preview_candidates)
         warnings = _build_unprotected_control_warnings(
             _collect_unprotected_control_warning_samples(translation_data_map, empty_rules),
             empty_rules,
@@ -310,6 +318,8 @@ class PlaceholderRuleAgentMixin:
             warnings=warnings,
             summary={
                 "candidate_count": len(candidates),
+                "uncovered_count_before_draft": uncovered_count_before_draft,
+                "uncovered_count_after_draft_preview": uncovered_count_after_draft_preview,
                 "draft_rule_count": len(draft_rules),
                 "manual_boundary_candidate_count": len(manual_boundary_markers),
                 "output": str(output_path),

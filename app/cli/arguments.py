@@ -79,6 +79,16 @@ def read_bool_arg(args: argparse.Namespace, name: str) -> bool:
     return raw_value
 
 
+def read_optional_bool_arg(args: argparse.Namespace, name: str) -> bool | None:
+    """从命名空间读取可选布尔参数。"""
+    raw_value = read_namespace_value(args, name)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, bool):
+        raise CliBusinessError(f"命令参数不是布尔值：{name}")
+    return raw_value
+
+
 def read_optional_int_arg(args: argparse.Namespace, name: str) -> int | None:
     """从命名空间读取可选整数参数。"""
     raw_value = read_namespace_value(args, name)
@@ -298,6 +308,7 @@ __all__ = [
     "read_bool_arg",
     "read_int_set_arg",
     "read_namespace_value",
+    "read_optional_bool_arg",
     "read_optional_float_arg",
     "read_optional_int_arg",
     "read_optional_int_list_arg",

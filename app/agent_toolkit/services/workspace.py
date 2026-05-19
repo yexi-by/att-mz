@@ -16,6 +16,7 @@ from .common import (
     TextRules,
     _agent_workflow_manifest,
     _build_custom_placeholder_rule_draft,
+    _collect_plugin_json_string_leaf_candidate_details,
     _collect_plugin_source_text_candidates,
     _event_command_rule_records_to_import_json,
     _is_path_inside,
@@ -123,6 +124,9 @@ class WorkspaceAgentMixin:
         )
         plugins_path = target_dir / "plugins.json"
         await export_plugins_json_file(game_data=game_data, output_path=plugins_path)
+        plugin_json_string_leaf_candidates_path = target_dir / "plugin-json-string-leaf-candidates.json"
+        plugin_json_string_leaf_candidates = _collect_plugin_json_string_leaf_candidate_details(game_data)
+        await _write_json_value(plugin_json_string_leaf_candidates_path, plugin_json_string_leaf_candidates)
         plugin_rules_path = target_dir / "plugin-rules.json"
         await _write_json_value(plugin_rules_path, _plugin_rule_records_to_import_json(plugin_rules))
         note_tag_candidates_path = target_dir / "note-tag-candidates.json"
@@ -181,6 +185,7 @@ class WorkspaceAgentMixin:
             "terminology_subtask_count": len(TERMINOLOGY_SUBTASK_GROUPS),
             "glossary_term_count": terminology_glossary.term_count() if terminology_glossary is not None else 0,
             "plugin_count": len(game_data.plugins_js),
+            "plugin_json_string_leaf_candidate_count": len(plugin_json_string_leaf_candidates),
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
             "stale_plugin_rule_count": stale_plugin_rule_count,
             "note_tag_candidate_count": note_tag_report.candidate_tag_count,
@@ -196,6 +201,7 @@ class WorkspaceAgentMixin:
             str(terminology_summary.contexts_dir),
             str(terminology_subtasks_dir),
             str(plugins_path),
+            str(plugin_json_string_leaf_candidates_path),
             str(plugin_rules_path),
             str(note_tag_candidates_path),
             str(note_tag_rules_path),

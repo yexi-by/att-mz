@@ -436,6 +436,35 @@ def test_translate_command_accepts_source_residual_override_names() -> None:
     assert overrides.source_residual_segment_pattern == "[ぁ-ん]+"
 
 
+def test_translate_command_accepts_source_lines_output_flags() -> None:
+    """模型输出原文对照开关会进入配置覆盖对象。"""
+    parser = build_parser()
+
+    include_args = parser.parse_args(["translate", "--game", "demo", "--include-source-lines"])
+    disable_args = parser.parse_args(["translate", "--game", "demo", "--no-source-lines"])
+    run_all_args = parser.parse_args(["run-all", "--game", "demo", "--include-source-lines"])
+
+    assert build_setting_overrides(include_args).text_translation_include_source_lines is True
+    assert build_setting_overrides(disable_args).text_translation_include_source_lines is False
+    assert build_setting_overrides(run_all_args).text_translation_include_source_lines is True
+
+
+def test_translate_source_lines_output_flags_are_mutually_exclusive() -> None:
+    """模型输出原文对照的开启和关闭参数不能同时传入。"""
+    parser = build_parser()
+
+    with pytest.raises(CliArgumentError):
+        _ = parser.parse_args(
+            [
+                "translate",
+                "--game",
+                "demo",
+                "--include-source-lines",
+                "--no-source-lines",
+            ]
+        )
+
+
 def test_json_progress_reports_to_stderr_without_polluting_stdout(
     capsys: CaptureFixture[str],
 ) -> None:
