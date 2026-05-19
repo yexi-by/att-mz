@@ -2,7 +2,15 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentReport,
+    AgentServiceContext,
+    TextRules,
+    TextScopeService,
+    _build_coverage_report,
+    _text_scope_blocking_errors,
+    load_setting,
+)
 
 
 class CoverageAgentMixin:

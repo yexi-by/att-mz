@@ -2,7 +2,23 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentServiceContext,
+    CustomPlaceholderRule,
+    GameData,
+    PluginTextRuleRecord,
+    SourceResidualRuleRecord,
+    TargetGameSession,
+    TextRules,
+    TextScopeService,
+    TranslationData,
+    build_source_residual_rule_records_from_import,
+    load_active_game_data,
+    load_custom_placeholder_rules_text,
+    load_setting,
+    parse_source_residual_rule_import_text,
+    read_fresh_plugin_text_rules,
+)
 
 
 class CoreAgentMixin:

@@ -2,7 +2,27 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentIssue,
+    AgentReport,
+    AgentServiceContext,
+    JsonObject,
+    JsonValue,
+    TextRules,
+    _append_check,
+    _current_python_major_minor,
+    count_uncovered_candidates,
+    ensure_db_directory,
+    issue,
+    load_environment_overrides,
+    load_setting,
+    platform,
+    resolve_app_path,
+    resolve_replacement_font_path,
+    resolve_setting_path,
+    scan_placeholder_candidates,
+    sys,
+)
 
 
 class DoctorAgentMixin:

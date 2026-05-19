@@ -2,7 +2,35 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentIssue,
+    AgentReport,
+    AgentServiceContext,
+    DEFAULT_SOURCE_LANGUAGE,
+    JsonArray,
+    Path,
+    PlaceholderRuleRecord,
+    Sequence,
+    SourceLanguage,
+    TextRules,
+    _append_placeholder_rule_safety_issues,
+    _build_custom_placeholder_rule_draft,
+    _build_joined_text_boundary_warnings,
+    _build_unprotected_control_warnings,
+    _collect_placeholder_preview_samples,
+    _collect_unprotected_control_warning_samples,
+    _joined_text_boundary_markers,
+    _placeholder_preview_loses_visible_source_text,
+    _preview_placeholder_sample,
+    aiofiles,
+    count_uncovered_candidates,
+    issue,
+    json,
+    load_custom_placeholder_rules_text,
+    load_setting,
+    placeholder_candidates_to_details,
+    scan_placeholder_candidates,
+)
 
 
 class PlaceholderRuleAgentMixin:

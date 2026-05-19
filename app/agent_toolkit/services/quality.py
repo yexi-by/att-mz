@@ -2,7 +2,43 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentIssue,
+    AgentReport,
+    AgentServiceContext,
+    Counter,
+    JsonArray,
+    JsonObject,
+    LlmFailureRecord,
+    Path,
+    QualityProgressCallbacks,
+    SettingOverrides,
+    TextRules,
+    TextScopeService,
+    TranslationErrorItem,
+    _build_coverage_report,
+    _build_manual_translation_template_entry,
+    _build_quality_fix_categories_by_path,
+    _build_translation_error_quality_detail,
+    _collect_active_translation_location_paths,
+    _collect_quality_fix_problem_paths,
+    _count_active_quality_details,
+    _count_protocol_sensitive_translation_items,
+    _coverage_hard_stop_errors,
+    _noop_quality_progress_callbacks,
+    _read_reset_translation_location_paths,
+    _resolve_quality_fix_translation_lines,
+    _string_lines_to_json_array,
+    _text_scope_blocking_errors,
+    _validate_source_residual_rule_records,
+    aiofiles,
+    collect_agent_service_native_quality_details,
+    collect_agent_service_native_write_protocol_details,
+    issue,
+    json,
+    load_setting,
+    native_thread_count,
+)
 
 
 class QualityAgentMixin:

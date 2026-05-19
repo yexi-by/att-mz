@@ -2,7 +2,34 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentIssue,
+    AgentReport,
+    AgentServiceContext,
+    EventCommandTextExtraction,
+    JsonArray,
+    JsonObject,
+    NoteTagTextExtraction,
+    PLUGINS_FILE_NAME,
+    Path,
+    PluginTextExtraction,
+    TextRules,
+    _build_rule_metric_detail,
+    _collect_write_protocol_unwritable_items,
+    _json_items_by_location_path,
+    _note_tag_item_matches_rule,
+    _preview_event_command_write_back,
+    build_event_command_rule_records_from_import,
+    build_note_tag_rule_records_from_import,
+    build_plugin_rule_records_from_import,
+    collect_translation_data_paths,
+    export_note_tag_candidates_file,
+    issue,
+    load_setting,
+    parse_event_command_rule_import_text,
+    parse_note_tag_rule_import_text,
+    parse_plugin_rule_import_text,
+)
 
 
 class RuleValidationAgentMixin:

@@ -2,7 +2,20 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentIssue,
+    AgentReport,
+    AgentServiceContext,
+    Path,
+    TextRules,
+    TextScopeService,
+    _classify_feedback_occurrences,
+    _collect_feedback_text_occurrences,
+    _count_feedback_gap_types,
+    _read_feedback_texts,
+    issue,
+    load_setting,
+)
 
 
 class FeedbackAgentMixin:

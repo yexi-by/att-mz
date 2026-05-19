@@ -1,339 +1,336 @@
-# A.T.T MZ 技术文档
+# A.T.T MZ 进阶教学与源码编译
 
-Autonomous Translation Toolkit for RPG Maker MV/MZ.
+本文面向需要从源码运行、调试或参与开发的使用者。只想使用发行包时，先看仓库根目录的 [快速开始](../README.md)。开发约束、文案规范和交付红线见 [项目局部规范](../AGENTS.md)。模块结构导航见 [开发文档地图](development/README.md)。
 
-A.T.T MZ 是面向 RPG Maker MV/MZ 日文和英文游戏的命令行翻译与质量检查工具。项目负责提取游戏文本、管理译文记录、导入规则、生成质量报告和写回游戏文件。语义判断（术语、插件字段、事件指令字段、data Note 标签字段、少量失败项和用户试玩反馈）由 Agent 按 `skills/att-mz/SKILL.md` 协议执行。
+## 环境准备
 
-## 环境要求
+| 工具 | 用途 |
+| --- | --- |
+| Python 3.14 | 运行 CLI、测试和 Python 业务代码 |
+| uv | 安装依赖、运行命令和测试 |
+| Rust stable | 构建 PyO3 原生扩展 |
+| VS Build Tools | Windows 上提供 MSVC 链接器，安装“使用 C++ 的桌面开发”组件 |
 
-| 组件 | 用途 |
-|------|------|
-| [Python](https://www.python.org/downloads/) 3.14+ | 主运行环境 |
-| [uv](https://docs.astral.sh/uv/getting-started/installation/) | 依赖管理与运行入口 |
-| [Rust](https://rustup.rs/) stable-msvc | PyO3 原生扩展编译 |
-| [VS Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) | C++ 桌面开发组件，提供 MSVC 链接器 |
-| OpenAI 兼容模型服务 | 翻译后端 |
-
-## 初始化
+初始化源码环境：
 
 ```powershell
-git clone <项目仓库地址> <项目目录>
 cd <项目目录>
-uv sync
+uv sync --locked --dev
 uv run maturin develop --release
-Copy-Item setting.example.toml setting.toml
+uv run python main.py --help
 ```
 
-质量检查、写入前协议预演和部分 data 扫描通过 [PyO3](https://pyo3.rs/) 原生扩展执行。首次初始化需先安装 Rust 和 MSVC 链接器：
+如果原生扩展构建失败，先确认 Rust 工具链和 VS Build Tools 可用，再重新执行：
 
 ```powershell
-rustup default stable-msvc
-rustc --version
-cargo --version
 uv run maturin develop --release
-```
-
-若扩展构建失败并提示找不到 C++ 链接器，安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)，勾选"使用 C++ 的桌面开发"。
-
-Rust 核心默认使用逻辑 CPU 核心数。限制线程数：
-
-```powershell
-$env:ATT_MZ_RUST_THREADS = "<线程数>"
 ```
 
 ## 模型配置
 
-模型地址和 API Key 通过环境变量提供：
-
-```powershell
-$env:RPG_MAKER_TOOLS_LLM_BASE_URL = "<模型服务地址>"
-$env:RPG_MAKER_TOOLS_LLM_API_KEY = "<API_KEY>"
-```
-
-如需透传额外请求参数，在 `setting.toml` 的 `[llm]` 下配置 `request_body_extra` 为 JSON 对象字符串，该对象会原样合并到 OpenAI 兼容 Chat Completions 请求体：
+复制或编辑 `<项目目录>\setting.toml`，填写 OpenAI 兼容接口配置：
 
 ```toml
 [llm]
-request_body_extra = '''
-{
-  "reasoning_effort": "high",
-  "thinking": {"type": "enabled"}
-}
-'''
+base_url = "https://<模型服务地址>/v1"
+api_key = "<API Key>"
+model = "<模型名>"
+timeout = 600
 ```
 
-当前流程依赖完整模型 JSON 响应来判断译文保存结果，配置 `stream=true` 或 `stream_options` 会直接报错。
-
-## Windows 终端编码
-
-游戏文本通常同时包含日文、中文和 RPG Maker 控制符。终端编码不正确会导致 Agent 看到乱码并误判文本。启动 Agent 前在同一 PowerShell 会话中执行：
+也可以用环境变量覆盖敏感配置。源码运行时所有命令都使用：
 
 ```powershell
-$OutputEncoding = [System.Text.UTF8Encoding]::new()
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-$env:PYTHONUTF8 = "1"
-$env:PYTHONIOENCODING = "utf-8"
-$env:LANG = "C.UTF-8"
-$env:LC_ALL = "C.UTF-8"
+uv run python main.py --agent-mode <命令> ... --json
 ```
 
-## 基本命令
+`--agent-mode` 会输出适合外部 Agent 读取的简洁日志；`--json` 会输出机器可读报告。命令返回 `status=error` 时，本阶段不能继续。
+
+## 环境与游戏注册
+
+先检查配置：
 
 ```powershell
-uv run python main.py --help
 uv run python main.py --agent-mode doctor --no-check-llm --json
+uv run python main.py --agent-mode doctor --json
+```
+
+注册游戏时必须显式声明原文语言。日文游戏：
+
+```powershell
 uv run python main.py --agent-mode add-game --path <游戏目录> --source-language ja --json
+```
+
+英文游戏：
+
+```powershell
+uv run python main.py --agent-mode add-game --path <游戏目录> --source-language en --json
+```
+
+查看已注册游戏：
+
+```powershell
 uv run python main.py --agent-mode list --json
 ```
 
-英文游戏把注册命令中的 `--source-language ja` 改为 `--source-language en`。项目不做自动语言检测，不能省略源语言参数。
+## Agent 工作区
 
-## CLI 约定
-
-- 全局参数（`--agent-mode`）放在子命令前。
-- `--json` 时 stdout 只输出最终 JSON 对象。`translate`、`quality-report`、`write-back` 等支持 JSON 输出的长任务会在 stderr 持续输出无 ANSI 文本进度条（已完成数量、百分比、已用时间、预计剩余时间、当前状态）。自动化脚本只解析 stdout，不要把 stderr 进度行当成结果 JSON。
-- 长任务运行时必须观察 stderr 进度，不能因为 stdout 暂未输出最终 JSON 就判定命令卡死。
-- 模型密钥只从环境变量或本地配置读取，不写进命令行参数、临时文件、报告或提交。
-- 文件型规则一律 `--input <文件>`，不把大 JSON 塞进命令行。
-
-## Agent 工作流
-
-Agent 执行翻译任务时必须使用项目 Skill：`skills/att-mz/SKILL.md`。
-
-核心 CLI 调用序列与先决条件：
-
-### 环境与注册
+工作区用于让外部 Agent 在不读源码、不碰数据库的前提下分析术语、插件规则、事件指令规则、Note 标签规则和占位符规则。
 
 ```powershell
-uv run python main.py --agent-mode doctor --no-check-llm --json
-uv run python main.py --agent-mode add-game --path <游戏目录> --source-language ja --json
-uv run python main.py --agent-mode doctor --game <游戏标题> --no-check-llm --json
 uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json
 ```
 
-上面的注册示例按日文游戏书写；英文游戏必须把源语言参数改为 `--source-language en`。
-
-### 术语表
-
-`prepare-agent-workspace` 在 `terminology/subtasks/sources/` 和 `terminology/subtasks/candidates/` 下生成按术语字段拆分的候选文件。术语表必须先进入第一轮子代理：主代理把候选文件分配给数个术语候选子代理，等待全部交卷后亲自审查信达雅、源文语义、中文自然度和译名统一，再把修订后的字段译名合并到 `terminology/field-terms.json`，并把可用于正文提示词命中的规范术语写入 `terminology/glossary.json`。子代理不能直接写最终术语表，也不能导入数据库。
+如果需要覆盖事件指令编码：
 
 ```powershell
-uv run python main.py --agent-mode import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json --json
+uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --code <事件指令编码> --json
 ```
 
-字段译名表会覆盖地图显示名、数据库名称、系统类型，以及 MZ 标准 `101.parameters[4]` 名字框等游戏字段。MV 的 `speaker_names` 来自每个对话块首条非空 `401` 正文识别出的虚拟名字框说话人，会服务译名统一、正文翻译提示词命中，并在写进游戏文件时重建对应 `401` 说话人行或名字标签；不会写回 `101.parameters[4]`。正文术语表只服务正文翻译提示词命中，不要把字段包装形式、定位信息或说明字段写进正文术语表。
-
-如果只需要单独导出术语表工程，可以使用 `export-terminology`。完整 Agent 翻译流程优先使用 `prepare-agent-workspace`，因为它会同时导出术语、插件规则、事件指令规则、Note 标签规则和占位符候选。
-
-```powershell
-uv run python main.py --agent-mode export-terminology --game <游戏标题> --output-dir <术语表目录>
-```
-
-如果只需要把已经导入数据库的字段译名写进游戏文件，可以使用 `write-terminology`。该命令不是机器可读 JSON 命令，不支持 `--json`；完整汉化写入仍优先使用写回前质量检查和 `write-back --json`。
-
-```powershell
-uv run python main.py --agent-mode write-terminology --game <游戏标题>
-```
-
-### 外部规则
-
-字段译名表和正文术语表保存后，才开启第二轮子代理任务：插件规则、事件指令规则和 Note 标签规则。
-
-```powershell
-# 插件规则
-uv run python main.py --agent-mode validate-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json --json
-uv run python main.py --agent-mode import-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json --json
-
-# 事件指令规则
-uv run python main.py --agent-mode validate-event-command-rules --game <游戏标题> --input <工作区>/event-command-rules.json --json
-uv run python main.py --agent-mode import-event-command-rules --game <游戏标题> --input <工作区>/event-command-rules.json --json
-
-# Note 标签规则
-uv run python main.py --agent-mode validate-note-tag-rules --game <游戏标题> --input <工作区>/note-tag-rules.json --json
-uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> --input <工作区>/note-tag-rules.json --json
-```
-
-Note 标签规则用于标准 `data/*.json` 中由插件显示给玩家的 `note` 标签文本（如 `<玩家可见说明标签:...>`、`<玩家可见名牌标签:...>`）。`<地图文件模式>` 可作为规则文件模式一次覆盖同类地图文件。`<机器协议标签:...>`、`<内部编号标签:...>` 等机器协议标签不得加入规则，也不得手工改游戏 `data/*.json`。
-
-### 占位符规则
-
-占位符规则必须在插件、事件指令和 Note 标签规则全部导入后生成——此时 CLI 才能看到当前真正会进入正文翻译的完整文本集合，避免漏掉插件参数、插件命令参数或 Note 标签文本里的自定义控制符。
-
-```powershell
-uv run python main.py --agent-mode build-placeholder-rules --game <游戏标题> --output <工作区>/placeholder-rules.json --json
-uv run python main.py --agent-mode validate-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json --json
-uv run python main.py --agent-mode scan-placeholder-candidates --game <游戏标题> --input <工作区>/placeholder-rules.json --json
-uv run python main.py --agent-mode import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json --json
-```
-
-最终导入前必须运行 `scan-placeholder-candidates`，确认 `summary.uncovered_count` 等于 0。
-
-裸无参数插件控制符可能直接贴着正文。若真实控制符是 `\FX`，原文形如 `\FXStop this!!!`，工具不会自动猜边界；必须查插件源码或规则说明后，手写只保护 `\FX` 本身的规则，例如 `{"\\\\FX": "[CUSTOM_PLUGIN_FX_MARKER_{index}]"}`。不要写成 `\\FXStop`，也不要把后面的 `Stop this!!!` 写进控制符规则。`validate-placeholder-rules` 的预览里，模型可见文本应保留可翻译正文。
-
-### 工作区验收
+外部 Agent 填写完成后，先校验工作区：
 
 ```powershell
 uv run python main.py --agent-mode validate-agent-workspace --game <游戏标题> --workspace <工作区> --json
 ```
 
-### 正文翻译
+临时文件完成导入后可以清理：
 
 ```powershell
-# 小批量试跑
-uv run python main.py --agent-mode translate --game <游戏标题> --max-batches 1 --json
+uv run python main.py --agent-mode cleanup-agent-workspace --workspace <工作区> --json
+```
 
-# 查看状态
+## 术语表流程
+
+导出术语表工程：
+
+```powershell
+uv run python main.py --agent-mode export-terminology --game <游戏标题> --output-dir <术语表目录>
+```
+
+外部 Agent 填写字段译名表和正文术语表后导入：
+
+```powershell
+uv run python main.py --agent-mode import-terminology --game <游戏标题> --input <术语表目录>/field-terms.json --glossary-input <术语表目录>/glossary.json --json
+```
+
+把稳定名词直接写进游戏文件：
+
+```powershell
+uv run python main.py --agent-mode write-terminology --game <游戏标题>
+```
+
+`write-terminology` 当前不支持 `--json`，执行时以终端日志和文件日志确认结果。
+
+若本次写入需要覆盖字体引用，必须显式确认：
+
+```powershell
+uv run python main.py --agent-mode write-terminology --game <游戏标题> --confirm-font-overwrite
+```
+
+## 外部文本规则
+
+插件规则从 `js/plugins.js` 导出、分析、校验、导入：
+
+```powershell
+uv run python main.py --agent-mode export-plugins-json --game <游戏标题> --output <工作区>/plugins.json
+uv run python main.py --agent-mode validate-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json --json
+uv run python main.py --agent-mode import-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json --json
+```
+
+事件指令规则从 `data/*.json` 导出、分析、校验、导入：
+
+```powershell
+uv run python main.py --agent-mode export-event-commands-json --game <游戏标题> --output <工作区>/event-commands.json
+uv run python main.py --agent-mode validate-event-command-rules --game <游戏标题> --input <工作区>/event-command-rules.json --json
+uv run python main.py --agent-mode import-event-command-rules --game <游戏标题> --input <工作区>/event-command-rules.json --json
+```
+
+Note 标签规则从标准数据文件的 `note` 字段导出、分析、校验、导入：
+
+```powershell
+uv run python main.py --agent-mode export-note-tag-candidates --game <游戏标题> --output <工作区>/note-tag-candidates.json --json
+uv run python main.py --agent-mode validate-note-tag-rules --game <游戏标题> --input <工作区>/note-tag-rules.json --json
+uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> --input <工作区>/note-tag-rules.json --json
+```
+
+规则导入只保存通过校验的条目。插件、事件指令和 Note 标签规则都不得绕过对应的 `validate-...` 命令。
+
+## 游戏控制符规则
+
+在真实游戏翻译前，必须先确认自定义控制符和特殊文本协议。先生成可编辑草稿：
+
+```powershell
+uv run python main.py --agent-mode build-placeholder-rules --game <游戏标题> --output <工作区>/placeholder-rules.json --json
+```
+
+校验规则和样本文本：
+
+```powershell
+uv run python main.py --agent-mode validate-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json --json
+```
+
+扫描仍未覆盖的疑似控制符：
+
+```powershell
+uv run python main.py --agent-mode scan-placeholder-candidates --game <游戏标题> --input <工作区>/placeholder-rules.json --json
+```
+
+确认后导入当前游戏数据库：
+
+```powershell
+uv run python main.py --agent-mode import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json --json
+```
+
+规则 JSON 顶层是对象，键为正则表达式字符串，值为占位符模板字符串。模板应生成形如 `[CUSTOM_NAME_1]` 的方括号占位符，建议使用 `{index}` 区分同一规则的多次命中。
+
+## 正文翻译
+
+小批量试跑：
+
+```powershell
+uv run python main.py --agent-mode translate --game <游戏标题> --max-batches 1 --json
+```
+
+查看状态和范围：
+
+```powershell
 uv run python main.py --agent-mode translation-status --game <游戏标题> --json
 uv run python main.py --agent-mode text-scope --game <游戏标题> --json
 uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
 uv run python main.py --agent-mode quality-report --game <游戏标题> --json
-
-# 全量翻译
-uv run python main.py --agent-mode translate --game <游戏标题> --json
-
-# 写回
-uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
-uv run python main.py --agent-mode quality-report --game <游戏标题> --json
-uv run python main.py --agent-mode write-back --game <游戏标题> --json
 ```
 
-`translate` 返回 0 表示本轮命令正常结束，不代表所有文本都已成功保存译文。`translation-status --json` 的 `pending_count` 表示当前还有多少文本没成功保存译文，`run_pending_count` 表示最近一次运行开始时待处理的文本数。
+继续全量翻译：
 
-`text-scope` 输出每条文本的内部位置、来源类型、规则来源、原文行、是否进入翻译、是否可保存译文、是否可写进游戏文件和不可处理原因。`audit-coverage` 对比规则命中、统一文本清单、已保存译文和实际写入范围；只要有规则命中但不可写、过期规则、缺译文或过期已保存译文，就必须先修规则、补译文或精确重置，不能写进游戏文件。
+```powershell
+uv run python main.py --agent-mode translate --game <游戏标题> --json
+```
 
-## 手动填写译文表
+常用运行控制参数：
 
-### 导出未保存译文
+| 参数 | 作用 |
+| --- | --- |
+| `--max-items <数量>` | 本轮最多处理的还没成功保存译文的文本数量 |
+| `--max-batches <数量>` | 本轮最多发送给模型的批次数 |
+| `--time-limit-seconds <秒数>` | 本轮最长运行时长 |
+| `--stop-on-error-rate <比例>` | 项目检查没通过的译文比例达到阈值时停止 |
+| `--stop-on-rate-limit-count <次数>` | 模型限流次数达到阈值时停止 |
 
-一次导出全部还没成功保存译文的原文结构，只填写 `translation_lines`（中文译文行）：
+## 手动填写和质量修复
+
+导出还没成功保存译文的文本：
 
 ```powershell
 uv run python main.py --agent-mode export-pending-translations --game <游戏标题> --output <工作区>/pending-translations.json --json
+```
+
+导入填写后的译文表：
+
+```powershell
 uv run python main.py --agent-mode import-manual-translations --game <游戏标题> --input <工作区>/pending-translations.json --json
 ```
 
-分批或抽样填写：
-
-```powershell
-uv run python main.py --agent-mode export-pending-translations --game <游戏标题> --limit N --output <文件> --json
-```
-
-手动填写的译文导入时会按当前 `[text_rules]` 行宽配置自动拆短 `long_text` 译文。若仍存在无法安全拆分的超长行，`quality-report` 会继续报告错误，阻止写回。
-
-### 导出质量修复表
-
-质量报告已给出可修复明细时，优先导出修复表（只改 `translation_lines`）：
+导出“模型翻了，但项目检查没通过的译文”修复表：
 
 ```powershell
 uv run python main.py --agent-mode export-quality-fix-template --game <游戏标题> --output <工作区>/quality-fix-template.json --json
-uv run python main.py --agent-mode import-manual-translations --game <游戏标题> --input <工作区>/quality-fix-template.json --json
 ```
 
-修复表中的 `text_for_model_lines` 仅供对照，不能复制进 `translation_lines`。`translation_lines` 必须使用 `original_lines` 里的游戏原始控制符；若仍看到内置游戏控制符占位符或自定义占位符，先对照 `original_lines` 改回反斜杠形式再导入。
+修复后同样用 `import-manual-translations` 导入。
 
-### 重置译文
-
-确认坏译文需要删除、重新交给模型翻译时：
+按清单重置指定文本：
 
 ```powershell
 uv run python main.py --agent-mode reset-translations --game <游戏标题> --input <工作区>/reset-translations.json --json
 ```
 
-`reset-translations.json` 格式为 `{"location_paths": ["<定位路径>"]}`。数组不能为空，路径必须来自当前提取范围。禁止用空 `translation_lines` 当重置信号。
-
-完整重译当前提取范围（需用户明确选择）：
+完整重译前必须确认成本，再执行：
 
 ```powershell
 uv run python main.py --agent-mode reset-translations --game <游戏标题> --all --json
 ```
 
-### 源文残留例外
+## 源文残留例外
 
-确认致谢名单、Staff 名、作品名、品牌名或专有名词确实不应翻译时，使用例外规则，禁止全局关闭源文残留检测。日文游戏和英文游戏都优先使用通用命令：
+如果质量报告提示译文里仍有源语言文本，先判断是否漏翻。只有名单、作品名、品牌名、专有名词等确实应保留源文时，才写入例外规则。
 
 ```powershell
 uv run python main.py --agent-mode validate-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json --json
 uv run python main.py --agent-mode import-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json --json
 ```
 
-项目只提供通用源文残留命令。日文和英文游戏都使用同一套规则文件与校验入口。
+当前源码模块名是 `source_residual`，负责源文残留例外规则解析、校验和检查协作。不要把源文残留检查理解成只服务日文；英文游戏也会按语言档案检查英文残留。
 
-源文保留例外文件顶层必须是 `{position_rules, structural_rules}`。`position_rules` 只能按文本在游戏里的内部位置放行明确片段；`structural_rules` 只能遮蔽协议词，并且必须声明 `pattern`、`allowed_terms`、`check_group` 和 `reason`，显示文本仍会继续做分组源文残留检查。禁止把例外字段写进手动填写译文表。
+## 写进游戏文件
 
-### 反馈原文反查
-
-试玩反馈修复闭环固定为：反馈清单 -> 补规则或补译文 -> `audit-coverage` -> `quality-report` -> 用户确认是否再次写进游戏文件 -> `verify-feedback-text`。反馈原文清单可以是字符串数组，也可以是 `{"texts": [...]}`：
+写入前必须确认覆盖范围和质量报告：
 
 ```powershell
-uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --input <工作区>/feedback-texts.json --json
-uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-candidates.json --json
+uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
+uv run python main.py --agent-mode quality-report --game <游戏标题> --json
 ```
 
-`verify-feedback-text` 只反查真实文件中是否仍有反馈原文，并按游戏数据、插件参数或插件源码候选分类。`scan-plugin-source-text` 只输出插件源码硬编码文本候选，不判断玩家是否可见，不自动改源码，也不把候选混入插件参数规则。
+报告没有错误后，把译文写进游戏文件：
 
-## 字体管理
+```powershell
+uv run python main.py --agent-mode write-back --game <游戏标题> --json
+```
 
-普通 `write-back` 只把译文写进游戏文件，不覆盖字体引用。只有用户明确允许字体覆盖时，才可在本轮追加 `--confirm-font-overwrite`。
+如需让配置字体覆盖游戏字体引用：
 
-还原项目曾覆盖过的字体引用（不滚回译文）：
+```powershell
+uv run python main.py --agent-mode write-back --game <游戏标题> --confirm-font-overwrite --json
+```
+
+还原项目覆盖过的字体引用：
 
 ```powershell
 uv run python main.py --agent-mode restore-font --game <游戏标题> --json
 ```
 
-字体还原对比 `data/*.json` 与 `data_origin/*.json`、`js/plugins.js` 与 `js/plugins_origin.js`，以及存在时的 `fonts/gamefont.css` 与 `fonts/gamefont_origin.css`，只把候选覆盖字体名替回原件里的实际旧字体引用。若需临时指定候选覆盖字体名，追加 `--replacement-font-path <字体文件>`。
-
-## Agent 启动示范
-
-以下以 Claude Code 为例，其他 Agent（Codex 等）对应调整即可。核心思路：先让 Agent 读取项目 Skill，再由它按 CLI 协议准备工作区、分析规则、小批量翻译、质量检查、填写失败译文并写回第一版可试玩汉化结果；用户试玩后继续把问题反馈给 Agent 迭代修复。
+`run-all` 会按固定顺序执行正文翻译和写入；使用前仍应先完成规则、术语和占位符准备：
 
 ```powershell
-# 1. 设置 UTF-8
-$OutputEncoding = [System.Text.UTF8Encoding]::new()
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-$env:PYTHONUTF8 = "1"
-$env:PYTHONIOENCODING = "utf-8"
-$env:LANG = "C.UTF-8"
-$env:LC_ALL = "C.UTF-8"
-
-# 2. 设置模型
-$env:RPG_MAKER_TOOLS_LLM_BASE_URL = "<模型服务地址>"
-$env:RPG_MAKER_TOOLS_LLM_API_KEY = "<API_KEY>"
-
-# 3. 启动 Agent
-claude --permission-mode bypassPermissions
+uv run python main.py --agent-mode run-all --game <游戏标题>
 ```
 
-在 Agent 交互界面提交任务说明：
+只运行翻译、不写入：
 
-```text
-请使用 <项目目录>/skills/att-mz/SKILL.md 执行 RPG Maker MV/MZ 游戏自动翻译。
-
-项目目录：<项目目录>
-游戏目录：<游戏目录>
-工作区：<工作区>
-
-要求：
-1. 全程按 Skill 里写明的输入、输出和校验步骤工作，只通过 CLI、工作区 JSON 和游戏目录处理业务数据。
-2. 先运行 doctor、add-game、prepare-agent-workspace，并确认 <游戏标题>。
-3. 先由主代理拆分术语字段，派发术语候选子代理，等待全部交卷后亲自审查、统一译名、修订字段译名表和正文术语表，并用 import-terminology 同时导入。
-4. 术语表导入后，再派发插件规则、事件指令规则和 data Note 标签规则三类子代理；这些文本来源确认后，再由主代理生成、校验并导入占位符规则。
-5. 先执行 translate --max-batches 1 小批量试跑，再查看 translation-status 和 quality-report。
-6. 质量问题优先用 export-quality-fix-template 导出可填写的修复表，再用 import-manual-translations 导入。
-7. 如果还有没成功保存译文的文本，使用 export-pending-translations 导出完整译文表，只填写中文译文行。
-8. 不直接修改数据库，不跳过 validate，不在 quality-report 报告错误时执行写回。
-9. 本轮写回前先向我确认；我确认后再执行 write-back --json。
-10. 除非我单独明确允许覆盖字体，否则不要添加 --confirm-font-overwrite。
-11. 写回完成后提醒我先实际游玩，把漏翻、误翻、显示异常和语气不自然的地方反馈回来；收到反馈后先整理成修复清单，再定位问题、修译文或补规则、重新运行质量检查，并在我确认后再次写回。
+```powershell
+uv run python main.py --agent-mode run-all --game <游戏标题> --skip-write-back
 ```
 
-新手建议先让 Agent 跑到小批量质量报告为止，确认没有占位符、乱码、超宽行和明显源文残留后，再继续全量翻译。若 Agent 输出出现乱码，先停止当前阶段，重新设置 UTF-8 后再重跑相关命令，不要基于乱码内容修译文或规则。
+## 试玩反馈
 
-## 验收
+写入后如果试玩发现原文，把反馈原文整理为字符串数组或 `{"texts": [...]}`，再反查真实文件：
+
+```powershell
+uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --input <工作区>/feedback-texts.json --json
+```
+
+若怀疑原文来自插件源码硬编码文本，扫描候选：
+
+```powershell
+uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-candidates.json --json
+```
+
+插件源码候选只说明“可能出现过这段文本”，不自动判断玩家是否可见，也不会修改插件源码。
+
+## 开发检查
+
+提交或交付前执行：
 
 ```powershell
 uv run basedpyright
 uv run pytest
 ```
+
+改到 Rust 原生扩展、构建配置或发布流程时再执行：
+
+```powershell
+cargo fmt -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+发行版只能由 GitHub Actions 的 `release` 工作流构建。本机负责源码修改、测试和提交，不负责生成正式发行包。

@@ -2,7 +2,28 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from .common import *
+from .common import (
+    AgentIssue,
+    AgentReport,
+    AgentServiceContext,
+    JsonObject,
+    Path,
+    TextRules,
+    TextScopeService,
+    TranslationItem,
+    _build_manual_translation_template_entry,
+    _prepare_manual_translation_item,
+    _text_scope_blocking_errors,
+    aiofiles,
+    cast,
+    coerce_json_value,
+    current_timestamp_text,
+    ensure_json_object,
+    ensure_json_string_list,
+    issue,
+    json,
+    load_setting,
+)
 
 
 class ManualTranslationAgentMixin:
