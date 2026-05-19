@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 
-from app.agent_toolkit import AgentReport, AgentToolkitService
+from app.agent_toolkit import AgentIssue, AgentReport, AgentToolkitService
 from app.agent_toolkit.reports import issue
 from app.cli.arguments import (
     read_bool_arg,
@@ -20,6 +20,7 @@ from app.cli.arguments import (
 )
 from app.cli.runtime import HandlerSession, resolve_optional_target_game_title, resolve_target_game_title
 from app.cli.reports import write_report_outputs
+from app.rmmz.text_rules import JsonObject
 
 
 async def run_export_plugins_json_command(args: argparse.Namespace) -> int:
@@ -50,17 +51,23 @@ async def run_import_plugin_rules_command(args: argparse.Namespace) -> int:
         write_report_outputs(report=report, args=args, title="插件规则导入报告")
         return 1
     if read_bool_arg(args, "json_output"):
+        warnings = build_deleted_translation_warnings(
+            deleted_translation_items=summary.deleted_translation_items,
+            backup_path=summary.deleted_translation_backup_path,
+            rule_label="插件规则",
+        )
         report = AgentReport.from_parts(
             errors=[],
-            warnings=[],
+            warnings=warnings,
             summary={
                 "game": game_title,
                 "input": str(input_path),
                 "imported_plugin_count": summary.imported_plugin_count,
                 "imported_rule_count": summary.imported_rule_count,
                 "deleted_translation_items": summary.deleted_translation_items,
+                "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
             },
-            details={},
+            details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
         )
         write_report_outputs(report=report, args=args, title="插件规则导入报告")
     return 0
@@ -99,20 +106,62 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
         write_report_outputs(report=report, args=args, title="事件指令规则导入报告")
         return 1
     if read_bool_arg(args, "json_output"):
+        warnings = build_deleted_translation_warnings(
+            deleted_translation_items=summary.deleted_translation_items,
+            backup_path=summary.deleted_translation_backup_path,
+            rule_label="事件指令规则",
+        )
         report = AgentReport.from_parts(
             errors=[],
-            warnings=[],
+            warnings=warnings,
             summary={
                 "game": game_title,
                 "input": str(input_path),
                 "imported_rule_group_count": summary.imported_rule_group_count,
                 "imported_path_rule_count": summary.imported_path_rule_count,
                 "deleted_translation_items": summary.deleted_translation_items,
+                "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
             },
-            details={},
+            details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
         )
         write_report_outputs(report=report, args=args, title="事件指令规则导入报告")
     return 0
+
+
+def build_deleted_translation_warnings(
+    *,
+    deleted_translation_items: int,
+    backup_path: str | None,
+    rule_label: str,
+) -> list[AgentIssue]:
+    """为规则导入 JSON 报告生成失效译文清理告警。"""
+    if deleted_translation_items <= 0:
+        return []
+    if backup_path is None:
+        return [
+            issue(
+                "deleted_translations_without_backup",
+                f"本次导入{rule_label}已清理 {deleted_translation_items} 条不再属于当前规则范围的已保存译文；没有生成备份文件",
+            )
+        ]
+    return [
+        issue(
+            "deleted_translations_backed_up",
+            f"本次导入{rule_label}已清理 {deleted_translation_items} 条不再属于当前规则范围的已保存译文；已先备份到 {backup_path}。如果发现规则导错，先重新导入正确规则，再用 import-manual-translations 读取该备份文件恢复这些译文",
+        )
+    ]
+
+
+def build_deleted_translation_backup_details(backup_path: str | None) -> JsonObject:
+    """生成规则导入清理译文后的恢复提示详情。"""
+    if backup_path is None:
+        return {}
+    return {
+        "deleted_translation_backup": {
+            "path": backup_path,
+            "restore_step": "先重新导入正确规则，再运行 import-manual-translations 并把 input 指向该备份文件。",
+        }
+    }
 
 
 async def run_export_note_tag_candidates_command(args: argparse.Namespace) -> int:

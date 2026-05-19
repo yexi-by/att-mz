@@ -155,6 +155,8 @@ uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> -
 
 规则导入只保存通过校验的条目。插件、事件指令和 Note 标签规则都不得绕过对应的 `validate-...` 命令。
 
+如果规则变化导致一部分已保存译文不再属于当前规则范围，导入命令会先把这些译文备份到 `outputs/rule-import-backups/<游戏标题>/...json`，再清理项目数据库里的旧译文记录。JSON 报告会返回 `deleted_translations_backed_up` 告警，并在 `summary.deleted_translation_backup_path` 给出备份文件路径。若确认规则导错，先重新导入正确规则，再用 `import-manual-translations --game <游戏标题> --input <备份文件> --json` 恢复这些译文。
+
 ## 游戏控制符规则
 
 在真实游戏翻译前，必须先确认自定义控制符和特殊文本协议。先生成可编辑草稿：

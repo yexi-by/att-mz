@@ -30,6 +30,7 @@ from .common import (
     parse_note_tag_rule_import_text,
     parse_plugin_rule_import_text,
 )
+from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, note_tag_rule_scope_hash
 
 
@@ -206,7 +207,16 @@ class RuleValidationAgentMixin:
                 )
                 stale_paths = sorted(old_note_paths - new_note_paths)
                 deleted_translation_items = 0
+                deleted_translation_backup_path: str | None = None
                 if stale_paths:
+                    stale_items = await session.read_translated_items_by_paths(stale_paths)
+                    backup = await write_rule_import_translation_backup(
+                        game_title=game_title,
+                        domain="note-tag-rules",
+                        items=stale_items,
+                    )
+                    if backup is not None:
+                        deleted_translation_backup_path = backup.backup_path
                     deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
                 await session.replace_note_tag_text_rules(records)
                 if records:
@@ -221,26 +231,53 @@ class RuleValidationAgentMixin:
             return AgentReport.from_parts(
                 errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
                 warnings=[],
-                summary={"file_count": 0, "tag_count": 0, "deleted_translation_items": 0},
+                summary={
+                    "file_count": 0,
+                    "tag_count": 0,
+                    "deleted_translation_items": 0,
+                    "deleted_translation_backup_path": "",
+                },
                 details={},
             )
+        warnings = [] if records else [issue("note_tag_rules_empty", "已导入空 Note 标签规则")]
+        if deleted_translation_items > 0 and deleted_translation_backup_path is not None:
+            warnings.append(
+                issue(
+                    "deleted_translations_backed_up",
+                    f"本次导入 Note 标签规则已清理 {deleted_translation_items} 条不再属于当前规则范围的已保存译文；已先备份到 {deleted_translation_backup_path}。如果发现规则导错，先重新导入正确规则，再用 import-manual-translations 读取该备份文件恢复这些译文",
+                )
+            )
+        elif deleted_translation_items > 0:
+            warnings.append(
+                issue(
+                    "deleted_translations_without_backup",
+                    f"本次导入 Note 标签规则已清理 {deleted_translation_items} 条不再属于当前规则范围的已保存译文；没有生成备份文件",
+                )
+            )
+        details: JsonObject = {
+            "rules": [
+                {
+                    "file_name": record.file_name,
+                    "tag_names": list(record.tag_names),
+                }
+                for record in records
+            ]
+        }
+        if deleted_translation_backup_path is not None:
+            details["deleted_translation_backup"] = {
+                "path": deleted_translation_backup_path,
+                "restore_step": "先重新导入正确规则，再运行 import-manual-translations 并把 input 指向该备份文件。",
+            }
         return AgentReport.from_parts(
             errors=[],
-            warnings=[] if records else [issue("note_tag_rules_empty", "已导入空 Note 标签规则")],
+            warnings=warnings,
             summary={
                 "file_count": len(records),
                 "tag_count": sum(len(record.tag_names) for record in records),
                 "deleted_translation_items": deleted_translation_items,
+                "deleted_translation_backup_path": deleted_translation_backup_path or "",
             },
-            details={
-                "rules": [
-                    {
-                        "file_name": record.file_name,
-                        "tag_names": list(record.tag_names),
-                    }
-                    for record in records
-                ]
-            },
+            details=details,
         )
 
     async def validate_source_residual_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:

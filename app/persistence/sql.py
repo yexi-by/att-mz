@@ -437,6 +437,24 @@ SELECT_TRANSLATED_ITEMS = f"""
 ;
 """
 
+SELECT_TRANSLATED_ITEMS_BY_PREFIX = f"""
+--sql
+    SELECT location_path, item_type, role, original_lines, source_line_paths, translation_lines
+    FROM [{TRANSLATION_TABLE_NAME}]
+    WHERE location_path LIKE ?
+    ORDER BY location_path
+;
+"""
+
+SELECT_TRANSLATED_ITEM_BY_PATH = f"""
+--sql
+    SELECT location_path, item_type, role, original_lines, source_line_paths, translation_lines
+    FROM [{TRANSLATION_TABLE_NAME}]
+    WHERE location_path = ?
+    LIMIT 1
+;
+"""
+
 SELECT_METADATA = f"""
 --sql
     SELECT game_title, game_path, engine_kind, content_root, engine_version
@@ -754,6 +772,8 @@ __all__: list[str] = [
     "SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN",
     "SELECT_TRANSLATION_RUN",
     "SELECT_TRANSLATED_ITEMS",
+    "SELECT_TRANSLATED_ITEMS_BY_PREFIX",
+    "SELECT_TRANSLATED_ITEM_BY_PATH",
     "SELECT_TRANSLATION_PATHS",
     "SELECT_TERMINOLOGY_IMPORT_STATE",
     "SELECT_TERMINOLOGY_GLOSSARY_TERMS",

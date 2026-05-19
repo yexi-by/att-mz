@@ -24,6 +24,7 @@ from app.rmmz.schema import (
     TranslationErrorItem,
     TranslationItem,
 )
+from app.runtime_paths import APP_HOME_ENV_NAME
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,8 +139,10 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
 async def test_import_empty_plugin_rules_deletes_stale_plugin_translations(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """插件规则改为空结果时同步清理旧插件译文，避免后续写进游戏文件被旧路径阻断。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path / "app-home"))
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
@@ -177,16 +180,37 @@ async def test_import_empty_plugin_rules_deletes_stale_plugin_translations(
     async with await registry.open_game("テストゲーム") as session:
         translated_items = await session.read_translated_items()
 
+    backup_path = summary.deleted_translation_backup_path
     assert summary.deleted_translation_items == 1
+    assert backup_path is not None
+    assert Path(backup_path).exists()
+    backup_payload = load_json_object(Path(backup_path))
+    backup_entry = ensure_json_object(coerce_json_value(backup_payload["plugins.js/0/Message"]), "backup_entry")
+    assert backup_entry["translation_lines"] == ["插件译文"]
     assert translated_items == []
+
+    _ = await handler.import_plugin_rules(game_title="テストゲーム", input_path=rules_path)
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    restore_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=Path(backup_path),
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        restored_items = await session.read_translated_items()
+
+    assert restore_report.status == "ok"
+    assert restored_items[0].location_path == "plugins.js/0/Message"
+    assert restored_items[0].translation_lines == ["插件译文"]
 
 
 @pytest.mark.asyncio
 async def test_import_empty_event_command_rules_deletes_stale_event_translations(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令规则改为空结果时同步清理旧事件指令译文。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path / "app-home"))
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
@@ -231,7 +255,16 @@ async def test_import_empty_event_command_rules_deletes_stale_event_translations
     async with await registry.open_game("テストゲーム") as session:
         translated_items = await session.read_translated_items()
 
+    backup_path = summary.deleted_translation_backup_path
     assert summary.deleted_translation_items == 1
+    assert backup_path is not None
+    assert Path(backup_path).exists()
+    backup_payload = load_json_object(Path(backup_path))
+    backup_entry = ensure_json_object(
+        coerce_json_value(backup_payload["CommonEvents.json/1/4/parameters/3/message"]),
+        "backup_entry",
+    )
+    assert backup_entry["translation_lines"] == ["事件指令译文"]
     assert translated_items == []
 
 

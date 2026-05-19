@@ -17,6 +17,7 @@ from app.application.font_replacement import (
     restore_font_references_from_origin_backups,
 )
 from app.application.runtime import load_runtime_setting
+from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.summaries import (
     EventCommandJsonExportSummary,
     EventCommandRuleImportSummary,
@@ -233,6 +234,7 @@ class TranslationHandler:
                 for rule in await session.read_plugin_text_rules()
             }
             deleted_translation_items = 0
+            deleted_translation_backup_path: str | None = None
             stale_prefixes: set[str] = set()
             for rule_record in rule_records:
                 old_rule = old_rules.get(rule_record.plugin_index)
@@ -242,6 +244,14 @@ class TranslationHandler:
             for plugin_index in sorted(set(old_rules) - new_plugin_indexes):
                 stale_prefixes.add(f"{PLUGINS_FILE_NAME}/{plugin_index}/")
             if stale_prefixes:
+                stale_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                backup = await write_rule_import_translation_backup(
+                    game_title=game_title,
+                    domain="plugin-rules",
+                    items=stale_items,
+                )
+                if backup is not None:
+                    deleted_translation_backup_path = backup.backup_path
                 deleted_translation_items = await session.delete_translation_items_by_prefixes(
                     sorted(stale_prefixes),
                 )
@@ -256,10 +266,13 @@ class TranslationHandler:
                 )
         imported_rule_count = sum(len(record.path_templates) for record in rule_records)
         logger.success(f"[tag.success]插件规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 插件 [tag.count]{len(rule_records)}[/tag.count] 个，规则 [tag.count]{imported_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
+        if deleted_translation_backup_path is not None:
+            logger.warning(f"[tag.warning]已备份被清理的插件译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
         return PluginRuleImportSummary(
             imported_plugin_count=len(rule_records),
             imported_rule_count=imported_rule_count,
             deleted_translation_items=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
         )
 
     async def export_plugins_json(
@@ -354,6 +367,7 @@ class TranslationHandler:
                 for rule in await session.read_event_command_text_rules()
             }
             deleted_translation_items = 0
+            deleted_translation_backup_path: str | None = None
             stale_prefixes: set[str] = set()
             for rule_record in rule_records:
                 rule_key = event_command_rule_key(rule_record)
@@ -373,6 +387,14 @@ class TranslationHandler:
                         self._event_command_rule_prefixes(game_data=game_data, rule_record=old_rule),
                     )
             if stale_prefixes:
+                stale_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                backup = await write_rule_import_translation_backup(
+                    game_title=game_title,
+                    domain="event-command-rules",
+                    items=stale_items,
+                )
+                if backup is not None:
+                    deleted_translation_backup_path = backup.backup_path
                 deleted_translation_items = await session.delete_translation_items_by_prefixes(
                     sorted(stale_prefixes),
                 )
@@ -387,10 +409,13 @@ class TranslationHandler:
                 )
         imported_path_rule_count = sum(len(record.path_templates) for record in rule_records)
         logger.success(f"[tag.success]事件指令规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 规则组 [tag.count]{len(rule_records)}[/tag.count] 个，路径规则 [tag.count]{imported_path_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
+        if deleted_translation_backup_path is not None:
+            logger.warning(f"[tag.warning]已备份被清理的事件指令译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
         return EventCommandRuleImportSummary(
             imported_rule_group_count=len(rule_records),
             imported_path_rule_count=imported_path_rule_count,
             deleted_translation_items=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
         )
 
     async def import_note_tag_rules(
@@ -438,7 +463,16 @@ class TranslationHandler:
             removed_rule_count = len(set(old_rules) - {rule.file_name for rule in rule_records})
             stale_paths = sorted(old_note_paths - new_note_paths)
             deleted_translation_items = 0
+            deleted_translation_backup_path: str | None = None
             if stale_paths and (changed_rule_count or removed_rule_count):
+                stale_items = await session.read_translated_items_by_paths(stale_paths)
+                backup = await write_rule_import_translation_backup(
+                    game_title=game_title,
+                    domain="note-tag-rules",
+                    items=stale_items,
+                )
+                if backup is not None:
+                    deleted_translation_backup_path = backup.backup_path
                 deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
             await session.replace_note_tag_text_rules(rule_records)
             if rule_records:
@@ -451,10 +485,13 @@ class TranslationHandler:
                 )
         imported_tag_count = sum(len(record.tag_names) for record in rule_records)
         logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{len(rule_records)}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
+        if deleted_translation_backup_path is not None:
+            logger.warning(f"[tag.warning]已备份被清理的 Note 标签译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
         return NoteTagRuleImportSummary(
             imported_file_count=len(rule_records),
             imported_tag_count=imported_tag_count,
             deleted_translation_items=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
         )
 
     async def translate_text(

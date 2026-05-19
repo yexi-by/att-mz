@@ -10,6 +10,7 @@ class PluginRuleImportSummary:
     imported_plugin_count: int
     imported_rule_count: int
     deleted_translation_items: int
+    deleted_translation_backup_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -35,6 +36,7 @@ class EventCommandRuleImportSummary:
     imported_rule_group_count: int
     imported_path_rule_count: int
     deleted_translation_items: int
+    deleted_translation_backup_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -53,6 +55,7 @@ class NoteTagRuleImportSummary:
     imported_file_count: int
     imported_tag_count: int
     deleted_translation_items: int
+    deleted_translation_backup_path: str | None = None
 
 
 @dataclass(slots=True)

@@ -21,6 +21,10 @@ from app.cli import parser_command_names
 from app.cli import registered_command_names
 from app.cli import write_report_outputs
 from app.cli.errors import CliArgumentError
+from app.cli.commands.rules import (
+    build_deleted_translation_backup_details,
+    build_deleted_translation_warnings,
+)
 from app.cli.commands.registry import run_list_command
 from app.cli.runtime import build_setting_overrides
 from app.application.summaries import TextTranslationSummary
@@ -367,6 +371,28 @@ def test_translate_quality_errors_do_not_fail_process() -> None:
 
     assert report.status == "warning"
     assert report.summary["quality_error_count"] == 2
+
+
+def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
+    """规则导入 JSON 报告必须提醒 Agent 已清理译文和恢复位置。"""
+    backup_path = "outputs/rule-import-backups/demo/plugin-rules-20260101-010101.json"
+
+    warnings = build_deleted_translation_warnings(
+        deleted_translation_items=2,
+        backup_path=backup_path,
+        rule_label="插件规则",
+    )
+    details = build_deleted_translation_backup_details(backup_path)
+
+    assert warnings[0].code == "deleted_translations_backed_up"
+    assert "已清理 2 条" in warnings[0].message
+    assert backup_path in warnings[0].message
+    assert "import-manual-translations" in warnings[0].message
+    backup_detail = ensure_json_object(details["deleted_translation_backup"], "backup_detail")
+    assert backup_detail["path"] == backup_path
+    restore_step = backup_detail["restore_step"]
+    assert isinstance(restore_step, str)
+    assert "import-manual-translations" in restore_step
 
 
 def test_partial_write_back_gate_only_blocks_saved_translation_risks() -> None:
