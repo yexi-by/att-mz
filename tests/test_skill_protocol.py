@@ -157,7 +157,8 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "禁止使用 `$.xxx` 点号路径",
         "`event-command-rules.json`：顶层必须是对象，格式为 `{指令编码字符串: [{match, paths}]}`",
         "`note-tag-rules.json`：顶层必须是对象，格式为 `{data文件名或文件模式: [note标签名, ...]}`",
-        "`{\"<data文件名>.json\": [\"<玩家可见说明标签>\"], \"<地图文件模式>\": [\"<玩家可见名牌标签>\"]}`",
+        "只写候选里真实存在的精确标签名，不支持标签正则",
+        "空结果使用 `{}`，但必须说明已检查候选",
         "不能把某个标签名当成所有游戏通用答案",
         "`pending-translations.json`：这是“还没成功保存译文的文本表”。顶层是 `{location_path: 条目对象}`",
         "导入前只填写 `translation_lines` 字符串数组",
@@ -184,13 +185,17 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         r"禁止改成 `\F3[60」「`",
         "如果 CLI 报 `疑似控制符不一致`",
         "占位符规则由主代理亲自处理",
+        "`references/translation-rule-examples.md`",
+        "进入术语候选、占位符收束、插件规则、事件指令规则或 Note 标签规则步骤时，必须读取",
+        "只读取当前步骤需要的小节",
+        "进入占位符规则编写、审查或修复前，必须读取",
         "基于当前会进入正文翻译的完整文本集合生成草稿",
         "`summary.uncovered_count` 不等于 0 时必须修规则，不能导入或翻译",
-        "正确示例：输入候选",
+        "具体正反样例只看 `references/translation-rule-examples.md`",
+        "不要在主流程中凭某个样例推导通用规则",
         "第二轮子代理任务契约",
         "格式为 `{正则表达式: 占位符模板}`",
         "格式为 `[{plugin_index, plugin_name, paths}]`",
-        '正确输出: [{"plugin_index": 0, "plugin_name": "DemoPlugin", "paths": ["$[\'parameters\'][\'message\']", "$[\'parameters\'][\'entries\'][*][\'label\']"]}]',
         "主代理必须等待三类规则子代理全部完成",
         "三类外部规则全部导入后，主代理才能重新运行 `build-placeholder-rules`",
         "亲自审查、校验、覆盖扫描并导入占位符规则",
@@ -212,23 +217,20 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`plugin-rules` 子代理任务单",
         "`event-command-rules` 子代理任务单",
         "`note-tag-rules` 子代理任务单",
-        "### 子代理最佳工作示例",
-        "必须复制对应任务单和本节示例",
-        "错误示例",
-        "{\"(?i)\\\\\\\\N\\\\d*\"",
+        "进入术语候选派发或主代理合并审查前，必须读取",
+        "进入第二轮三类外部规则派发或主代理验收前，必须读取",
+        "### 样例参考读取要求",
+        "只读取 `references/translation-rule-examples.md` 中对应小节",
+        "样例只说明判断方式，不是当前游戏固定答案",
         "小写 `\\n` 是游戏文本中的字面量换行，已由项目内置规则保护",
         "处理裸大写 `\\N` 插件标记时不得使用 `(?i)` 忽略大小写",
         "输入：读取 <工作区>/terminology/subtasks/sources/<术语分组>.json、<工作区>/terminology/contexts/speakers/*.json",
         "不确定项也必须给出当前最合理译名",
-        "$['parameters']['entries'][*]['label']",
-        "资源路径、脚本、数字、颜色、布尔值和内部标识都排除",
-        "code=357 parameters = [插件名, 指令名, 显示名, 参数对象]",
-        "MV 默认导出 `356`",
-        "$['parameters'][3]['messageText']",
-        "$['parameters'][2]",
-        "输入片段: {\"file_name\": \"<物品数据文件>.json\", \"tag_name\": \"<玩家可见说明标签>\"",
-        "正确输出: {\"<物品数据文件>.json\": [\"<玩家可见说明标签>\"], \"<技能数据文件>.json\": [\"<玩家可见补充说明标签>\"], \"<地图文件模式>\": [\"<玩家可见名牌标签>\"]}",
-        "同一个标签名在不同游戏里含义可能不同",
+        "JSONPath 从 $['parameters'] 开始并使用括号路径语法",
+        "不要选择资源路径、脚本、数字、布尔值、内部标识和只服务程序定位或排障的字段",
+        "规则只依据 `event-commands.json` 里可见的数组位置和字符串叶子填写",
+        "不能据此跳过当前文件检查",
+        "不能把某个标签名当成所有游戏通用答案",
         "脚本、公式、资源名、ID、枚举、装备状态编号、连锁技能编号",
         "要查看最新一轮“模型翻了但项目检查没通过”的全部错误明细",
         "`export-quality-fix-template --game <游戏标题> --output <工作区>/quality-fix-template.json --json`",
@@ -267,6 +269,20 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "aliases",
         "别名",
         "格式为 `{插件名: [JSONPath, ...]}`",
+        "DemoPlugin",
+        "Actor.png",
+        "ShowMessage",
+        "FXStop",
+        "输入片段:",
+        "正确示例：",
+        "错误示例：",
+        "正确输出:",
+        "### 子代理最佳工作示例",
+        "必须复制对应任务单和本节示例",
+        "`356`",
+        "`357`",
+        "code=357 parameters",
+        "默认导出 `356`",
         '正确输出: {"DemoPlugin"',
         "对象格式，key 是插件名",
         "### 四类子代理任务契约",
@@ -293,6 +309,74 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         assert phrase not in text
 
 
+def test_att_mz_skill_documents_placeholder_scope_and_mixed_protocol_strategy() -> None:
+    """Skill 必须说明占位符作用域，并指导主代理安全处理混合协议文本。"""
+    skill_paths = [
+        ROOT / "skills" / "att-mz" / "SKILL.md",
+        ROOT / "skills" / "att-mz-release" / "SKILL.md",
+    ]
+    required_phrases = [
+        "占位符规则作用于当前已经进入正文翻译集合的每一条文本",
+        "RPG Maker 标准数据文本、已导入插件参数规则命中的文本、已导入事件指令规则命中的文本和已导入 Note 标签规则命中的文本",
+        "不会扫描未被规则纳入的原始插件参数、事件指令参数或 Note 标签字符串",
+        "不会自动解析游戏私有协议语法",
+        "占位符系统的能力边界",
+        "它不能让未被插件规则、事件指令规则或 Note 标签规则选中的字符串进入翻译",
+        "不能替代理解游戏私有协议语法、拆分字符串叶子或判断某段自然语言是否可见",
+        "三类外部规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`",
+        "占位符规则可以自由保护游戏私有协议壳、前后缀、插件命令关键字、参数标签",
+        "规则只遮蔽不可翻译协议片段，不能吞掉玩家可见文本",
+        "复杂文本协议通用策略",
+        "任何来源的文本条目只要混合了必须原样保留的游戏协议和玩家可见文本",
+        "标准 data 字段、插件参数、事件指令参数或 Note 标签值",
+        "不得把策略绑定到某个指令编码、插件名、文件名或标签名",
+        "先确认该来源已经被内置提取或对应外部规则纳入正文翻译集合",
+        "`validate-placeholder-rules --sample <原文片段> --input <规则文件> --json`",
+        "去掉 `[CUSTOM_...]` 后仍应保留需要翻译的玩家可见文本",
+        "标签壳、触发前后缀等不可翻译协议片段应被保护或本身不进入翻译",
+        "任何来源的单个文本字段或字符串叶子",
+        "不要因为它“混有协议语法”就一概排除",
+        "也不要直接整段交给模型",
+        "才允许把对应真实路径纳入相应规则或继续翻译",
+        "无法确认边界、格式不稳定或可见文本无法从协议壳中安全露出时，排除该文本并在报告中说明风险",
+    ]
+
+    for path in skill_paths:
+        text = path.read_text(encoding="utf-8")
+        for phrase in required_phrases:
+            assert phrase in text
+
+
+def test_translation_rule_examples_are_progressive_references_not_skill_rules() -> None:
+    """具体样例必须放在 references，并声明不能当作当前游戏固定答案。"""
+    dev_reference = ROOT / "skills" / "att-mz" / "references" / "translation-rule-examples.md"
+    release_reference = ROOT / "skills" / "att-mz-release" / "references" / "translation-rule-examples.md"
+    assert dev_reference.exists()
+    assert release_reference.exists()
+    assert release_reference.read_text(encoding="utf-8") == dev_reference.read_text(encoding="utf-8")
+
+    text = dev_reference.read_text(encoding="utf-8")
+    required_phrases = [
+        "# 翻译规则样例参考",
+        "主 Skill 负责流程、边界和抽象方法",
+        "本文件用于在对应步骤中渐进式读取",
+        "所有样例都使用抽象占位符",
+        "不代表任何游戏、插件、指令编码、文件名、路径层级或标签名的固定规则",
+        "进入术语候选、占位符收束、插件规则、事件指令规则或 Note 标签规则步骤时，只读取当前步骤的小节",
+        "样例只说明判断方法，不是当前游戏答案",
+        "最终判断必须回到当前工作区 JSON、CLI 校验结果和用户明确提供的信息",
+        "不要把样例字段名、路径层级、指令编码、标签名、插件参数名或文本类型当作通用规律",
+        "## 术语候选样例",
+        "## 占位符规则样例",
+        "## 三类外部规则样例",
+        "### 插件规则",
+        "### 事件指令规则",
+        "### Note 标签规则",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+
 def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
     """三类规则子代理引用的外部任务契约文档必须可直接执行。"""
     plugin_text = (ROOT / "docs" / "plugin-rules-agent-prompt.md").read_text(encoding="utf-8")
@@ -317,8 +401,10 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
     event_required_phrases = [
         "不读取项目源码、数据库或程序内部对象",
         "`<工作区>/event-commands.json`",
-        "MV 工作区未显式指定编码时通常导出 `356` 插件命令",
-        "MZ 工作区通常导出 `357` 插件命令",
+        "工作区可能包含默认导出的插件命令编码，也可能包含 CLI 显式指定的任意事件指令编码",
+        "编码只表示导出起点，仍必须以当前 `event-commands.json` 顶层编码为准",
+        "插件命令或其他事件指令参数可能是嵌套对象、字符串数组、顶层字符串或单个命令字符串",
+        "不要把某个编码、参数位置、插件名或字符串形态当成所有游戏通用答案",
         "唯一可写文件：`<工作区>/event-command-rules.json`",
         "格式为 `{指令编码字符串: [{match, paths}]}`",
         "该导出命令不提供 `--json` 摘要",
@@ -326,6 +412,11 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
         "没有过滤条件时，`match` 写 `{}`",
         "JSONPath 必须使用括号路径语法",
         "合法空结果是 `{}`",
+        "事件指令里的插件命令字符串或其他单个字符串叶子可能混合命令语法和玩家可见文本",
+        "不要因为混有命令语法就一概排除",
+        "可以先把该字符串叶子列入规则，并在完成报告中提醒主代理后续必须用占位符规则保护协议壳",
+        "若边界不稳定、看不出哪部分会显示给玩家，或协议壳无法安全保护，则排除并报告风险",
+        "如果纳入了混合协议文本，必须列出需要主代理后续用占位符规则保护的协议片段或边界",
         "validate-event-command-rules",
         "未解决风险",
     ]
@@ -350,6 +441,15 @@ def test_rule_agent_prompt_documents_exist_and_define_cli_contracts() -> None:
     ]
     for phrase in forbidden_command_phrases:
         assert phrase not in combined_text
+
+    forbidden_event_prompt_phrases = [
+        "`356`",
+        "`357`",
+        "MV 工作区未显式指定编码",
+        "MZ 工作区通常导出",
+    ]
+    for phrase in forbidden_event_prompt_phrases:
+        assert phrase not in event_text
 
 
 def test_documentation_uses_current_feedback_cli_names() -> None:
@@ -538,6 +638,8 @@ def test_release_skill_directory_contains_required_references() -> None:
     release_reference = ROOT / "skills" / "att-mz-release" / "references" / "rpg-maker-mv-mz-world-knowledge.md"
     assert release_reference.exists()
     assert release_reference.read_text(encoding="utf-8") == dev_reference.read_text(encoding="utf-8")
+    reference_text = dev_reference.read_text(encoding="utf-8")
+    assert "默认编码只是工作区导出的起点，不是插件文本、事件指令规则或占位符规则的处理范围边界" in reference_text
 
     package_reference = ROOT / "skills" / "att-mz-release" / "references" / "subtask-package-mode.md"
     assert package_reference.exists()
@@ -545,6 +647,13 @@ def test_release_skill_directory_contains_required_references() -> None:
     assert ".\\att-mz.exe --agent-mode prepare-agent-workspace" in package_text
     assert "uv run python main.py" not in package_text
     assert "任务包文件夹必须能被压缩后远程分发" in package_text
+
+    example_reference = ROOT / "skills" / "att-mz" / "references" / "translation-rule-examples.md"
+    release_example_reference = (
+        ROOT / "skills" / "att-mz-release" / "references" / "translation-rule-examples.md"
+    )
+    assert release_example_reference.exists()
+    assert release_example_reference.read_text(encoding="utf-8") == example_reference.read_text(encoding="utf-8")
 
 
 def test_project_rules_require_github_workflow_releases_and_skill_sync() -> None:
@@ -572,6 +681,7 @@ def test_release_packaging_script_uses_release_skill_template() -> None:
         '"att-mz-release" / "SKILL.md"',
         '"att-mz-release" / "references"',
         '"subtask-package-mode.md"',
+        '"translation-rule-examples.md"',
         "copy_packaged_release_skill",
         '"name: att-mz-release", "name: att-mz"',
         '"skills" / "att-mz" / "SKILL.md"',
