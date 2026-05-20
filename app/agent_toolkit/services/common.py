@@ -255,6 +255,7 @@ class AgentServiceContext(Protocol):
         *,
         game_title: str,
         rules_text: str,
+        confirm_empty: bool = False,
     ) -> AgentReport:
         """导入结构化占位符规则。"""
         ...
@@ -1500,12 +1501,12 @@ def _collect_unprotected_control_warning_samples(
 
 
 def _validate_terminology_registry(registry: TerminologyRegistry) -> list[AgentIssue]:
-    """检查术语表填写质量。"""
+    """检查字段译名表填写质量。"""
     warnings: list[AgentIssue] = []
     category_map = registry.as_category_map()
     empty_count = registry.total_entry_count() - registry.filled_entry_count()
     if empty_count:
-        warnings.append(issue("terminology_empty_translation", f"术语表存在 {empty_count} 个空译名"))
+        warnings.append(issue("terminology_empty_translation", f"字段译名表存在 {empty_count} 个空译名"))
     translated_counter = Counter(
         value.strip()
         for entries in category_map.values()
@@ -1514,7 +1515,7 @@ def _validate_terminology_registry(registry: TerminologyRegistry) -> list[AgentI
     )
     duplicate_count = sum(1 for count in translated_counter.values() if count > 1)
     if duplicate_count:
-        warnings.append(issue("terminology_duplicate_translation", f"术语表存在 {duplicate_count} 组重复译名，需要确认是否合理"))
+        warnings.append(issue("terminology_duplicate_translation", f"字段译名表存在 {duplicate_count} 组重复译名，需要确认是否合理"))
     variant_mismatch_count = _count_name_variant_mismatches(registry.speaker_names)
     if variant_mismatch_count:
         warnings.append(issue("terminology_variant_mismatch", f"说话人变体存在 {variant_mismatch_count} 处译名不一致风险"))
@@ -1535,9 +1536,9 @@ def _validate_terminology_registry_shape(
         missing_count = len(set(expected_entries) - set(imported_entries))
         extra_count = len(set(imported_entries) - set(expected_entries))
         if missing_count:
-            errors.append(issue("terminology_missing_terms", f"{category} 缺少 {missing_count} 个当前游戏术语"))
+            errors.append(issue("terminology_missing_terms", f"字段译名表 {category} 缺少 {missing_count} 个当前游戏词条"))
         if extra_count:
-            errors.append(issue("terminology_extra_terms", f"{category} 多出 {extra_count} 个当前游戏不存在的术语"))
+            errors.append(issue("terminology_extra_terms", f"字段译名表 {category} 多出 {extra_count} 个当前游戏不存在的词条"))
 
 
 def _first_original_line_samples(items: Iterable[TranslationItem], limit: int = 5) -> JsonArray:

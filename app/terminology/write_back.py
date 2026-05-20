@@ -207,6 +207,8 @@ def _write_mv_virtual_speaker_names_to_commands(
         if speaker_command is None:
             continue
         speaker_line, virtual_speaker = speaker_command
+        if not virtual_speaker.requires_translation:
+            continue
         translated_speaker = translations.get(virtual_speaker.speaker)
         if translated_speaker is None:
             continue

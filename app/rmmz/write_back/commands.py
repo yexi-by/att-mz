@@ -130,15 +130,15 @@ def write_mv_virtual_name_text_item(
             "当前 MV 译文仍包含说话人行，请先执行 reset-translations --all 后重新提取和翻译。"
         )
 
-    translated_speaker = read_mv_translated_speaker(
+    render_speaker = read_mv_render_speaker(
         speaker_name_translations=speaker_name_translations,
-        source_speaker=speaker.speaker,
+        virtual_speaker=speaker,
         location_path=item.location_path,
     )
     translation_lines = prepare_long_text_write_lines(item=item, text_rules=text_rules)
     ensure_mv_translation_body_is_clean(
         source_speaker=speaker.speaker,
-        translated_speaker=translated_speaker,
+        translated_speaker=render_speaker,
         translation_lines=translation_lines,
         location_path=item.location_path,
     )
@@ -150,7 +150,7 @@ def write_mv_virtual_name_text_item(
             game_data=game_data,
             source_line_path=speaker_line_path,
             translated_text=speaker.render(
-                translated_speaker=translated_speaker,
+                translated_speaker=render_speaker,
                 translated_body=translation_lines[0],
             ),
         )
@@ -167,7 +167,7 @@ def write_mv_virtual_name_text_item(
     write_text_command_first_parameter(
         game_data=game_data,
         source_line_path=speaker_line_path,
-        translated_text=speaker.render(translated_speaker=translated_speaker),
+        translated_text=speaker.render(translated_speaker=render_speaker),
     )
     write_prepared_line_commands_by_paths(
         game_data=game_data,
@@ -344,6 +344,24 @@ def read_mv_translated_speaker(
     if not translated_speaker:
         raise ValueError(f"MV 说话人 {source_speaker} 缺少术语译名，请先导入 speaker_names: {location_path}")
     return translated_speaker
+
+
+def read_mv_render_speaker(
+    *,
+    speaker_name_translations: dict[str, str] | None,
+    virtual_speaker: MvVirtualSpeaker,
+    location_path: str,
+) -> str:
+    """读取写回用说话人文本，动态控制符保持原样。"""
+    if not virtual_speaker.requires_translation:
+        if virtual_speaker.source_speaker_text:
+            return virtual_speaker.source_speaker_text
+        return virtual_speaker.speaker
+    return read_mv_translated_speaker(
+        speaker_name_translations=speaker_name_translations,
+        source_speaker=virtual_speaker.speaker,
+        location_path=location_path,
+    )
 
 
 def ensure_mv_translation_body_is_clean(

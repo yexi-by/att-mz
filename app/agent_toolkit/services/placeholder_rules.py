@@ -40,6 +40,13 @@ from .common import (
     placeholder_candidates_to_details,
     scan_placeholder_candidates,
 )
+from app.application.flow_gate import collect_external_text_rule_gate_errors, ensure_empty_rule_import_allowed
+from app.rule_review import (
+    PLACEHOLDER_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    placeholder_rule_scope_hash,
+    structured_placeholder_rule_scope_hash,
+)
 
 
 class PlaceholderRuleAgentMixin:
@@ -235,7 +242,13 @@ class PlaceholderRuleAgentMixin:
             },
         )
 
-    async def import_placeholder_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
+    async def import_placeholder_rules(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        rules_text: str,
+        confirm_empty: bool = False,
+    ) -> AgentReport:
         """校验并导入当前游戏专用自定义占位符规则。"""
         validation_report = await self.validate_placeholder_rules(
             game_title=game_title,
@@ -268,8 +281,51 @@ class PlaceholderRuleAgentMixin:
             )
             for rule in custom_rules
         ]
+        coverage_report = await self.scan_placeholder_candidates(
+            game_title=game_title,
+            custom_placeholder_rules_text=rules_text,
+        )
+        uncovered_count = _summary_int(coverage_report.summary, "uncovered_count")
+        if not rule_records:
+            try:
+                ensure_empty_rule_import_allowed(
+                    rule_label="普通占位符规则",
+                    confirm_empty=confirm_empty,
+                    candidate_count=uncovered_count,
+                )
+            except RuntimeError as error:
+                return AgentReport.from_parts(
+                    errors=[issue("placeholder_rules_empty_unconfirmed", str(error))],
+                    warnings=validation_report.warnings,
+                    summary={
+                        "game": game_title,
+                        "imported_rule_count": 0,
+                        "validated_rule_count": validation_report.summary.get("rule_count", 0),
+                        "sample_count": validation_report.summary.get("sample_count", 0),
+                    },
+                    details={
+                        "validation": {
+                            "summary": validation_report.summary,
+                            "details": validation_report.details,
+                        },
+                        "coverage": {
+                            "summary": coverage_report.summary,
+                            "details": coverage_report.details,
+                        },
+                    },
+                )
+        candidate_details = _json_array_detail(coverage_report.details, "candidates")
+        scope_hash = placeholder_rule_scope_hash(candidate_details)
         async with await self.game_registry.open_game(game_title) as session:
             await session.replace_placeholder_rules(rule_records)
+            if rule_records:
+                await session.delete_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+            else:
+                await session.replace_rule_review_state(
+                    rule_domain=PLACEHOLDER_RULE_DOMAIN,
+                    scope_hash=scope_hash,
+                    reviewed_empty=True,
+                )
         return AgentReport.from_parts(
             errors=[],
             warnings=validation_report.warnings
@@ -487,6 +543,7 @@ class PlaceholderRuleAgentMixin:
         *,
         game_title: str,
         rules_text: str,
+        confirm_empty: bool = False,
     ) -> AgentReport:
         """校验并导入当前游戏专用结构化占位符规则。"""
         validation_report = await self.validate_structured_placeholder_rules(
@@ -514,8 +571,51 @@ class PlaceholderRuleAgentMixin:
 
         structured_rules = load_structured_placeholder_rules_text(rules_text)
         rule_records = _structured_placeholder_rule_records_from_runtime(structured_rules)
+        coverage_report = await self.scan_structured_placeholder_candidates(
+            game_title=game_title,
+            rules_text=rules_text,
+        )
+        uncovered_count = _summary_int(coverage_report.summary, "uncovered_count")
+        if not rule_records:
+            try:
+                ensure_empty_rule_import_allowed(
+                    rule_label="结构化占位符规则",
+                    confirm_empty=confirm_empty,
+                    candidate_count=uncovered_count,
+                )
+            except RuntimeError as error:
+                return AgentReport.from_parts(
+                    errors=[issue("structured_placeholder_rules_empty_unconfirmed", str(error))],
+                    warnings=validation_report.warnings,
+                    summary={
+                        "game": game_title,
+                        "imported_rule_count": 0,
+                        "validated_rule_count": validation_report.summary.get("rule_count", 0),
+                        "sample_count": validation_report.summary.get("sample_count", 0),
+                    },
+                    details={
+                        "validation": {
+                            "summary": validation_report.summary,
+                            "details": validation_report.details,
+                        },
+                        "coverage": {
+                            "summary": coverage_report.summary,
+                            "details": coverage_report.details,
+                        },
+                    },
+                )
+        candidate_details = _json_array_detail(coverage_report.details, "candidates")
+        scope_hash = structured_placeholder_rule_scope_hash(candidate_details)
         async with await self.game_registry.open_game(game_title) as session:
             await session.replace_structured_placeholder_rules(rule_records)
+            if rule_records:
+                await session.delete_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+            else:
+                await session.replace_rule_review_state(
+                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+                    scope_hash=scope_hash,
+                    reviewed_empty=True,
+                )
         return AgentReport.from_parts(
             errors=[],
             warnings=validation_report.warnings
@@ -554,6 +654,25 @@ class PlaceholderRuleAgentMixin:
                 structured_placeholder_rules=structured_rules,
             )
             game_data = await self._load_game_data(session)
+            external_rule_errors = await collect_external_text_rule_gate_errors(
+                session=session,
+                game_data=game_data,
+            )
+            if external_rule_errors:
+                return AgentReport.from_parts(
+                    errors=[issue(error.code, error.message) for error in external_rule_errors],
+                    warnings=[],
+                    summary={
+                        "game": game_title,
+                        "candidate_count": 0,
+                        "uncovered_count_before_draft": 0,
+                        "uncovered_count_after_draft_preview": 0,
+                        "draft_rule_count": 0,
+                        "manual_boundary_candidate_count": 0,
+                        "output": str(output_path),
+                    },
+                    details={},
+                )
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
                 game_data=game_data,
@@ -620,6 +739,22 @@ def _structured_placeholder_rule_records_from_runtime(
         )
         for rule in rules
     ]
+
+
+def _summary_int(summary: JsonObject, key: str) -> int:
+    """从报告 summary 中读取整数计数字段。"""
+    raw_value = summary.get(key)
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise RuntimeError(f"报告缺少有效计数字段: {key}")
+    return raw_value
+
+
+def _json_array_detail(details: JsonObject, key: str) -> JsonArray:
+    """从报告 details 中读取 JSON 数组字段。"""
+    raw_value = details.get(key)
+    if not isinstance(raw_value, list):
+        raise RuntimeError(f"报告缺少有效数组字段: {key}")
+    return [item for item in raw_value]
 
 
 def _collect_structured_placeholder_preview_samples(

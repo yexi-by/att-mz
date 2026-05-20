@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import TracebackType
-from typing import Self, override
+from typing import Self, cast, override
 
 import aiosqlite
 
@@ -24,6 +24,7 @@ from .run_records import RunRecordSessionMixin
 from .session_utils import build_event_command_group_key, current_timestamp_text
 from .sql import (
     CHECK_CONNECTION_READABLE,
+    CREATE_SCHEMA_VERSION_TABLE,
     CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE,
     CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE,
     CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE,
@@ -41,15 +42,20 @@ from .sql import (
     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
     CREATE_TRANSLATION_RUNS_TABLE,
     CREATE_TRANSLATION_TABLE,
-    CREATE_TERMINOLOGY_IMPORT_STATE_TABLE,
-    CREATE_TERMINOLOGY_GLOSSARY_TERMS_TABLE,
-    CREATE_TERMINOLOGY_TERMS_TABLE,
+    CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE,
+    CREATE_TEXT_GLOSSARY_TERMS_TABLE,
+    CREATE_FIELD_TRANSLATION_TERMS_TABLE,
+    CURRENT_SCHEMA_VERSION,
     LANGUAGE_SETTINGS_KEY,
     METADATA_KEY,
+    SCHEMA_VERSION_KEY,
     SELECT_LANGUAGE_SETTINGS,
     SELECT_METADATA,
+    SELECT_SCHEMA_VERSION,
+    SELECT_TABLE_NAMES,
     UPSERT_LANGUAGE_SETTINGS,
     UPSERT_METADATA,
+    UPSERT_SCHEMA_VERSION,
 )
 from .terminology_records import TerminologyRecordSessionMixin
 from .translation_records import TranslationRecordSessionMixin
@@ -73,8 +79,54 @@ async def check_connection_readable(connection: aiosqlite.Connection, db_path: P
         raise RuntimeError(f"数据库可读性校验失败，返回值异常: {db_path}")
 
 
+async def read_table_names(connection: aiosqlite.Connection) -> set[str]:
+    """读取当前 SQLite 文件中的全部表名。"""
+    async with connection.execute(SELECT_TABLE_NAMES) as cursor:
+        rows = await cursor.fetchall()
+    table_names: set[str] = set()
+    for row in rows:
+        table_name = cast(object, row["name"])
+        if not isinstance(table_name, str):
+            raise RuntimeError("数据库表名读取结果不是字符串")
+        table_names.add(table_name)
+    return table_names
+
+
+def legacy_terminology_table_names() -> set[str]:
+    """返回已废弃的术语表物理表名，用于不兼容升级检测。"""
+    return {
+        "terminology_" + "terms",
+        "terminology_" + "glossary_terms",
+        "terminology_" + "import_state",
+    }
+
+
+def _old_database_error(db_path: Path) -> RuntimeError:
+    """构造旧数据库格式的统一失败信息。"""
+    return RuntimeError(
+        f"旧数据库格式已废弃，请删除对应游戏数据库后重新注册游戏，再重新导入规则和译名: {db_path}"
+    )
+
+
+async def ensure_schema_compatible(connection: aiosqlite.Connection, db_path: Path) -> None:
+    """确认已有数据库是当前不兼容版本，旧库直接拒绝打开。"""
+    table_names = await read_table_names(connection)
+    if table_names & legacy_terminology_table_names():
+        raise _old_database_error(db_path)
+    if "schema_version" not in table_names:
+        raise _old_database_error(db_path)
+    try:
+        async with connection.execute(SELECT_SCHEMA_VERSION, (SCHEMA_VERSION_KEY,)) as cursor:
+            row = await cursor.fetchone()
+    except aiosqlite.Error as error:
+        raise _old_database_error(db_path) from error
+    if row is None or row[0] != CURRENT_SCHEMA_VERSION:
+        raise _old_database_error(db_path)
+
+
 async def create_static_tables(connection: aiosqlite.Connection) -> None:
     """初始化当前数据库要求的全部静态表。"""
+    _ = await connection.execute(CREATE_SCHEMA_VERSION_TABLE)
     _ = await connection.execute(CREATE_TRANSLATION_TABLE)
     _ = await connection.execute(CREATE_METADATA_TABLE)
     _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
@@ -83,9 +135,9 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE)
-    _ = await connection.execute(CREATE_TERMINOLOGY_TERMS_TABLE)
-    _ = await connection.execute(CREATE_TERMINOLOGY_GLOSSARY_TERMS_TABLE)
-    _ = await connection.execute(CREATE_TERMINOLOGY_IMPORT_STATE_TABLE)
+    _ = await connection.execute(CREATE_FIELD_TRANSLATION_TERMS_TABLE)
+    _ = await connection.execute(CREATE_TEXT_GLOSSARY_TERMS_TABLE)
+    _ = await connection.execute(CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE)
     _ = await connection.execute(CREATE_PLACEHOLDER_RULES_TABLE)
     _ = await connection.execute(CREATE_STRUCTURED_PLACEHOLDER_RULES_TABLE)
     _ = await connection.execute(CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE)
@@ -95,6 +147,10 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_TRANSLATION_RUNS_TABLE)
     _ = await connection.execute(CREATE_LLM_FAILURES_TABLE)
     _ = await connection.execute(CREATE_TRANSLATION_QUALITY_ERRORS_TABLE)
+    _ = await connection.execute(
+        UPSERT_SCHEMA_VERSION,
+        (SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION),
+    )
     await connection.commit()
 
 
@@ -209,6 +265,7 @@ class GameRegistry:
             connection = await open_connection(db_path)
             try:
                 await check_connection_readable(connection=connection, db_path=db_path)
+                await ensure_schema_compatible(connection=connection, db_path=db_path)
                 metadata = await read_metadata(connection=connection, db_path=db_path)
                 language_settings = await read_language_settings(connection=connection, db_path=db_path)
                 records.append(
@@ -244,6 +301,7 @@ class GameRegistry:
         try:
             if db_already_exists:
                 await check_connection_readable(connection=connection, db_path=db_path)
+                await ensure_schema_compatible(connection=connection, db_path=db_path)
                 previous_metadata = await read_metadata(
                     connection=connection,
                     db_path=db_path,
@@ -289,6 +347,7 @@ class GameRegistry:
         connection = await open_connection(db_path)
         try:
             await check_connection_readable(connection=connection, db_path=db_path)
+            await ensure_schema_compatible(connection=connection, db_path=db_path)
             metadata = await read_metadata(
                 connection=connection,
                 db_path=db_path,

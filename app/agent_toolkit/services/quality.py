@@ -40,6 +40,7 @@ from .common import (
     load_setting,
     native_thread_count,
 )
+from app.application.flow_gate import collect_workflow_gate_errors
 
 
 class QualityAgentMixin:
@@ -265,6 +266,15 @@ class QualityAgentMixin:
                 text_rules=text_rules,
                 translated_items=translated_items,
             )
+            workflow_gate_errors = await collect_workflow_gate_errors(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                custom_placeholder_rules_supplied=False,
+                translated_items=translated_items,
+                scope=scope,
+            )
             active_paths = scope.active_paths
             writable_paths = scope.writable_paths
             translated_paths = {item.location_path for item in translated_items}
@@ -307,11 +317,16 @@ class QualityAgentMixin:
             filled_terminology_count = terminology_registry.filled_entry_count()
             empty_terminology_count = total_terminology_count - filled_terminology_count
 
+        workflow_gate_agent_errors = [
+            issue(error.code, error.message)
+            for error in workflow_gate_errors
+        ]
         coverage_blocking_errors = _coverage_hard_stop_errors(coverage_report)
         if coverage_blocking_errors or source_residual_rule_errors:
             errors.extend(coverage_report.errors)
             warnings.extend(coverage_report.warnings)
             errors.extend(source_residual_rule_errors)
+            errors.extend(workflow_gate_agent_errors)
             set_progress(1, 1)
             set_status("覆盖审计未通过，质量报告已停止")
             return AgentReport.from_parts(
@@ -416,6 +431,7 @@ class QualityAgentMixin:
         llm_failure_counts = Counter(failure.category for failure in llm_failures)
         advance_progress(1)
         errors.extend(coverage_report.errors)
+        errors.extend(workflow_gate_agent_errors)
         warnings.extend(coverage_report.warnings)
         if llm_failures and pending_paths:
             errors.append(issue("llm_failures", f"最新翻译运行存在 {len(llm_failures)} 条模型运行故障"))
@@ -434,9 +450,9 @@ class QualityAgentMixin:
         if write_back_protocol_items:
             errors.append(issue("write_back_protocol", f"发现 {len(write_back_protocol_items)} 条译文写回后会破坏游戏或插件解析协议"))
         if terminology_registry is None:
-            errors.append(issue("terminology_missing", "当前游戏尚未导入术语表"))
+            errors.append(issue("terminology_missing", "当前游戏尚未导入字段译名表"))
         elif empty_terminology_count:
-            errors.append(issue("terminology_empty_translation", f"术语表还有 {empty_terminology_count} 个词条没有填写译名"))
+            errors.append(issue("terminology_empty_translation", f"字段译名表还有 {empty_terminology_count} 个词条没有填写译名"))
         if stale_source_residual_rule_paths:
             errors.append(issue("stale_source_residual_rules", f"发现 {len(stale_source_residual_rule_paths)} 条不在当前提取范围内的源文残留例外规则"))
 

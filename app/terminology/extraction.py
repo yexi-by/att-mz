@@ -223,6 +223,8 @@ class TerminologyExtraction:
             )
             if virtual_speaker is None:
                 continue
+            if not virtual_speaker.requires_translation:
+                continue
             source_text = virtual_speaker.speaker
             if not is_translatable_terminology_source(source_text):
                 continue

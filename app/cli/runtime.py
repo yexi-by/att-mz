@@ -48,8 +48,21 @@ PARTIAL_WRITE_BACK_BLOCKING_ERROR_CODES: frozenset[str] = frozenset(
         "stale_plugin_rules",
         "stale_saved_translations",
         "stale_source_residual_rules",
+        "terminology_bundle",
         "terminology_missing",
         "terminology_empty_translation",
+        "plugin_text_missing",
+        "plugin_text_stale_empty_confirmation",
+        "event_command_text_missing",
+        "event_command_text_stale_empty_confirmation",
+        "note_tag_text_missing",
+        "note_tag_text_stale_empty_confirmation",
+        "placeholder_rules_missing",
+        "placeholder_rules_stale_empty_confirmation",
+        "structured_placeholder_rules_missing",
+        "structured_placeholder_rules_stale_empty_confirmation",
+        "placeholder_uncovered",
+        "structured_placeholder_uncovered",
     }
 )
 
@@ -183,7 +196,7 @@ def ensure_text_translation_not_blocked(summary: TextTranslationSummary) -> None
         raise CliBusinessError(f"正文翻译不能继续：{summary.blocked_reason}")
     if summary.has_errors:
         logger.warning(
-            f"[tag.warning]正文翻译存在待处理失败项[/tag.warning] 成功 [tag.count]{summary.success_count}[/tag.count] 条，失败 [tag.count]{summary.error_count}[/tag.count] 条；可继续运行 translate 或使用质量报告排查"
+            f"[tag.warning]正文翻译还有没成功保存译文的文本[/tag.warning] 成功 [tag.count]{summary.success_count}[/tag.count] 条，失败 [tag.count]{summary.error_count}[/tag.count] 条；先查看质量报告，规则检查通过后再运行 translate 处理剩余文本"
         )
 
 

@@ -16,6 +16,13 @@ from app.application.font_replacement import (
     collect_replacement_font_names,
     restore_font_references_from_origin_backups,
 )
+from app.application.flow_gate import (
+    assert_workflow_gate_passed,
+    count_event_command_rule_candidates,
+    count_note_tag_rule_candidates,
+    count_plugin_rule_candidates,
+    ensure_empty_rule_import_allowed,
+)
 from app.application.runtime import load_runtime_setting
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.summaries import (
@@ -31,6 +38,7 @@ from app.application.summaries import (
     TextTranslationSummary,
     WriteBackSummary,
 )
+from app.application.write_back_gate import assert_write_back_quality_passed
 from app.config import (
     SettingOverrides,
     load_custom_placeholder_rules_text,
@@ -54,6 +62,7 @@ from app.terminology import (
     export_terminology_artifacts,
     load_terminology_glossary,
     load_terminology_registry,
+    validate_terminology_bundle,
 )
 from app.note_tag_text import (
     NoteTagTextExtraction,
@@ -244,6 +253,7 @@ class TranslationHandler:
         self,
         game_title: str,
         input_path: Path,
+        confirm_empty: bool = False,
     ) -> PluginRuleImportSummary:
         """把外部插件规则 JSON 导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
@@ -253,6 +263,12 @@ class TranslationHandler:
                 game_data=game_data,
                 import_file=import_file,
             )
+            if not rule_records:
+                ensure_empty_rule_import_allowed(
+                    rule_label="插件规则",
+                    confirm_empty=confirm_empty,
+                    candidate_count=count_plugin_rule_candidates(game_data),
+                )
             old_rules = {
                 rule.plugin_index: rule
                 for rule in await session.read_plugin_text_rules()
@@ -378,6 +394,7 @@ class TranslationHandler:
         self,
         game_title: str,
         input_path: Path,
+        confirm_empty: bool = False,
     ) -> EventCommandRuleImportSummary:
         """把外部事件指令规则 JSON 导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
@@ -387,6 +404,19 @@ class TranslationHandler:
                 game_data=game_data,
                 import_file=import_file,
             )
+            if not rule_records:
+                if not confirm_empty:
+                    ensure_empty_rule_import_allowed(
+                        rule_label="事件指令规则",
+                        confirm_empty=confirm_empty,
+                        candidate_count=0,
+                    )
+                setting = self._load_setting(source_language=session.source_language)
+                ensure_empty_rule_import_allowed(
+                    rule_label="事件指令规则",
+                    confirm_empty=confirm_empty,
+                    candidate_count=count_event_command_rule_candidates(game_data=game_data, setting=setting),
+                )
             old_rules = {
                 event_command_rule_key(rule): rule
                 for rule in await session.read_event_command_text_rules()
@@ -447,6 +477,7 @@ class TranslationHandler:
         self,
         game_title: str,
         input_path: Path,
+        confirm_empty: bool = False,
     ) -> NoteTagRuleImportSummary:
         """把外部 Note 标签规则 JSON 导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
@@ -463,6 +494,12 @@ class TranslationHandler:
                 import_file=import_file,
                 text_rules=text_rules,
             )
+            if not rule_records:
+                ensure_empty_rule_import_allowed(
+                    rule_label="Note 标签规则",
+                    confirm_empty=confirm_empty,
+                    candidate_count=count_note_tag_rule_candidates(game_data=game_data, text_rules=text_rules),
+                )
             old_rules = {
                 rule.file_name: rule
                 for rule in await session.read_note_tag_text_rules()
@@ -552,6 +589,7 @@ class TranslationHandler:
                 session=session,
                 setting=setting,
                 text_rules=text_rules,
+                custom_placeholder_rules_supplied=custom_placeholder_rules_text is not None,
                 translation_cache=translation_cache,
                 run_limits=run_limits or TranslationRunLimits(),
                 callbacks=callbacks,
@@ -563,6 +601,7 @@ class TranslationHandler:
         session: TargetGameSession,
         setting: Setting,
         text_rules: TextRules,
+        custom_placeholder_rules_supplied: bool,
         translation_cache: TranslationCache,
         run_limits: TranslationRunLimits,
         callbacks: tuple[
@@ -575,27 +614,24 @@ class TranslationHandler:
         set_progress, advance_progress, set_status = callbacks
         game_title = session.game_title
         game_data = await self._load_session_game_data(session)
-        terminology_prompt_index = await self._load_terminology_prompt_index(
-            session=session,
-            game_data=game_data,
-        )
-
         scope = await TextScopeService().build(
             session=session,
             game_data=game_data,
             text_rules=text_rules,
         )
+        await assert_workflow_gate_passed(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
+            scope=scope,
+        )
+        terminology_prompt_index = await self._load_terminology_prompt_index(
+            session=session,
+            game_data=game_data,
+        )
         translation_data_map = scope.translation_data_map
-        if scope.stale_plugin_rules:
-            raise RuntimeError(
-                f"存在 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导入插件规则后再翻译"
-            )
-        if scope.write_back_probe_error:
-            raise RuntimeError(scope.write_back_probe_error)
-        if scope.unwritable_entries:
-            raise RuntimeError(
-                f"存在 {len(scope.unwritable_entries)} 条当前文本无法写进游戏文件，请先运行 audit-coverage 查看明细"
-            )
 
         total_extracted_items = count_translation_items(translation_data_map)
         translated_paths = await session.read_translation_location_paths()
@@ -764,6 +800,22 @@ class TranslationHandler:
                 structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             translated_items = await session.read_translated_items()
+            await assert_workflow_gate_passed(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                custom_placeholder_rules_supplied=False,
+                translated_items=translated_items,
+            )
+            await assert_write_back_quality_passed(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                translated_items=translated_items,
+                require_complete_translation=True,
+            )
             translated_items = await self._filter_writable_translation_items(
                 session=session,
                 game_data=game_data,
@@ -866,8 +918,8 @@ class TranslationHandler:
                 imported_registry=registry,
                 expected_registry=expected_registry,
             )
-            await session.replace_terminology_registry(registry)
-            await session.replace_terminology_glossary(glossary)
+            validate_terminology_bundle(registry=registry, glossary=glossary)
+            await session.replace_terminology_bundle(registry=registry, glossary=glossary)
         imported_count = registry.total_entry_count()
         filled_count = registry.filled_entry_count()
         glossary_term_count = glossary.term_count()
@@ -899,6 +951,22 @@ class TranslationHandler:
                 structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             translated_items = await session.read_translated_items()
+            await assert_workflow_gate_passed(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                custom_placeholder_rules_supplied=False,
+                translated_items=translated_items,
+            )
+            await assert_write_back_quality_passed(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                translated_items=translated_items,
+                require_complete_translation=False,
+            )
             translated_items = await self._filter_writable_translation_items(
                 session=session,
                 game_data=game_data,
@@ -1020,10 +1088,13 @@ class TranslationHandler:
         game_data: GameData,
     ) -> TerminologyPromptIndex | None:
         """读取数据库正文术语表，并转换为正文提示词索引。"""
+        registry = await session.read_terminology_registry()
         glossary = await session.read_terminology_glossary()
         if glossary is None:
-            logger.info(f"[tag.skip]数据库没有已导入正文术语表，正文提示词不注入标准译名[/tag.skip] 游戏 [tag.count]{session.game_title}[/tag.count]")
-            return None
+            raise RuntimeError("当前游戏尚未导入正文术语表，检查没通过，不能继续")
+        if registry is None:
+            raise RuntimeError("当前游戏尚未导入字段译名表，检查没通过，不能继续")
+        validate_terminology_bundle(registry=registry, glossary=glossary)
 
         index = TerminologyPromptIndex.from_glossary(glossary, game_data=game_data)
         logger.info(f"[tag.phase]已加载正文术语表[/tag.phase] 游戏 [tag.count]{session.game_title}[/tag.count] 可注入译名 [tag.count]{len(index.entries)}[/tag.count] 条")

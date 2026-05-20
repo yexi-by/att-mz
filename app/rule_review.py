@@ -9,11 +9,19 @@ from app.rmmz.commands import iter_all_commands
 from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonArray, JsonValue
 
-type RuleReviewDomain = Literal["plugin_text", "event_command_text", "note_tag_text"]
+type RuleReviewDomain = Literal[
+    "plugin_text",
+    "event_command_text",
+    "note_tag_text",
+    "placeholder_rules",
+    "structured_placeholder_rules",
+]
 
 PLUGIN_TEXT_RULE_DOMAIN: RuleReviewDomain = "plugin_text"
 EVENT_COMMAND_TEXT_RULE_DOMAIN: RuleReviewDomain = "event_command_text"
 NOTE_TAG_TEXT_RULE_DOMAIN: RuleReviewDomain = "note_tag_text"
+PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "placeholder_rules"
+STRUCTURED_PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "structured_placeholder_rules"
 
 
 def plugin_rule_scope_hash(game_data: GameData) -> str:
@@ -41,6 +49,16 @@ def note_tag_rule_scope_hash(game_data: GameData) -> str:
     for file_name, value in sorted(game_data.data.items()):
         _append_note_values(value=value, path=[file_name], notes=notes)
     return _stable_json_hash(notes)
+
+
+def placeholder_rule_scope_hash(payload: JsonValue) -> str:
+    """计算普通占位符空结果审查依赖的当前候选哈希。"""
+    return _stable_json_hash(payload)
+
+
+def structured_placeholder_rule_scope_hash(payload: JsonValue) -> str:
+    """计算结构化占位符空结果审查依赖的当前候选哈希。"""
+    return _stable_json_hash(payload)
 
 
 def _append_note_values(*, value: JsonValue, path: list[str | int], notes: JsonArray) -> None:
@@ -77,16 +95,24 @@ def parse_rule_review_domain(value: str) -> RuleReviewDomain:
         return EVENT_COMMAND_TEXT_RULE_DOMAIN
     if value == NOTE_TAG_TEXT_RULE_DOMAIN:
         return NOTE_TAG_TEXT_RULE_DOMAIN
+    if value == PLACEHOLDER_RULE_DOMAIN:
+        return PLACEHOLDER_RULE_DOMAIN
+    if value == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
+        return STRUCTURED_PLACEHOLDER_RULE_DOMAIN
     raise ValueError(f"未知外部规则审查领域: {value}")
 
 
 __all__: list[str] = [
     "EVENT_COMMAND_TEXT_RULE_DOMAIN",
     "NOTE_TAG_TEXT_RULE_DOMAIN",
+    "PLACEHOLDER_RULE_DOMAIN",
     "PLUGIN_TEXT_RULE_DOMAIN",
     "RuleReviewDomain",
+    "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
     "event_command_rule_scope_hash",
     "note_tag_rule_scope_hash",
     "parse_rule_review_domain",
+    "placeholder_rule_scope_hash",
     "plugin_rule_scope_hash",
+    "structured_placeholder_rule_scope_hash",
 ]

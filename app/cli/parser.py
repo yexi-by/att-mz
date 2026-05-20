@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_plugin_parser)
     _ = import_plugin_parser.add_argument("--input", required=True, help="外部插件规则 JSON 文件")
+    _ = import_plugin_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有插件规则候选，允许导入空规则")
     _ = import_plugin_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_event_commands_parser = subparsers.add_parser(
@@ -80,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_event_command_parser)
     _ = import_event_command_parser.add_argument("--input", required=True, help="外部事件指令规则 JSON 文件")
+    _ = import_event_command_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有事件指令规则候选，允许导入空规则")
     _ = import_event_command_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_note_tag_parser = subparsers.add_parser(
@@ -104,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_note_tag_parser)
     _ = import_note_tag_parser.add_argument("--input", required=True, help="Note 标签规则 JSON 文件")
+    _ = import_note_tag_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有 Note 标签规则候选，允许导入空规则")
     _ = import_note_tag_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     scan_placeholder_parser = subparsers.add_parser(
@@ -338,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_placeholder_source_group = import_placeholder_parser.add_mutually_exclusive_group(required=True)
     _ = import_placeholder_source_group.add_argument("--rules", help="占位符规则 JSON 字符串")
     _ = import_placeholder_source_group.add_argument("--input", help="占位符规则 JSON 文件")
+    _ = import_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有普通占位符候选，允许导入空规则")
     _ = import_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_structured_placeholder_parser = subparsers.add_parser(
@@ -370,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_structured_placeholder_parser)
     _ = import_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
+    _ = import_structured_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有结构化占位符候选，允许导入空规则")
     _ = import_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_plugin_parser = subparsers.add_parser(

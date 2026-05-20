@@ -14,6 +14,8 @@ from .schemas import (
     TerminologyGlossary,
     TerminologyCategory,
     TerminologyRegistry,
+    collect_terminology_bundle_errors,
+    validate_terminology_bundle,
 )
 from .write_back import apply_terminology_translations
 
@@ -28,7 +30,9 @@ __all__: list[str] = [
     "TerminologyPromptIndex",
     "TerminologyRegistry",
     "apply_terminology_translations",
+    "collect_terminology_bundle_errors",
     "export_terminology_artifacts",
     "load_terminology_glossary",
     "load_terminology_registry",
+    "validate_terminology_bundle",
 ]

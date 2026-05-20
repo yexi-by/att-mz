@@ -52,6 +52,7 @@ from .common import (
     write_field_terms_json,
     write_glossary_json,
 )
+from app.terminology import collect_terminology_bundle_errors
 
 
 class WorkspaceAgentMixin:
@@ -277,7 +278,7 @@ class WorkspaceAgentMixin:
                     errors=errors,
                 )
             except Exception as error:
-                errors.append(issue("terminology_validate_failed", f"术语表结构校验失败: {type(error).__name__}: {error}"))
+                errors.append(issue("terminology_validate_failed", f"字段译名表结构校验失败: {type(error).__name__}: {error}"))
             if registry is not None:
                 terminology_issues = _validate_terminology_registry(registry)
                 errors.extend(issue_item for issue_item in terminology_issues if issue_item.code == "terminology_empty_translation")
@@ -290,6 +291,7 @@ class WorkspaceAgentMixin:
                 }
         else:
             errors.append(issue("terminology_missing", "工作区缺少 terminology/field-terms.json"))
+            registry = None
         if glossary_path.exists():
             glossary: TerminologyGlossary | None = None
             try:
@@ -302,20 +304,30 @@ class WorkspaceAgentMixin:
                 }
         else:
             errors.append(issue("glossary_missing", "工作区缺少 terminology/glossary.json"))
+            glossary = None
+        if registry is not None or glossary is not None:
+            errors.extend(
+                issue("terminology_bundle_invalid", message)
+                for message in collect_terminology_bundle_errors(registry=registry, glossary=glossary)
+            )
         if plugin_rules_path.exists():
             async with aiofiles.open(plugin_rules_path, "r", encoding="utf-8") as file:
                 plugin_report = await self.validate_plugin_rules(game_title=game_title, rules_text=await file.read())
             errors.extend(plugin_report.errors)
             warnings.extend(plugin_report.warnings)
             details["plugin_rules"] = plugin_report.details
+            if _summary_int(plugin_report.summary, "rule_count") == 0:
+                errors.append(issue("plugin_rules_empty_unconfirmed", "插件规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
         else:
-            warnings.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
+            errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
         if note_tag_rules_path.exists():
             async with aiofiles.open(note_tag_rules_path, "r", encoding="utf-8") as file:
                 note_tag_report = await self.validate_note_tag_rules(game_title=game_title, rules_text=await file.read())
             errors.extend(note_tag_report.errors)
             warnings.extend(note_tag_report.warnings)
             details["note_tag_rules"] = note_tag_report.details
+            if _summary_int(note_tag_report.summary, "tag_count") == 0:
+                errors.append(issue("note_tag_rules_empty_unconfirmed", "Note 标签规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
         else:
             errors.append(issue("note_tag_rules_missing", "工作区缺少 note-tag-rules.json"))
         if event_rules_path.exists():
@@ -324,8 +336,10 @@ class WorkspaceAgentMixin:
             errors.extend(event_report.errors)
             warnings.extend(event_report.warnings)
             details["event_command_rules"] = event_report.details
+            if _summary_int(event_report.summary, "path_rule_count") == 0:
+                errors.append(issue("event_command_rules_empty_unconfirmed", "事件指令规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
         else:
-            warnings.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
+            errors.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
         if placeholder_rules_path.exists():
             async with aiofiles.open(placeholder_rules_path, "r", encoding="utf-8") as file:
                 placeholder_rules_text = await file.read()
@@ -337,6 +351,8 @@ class WorkspaceAgentMixin:
             errors.extend(placeholder_report.errors)
             warnings.extend(placeholder_report.warnings)
             details["placeholder_rules"] = placeholder_report.details
+            if _summary_int(placeholder_report.summary, "rule_count") == 0:
+                errors.append(issue("placeholder_rules_empty_unconfirmed", "普通占位符规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
             try:
                 placeholder_coverage_report = await self.scan_placeholder_candidates(
                     game_title=game_title,
@@ -365,7 +381,7 @@ class WorkspaceAgentMixin:
                     )
                 )
         else:
-            warnings.append(issue("placeholder_rules_missing", "工作区缺少 placeholder-rules.json"))
+            errors.append(issue("placeholder_rules_missing", "工作区缺少 placeholder-rules.json"))
         if structured_placeholder_rules_path.exists():
             async with aiofiles.open(structured_placeholder_rules_path, "r", encoding="utf-8") as file:
                 structured_placeholder_rules_text = await file.read()
@@ -381,6 +397,8 @@ class WorkspaceAgentMixin:
                 if warning.code not in {"structured_placeholder_rules_empty", "structured_placeholder_samples_empty"}
             )
             details["structured_placeholder_rules"] = structured_placeholder_report.details
+            if _summary_int(structured_placeholder_report.summary, "rule_count") == 0:
+                errors.append(issue("structured_placeholder_rules_empty_unconfirmed", "结构化占位符规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
             try:
                 structured_placeholder_coverage_report = await self.scan_structured_placeholder_candidates(
                     game_title=game_title,
@@ -395,6 +413,13 @@ class WorkspaceAgentMixin:
                 uncovered_value = structured_placeholder_coverage_report.summary.get("uncovered_count")
                 if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
                     errors.append(issue("structured_placeholder_coverage_invalid", "结构化占位符候选扫描缺少有效的 uncovered_count"))
+                elif uncovered_value > 0:
+                    errors.append(
+                        issue(
+                            "structured_placeholder_coverage_uncovered",
+                            f"还有 {uncovered_value} 个当前正文会使用但未被结构化规则覆盖的协议外壳候选",
+                        )
+                    )
             except Exception as error:
                 errors.append(
                     issue(
@@ -403,7 +428,7 @@ class WorkspaceAgentMixin:
                     )
                 )
         else:
-            warnings.append(issue("structured_placeholder_rules_missing", f"工作区缺少 {STRUCTURED_PLACEHOLDER_RULES_FILE_NAME}"))
+            errors.append(issue("structured_placeholder_rules_missing", f"工作区缺少 {STRUCTURED_PLACEHOLDER_RULES_FILE_NAME}"))
         return AgentReport.from_parts(errors=errors, warnings=warnings, summary={"workspace": str(workspace)}, details=details)
 
     async def cleanup_agent_workspace(self: AgentServiceContext, *, workspace: Path) -> AgentReport:
@@ -451,3 +476,11 @@ class WorkspaceAgentMixin:
             summary={"workspace": str(workspace), "deleted_count": deleted_count},
             details={},
         )
+
+
+def _summary_int(summary: JsonObject, key: str) -> int:
+    """从 Agent 报告摘要中读取整数计数字段。"""
+    raw_value = summary.get(key)
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise RuntimeError(f"报告缺少有效计数字段: {key}")
+    return raw_value

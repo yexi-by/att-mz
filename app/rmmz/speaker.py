@@ -11,20 +11,24 @@ type MvSpeakerStyle = Literal[
     "standalone_colon",
     "actor_control_colon",
     "yep_name_box",
-    "dark_plasma_quote",
-    "dark_plasma_paren",
+    "plain_angle_name_box",
+    "quote_prefix",
 ]
 
 ACTOR_NAME_PREFIX_PATTERN: re.Pattern[str] = re.compile(
     r"^(?P<control>\\[Nn]\[(?P<actor_id>\d+)\])\s*[:：]\s*(?P<body>.*)$",
 )
+ACTOR_NAME_CONTROL_PATTERN: re.Pattern[str] = re.compile(r"^\\[Nn]\[(?P<actor_id>\d+)\]$")
 YEP_NAME_BOX_PATTERN: re.Pattern[str] = re.compile(
-    r"^(?P<command>\\(?:n(?:c|r)?|r))<(?P<speaker>[^>\r\n]{1,80})>(?P<body>.*)$",
+    r"^(?P<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?P<speaker>[^>\r\n]{1,80})>(?P<body>.*)$",
 )
-DARK_PLASMA_AUTO_NAME_PATTERN: re.Pattern[str] = re.compile(
-    r"^(?P<speaker>[^\\「（:：\r\n]{1,40})\s*(?P<connector>[:：]?「|（)(?P<body>.*)$"
+PLAIN_ANGLE_NAME_BOX_PATTERN: re.Pattern[str] = re.compile(
+    r"^<(?P<speaker>[^<>\r\n]{1,80})>\s*$"
 )
-DARK_PLASMA_SPEAKER_STOP_PATTERN: re.Pattern[str] = re.compile(r"[。！？!?、，,；;…—]")
+QUOTE_PREFIX_NAME_PATTERN: re.Pattern[str] = re.compile(
+    r"^(?P<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?P<connector>[:：]?「)(?P<body>.*)$"
+)
+QUOTE_PREFIX_SPEAKER_STOP_PATTERN: re.Pattern[str] = re.compile(r"[。！？!?、，,；;…—]")
 STANDALONE_SPEAKER_LINE_PATTERN: re.Pattern[str] = re.compile(
     r"^(?P<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$"
 )
@@ -39,6 +43,8 @@ class MvVirtualSpeaker:
     body_text: str
     name_command: str = ""
     connector: str = ""
+    source_speaker_text: str = ""
+    requires_translation: bool = True
 
     def render(self, *, translated_speaker: str, translated_body: str | None = None) -> str:
         """按原协议样式重建写回到 `401` 的文本。"""
@@ -49,6 +55,8 @@ class MvVirtualSpeaker:
             return f"{translated_speaker}："
         if self.style == "yep_name_box":
             return f"{self.name_command}<{translated_speaker}>{body_text}"
+        if self.style == "plain_angle_name_box":
+            return f"<{translated_speaker}>"
         return f"{translated_speaker}{self.connector}{body_text}"
 
 
@@ -78,6 +86,19 @@ def parse_mv_virtual_speaker_line(
     if yep_match is not None:
         speaker = _clean_speaker_text(yep_match.group("speaker"))
         if speaker:
+            actor_control_speaker = _parse_actor_name_control(
+                text=speaker,
+                game_data=game_data,
+            )
+            if actor_control_speaker is not None:
+                return MvVirtualSpeaker(
+                    speaker=actor_control_speaker,
+                    style="yep_name_box",
+                    body_text=_clean_body_text(yep_match.group("body")),
+                    name_command=yep_match.group("command"),
+                    source_speaker_text=speaker,
+                    requires_translation=False,
+                )
             return MvVirtualSpeaker(
                 speaker=speaker,
                 style="yep_name_box",
@@ -85,16 +106,37 @@ def parse_mv_virtual_speaker_line(
                 name_command=yep_match.group("command"),
             )
 
-    dark_plasma_match = DARK_PLASMA_AUTO_NAME_PATTERN.match(normalized_text)
-    if dark_plasma_match is not None:
-        speaker = _clean_speaker_text(dark_plasma_match.group("speaker"))
-        if _is_plausible_dark_plasma_speaker(speaker):
-            connector = dark_plasma_match.group("connector")
-            style: MvSpeakerStyle = "dark_plasma_paren" if connector == "（" else "dark_plasma_quote"
+    angle_match = PLAIN_ANGLE_NAME_BOX_PATTERN.match(normalized_text)
+    if angle_match is not None:
+        speaker = _clean_speaker_text(angle_match.group("speaker"))
+        if speaker:
+            actor_control_speaker = _parse_actor_name_control(
+                text=speaker,
+                game_data=game_data,
+            )
+            if actor_control_speaker is not None:
+                return MvVirtualSpeaker(
+                    speaker=actor_control_speaker,
+                    style="plain_angle_name_box",
+                    body_text="",
+                    source_speaker_text=speaker,
+                    requires_translation=False,
+                )
             return MvVirtualSpeaker(
                 speaker=speaker,
-                style=style,
-                body_text=_clean_body_text(dark_plasma_match.group("body")),
+                style="plain_angle_name_box",
+                body_text="",
+            )
+
+    quote_match = QUOTE_PREFIX_NAME_PATTERN.match(normalized_text)
+    if quote_match is not None:
+        speaker = _clean_speaker_text(quote_match.group("speaker"))
+        if _is_plausible_quote_prefix_speaker(speaker):
+            connector = quote_match.group("connector")
+            return MvVirtualSpeaker(
+                speaker=speaker,
+                style="quote_prefix",
+                body_text=_clean_body_text(quote_match.group("body")),
                 connector=connector,
             )
 
@@ -122,6 +164,18 @@ def _actor_name_by_id(*, game_data: GameData, actor_id: int) -> str | None:
     return None
 
 
+def _parse_actor_name_control(*, text: str, game_data: GameData) -> str | None:
+    """把动态角色名控制符解析成可读说话人名，无法解析时保留原控制符。"""
+    actor_match = ACTOR_NAME_CONTROL_PATTERN.fullmatch(text.strip())
+    if actor_match is None:
+        return None
+    actor_id = int(actor_match.group("actor_id"))
+    actor_name = _actor_name_by_id(game_data=game_data, actor_id=actor_id)
+    if actor_name is not None:
+        return actor_name
+    return text.strip()
+
+
 def _clean_speaker_text(text: str) -> str:
     """清理说话人文本外侧空白。"""
     return text.strip()
@@ -132,14 +186,14 @@ def _clean_body_text(text: str) -> str:
     return text.strip()
 
 
-def _is_plausible_dark_plasma_speaker(text: str) -> bool:
-    """判断 DarkPlasma 行首候选是否更像名字而不是普通叙述句。"""
+def _is_plausible_quote_prefix_speaker(text: str) -> bool:
+    """判断引号前缀候选是否更像名字而不是普通叙述句。"""
     speaker = text.strip()
     if not speaker:
         return False
     if all(character in "?？!！" for character in speaker):
         return True
-    return DARK_PLASMA_SPEAKER_STOP_PATTERN.search(speaker) is None
+    return QUOTE_PREFIX_SPEAKER_STOP_PATTERN.search(speaker) is None
 
 
 __all__: list[str] = [

@@ -14,6 +14,7 @@
 
 | 表名 | 职责 | 主要写入入口 |
 |------|------|--------------|
+| `schema_version` | 保存当前数据库 schema 版本；旧库和缺版本库会直接拒绝打开 | `add-game` |
 | `metadata` | 保存当前数据库绑定的游戏目录、真实内容目录、引擎类型和版本 | `add-game` |
 | `language_settings` | 保存当前游戏的源语言和目标语言 | `add-game` |
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
@@ -22,10 +23,13 @@
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
 | `event_command_text_rule_paths` | 保存事件指令规则组的可翻译参数路径 | `import-event-command-rules` |
-| `terminology_terms` | 保存字段译名表，例如地图名、数据库名称和系统类型译名 | `import-terminology` |
-| `terminology_glossary_terms` | 保存正文翻译提示词使用的正文术语表 | `import-terminology` |
-| `terminology_import_state` | 标记术语表已经导入，用来区分“空术语表”和“从未导入” | `import-terminology` |
+| `terminology_field_terms` | 保存字段译名表，例如地图名、数据库名称和系统类型译名 | `import-terminology` |
+| `text_glossary_terms` | 保存正文翻译提示词使用的正文术语表 | `import-terminology` |
+| `terminology_bundle_state` | 标记字段译名表和正文术语表已经作为同一批导入 | `import-terminology` |
 | `placeholder_rules` | 保存当前游戏专用的自定义控制符保护规则 | `import-placeholder-rules` |
+| `structured_placeholder_rules` | 保存当前游戏专用结构化占位符规则主体 | `import-structured-placeholder-rules` |
+| `structured_placeholder_rule_groups` | 保存结构化占位符规则中的保护分组模板 | `import-structured-placeholder-rules` |
+| `rule_review_states` | 保存空插件规则、空事件指令规则、空 Note 规则和空占位符规则的显式确认状态 | `import-* --confirm-empty` |
 | `source_residual_rules` | 保存允许保留源语言片段的例外规则 | `import-source-residual-rules` |
 | `font_replacement_records` | 保存最近一次字体覆盖产生的可还原字体引用记录 | `write-back --confirm-font-overwrite`、`write-terminology --confirm-font-overwrite` |
 | `translation_runs` | 保存正文翻译运行状态和统计快照 | `translate` |
@@ -39,7 +43,7 @@
 - `location_path` 是文本在游戏里的内部位置，只用于绑定导出、导入、质量检查和写回流程。面向用户说明时应说“文本在游戏里的内部位置”。
 - `item_type` 当前取值为 `long_text`、`array`、`short_text`。
 - `engine_kind` 当前取值为 `mv`、`mz`。
-- 打开数据库时会校验关键字段。缺少当前 schema 必需字段时会直接报错，要求重新注册或执行独立数据迁移，不做静默猜测。
+- 打开数据库时会校验 `schema_version`。旧数据库、缺版本库和含废弃术语表名的数据库会直接报错，提示删除对应游戏数据库后重新注册并重新导入规则和译名；正式代码不会做运行时兼容迁移。
 
 ## CLI 与 Skill 对齐
 
@@ -178,7 +182,7 @@
 - 规则组删除时，路径通过外键级联删除。
 - 导入时必须显式声明事件指令编码，业务代码不会按固定编码猜测复杂插件参数文本。
 
-### `terminology_terms`
+### `terminology_field_terms`
 
 保存字段译名表。它负责写回稳定字段，例如地图显示名、数据库名称、系统类型，以及 MZ 标准名字框等。MV 的说话人术语也会保存在 `speaker_names` 中，用于术语统一、正文翻译提示词命中，以及重建对应的 `401` 虚拟名字框；不会写入 `101.parameters[4]`。
 
@@ -194,12 +198,13 @@
 
 维护规则：
 
-- `import-terminology` 会整体替换此表内容。
-- 空字段译名表也会通过 `terminology_import_state` 标记为已导入。
+- `import-terminology` 会和正文术语表一起原子替换此表内容。
+- 字段译名表有条目时，正文术语表不得为空。
+- 字段译名表中已经填写译名的词条，必须在正文术语表中存在同原文、同译名的规范术语。
 - MV 标准 `101` 通常没有第 5 个名字框参数，不能为了写入说话人而补齐字段。
 - MV 的 `speaker_names` 来源于每个对话块首条非空 `401` 正文识别出的虚拟名字框说话人；它会用于重建对应 `401` 说话人行或名字标签，但不会写入 `101.parameters[4]`。
 
-### `terminology_glossary_terms`
+### `text_glossary_terms`
 
 保存正文翻译提示词使用的正文术语表。
 
@@ -210,12 +215,12 @@
 
 维护规则：
 
-- `import-terminology` 会整体替换此表内容。
+- `import-terminology` 会和字段译名表一起原子替换此表内容。
 - 它只服务正文翻译提示词命中，不负责直接写回游戏字段。
 
-### `terminology_import_state`
+### `terminology_bundle_state`
 
-标记术语表导入状态，用于区分“已经导入空术语表”和“从未导入术语表”。
+标记字段译名表和正文术语表已经作为同一批完整导入，用于区分“已经导入空术语包”和“从未导入术语包”。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -224,8 +229,8 @@
 
 维护规则：
 
-- 字段译名表或正文术语表为空时，也会写入状态记录。
-- 读取术语表时，如果术语表为空但存在状态记录，会返回空术语表对象。
+- 只有 `import-terminology` 的整包导入成功后才会写入状态记录。
+- 读取术语表时，如果表为空但存在状态记录，会返回空术语对象。
 
 ### `placeholder_rules`
 

@@ -9,6 +9,7 @@ import pytest
 from app.application.file_writer import reset_writable_copies
 from app.application.file_writer import write_game_files
 from app.application.handler import TranslationHandler
+from app.application.flow_gate import structured_placeholder_scope_hash
 from app.application.font_replacement import (
     apply_font_replacement,
     read_plugins_js_file,
@@ -19,11 +20,25 @@ from app.note_tag_text import NoteTagTextExtraction, build_note_tag_rule_records
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
+from app.plugin_text import build_plugin_hash
+from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, STRUCTURED_PLACEHOLDER_RULE_DOMAIN, note_tag_rule_scope_hash
 from app.rmmz import DataTextExtraction, load_game_data, read_game_title, resolve_game_layout
 from app.rmmz.control_codes import CustomPlaceholderRule
-from app.rmmz.schema import NoteTagTextRuleRecord, PLUGINS_FILE_NAME, TranslationItem
+from app.rmmz.schema import (
+    EventCommandParameterFilter,
+    EventCommandTextRuleRecord,
+    NoteTagTextRuleRecord,
+    PLUGINS_FILE_NAME,
+    PlaceholderRuleRecord,
+    PluginTextRuleRecord,
+    TranslationErrorItem,
+    TranslationItem,
+)
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.rmmz.write_back import write_data_text
+from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_scope import TextScopeService
+from app.utils.config_loader_utils import load_setting
 
 
 def _rewrite_json(path: Path, value: JsonValue) -> None:
@@ -34,6 +49,27 @@ def _rewrite_json(path: Path, value: JsonValue) -> None:
 def _read_test_json(path: Path) -> JsonValue:
     """读取测试 JSON 并收窄为项目 JSON 类型。"""
     return coerce_json_value(cast(object, json.loads(path.read_text(encoding="utf-8"))))
+
+
+def _translated_test_line_preserving_controls(line: str, text_rules: TextRules) -> str:
+    """生成测试译文，并保留原文中必须原样保留的控制符。"""
+    spans = text_rules.iter_control_sequence_spans(line)
+    if not spans:
+        return "测试"
+    translated_parts: list[str] = []
+    last_end = 0
+    visible_text_inserted = False
+    for span in spans:
+        if span.start_index > last_end and not visible_text_inserted:
+            translated_parts.append("测试")
+            visible_text_inserted = True
+        translated_parts.append(span.original)
+        last_end = span.end_index
+    if last_end < len(line) and not visible_text_inserted:
+        translated_parts.append("测试")
+    if not visible_text_inserted:
+        translated_parts.append("测试")
+    return "".join(translated_parts)
 
 
 @pytest.mark.asyncio
@@ -132,6 +168,49 @@ async def test_mv_data_extraction_reads_role_from_first_401(
                     {"code": 0, "parameters": []},
                 ],
             },
+            {
+                "id": 9,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<案内人>"]},
+                    {"code": 401, "parameters": ["独立行の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 10,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["\\N<店員>大文字制御の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 11,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<\\n[1]>"]},
+                    {"code": 401, "parameters": ["動的名の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 12,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["こちらはステラ（1戦目）の回想です。"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 13,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<ステラ><ソフィア>"]},
+                    {"code": 401, "parameters": ["複合名の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
         ]
     )
     _rewrite_json(common_events_path, common_events)
@@ -161,6 +240,18 @@ async def test_mv_data_extraction_reads_role_from_first_401(
     assert items_by_path["CommonEvents.json/7/0"].original_lines == ["第五参数を無視します」"]
     assert items_by_path["CommonEvents.json/8/0"].role == "旁白"
     assert items_by_path["CommonEvents.json/8/0"].original_lines == ["まだやるかい？掛け金はそのままだぜ？（掛け金\\V[48])"]
+    assert items_by_path["CommonEvents.json/9/0"].role == "案内人"
+    assert items_by_path["CommonEvents.json/9/0"].original_lines == ["独立行の本文です"]
+    assert items_by_path["CommonEvents.json/9/0"].source_line_paths == ["CommonEvents.json/9/2"]
+    assert items_by_path["CommonEvents.json/10/0"].role == "店員"
+    assert items_by_path["CommonEvents.json/10/0"].original_lines == ["大文字制御の本文です"]
+    assert items_by_path["CommonEvents.json/11/0"].role == "MV勇者"
+    assert items_by_path["CommonEvents.json/11/0"].original_lines == ["動的名の本文です"]
+    assert items_by_path["CommonEvents.json/11/0"].source_line_paths == ["CommonEvents.json/11/2"]
+    assert items_by_path["CommonEvents.json/12/0"].role == "旁白"
+    assert items_by_path["CommonEvents.json/12/0"].original_lines == ["こちらはステラ（1戦目）の回想です。"]
+    assert items_by_path["CommonEvents.json/13/0"].role == "旁白"
+    assert items_by_path["CommonEvents.json/13/0"].original_lines == ["<ステラ><ソフィア>", "複合名の本文です"]
 
 
 @pytest.mark.asyncio
@@ -267,16 +358,81 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="en")
     async with await registry.open_game("テストゲーム") as session:
+        game_data = await load_game_data(minimal_game_dir)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[EventCommandParameterFilter(index=0, value="TestPlugin")],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+        setting = load_setting(source_language=session.source_language)
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+            structured_placeholder_rules=(),
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=(),
+            ),
+            reviewed_empty=True,
+        )
+        active_items = scope.active_items()
         await session.write_translation_items(
             [
                 TranslationItem(
-                    location_path="CommonEvents.json/3/0",
-                    item_type="long_text",
-                    role="Adriel",
-                    original_lines=["But-"],
-                    source_line_paths=["CommonEvents.json/3/1"],
-                    translation_lines=["但是——"],
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=["但是——"]
+                    if item.location_path == "CommonEvents.json/3/0"
+                    else [
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
                 )
+                for item in active_items
             ]
         )
 
@@ -300,6 +456,162 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
     )[0]
 
     assert written_line == "但是——"
+
+
+@pytest.mark.asyncio
+async def test_direct_write_back_rejects_latest_quality_errors(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """直接调用业务写回也必须拦截模型翻了但项目检查没通过的译文。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data = await load_game_data(minimal_game_dir)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[EventCommandParameterFilter(index=0, value="TestPlugin")],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+        setting = load_setting(source_language=session.source_language)
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+            structured_placeholder_rules=(),
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=(),
+            ),
+            reviewed_empty=True,
+        )
+        active_items = scope.active_items()
+        assert active_items
+        failed_item = active_items[0]
+        run_record = await session.start_translation_run(
+            total_extracted=len(active_items),
+            pending_count=1,
+            deduplicated_count=1,
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    location_path=failed_item.location_path,
+                    item_type=failed_item.item_type,
+                    role=failed_item.role,
+                    original_lines=[line for line in failed_item.original_lines],
+                    translation_lines=[],
+                    error_type="AI漏翻",
+                    error_detail=["无法解析模型输出"],
+                    model_response="{}",
+                )
+            ],
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="项目检查没通过"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_write_terminology_rejects_missing_workflow_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """直接调用术语写回也必须经过写入前流程检查。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="检查没通过"):
+            _ = await handler.write_terminology(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
 
 
 @pytest.mark.asyncio
@@ -342,6 +654,32 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
                     {"code": 0, "parameters": []},
                 ],
             },
+            {
+                "id": 6,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<案内人>"]},
+                    {"code": 401, "parameters": ["独立行の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 7,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["\\N<店員>大文字制御の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 8,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<\\n[1]>"]},
+                    {"code": 401, "parameters": ["動的名の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
         ]
     )
     _rewrite_json(common_events_path, common_events)
@@ -357,6 +695,9 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
     items_by_path["CommonEvents.json/3/0"].translation_lines = ["你好」"]
     items_by_path["CommonEvents.json/4/0"].translation_lines = ["欢迎光临"]
     items_by_path["CommonEvents.json/5/0"].translation_lines = ["勇者正文"]
+    items_by_path["CommonEvents.json/6/0"].translation_lines = ["独立正文"]
+    items_by_path["CommonEvents.json/7/0"].translation_lines = ["大写正文"]
+    items_by_path["CommonEvents.json/8/0"].translation_lines = ["动态正文"]
 
     reset_writable_copies(game_data)
     write_data_text(
@@ -366,6 +707,9 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
             items_by_path["CommonEvents.json/3/0"],
             items_by_path["CommonEvents.json/4/0"],
             items_by_path["CommonEvents.json/5/0"],
+            items_by_path["CommonEvents.json/6/0"],
+            items_by_path["CommonEvents.json/7/0"],
+            items_by_path["CommonEvents.json/8/0"],
         ],
         speaker_name_translations={"案内人": "向导", "店員": "店员", "MV勇者": "勇者"},
     )
@@ -387,12 +731,29 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
         ensure_json_object(writable_events[5], "CommonEvents[5]")["list"],
         "CommonEvents[5].list",
     )
+    angle_commands = ensure_json_array(
+        ensure_json_object(writable_events[6], "CommonEvents[6]")["list"],
+        "CommonEvents[6].list",
+    )
+    upper_commands = ensure_json_array(
+        ensure_json_object(writable_events[7], "CommonEvents[7]")["list"],
+        "CommonEvents[7].list",
+    )
+    dynamic_commands = ensure_json_array(
+        ensure_json_object(writable_events[8], "CommonEvents[8]")["list"],
+        "CommonEvents[8].list",
+    )
 
     assert ensure_json_array(ensure_json_object(standalone_commands[1], "standalone.speaker")["parameters"], "standalone.speaker.parameters")[0] == "向导："
     assert ensure_json_array(ensure_json_object(standalone_commands[2], "standalone.body")["parameters"], "standalone.body.parameters")[0] == "你好"
     assert ensure_json_array(ensure_json_object(inline_commands[1], "inline.speaker")["parameters"], "inline.speaker.parameters")[0] == "向导「你好」"
     assert ensure_json_array(ensure_json_object(yep_commands[1], "yep.speaker")["parameters"], "yep.speaker.parameters")[0] == "\\n<店员>欢迎光临"
     assert ensure_json_array(ensure_json_object(actor_commands[1], "actor.speaker")["parameters"], "actor.speaker.parameters")[0] == "勇者：勇者正文"
+    assert ensure_json_array(ensure_json_object(angle_commands[1], "angle.speaker")["parameters"], "angle.speaker.parameters")[0] == "<向导>"
+    assert ensure_json_array(ensure_json_object(angle_commands[2], "angle.body")["parameters"], "angle.body.parameters")[0] == "独立正文"
+    assert ensure_json_array(ensure_json_object(upper_commands[1], "upper.speaker")["parameters"], "upper.speaker.parameters")[0] == "\\N<店员>大写正文"
+    assert ensure_json_array(ensure_json_object(dynamic_commands[1], "dynamic.speaker")["parameters"], "dynamic.speaker.parameters")[0] == "<\\n[1]>"
+    assert ensure_json_array(ensure_json_object(dynamic_commands[2], "dynamic.body")["parameters"], "dynamic.body.parameters")[0] == "动态正文"
 
 
 @pytest.mark.asyncio
@@ -425,6 +786,48 @@ async def test_mv_virtual_name_box_write_back_requires_speaker_translation(minim
     reset_writable_copies(game_data)
     with pytest.raises(ValueError, match="缺少术语译名"):
         write_data_text(game_data, [item], speaker_name_translations={})
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_name_box_write_back_keeps_dynamic_speaker_without_translation(
+    minimal_mv_game_dir: Path,
+) -> None:
+    """MV 动态名字框控制符写回时原样保留，不要求术语译名。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["<\\n[1]>"]},
+                {"code": 401, "parameters": ["動的名の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    game_data = await load_game_data(minimal_mv_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    item = next(
+        candidate
+        for candidate in extracted["CommonEvents.json"].translation_items
+        if candidate.location_path == "CommonEvents.json/2/0"
+    )
+    item.translation_lines = ["动态正文"]
+
+    reset_writable_copies(game_data)
+    write_data_text(game_data, [item], speaker_name_translations={})
+
+    writable_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
+    commands = ensure_json_array(
+        ensure_json_object(writable_events[2], "CommonEvents[2]")["list"],
+        "CommonEvents[2].list",
+    )
+
+    assert ensure_json_array(ensure_json_object(commands[1], "dynamic.speaker")["parameters"], "dynamic.speaker.parameters")[0] == "<\\n[1]>"
+    assert ensure_json_array(ensure_json_object(commands[2], "dynamic.body")["parameters"], "dynamic.body.parameters")[0] == "动态正文"
 
 
 @pytest.mark.asyncio

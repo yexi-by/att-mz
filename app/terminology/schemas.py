@@ -174,6 +174,70 @@ class TerminologyGlossary(StrictTerminologyModel):
         return len(self.terms)
 
 
+def validate_terminology_bundle(
+    *,
+    registry: TerminologyRegistry,
+    glossary: TerminologyGlossary,
+) -> None:
+    """校验字段译名表和正文术语表属于同一次完整导入。"""
+    errors = collect_terminology_bundle_errors(registry=registry, glossary=glossary)
+    if errors:
+        raise ValueError("；".join(errors))
+
+
+def collect_terminology_bundle_errors(
+    *,
+    registry: TerminologyRegistry | None,
+    glossary: TerminologyGlossary | None,
+) -> list[str]:
+    """返回字段译名表和正文术语表的同步校验错误。"""
+    errors: list[str] = []
+    if registry is None:
+        errors.append("当前游戏尚未导入字段译名表")
+        return errors
+    if glossary is None:
+        errors.append("当前游戏尚未导入正文术语表")
+        return errors
+    total_count = registry.total_entry_count()
+    filled_count = registry.filled_entry_count()
+    if total_count > 0 and glossary.term_count() == 0:
+        errors.append("字段译名表已有条目，但正文术语表为空，检查没通过，不能继续")
+    empty_count = total_count - filled_count
+    if empty_count:
+        errors.append(f"字段译名表还有 {empty_count} 个词条没有填写译名")
+    missing_terms: list[str] = []
+    mismatched_terms: list[str] = []
+    for source_text, translated_text in _iter_filled_field_terms(registry):
+        glossary_translation = glossary.terms.get(source_text)
+        if glossary_translation is None:
+            missing_terms.append(source_text)
+            continue
+        if glossary_translation != translated_text:
+            mismatched_terms.append(source_text)
+    if missing_terms:
+        sample_text = "、".join(missing_terms[:5])
+        suffix = "" if len(missing_terms) <= 5 else f" 等 {len(missing_terms)} 个"
+        errors.append(f"正文术语表缺少字段译名表中已填写的规范术语: {sample_text}{suffix}")
+    if mismatched_terms:
+        sample_text = "、".join(mismatched_terms[:5])
+        suffix = "" if len(mismatched_terms) <= 5 else f" 等 {len(mismatched_terms)} 个"
+        errors.append(f"正文术语表与字段译名表存在译名不一致: {sample_text}{suffix}")
+    return errors
+
+
+def _iter_filled_field_terms(registry: TerminologyRegistry) -> list[tuple[str, str]]:
+    """按类别顺序返回字段译名表中已填写的词条。"""
+    terms: list[tuple[str, str]] = []
+    for entries in registry.as_category_map().values():
+        for source_text, translated_text in entries.items():
+            normalized_source_text = source_text.strip()
+            normalized_translated_text = translated_text.strip()
+            if not normalized_source_text or not normalized_translated_text:
+                continue
+            terms.append((normalized_source_text, normalized_translated_text))
+    return terms
+
+
 def _normalize_required_mapping(entries: dict[str, str], field_name: str) -> dict[str, str]:
     """清理术语映射首尾空白，并拒绝空键、空值和清理后重复键。"""
     normalized_entries: dict[str, str] = {}
@@ -213,4 +277,6 @@ __all__: list[str] = [
     "TerminologyRegistry",
     "TERMINOLOGY_CATEGORIES",
     "TERMINOLOGY_CATEGORY_LABELS",
+    "collect_terminology_bundle_errors",
+    "validate_terminology_bundle",
 ]

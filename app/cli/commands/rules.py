@@ -38,7 +38,11 @@ async def run_import_plugin_rules_command(args: argparse.Namespace) -> int:
     input_path = read_required_path_arg(args, "input")
     try:
         async with HandlerSession() as handler:
-            summary = await handler.import_plugin_rules(game_title=game_title, input_path=input_path)
+            summary = await handler.import_plugin_rules(
+                game_title=game_title,
+                input_path=input_path,
+                confirm_empty=read_bool_arg(args, "confirm_empty"),
+            )
     except Exception as error:
         if not read_bool_arg(args, "json_output"):
             raise
@@ -93,7 +97,11 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
     input_path = read_required_path_arg(args, "input")
     try:
         async with HandlerSession() as handler:
-            summary = await handler.import_event_command_rules(game_title=game_title, input_path=input_path)
+            summary = await handler.import_event_command_rules(
+                game_title=game_title,
+                input_path=input_path,
+                confirm_empty=read_bool_arg(args, "confirm_empty"),
+            )
     except Exception as error:
         if not read_bool_arg(args, "json_output"):
             raise
@@ -192,7 +200,11 @@ async def run_import_note_tag_rules_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     rules_text = await read_text_file(read_required_path_arg(args, "input"))
     service = AgentToolkitService()
-    report = await service.import_note_tag_rules(game_title=game_title, rules_text=rules_text)
+    report = await service.import_note_tag_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+        confirm_empty=read_bool_arg(args, "confirm_empty"),
+    )
     write_report_outputs(report=report, args=args, title="Note 标签规则导入报告")
     return 1 if report.status == "error" else 0
 
@@ -240,7 +252,11 @@ async def run_import_placeholder_rules_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     rules_text = await read_required_text_source_arg(args, "rules", "input")
     service = AgentToolkitService()
-    report = await service.import_placeholder_rules(game_title=game_title, rules_text=rules_text)
+    report = await service.import_placeholder_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+        confirm_empty=read_bool_arg(args, "confirm_empty"),
+    )
     write_report_outputs(report=report, args=args, title="自定义占位符规则导入报告")
     return 1 if report.status == "error" else 0
 
@@ -281,6 +297,7 @@ async def run_import_structured_placeholder_rules_command(args: argparse.Namespa
     report = await service.import_structured_placeholder_rules(
         game_title=game_title,
         rules_text=rules_text,
+        confirm_empty=read_bool_arg(args, "confirm_empty"),
     )
     write_report_outputs(report=report, args=args, title="结构化占位符规则导入报告")
     return 1 if report.status == "error" else 0

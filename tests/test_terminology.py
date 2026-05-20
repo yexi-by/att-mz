@@ -7,8 +7,10 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from app.application.handler import validate_terminology_registry_shape
+from app.application.handler import TranslationHandler, validate_terminology_registry_shape
 from app.application.file_writer import reset_writable_copies
+from app.llm import LLMHandler
+from app.persistence import GameRegistry
 from app.rmmz import DataTextExtraction, load_game_data
 from app.rmmz.schema import TranslationData, TranslationItem
 from app.rmmz.text_rules import coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
@@ -105,6 +107,51 @@ async def test_export_terminology_writes_terms_and_contexts(
 
 
 @pytest.mark.asyncio
+async def test_import_terminology_rejects_field_terms_without_glossary(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """字段译名表有已填写译名时，正文术语表为空必须直接拒绝导入。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    game_data = await load_game_data(minimal_game_dir)
+    summary = await export_terminology_artifacts(
+        game_data=game_data,
+        output_dir=tmp_path / "terminology",
+    )
+    exported_registry = await load_terminology_registry(field_terms_path=summary.field_terms_path)
+    filled_registry = exported_registry.model_copy(
+        update={
+            "speaker_names": {
+                **exported_registry.speaker_names,
+                "アリス": "爱丽丝",
+            }
+        }
+    )
+    _ = summary.field_terms_path.write_text(
+        f"{filled_registry.model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+    _ = summary.glossary_path.write_text(
+        f"{TerminologyGlossary().model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+    try:
+        with pytest.raises(ValueError, match="正文术语表为空"):
+            _ = await handler.import_terminology(
+                game_title="テストゲーム",
+                input_path=summary.field_terms_path,
+                glossary_input_path=summary.glossary_path,
+            )
+    finally:
+        await handler.close()
+    async with await registry.open_game("テストゲーム") as session:
+        assert await session.read_terminology_registry() is None
+        assert await session.read_terminology_glossary() is None
+
+
+@pytest.mark.asyncio
 async def test_mv_terminology_skips_mz_name_box_parameter(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
@@ -175,6 +222,41 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
                     {"code": 0, "parameters": []},
                 ],
             },
+            {
+                "id": 5,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<受付>"]},
+                    {"code": 401, "parameters": ["独立行の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 6,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<\\n[1]>"]},
+                    {"code": 401, "parameters": ["動的名の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 7,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["こちらはステラ（1戦目）の回想です。"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 8,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<ステラ><ソフィア>"]},
+                    {"code": 401, "parameters": ["複合名の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
         ]
     )
     _ = common_events_path.write_text(
@@ -194,9 +276,13 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     assert registry.speaker_names == {
         "MV勇者": "",
         "案内人": "",
+        "受付": "",
     }
     assert "\\n[999]" not in registry.speaker_names
-    assert summary.sample_file_count == 2
+    assert "\\n[1]" not in registry.speaker_names
+    assert "こちらはステラ" not in registry.speaker_names
+    assert "<ステラ><ソフィア>" not in registry.speaker_names
+    assert summary.sample_file_count == 3
 
     contexts = [
         SpeakerDialogueContext.model_validate_json(path.read_text(encoding="utf-8"))
@@ -205,6 +291,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     contexts_by_name = {context.name: context.dialogue_lines for context in contexts}
     assert contexts_by_name["案内人"] == ["こんにちは」"]
     assert contexts_by_name["MV勇者"] == ["役者の本文です"]
+    assert contexts_by_name["受付"] == ["独立行の本文です"]
 
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     prompt_batches = list(
@@ -229,10 +316,10 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     reset_writable_copies(game_data)
     written_count = apply_terminology_translations(
         game_data,
-        TerminologyRegistry(speaker_names={"案内人": "向导", "MV勇者": "勇者"}),
+        TerminologyRegistry(speaker_names={"案内人": "向导", "MV勇者": "勇者", "受付": "接待员"}),
     )
 
-    assert written_count == 2
+    assert written_count == 3
     current_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
     current_event = ensure_json_object(current_events[2], "CommonEvents[2]")
     current_commands = ensure_json_array(current_event["list"], "CommonEvents[2].list")
@@ -247,6 +334,16 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     actor_text_command = ensure_json_object(actor_commands[1], "CommonEvents[3].list[1]")
     actor_text_parameters = ensure_json_array(actor_text_command["parameters"], "CommonEvents[3].list[1].parameters")
     assert actor_text_parameters[0] == "勇者："
+    angle_event = ensure_json_object(current_events[5], "CommonEvents[5]")
+    angle_commands = ensure_json_array(angle_event["list"], "CommonEvents[5].list")
+    angle_text_command = ensure_json_object(angle_commands[1], "CommonEvents[5].list[1]")
+    angle_text_parameters = ensure_json_array(angle_text_command["parameters"], "CommonEvents[5].list[1].parameters")
+    assert angle_text_parameters[0] == "<接待员>"
+    dynamic_event = ensure_json_object(current_events[6], "CommonEvents[6]")
+    dynamic_commands = ensure_json_array(dynamic_event["list"], "CommonEvents[6].list")
+    dynamic_text_command = ensure_json_object(dynamic_commands[1], "CommonEvents[6].list[1]")
+    dynamic_text_parameters = ensure_json_array(dynamic_text_command["parameters"], "CommonEvents[6].list[1].parameters")
+    assert dynamic_text_parameters[0] == "<\\n[1]>"
 
 
 def test_speaker_sample_file_name_uses_readable_source_name() -> None:

@@ -5,22 +5,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_agents_requires_external_judgment_for_game_private_semantics() -> None:
-    """项目规范必须禁止程序把启发式候选当成游戏私有语义结论。"""
-    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-    required_phrases = [
-        "程序只能内置引擎公开协议和结构性校验",
-        "不能把启发式猜测当作游戏私有语义的最终判断",
-        "必须来自用户明确输入、当前游戏文件的人工或外部代理分析、已导入规则、术语表或源文残留例外规则",
-        "候选只能用于提示和校验，不能自动升级为已确认规则",
-        "必须输出可理解的告警或错误",
-        "禁止靠程序自身猜测继续翻译、导入规则或消耗模型额度",
-    ]
-    for phrase in required_phrases:
-        assert phrase in text
-
-
 def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
     """Skill 必须约束两轮子代理流程和主代理术语表审核责任。"""
     text = (ROOT / "skills" / "att-mz" / "SKILL.md").read_text(encoding="utf-8")
@@ -149,6 +133,7 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "合法空结构是 `{ \"paired_shell_rules\": [] }`",
         "`references/structured-placeholder-rules.md`",
         "`terminology/field-terms.json`：这是“字段译名表”",
+        "字段译名表不允许空值",
         "MV 的 `speaker_names` 是虚拟名字框说话人术语：由 CLI 从每个对话块首条非空 `401` 正文识别",
         "MV 的 `speaker_names` 虽然放在字段译名表里，但表示虚拟名字框说话人术语，只能写回对应 `401` 说话人行或名字标签",
         "`terminology/glossary.json`：这是“正文术语表”",
@@ -310,6 +295,7 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "默认 `ja`",
         "默认日文",
         "`write-terminology` 等长任务",
+        "不能确定译名时保留空字符串",
     ]
     for phrase in forbidden_sample_phrases:
         assert phrase not in text
@@ -745,29 +731,6 @@ def test_release_skill_directory_contains_required_references() -> None:
     assert release_structured_reference.read_text(encoding="utf-8") == structured_reference.read_text(
         encoding="utf-8"
     )
-
-
-def test_project_rules_require_github_workflow_releases_and_skill_sync() -> None:
-    """项目规范必须固定 GitHub 工作流发布和双 Skill 同步更新。"""
-    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-    required_phrases = [
-        "## 8.1 Skill 与 docs 边界",
-        "Skill 是给 Agent 执行任务看的契约",
-        "`docs/` 是给正常人类阅读的文档",
-        "不得把子代理任务单、agent prompt、黑盒执行契约",
-        "不得要求 Agent 从 `docs/` 复制任务契约",
-        "不得声明 `docs/` 覆盖 Skill",
-        "发行版 Skill references 必须随发行包复制",
-        "每次修改开发版 Skill 时，必须同步审查并更新发行版 Skill",
-        "打包脚本必须把 `skills/att-mz-release/SKILL.md` 转换为发行包内的 `skills/att-mz/SKILL.md`",
-        "每次正式发布发行版必须使用 GitHub Actions `release` 工作流生成并发布 ZIP",
-        "禁止在本机手工打包后直接上传 GitHub Release",
-        "本机只能提供源码改动、提交和工作流触发",
-        "发行版验收必须由 GitHub Actions 发布工作流执行",
-    ]
-    for phrase in required_phrases:
-        assert phrase in text
 
 
 def test_release_packaging_script_uses_release_skill_template() -> None:

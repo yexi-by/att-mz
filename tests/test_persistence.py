@@ -117,18 +117,22 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             map_display_names={"始まりの町": "起始之镇"},
             skill_names={"火の術": "火术"},
         )
-        await session.replace_terminology_registry(terminology_registry)
-        assert await session.read_terminology_registry() == terminology_registry
         terminology_glossary = TerminologyGlossary(
             terms={"アリス": "爱丽丝"},
         )
-        await session.replace_terminology_glossary(terminology_glossary)
+        await session.replace_terminology_bundle(
+            registry=terminology_registry,
+            glossary=terminology_glossary,
+        )
+        assert await session.read_terminology_registry() == terminology_registry
         assert await session.read_terminology_glossary() == terminology_glossary
         empty_terminology_registry = TerminologyRegistry()
-        await session.replace_terminology_registry(empty_terminology_registry)
-        assert await session.read_terminology_registry() == empty_terminology_registry
         empty_terminology_glossary = TerminologyGlossary()
-        await session.replace_terminology_glossary(empty_terminology_glossary)
+        await session.replace_terminology_bundle(
+            registry=empty_terminology_registry,
+            glossary=empty_terminology_glossary,
+        )
+        assert await session.read_terminology_registry() == empty_terminology_registry
         assert await session.read_terminology_glossary() == empty_terminology_glossary
 
         placeholder_rule = PlaceholderRuleRecord(
@@ -311,7 +315,7 @@ async def test_open_game_requires_language_settings_without_creating_empty_table
         )
     registry = GameRegistry(db_dir)
 
-    with pytest.raises(RuntimeError, match="语言设置表"):
+    with pytest.raises(RuntimeError, match="旧数据库格式已废弃"):
         _ = await registry.open_game("Legacy")
 
     with sqlite3.connect(db_path) as connection:
@@ -322,6 +326,22 @@ async def test_open_game_requires_language_settings_without_creating_empty_table
         )
         table_names = {row[0] for row in table_rows}
     assert "language_settings" not in table_names
+
+
+@pytest.mark.asyncio
+async def test_open_game_rejects_database_with_legacy_terminology_tables(tmp_path: Path) -> None:
+    """即使版本号伪装成当前值，含废弃术语表名的数据库也必须拒绝打开。"""
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    db_path = db_dir / "LegacyTerms.db"
+    with sqlite3.connect(db_path) as connection:
+        _ = connection.execute("CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)")
+        _ = connection.execute("INSERT INTO schema_version (schema_key, version) VALUES ('current', 2)")
+        _ = connection.execute("CREATE TABLE terminology_terms (category TEXT, source_text TEXT, translated_text TEXT)")
+    registry = GameRegistry(db_dir)
+
+    with pytest.raises(RuntimeError, match="旧数据库格式已废弃"):
+        _ = await registry.open_game("LegacyTerms")
 
 
 @pytest.mark.asyncio

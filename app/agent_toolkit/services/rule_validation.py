@@ -31,6 +31,7 @@ from .common import (
     parse_plugin_rule_import_text,
 )
 from app.application.rule_import_backup import write_rule_import_translation_backup
+from app.application.flow_gate import count_note_tag_rule_candidates, ensure_empty_rule_import_allowed
 from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, note_tag_rule_scope_hash
 
 
@@ -183,7 +184,13 @@ class RuleValidationAgentMixin:
             details=details,
         )
 
-    async def import_note_tag_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
+    async def import_note_tag_rules(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        rules_text: str,
+        confirm_empty: bool = False,
+    ) -> AgentReport:
         """校验并导入当前游戏的 Note 标签文本规则。"""
         try:
             import_file = parse_note_tag_rule_import_text(rules_text)
@@ -205,6 +212,12 @@ class RuleValidationAgentMixin:
                     import_file=import_file,
                     text_rules=text_rules,
                 )
+                if not records:
+                    ensure_empty_rule_import_allowed(
+                        rule_label="Note 标签规则",
+                        confirm_empty=confirm_empty,
+                        candidate_count=count_note_tag_rule_candidates(game_data=game_data, text_rules=text_rules),
+                    )
                 old_records = await session.read_note_tag_text_rules()
                 old_note_paths = collect_translation_data_paths(
                     NoteTagTextExtraction(
