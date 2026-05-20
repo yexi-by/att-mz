@@ -63,7 +63,7 @@ pub fn scan_font_replacements_impl(payload_json: &str) -> Result<String, String>
             plugin_changes,
             replaced_count,
         }
-    });
+    })?;
     serde_json::to_string(&output)
         .map_err(|error| format!("Rust 字体替换输出 JSON 序列化失败: {error}"))
 }

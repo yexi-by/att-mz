@@ -29,7 +29,7 @@ pub fn scan_write_protocol_impl(payload_json: &str) -> Result<String, String> {
                 })
                 .collect(),
         )
-    });
+    })?;
     serde_json::to_string(&details)
         .map_err(|error| format!("Rust 写入协议输出 JSON 序列化失败: {error}"))
 }

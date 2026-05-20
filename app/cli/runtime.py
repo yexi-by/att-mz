@@ -215,13 +215,11 @@ def build_translation_run_limits(args: argparse.Namespace) -> TranslationRunLimi
     max_batches = read_optional_positive_int_arg(args, "max_batches")
     time_limit_seconds = read_optional_positive_int_arg(args, "time_limit_seconds")
     stop_on_error_rate = read_optional_rate_arg(args, "stop_on_error_rate")
-    stop_on_rate_limit_count = read_optional_positive_int_arg(args, "stop_on_rate_limit_count")
     return TranslationRunLimits(
         max_items=max_items,
         max_batches=max_batches,
         time_limit_seconds=time_limit_seconds,
         stop_on_error_rate=stop_on_error_rate,
-        stop_on_rate_limit_count=stop_on_rate_limit_count,
     )
 
 

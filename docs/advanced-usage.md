@@ -216,7 +216,6 @@ uv run python main.py --agent-mode translate --game <游戏标题> --json
 | `--max-batches <数量>` | 本轮最多发送给模型的批次数 |
 | `--time-limit-seconds <秒数>` | 本轮最长运行时长 |
 | `--stop-on-error-rate <比例>` | 项目检查没通过的译文比例达到阈值时停止 |
-| `--stop-on-rate-limit-count <次数>` | 模型限流次数达到阈值时停止 |
 | `--include-source-lines` | 本轮要求模型额外输出原文对照，方便排障 |
 | `--no-source-lines` | 本轮要求模型不要输出原文对照，减少输出 token |
 

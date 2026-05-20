@@ -21,7 +21,6 @@ class TranslationRunLimits:
     max_batches: int | None = None
     time_limit_seconds: int | None = None
     stop_on_error_rate: float | None = None
-    stop_on_rate_limit_count: int | None = None
 
 
 class TranslationRunInterrupted(Exception):

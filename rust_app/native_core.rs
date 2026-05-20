@@ -30,7 +30,7 @@ pub fn scan_font_replacements_impl(payload_json: &str) -> Result<String, String>
     font_replacement::scan_font_replacements_impl(payload_json)
 }
 
-pub fn read_configured_thread_count() -> Option<usize> {
+pub fn read_configured_thread_count() -> Result<Option<usize>, String> {
     pool::read_configured_thread_count()
 }
 

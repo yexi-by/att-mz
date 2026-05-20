@@ -445,7 +445,6 @@ def add_translation_limit_arguments(parser: argparse.ArgumentParser) -> None:
     _ = group.add_argument("--max-batches", type=int, help="本轮最多处理的模型批次数")
     _ = group.add_argument("--time-limit-seconds", type=int, help="本轮翻译最长运行秒数")
     _ = group.add_argument("--stop-on-error-rate", type=float, help="检查没通过的译文比例达到该值时停止本轮")
-    _ = group.add_argument("--stop-on-rate-limit-count", type=int, help="模型限流故障达到该次数时停止本轮")
 
 
 def add_setting_override_arguments(

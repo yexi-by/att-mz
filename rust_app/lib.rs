@@ -8,8 +8,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn native_thread_count() -> usize {
-    native_core::read_configured_thread_count().unwrap_or_else(rayon::current_num_threads)
+fn native_thread_count() -> PyResult<usize> {
+    native_core::read_configured_thread_count()
+        .map(|thread_count| thread_count.unwrap_or_else(rayon::current_num_threads))
+        .map_err(PyValueError::new_err)
 }
 
 #[pyfunction]

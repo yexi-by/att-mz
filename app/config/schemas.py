@@ -3,7 +3,7 @@
 
 本模块定义 CLI 翻译流程的运行配置：正文模型服务、正文切批、
 正文翻译和文本过滤规则。RPG Maker 标准控制符由代码协议负责保护，自定义正则
-占位符规则由项目根目录的 JSON 文件提供。
+占位符规则由当前游戏数据库或 CLI 显式输入提供。
 """
 
 from typing import Annotated, ClassVar

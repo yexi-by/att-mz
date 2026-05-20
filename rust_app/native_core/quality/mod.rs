@@ -59,7 +59,7 @@ pub fn scan_quality_impl(payload_json: &str) -> Result<String, String> {
             placeholder_risk_items,
             overwide_line_items,
         }
-    });
+    })?;
 
     serde_json::to_string(&output)
         .map_err(|error| format!("Rust 质检输出 JSON 序列化失败: {error}"))
