@@ -73,6 +73,7 @@ class TranslationItem(BaseModel):
         placeholder_sources: dict[str, str] = {}
         custom_placeholder_counter = 0
         custom_placeholder_map: dict[str, str] = {}
+        custom_index_by_key: dict[str, int] = {}
 
         def replace_func(span: ControlSequenceSpan) -> str:
             """把单个控制符替换为结构化占位符。"""
@@ -81,16 +82,27 @@ class TranslationItem(BaseModel):
             if span.placeholder is not None:
                 placeholder = span.placeholder
             elif span.custom_template is not None:
-                existing_placeholder = custom_placeholder_map.get(original)
-                if existing_placeholder is not None:
-                    placeholder = existing_placeholder
-                else:
-                    custom_placeholder_counter += 1
+                if span.custom_index_key is not None:
+                    existing_index = custom_index_by_key.get(span.custom_index_key)
+                    if existing_index is None:
+                        custom_placeholder_counter += 1
+                        existing_index = custom_placeholder_counter
+                        custom_index_by_key[span.custom_index_key] = existing_index
                     placeholder = rules.format_custom_placeholder(
                         template=span.custom_template,
-                        index=custom_placeholder_counter,
+                        index=existing_index,
                     )
-                    custom_placeholder_map[original] = placeholder
+                else:
+                    existing_placeholder = custom_placeholder_map.get(original)
+                    if existing_placeholder is not None:
+                        placeholder = existing_placeholder
+                    else:
+                        custom_placeholder_counter += 1
+                        placeholder = rules.format_custom_placeholder(
+                            template=span.custom_template,
+                            index=custom_placeholder_counter,
+                        )
+                        custom_placeholder_map[original] = placeholder
             else:
                 raise ValueError(f"无法为控制符生成占位符: {original}")
 
@@ -99,7 +111,10 @@ class TranslationItem(BaseModel):
             if (
                 existing_original is not None
                 and existing_original != original
-                and (existing_source == "custom" or span.source == "custom")
+                and (
+                    existing_source in {"custom", "structured"}
+                    or span.source in {"custom", "structured"}
+                )
             ):
                 detail = f"{existing_original} / {original}"
                 raise ValueError(
@@ -132,7 +147,7 @@ class TranslationItem(BaseModel):
             return line.replace(REAL_LINE_BREAK_MARKER, REAL_LINE_BREAK_PLACEHOLDER)
 
         def replace_line(line: str) -> str:
-            """按标准控制符、自定义规则和真实换行顺序构建模型输入文本。"""
+            """按标准控制符、自定义规则、结构化规则和真实换行顺序构建模型输入文本。"""
             masked_line = rules.replace_rm_control_sequences(line, replace_func)
             return replace_real_line_breaks(masked_line)
 
@@ -236,6 +251,16 @@ class PlaceholderRuleRecord(BaseModel):
 
     pattern_text: str
     placeholder_template: str
+
+
+class StructuredPlaceholderRuleRecord(BaseModel):
+    """当前游戏导入的结构化占位符规则。"""
+
+    rule_name: str
+    rule_type: str
+    pattern_text: str
+    translatable_group: str
+    protected_groups: dict[str, str] = Field(default_factory=dict)
 
 
 class SourceResidualRuleRecord(BaseModel):

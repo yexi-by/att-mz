@@ -340,6 +340,38 @@ def build_parser() -> argparse.ArgumentParser:
     _ = import_placeholder_source_group.add_argument("--input", help="占位符规则 JSON 文件")
     _ = import_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
+    validate_structured_placeholder_parser = subparsers.add_parser(
+        "validate-structured-placeholder-rules",
+        help="校验结构化占位符规则 JSON，并预览协议外壳保护效果",
+    )
+    add_optional_target_arguments(validate_structured_placeholder_parser)
+    _ = validate_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
+    _ = validate_structured_placeholder_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = validate_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+    _ = validate_structured_placeholder_parser.add_argument(
+        "--sample",
+        action="append",
+        default=[],
+        help="用于预览替换和还原效果的原文片段，可重复传入",
+    )
+
+    scan_structured_placeholder_parser = subparsers.add_parser(
+        "scan-structured-placeholder-candidates",
+        help="扫描结构化占位符规则对当前正文协议外壳候选的覆盖情况",
+    )
+    add_optional_target_arguments(scan_structured_placeholder_parser)
+    _ = scan_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
+    _ = scan_structured_placeholder_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = scan_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    import_structured_placeholder_parser = subparsers.add_parser(
+        "import-structured-placeholder-rules",
+        help="把当前游戏专用结构化占位符规则写入数据库",
+    )
+    add_optional_target_arguments(import_structured_placeholder_parser)
+    _ = import_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
+    _ = import_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
     validate_plugin_parser = subparsers.add_parser(
         "validate-plugin-rules",
         help="校验插件文本规则 JSON",

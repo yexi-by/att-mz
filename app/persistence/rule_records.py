@@ -10,6 +10,7 @@ from app.rmmz.schema import (
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
+    StructuredPlaceholderRuleRecord,
 )
 
 from .records import RuleReviewStateRecord
@@ -24,6 +25,8 @@ from .sql import (
     DELETE_ALL_PLACEHOLDER_RULES,
     DELETE_ALL_PLUGIN_TEXT_RULES,
     DELETE_ALL_SOURCE_RESIDUAL_RULES,
+    DELETE_ALL_STRUCTURED_PLACEHOLDER_RULE_GROUPS,
+    DELETE_ALL_STRUCTURED_PLACEHOLDER_RULES,
     DELETE_RULE_REVIEW_STATE,
     INSERT_EVENT_COMMAND_TEXT_RULE_FILTER,
     INSERT_EVENT_COMMAND_TEXT_RULE_GROUP,
@@ -32,6 +35,8 @@ from .sql import (
     INSERT_PLACEHOLDER_RULE,
     INSERT_PLUGIN_TEXT_RULE,
     INSERT_SOURCE_RESIDUAL_RULE,
+    INSERT_STRUCTURED_PLACEHOLDER_RULE,
+    INSERT_STRUCTURED_PLACEHOLDER_RULE_GROUP,
     SELECT_EVENT_COMMAND_TEXT_RULE_FILTERS,
     SELECT_EVENT_COMMAND_TEXT_RULE_GROUPS,
     SELECT_EVENT_COMMAND_TEXT_RULE_PATHS,
@@ -40,6 +45,8 @@ from .sql import (
     SELECT_PLUGIN_TEXT_RULES,
     SELECT_RULE_REVIEW_STATE,
     SELECT_SOURCE_RESIDUAL_RULES,
+    SELECT_STRUCTURED_PLACEHOLDER_RULE_GROUPS,
+    SELECT_STRUCTURED_PLACEHOLDER_RULES,
     UPSERT_RULE_REVIEW_STATE,
 )
 
@@ -203,6 +210,59 @@ class RuleRecordSessionMixin(SessionMixinBase):
                 placeholder_template=row_str(row, "placeholder_template", self.db_path),
             )
             for row in rows
+        ]
+
+    async def replace_structured_placeholder_rules(
+        self,
+        rules: list[StructuredPlaceholderRuleRecord],
+    ) -> None:
+        """用当前游戏专用规则替换数据库中的结构化占位符规则。"""
+        _ = await self.connection.execute(DELETE_ALL_STRUCTURED_PLACEHOLDER_RULE_GROUPS)
+        _ = await self.connection.execute(DELETE_ALL_STRUCTURED_PLACEHOLDER_RULES)
+        for rule in rules:
+            _ = await self.connection.execute(
+                INSERT_STRUCTURED_PLACEHOLDER_RULE,
+                (
+                    rule.rule_name,
+                    rule.rule_type,
+                    rule.pattern_text,
+                    rule.translatable_group,
+                ),
+            )
+            for group_name, placeholder_template in rule.protected_groups.items():
+                _ = await self.connection.execute(
+                    INSERT_STRUCTURED_PLACEHOLDER_RULE_GROUP,
+                    (
+                        rule.rule_name,
+                        group_name,
+                        placeholder_template,
+                    ),
+                )
+        await self.connection.commit()
+
+    async def read_structured_placeholder_rules(self) -> list[StructuredPlaceholderRuleRecord]:
+        """读取当前游戏专用结构化占位符规则。"""
+        async with self.connection.execute(SELECT_STRUCTURED_PLACEHOLDER_RULES) as cursor:
+            rule_rows = await cursor.fetchall()
+        async with self.connection.execute(SELECT_STRUCTURED_PLACEHOLDER_RULE_GROUPS) as cursor:
+            group_rows = await cursor.fetchall()
+
+        groups_by_rule: dict[str, dict[str, str]] = {}
+        for row in group_rows:
+            rule_name = row_str(row, "rule_name", self.db_path)
+            groups_by_rule.setdefault(rule_name, {})[
+                row_str(row, "group_name", self.db_path)
+            ] = row_str(row, "placeholder_template", self.db_path)
+
+        return [
+            StructuredPlaceholderRuleRecord(
+                rule_name=row_str(row, "rule_name", self.db_path),
+                rule_type=row_str(row, "rule_type", self.db_path),
+                pattern_text=row_str(row, "pattern_text", self.db_path),
+                translatable_group=row_str(row, "translatable_group", self.db_path),
+                protected_groups=groups_by_rule.get(row_str(row, "rule_name", self.db_path), {}),
+            )
+            for row in rule_rows
         ]
 
     async def replace_source_residual_rules(

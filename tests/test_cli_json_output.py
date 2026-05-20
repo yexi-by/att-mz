@@ -214,6 +214,49 @@ def test_placeholder_rule_commands_accept_input_files() -> None:
     assert namespace_optional_str(validate_args, "placeholder_rules") is None
 
 
+def test_structured_placeholder_rule_commands_accept_input_files() -> None:
+    """结构化占位符命令只通过文件输入，避免把长正则塞进命令行。"""
+    parser = build_parser()
+
+    validate_args = parser.parse_args(
+        [
+            "validate-structured-placeholder-rules",
+            "--game",
+            "demo",
+            "--input",
+            "structured-placeholder-rules.json",
+            "--json",
+        ]
+    )
+    scan_args = parser.parse_args(
+        [
+            "scan-structured-placeholder-candidates",
+            "--game",
+            "demo",
+            "--input",
+            "structured-placeholder-rules.json",
+            "--json",
+        ]
+    )
+    import_args = parser.parse_args(
+        [
+            "import-structured-placeholder-rules",
+            "--game",
+            "demo",
+            "--input",
+            "structured-placeholder-rules.json",
+            "--json",
+        ]
+    )
+
+    assert namespace_optional_str(validate_args, "input") == "structured-placeholder-rules.json"
+    assert namespace_optional_str(scan_args, "input") == "structured-placeholder-rules.json"
+    assert namespace_optional_str(import_args, "input") == "structured-placeholder-rules.json"
+    assert getattr(validate_args, "json_output") is True
+    assert getattr(scan_args, "json_output") is True
+    assert getattr(import_args, "json_output") is True
+
+
 def test_rule_commands_accept_input_files_and_json_output() -> None:
     """规则扫描、验收与导入命令支持文件输入和机器可读输出。"""
     parser = build_parser()

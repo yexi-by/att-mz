@@ -10,8 +10,10 @@ from app.agent_toolkit import AgentToolkitService
 from app.application.handler import TranslationHandler
 from app.config import SettingOverrides
 from app.llm import LLMHandler
+from app.native_quality import collect_native_quality_details
 from app.persistence import GameRegistry
 from app.plugin_text import build_plugin_hash
+from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.rmmz.json_types import JsonArray, JsonObject, JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.loader import load_game_data
 from app.rmmz.schema import (
@@ -21,11 +23,14 @@ from app.rmmz.schema import (
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
+    StructuredPlaceholderRuleRecord,
     TranslationErrorItem,
     TranslationItem,
 )
+from app.rmmz.text_rules import TextRules
 from app.runtime_paths import APP_HOME_ENV_NAME
 from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.utils.config_loader_utils import load_setting
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -727,6 +732,63 @@ async def test_import_placeholder_rules_runs_validation_before_save(
 
 
 @pytest.mark.asyncio
+async def test_import_structured_placeholder_rules_saves_separate_records(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """结构化占位符规则单独保存，不混入普通正则占位符规则表。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "MINI_LABEL",
+                    "pattern": r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+                        "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    validate_report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=["<Mini Label: Alraune>"],
+    )
+    import_report = await service.import_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        placeholder_records = await session.read_placeholder_rules()
+        structured_records = await session.read_structured_placeholder_rules()
+
+    assert validate_report.status == "ok"
+    assert import_report.status in {"ok", "warning"}
+    assert placeholder_records == []
+    assert structured_records == [
+        StructuredPlaceholderRuleRecord(
+            rule_name="MINI_LABEL",
+            rule_type="paired_shell",
+            pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+            translatable_group="text",
+            protected_groups={
+                "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+                "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_english_profile_exports_visible_pending_text_without_protocol_noise(
     minimal_english_game_dir: Path,
     tmp_path: Path,
@@ -1016,6 +1078,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
 
     assert report.status == "ok"
     rules_path = workspace / "placeholder-rules.json"
+    structured_rules_path = workspace / "structured-placeholder-rules.json"
     note_candidates_path = workspace / "note-tag-candidates.json"
     note_rules_path = workspace / "note-tag-rules.json"
     plugin_json_string_candidates_path = workspace / "plugin-json-string-leaf-candidates.json"
@@ -1027,6 +1090,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     item_candidate_path = workspace / "terminology" / "subtasks" / "candidates" / "item_terms.json"
     manifest_path = workspace / "manifest.json"
     assert rules_path.exists()
+    assert structured_rules_path.exists()
     assert note_candidates_path.exists()
     assert note_rules_path.exists()
     assert plugin_json_string_candidates_path.exists()
@@ -1038,6 +1102,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert item_candidate_path.exists()
     assert manifest_path.exists()
     rules = load_json_object(rules_path)
+    structured_rules = load_json_object(structured_rules_path)
     plugin_json_string_candidates = load_json_array(plugin_json_string_candidates_path)
     note_rules = load_json_object(note_rules_path)
     glossary = load_json_object(glossary_path)
@@ -1058,6 +1123,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     second_round = ensure_json_object(subagent_rounds[1], "manifest.workflow.subagent_rounds[1]")
     plugin_json_string_leaf_candidate_count = report.summary["plugin_json_string_leaf_candidate_count"]
     assert rules == {r"(?i)\\F\d*\[[^\]\r\n]+\]": "[CUSTOM_FACE_PORTRAIT_{index}]"}
+    assert structured_rules == {"paired_shell_rules": []}
     assert isinstance(plugin_json_string_leaf_candidate_count, int)
     assert plugin_json_string_leaf_candidate_count >= 2
     assert any(
@@ -1079,6 +1145,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert layout["engine_kind"] == "mz"
     assert report.summary["event_command_codes"] == [357]
     assert report.summary["placeholder_rule_draft_count"] == 1
+    assert report.summary["structured_placeholder_rule_count"] == 0
     assert report.summary["terminology_subtask_count"] == 5
     assert first_round["name"] == "terminology_candidates"
     assert first_round["owner"] == "主代理"
@@ -1086,6 +1153,67 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert "placeholder_phase" in workflow
     assert "plugin-json-string-leaf-candidates.json" in json.dumps(report.details, ensure_ascii=False)
     assert "note-tag-rules.json" in json.dumps(report.details, ensure_ascii=False)
+    assert "structured-placeholder-rules.json" in json.dumps(report.details, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("sample_text", "expected_candidate"),
+    [
+        ("◆<Alice>ｔ", "◆<Alice>ｔ"),
+        ("<名前: Alraune>", "<名前: Alraune>"),
+        ("<Voice id=hero name=Alice>", "<Voice id=hero name=Alice>"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_warns_about_uncovered_structured_candidates(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+    sample_text: str,
+    expected_candidate: str,
+) -> None:
+    """工作区整体验收必须把未覆盖的结构化协议外壳候选提示给 Agent。"""
+    common_events_path = minimal_english_game_dir / "data" / "CommonEvents.json"
+    raw_value = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_value), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    text_command = ensure_json_object(commands[1], "CommonEvents.json[1].list[1]")
+    parameters = ensure_json_array(text_command["parameters"], "CommonEvents.json[1].list[1].parameters")
+    parameters[0] = sample_text
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+
+    _ = await service.prepare_agent_workspace(
+        game_title="English Fixture Game",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    report = await service.validate_agent_workspace(game_title="English Fixture Game", workspace=workspace)
+
+    warning_codes = {warning.code for warning in report.warnings}
+    coverage_summary = ensure_json_object(
+        ensure_json_object(report.details["structured_placeholder_coverage"], "structured_placeholder_coverage")[
+            "summary"
+        ],
+        "structured_placeholder_coverage.summary",
+    )
+    assert "structured_placeholder_uncovered" in warning_codes
+    assert coverage_summary["uncovered_count"] == 1
+    coverage_details = ensure_json_object(
+        ensure_json_object(report.details["structured_placeholder_coverage"], "structured_placeholder_coverage")[
+            "details"
+        ],
+        "structured_placeholder_coverage.details",
+    )
+    candidates = ensure_json_array(coverage_details["candidates"], "structured_placeholder_coverage.details.candidates")
+    assert any(
+        ensure_json_object(candidate, "candidate")["candidate"] == expected_candidate
+        for candidate in candidates
+    )
 
 
 @pytest.mark.asyncio
@@ -1231,6 +1359,20 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
                 )
             ]
         )
+        await session.replace_structured_placeholder_rules(
+            [
+                StructuredPlaceholderRuleRecord(
+                    rule_name="MINI_LABEL",
+                    rule_type="paired_shell",
+                    pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                    translatable_group="text",
+                    protected_groups={
+                        "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+                        "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+                    },
+                )
+            ]
+        )
 
     report = await service.prepare_agent_workspace(
         game_title="テストゲーム",
@@ -1249,12 +1391,14 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     event_rules = load_json_object(workspace / "event-command-rules.json")
     note_rules = load_json_object(workspace / "note-tag-rules.json")
     placeholder_rules = load_json_object(workspace / "placeholder-rules.json")
+    structured_placeholder_rules = load_json_object(workspace / "structured-placeholder-rules.json")
     warning_codes = {warning.code for warning in validation_report.warnings}
     assert report.status == "ok"
     assert report.summary["plugin_rule_count"] == 1
     assert report.summary["event_command_rule_count"] == 1
     assert report.summary["note_tag_rule_count"] == 1
     assert report.summary["placeholder_rule_count"] == 1
+    assert report.summary["structured_placeholder_rule_count"] == 1
     assert report.summary["glossary_term_count"] == 1
     assert prepared_registry == filled_registry
     assert prepared_glossary == TerminologyGlossary(terms={"火の術": "火术"})
@@ -1275,6 +1419,19 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     }
     assert note_rules == {"Items.json": ["拡張説明"]}
     assert placeholder_rules == {r"(?i)\\F\d*\[[^\]\r\n]+\]": "[CUSTOM_FACE_PORTRAIT_{index}]"}
+    assert structured_placeholder_rules == {
+        "paired_shell_rules": [
+            {
+                "name": "MINI_LABEL",
+                "pattern": r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                "translatable_group": "text",
+                "protected_groups": {
+                    "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+                    "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+                },
+            }
+        ]
+    }
     assert validation_report.status == "ok"
     assert "plugin_rules_missing" not in warning_codes
     assert "event_command_rules_missing" not in warning_codes
@@ -2761,6 +2918,147 @@ async def test_quality_report_accepts_saved_short_text_real_line_breaks(
     report = await service.quality_report(game_title="テストゲーム")
 
     assert report.summary["placeholder_risk_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quality_report_accepts_structured_placeholder_shell_and_rejects_changed_shell(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量报告不把已保护外壳当英文残留，但会拦截被改坏的外壳。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    structured_rule = StructuredPlaceholderRuleRecord(
+        rule_name="MINI_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+        },
+    )
+    async with await registry.open_game("English Fixture Game") as session:
+        await session.replace_structured_placeholder_rules([structured_rule])
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/0",
+                    item_type="long_text",
+                    role="Guide",
+                    original_lines=["<Mini Label: Alraune>"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["<Mini Label: 阿尔劳娜>"],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    accepted_report = await service.quality_report(game_title="English Fixture Game")
+
+    assert accepted_report.summary["placeholder_risk_count"] == 0
+    assert accepted_report.summary["source_residual_count"] == 0
+
+    async with await registry.open_game("English Fixture Game") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/0",
+                    item_type="long_text",
+                    role="Guide",
+                    original_lines=["<Mini Label: Alraune>"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["<迷你标签: 阿尔劳娜>"],
+                )
+            ]
+        )
+
+    rejected_report = await service.quality_report(game_title="English Fixture Game")
+
+    assert rejected_report.summary["placeholder_risk_count"] == 1
+
+
+def test_native_quality_reports_structured_placeholder_conflicts() -> None:
+    """Rust 质检核心必须和 Python 文本规则一样拒绝结构化保护范围冲突。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="en")
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(
+                pattern_text=r">",
+                placeholder_template="[CUSTOM_CLOSE_{index}]",
+            ),
+        ),
+        structured_placeholder_rules=(
+            StructuredPlaceholderRule.create(
+                rule_name="MINI_LABEL",
+                rule_type="paired_shell",
+                pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                translatable_group="text",
+                protected_groups={
+                    "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+                    "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+                },
+            ),
+        ),
+    )
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="CommonEvents.json/1/0",
+                item_type="long_text",
+                role="Guide",
+                original_lines=["<Mini Label: Alraune>"],
+                source_line_paths=["CommonEvents.json/1/1"],
+                translation_lines=["<Mini Label: 阿尔劳娜>"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert len(details.placeholder_risk_items) == 1
+    assert "结构化占位符保护片段与已有控制符规则重叠" in json.dumps(
+        details.placeholder_risk_items,
+        ensure_ascii=False,
+    )
+
+
+def test_native_quality_accepts_structured_placeholder_lookahead_pattern() -> None:
+    """Python 已校验的结构化正则能力，Rust 质检核心不能再用更窄子集误拒。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="en")
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        structured_placeholder_rules=(
+            StructuredPlaceholderRule.create(
+                rule_name="LOOK_LABEL",
+                rule_type="paired_shell",
+                pattern_text=r"(?P<open><Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)(?!x)",
+                translatable_group="text",
+                protected_groups={
+                    "open": "[CUSTOM_LOOK_LABEL_OPEN_{index}]",
+                    "close": "[CUSTOM_LOOK_LABEL_CLOSE_{index}]",
+                },
+            ),
+        ),
+    )
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="CommonEvents.json/1/0",
+                item_type="long_text",
+                role="Guide",
+                original_lines=["<Label: Alice>"],
+                source_line_paths=["CommonEvents.json/1/1"],
+                translation_lines=["<Label: 爱丽丝>"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert details.placeholder_risk_items == []
+    assert details.source_residual_items == []
 
 
 @pytest.mark.asyncio

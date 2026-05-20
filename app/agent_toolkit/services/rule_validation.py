@@ -50,7 +50,12 @@ class RuleValidationAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             game_data = await self._load_game_data(session)
         report = await export_note_tag_candidates_file(
             game_data=game_data,
@@ -85,7 +90,12 @@ class RuleValidationAgentMixin:
                     session=session,
                     custom_placeholder_rules_text=None,
                 )
-                text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+                structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
                 game_data = await self._load_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_note_tag_rule_records_from_import(
@@ -183,7 +193,12 @@ class RuleValidationAgentMixin:
                     session=session,
                     custom_placeholder_rules_text=None,
                 )
-                text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+                structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
                 game_data = await self._load_game_data(session)
                 records = build_note_tag_rule_records_from_import(
                     game_data=game_data,
@@ -373,10 +388,15 @@ class RuleValidationAgentMixin:
                     session=session,
                     custom_placeholder_rules_text=None,
                 )
+                structured_rules = await self._resolve_structured_rules(session=session)
                 game_data = await self._load_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_plugin_rule_records_from_import(game_data=game_data, import_file=import_file)
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             extracted_map = PluginTextExtraction(
                 game_data,
                 plugin_rule_records=records,
@@ -452,10 +472,15 @@ class RuleValidationAgentMixin:
                     session=session,
                     custom_placeholder_rules_text=None,
                 )
+                structured_rules = await self._resolve_structured_rules(session=session)
                 game_data = await self._load_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             extracted_map = EventCommandTextExtraction(
                 game_data,
                 rule_records=records,

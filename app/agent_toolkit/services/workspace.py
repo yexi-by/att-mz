@@ -9,6 +9,7 @@ from .common import (
     JsonArray,
     JsonObject,
     Path,
+    STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
     TERMINOLOGY_SUBTASK_GROUPS,
     TerminologyExtraction,
     TerminologyGlossary,
@@ -24,6 +25,7 @@ from .common import (
     _note_tag_rule_records_to_import_json,
     _placeholder_rule_records_to_import_json,
     _plugin_rule_records_to_import_json,
+    _structured_placeholder_rule_records_to_import_json,
     _validate_terminology_registry,
     _validate_terminology_registry_shape,
     _write_json_object,
@@ -100,8 +102,14 @@ class WorkspaceAgentMixin:
             note_tag_rules = await session.read_note_tag_text_rules()
             event_rules = await session.read_event_command_text_rules()
             placeholder_records = await session.read_placeholder_rules()
+            structured_placeholder_records = await session.read_structured_placeholder_rules()
             custom_rules = await self._resolve_custom_rules(session=session, custom_placeholder_rules_text=None)
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
                 game_data=game_data,
@@ -169,6 +177,11 @@ class WorkspaceAgentMixin:
             else {key: value for key, value in placeholder_rule_drafts.items()}
         )
         await _write_json_object(placeholder_rules_path, placeholder_rule_payload)
+        structured_placeholder_rules_path = target_dir / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
+        await _write_json_object(
+            structured_placeholder_rules_path,
+            _structured_placeholder_rule_records_to_import_json(structured_placeholder_records),
+        )
         generated_summary: JsonObject = {
             "engine": game_data.layout.engine_label,
             "engine_kind": game_data.layout.engine_kind,
@@ -194,6 +207,7 @@ class WorkspaceAgentMixin:
             "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
             "placeholder_rule_count": len(placeholder_records),
             "placeholder_rule_draft_count": len(placeholder_rule_drafts),
+            "structured_placeholder_rule_count": len(structured_placeholder_records),
         }
         manifest_files: JsonArray = [
             str(terminology_summary.field_terms_path),
@@ -209,6 +223,7 @@ class WorkspaceAgentMixin:
             str(event_rules_path),
             str(placeholder_path),
             str(placeholder_rules_path),
+            str(structured_placeholder_rules_path),
         ]
         manifest: JsonObject = {
             "files": manifest_files,
@@ -246,6 +261,7 @@ class WorkspaceAgentMixin:
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
         placeholder_rules_path = workspace / "placeholder-rules.json"
+        structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
         if field_terms_path.exists():
             registry: TerminologyRegistry | None = None
             try:
@@ -350,6 +366,44 @@ class WorkspaceAgentMixin:
                 )
         else:
             warnings.append(issue("placeholder_rules_missing", "工作区缺少 placeholder-rules.json"))
+        if structured_placeholder_rules_path.exists():
+            async with aiofiles.open(structured_placeholder_rules_path, "r", encoding="utf-8") as file:
+                structured_placeholder_rules_text = await file.read()
+                structured_placeholder_report = await self.validate_structured_placeholder_rules(
+                    game_title=game_title,
+                    rules_text=structured_placeholder_rules_text,
+                    sample_texts=[],
+                )
+            errors.extend(structured_placeholder_report.errors)
+            warnings.extend(
+                warning
+                for warning in structured_placeholder_report.warnings
+                if warning.code not in {"structured_placeholder_rules_empty", "structured_placeholder_samples_empty"}
+            )
+            details["structured_placeholder_rules"] = structured_placeholder_report.details
+            try:
+                structured_placeholder_coverage_report = await self.scan_structured_placeholder_candidates(
+                    game_title=game_title,
+                    rules_text=structured_placeholder_rules_text,
+                )
+                errors.extend(structured_placeholder_coverage_report.errors)
+                warnings.extend(structured_placeholder_coverage_report.warnings)
+                details["structured_placeholder_coverage"] = {
+                    "summary": structured_placeholder_coverage_report.summary,
+                    "details": structured_placeholder_coverage_report.details,
+                }
+                uncovered_value = structured_placeholder_coverage_report.summary.get("uncovered_count")
+                if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
+                    errors.append(issue("structured_placeholder_coverage_invalid", "结构化占位符候选扫描缺少有效的 uncovered_count"))
+            except Exception as error:
+                errors.append(
+                    issue(
+                        "structured_placeholder_coverage_scan_failed",
+                        f"结构化占位符覆盖扫描失败: {type(error).__name__}: {error}",
+                    )
+                )
+        else:
+            warnings.append(issue("structured_placeholder_rules_missing", f"工作区缺少 {STRUCTURED_PLACEHOLDER_RULES_FILE_NAME}"))
         return AgentReport.from_parts(errors=errors, warnings=warnings, summary={"workspace": str(workspace)}, details=details)
 
     async def cleanup_agent_workspace(self: AgentServiceContext, *, workspace: Path) -> AgentReport:

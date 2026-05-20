@@ -341,6 +341,16 @@ def _build_text_rules_payload(text_rules: TextRules) -> JsonObject:
             }
             for rule in text_rules.custom_placeholder_rules
         ],
+        "structured_placeholder_rules": [
+            {
+                "rule_name": rule.rule_name,
+                "rule_type": rule.rule_type,
+                "pattern_text": rule.pattern_text,
+                "translatable_group": rule.translatable_group,
+                "protected_groups": dict(rule.protected_groups),
+            }
+            for rule in text_rules.structured_placeholder_rules
+        ],
         "source_residual_allowed_chars": [char for char in setting.source_residual_allowed_chars],
         "source_residual_allowed_tail_chars": [char for char in setting.source_residual_allowed_tail_chars],
         "source_residual_segment_pattern": setting.source_residual_segment_pattern,

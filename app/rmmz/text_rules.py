@@ -17,6 +17,7 @@ from app.rmmz.control_codes import (
     ControlSequenceSpan,
     CustomPlaceholderRule,
     RawControlSequenceCandidate,
+    StructuredPlaceholderRule,
     format_placeholder_template,
     iter_raw_control_sequence_candidates,
     iter_standard_control_spans,
@@ -40,6 +41,7 @@ class TextRules:
 
     setting: TextRulesSetting
     custom_placeholder_rules: tuple[CustomPlaceholderRule, ...]
+    structured_placeholder_rules: tuple[StructuredPlaceholderRule, ...]
     placeholder_token_pattern: re.Pattern[str]
     source_text_required_pattern: re.Pattern[str]
     source_residual_segment_pattern: re.Pattern[str]
@@ -51,11 +53,13 @@ class TextRules:
         cls,
         setting: TextRulesSetting,
         custom_placeholder_rules: tuple[CustomPlaceholderRule, ...] = (),
+        structured_placeholder_rules: tuple[StructuredPlaceholderRule, ...] = (),
     ) -> "TextRules":
         """根据配置构建并预编译全部正则规则。"""
         return cls(
             setting=setting,
             custom_placeholder_rules=custom_placeholder_rules,
+            structured_placeholder_rules=structured_placeholder_rules,
             placeholder_token_pattern=ALL_PLACEHOLDER_PATTERN,
             source_text_required_pattern=re.compile(setting.source_text_required_pattern),
             source_residual_segment_pattern=re.compile(setting.source_residual_segment_pattern),
@@ -101,7 +105,15 @@ class TextRules:
     def iter_control_sequence_spans(self, text: str) -> list[ControlSequenceSpan]:
         """顺序扫描一行文本，识别标准控制符和自定义保护片段。"""
         spans = iter_standard_control_spans(text)
-        spans.extend(self._iter_custom_placeholder_spans(text))
+        custom_spans = self._iter_custom_placeholder_spans(text)
+        structured_result = self._iter_structured_placeholder_spans(text)
+        self._validate_structured_placeholder_conflicts(
+            base_spans=[*spans, *custom_spans],
+            structured_spans=structured_result.spans,
+            translatable_ranges=structured_result.translatable_ranges,
+        )
+        spans.extend(custom_spans)
+        spans.extend(structured_result.spans)
         return select_non_overlapping_spans(spans)
 
     def format_custom_placeholder(self, *, template: str, index: int) -> str:
@@ -182,6 +194,90 @@ class TextRules:
                     )
                 )
         return spans
+
+    def _iter_structured_placeholder_spans(self, text: str) -> "_StructuredPlaceholderScanResult":
+        """扫描外部 JSON 中定义的结构化占位符规则。"""
+        spans: list[ControlSequenceSpan] = []
+        translatable_ranges: list[_ProtectedRange] = []
+        for rule in self.structured_placeholder_rules:
+            for match in rule.pattern.finditer(text):
+                translatable_range = _match_group_range(
+                    match=match,
+                    group_name=rule.translatable_group,
+                    rule_name=rule.rule_name,
+                )
+                translatable_ranges.append(translatable_range)
+                match_key = f"structured:{rule.rule_name}:{match.start()}:{match.end()}:{match.group(0)}"
+                group_ranges: list[_ProtectedRange] = []
+                for group_name, placeholder_template in rule.protected_groups.items():
+                    protected_range = _match_group_range(
+                        match=match,
+                        group_name=group_name,
+                        rule_name=rule.rule_name,
+                    )
+                    if protected_range.start == protected_range.end:
+                        raise ValueError(f"结构化占位符规则 {rule.rule_name} 的保护分组 {group_name} 命中了空文本")
+                    if _ranges_overlap(protected_range, translatable_range):
+                        raise ValueError(
+                            f"结构化占位符规则 {rule.rule_name} 的保护分组 {group_name} 覆盖了可翻译文本分组"
+                        )
+                    for existing_range in group_ranges:
+                        if _ranges_overlap(protected_range, existing_range):
+                            raise ValueError(
+                                f"结构化占位符规则 {rule.rule_name} 的保护分组互相重叠"
+                            )
+                    group_ranges.append(protected_range)
+                    spans.append(
+                        ControlSequenceSpan(
+                            start_index=protected_range.start,
+                            end_index=protected_range.end,
+                            original=text[protected_range.start:protected_range.end],
+                            source="structured",
+                            placeholder=None,
+                            custom_template=placeholder_template,
+                            priority=2,
+                            custom_index_key=match_key,
+                        )
+                    )
+        return _StructuredPlaceholderScanResult(
+            spans=spans,
+            translatable_ranges=translatable_ranges,
+        )
+
+    def _validate_structured_placeholder_conflicts(
+        self,
+        *,
+        base_spans: list[ControlSequenceSpan],
+        structured_spans: list[ControlSequenceSpan],
+        translatable_ranges: list["_ProtectedRange"],
+    ) -> None:
+        """校验结构化规则与普通保护规则没有抢占同一段文本。"""
+        for structured_span in structured_spans:
+            structured_range = _ProtectedRange(
+                start=structured_span.start_index,
+                end=structured_span.end_index,
+            )
+            for base_span in base_spans:
+                base_range = _ProtectedRange(start=base_span.start_index, end=base_span.end_index)
+                if _ranges_overlap(structured_range, base_range):
+                    raise ValueError(
+                        f"结构化占位符保护片段与已有控制符规则重叠: {structured_span.original} / {base_span.original}"
+                    )
+        for index, left_span in enumerate(structured_spans):
+            left_range = _ProtectedRange(start=left_span.start_index, end=left_span.end_index)
+            for right_span in structured_spans[index + 1:]:
+                right_range = _ProtectedRange(start=right_span.start_index, end=right_span.end_index)
+                if _ranges_overlap(left_range, right_range):
+                    raise ValueError(
+                        f"结构化占位符保护片段互相重叠: {left_span.original} / {right_span.original}"
+                    )
+        for translatable_range in translatable_ranges:
+            for span in [*base_spans, *structured_spans]:
+                span_range = _ProtectedRange(start=span.start_index, end=span.end_index)
+                if _ranges_overlap(translatable_range, span_range):
+                    raise ValueError(
+                        f"结构化占位符可翻译文本分组被保护规则覆盖: {span.original}"
+                    )
 
     def check_source_residual(
         self,
@@ -350,6 +446,43 @@ def _overlaps_any_control_span(
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class _ProtectedRange:
+    """记录单个受保护或可翻译文本范围。"""
+
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
+class _StructuredPlaceholderScanResult:
+    """结构化占位符扫描结果。"""
+
+    spans: list[ControlSequenceSpan]
+    translatable_ranges: list[_ProtectedRange]
+
+
+def _match_group_range(
+    *,
+    match: re.Match[str],
+    group_name: str,
+    rule_name: str,
+) -> _ProtectedRange:
+    """读取命名分组范围并把未命中情况转成业务错误。"""
+    try:
+        start, end = match.span(group_name)
+    except IndexError as error:
+        raise ValueError(f"结构化占位符规则 {rule_name} 缺少命名分组: {group_name}") from error
+    if start < 0 or end < 0:
+        raise ValueError(f"结构化占位符规则 {rule_name} 的命名分组未命中: {group_name}")
+    return _ProtectedRange(start=start, end=end)
+
+
+def _ranges_overlap(left: _ProtectedRange, right: _ProtectedRange) -> bool:
+    """判断两个半开范围是否重叠。"""
+    return left.start < right.end and left.end > right.start
+
+
 __all__: list[str] = [
     "ControlSequenceSpan",
     "CustomPlaceholderRule",
@@ -357,6 +490,7 @@ __all__: list[str] = [
     "JsonObject",
     "JsonPrimitive",
     "JsonValue",
+    "StructuredPlaceholderRule",
     "TextRules",
     "coerce_json_value",
     "ensure_json_array",

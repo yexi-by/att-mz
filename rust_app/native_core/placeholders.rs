@@ -29,9 +29,10 @@ pub(crate) fn build_placeholders(
     let mut placeholder_counts: HashMap<String, usize> = HashMap::new();
     let mut custom_placeholder_counter = 0usize;
     let mut custom_placeholder_map: HashMap<String, String> = HashMap::new();
+    let mut custom_index_by_key: HashMap<String, usize> = HashMap::new();
 
     for line in &item.original_lines {
-        let spans = iter_control_sequence_spans(line, rules);
+        let spans = iter_control_sequence_spans(line, rules)?;
         let mut output = String::new();
         let mut last_end = 0usize;
         for span in spans {
@@ -39,7 +40,20 @@ pub(crate) fn build_placeholders(
             let placeholder = if let Some(standard_placeholder) = &span.placeholder {
                 standard_placeholder.clone()
             } else if let Some(custom_template) = &span.custom_template {
-                if let Some(existing_placeholder) = custom_placeholder_map.get(&span.original) {
+                if let Some(custom_index_key) = &span.custom_index_key {
+                    let index =
+                        if let Some(existing_index) = custom_index_by_key.get(custom_index_key) {
+                            *existing_index
+                        } else {
+                            custom_placeholder_counter += 1;
+                            custom_index_by_key
+                                .insert(custom_index_key.clone(), custom_placeholder_counter);
+                            custom_placeholder_counter
+                        };
+                    format_custom_placeholder(custom_template, index)
+                } else if let Some(existing_placeholder) =
+                    custom_placeholder_map.get(&span.original)
+                {
                     existing_placeholder.clone()
                 } else {
                     custom_placeholder_counter += 1;
@@ -55,8 +69,10 @@ pub(crate) fn build_placeholders(
             if let Some(existing_original) = placeholder_map.get(&placeholder) {
                 let existing_source = placeholder_sources.get(&placeholder);
                 if existing_original != &span.original
-                    && (existing_source == Some(&SpanSource::Custom)
-                        || span.source == SpanSource::Custom)
+                    && (matches!(
+                        existing_source,
+                        Some(SpanSource::Custom | SpanSource::Structured)
+                    ) || matches!(span.source, SpanSource::Custom | SpanSource::Structured))
                 {
                     return Err(format!(
                         "自定义占位符 {} 同时匹配了多个不同片段: {} / {}",
@@ -162,9 +178,9 @@ pub(crate) fn verify_placeholders(
         }
     }
 
-    let original_raw_controls = collect_unprotected_control_sequences(&item.original_lines, rules);
+    let original_raw_controls = collect_unprotected_control_sequences(&item.original_lines, rules)?;
     let translated_raw_controls =
-        collect_unprotected_control_sequences(translation_lines_with_placeholders, rules);
+        collect_unprotected_control_sequences(translation_lines_with_placeholders, rules)?;
     if original_raw_controls != translated_raw_controls {
         errors.push(format!(
             "疑似控制符不一致，未被占位符规则覆盖的反斜杠控制片段必须原样保留 (原文: {}; 译文: {})",
@@ -194,7 +210,7 @@ pub(crate) fn mask_translation_controls(
     item: &NativeTranslationItem,
     rules: &CompiledRules,
     placeholder_map: &HashMap<String, String>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let reverse_map: HashMap<String, String> = placeholder_map
         .iter()
         .map(|(placeholder, original)| (original.clone(), placeholder.clone()))
@@ -207,14 +223,14 @@ pub(crate) fn mask_translation_controls(
                     .get(&span.original)
                     .cloned()
                     .unwrap_or_else(|| "[CUSTOM_UNEXPECTED_1]".to_string())
-            });
+            })?;
             if reverse_map
                 .get(REAL_LINE_BREAK_MARKER)
                 .is_some_and(|placeholder| placeholder == REAL_LINE_BREAK_PLACEHOLDER)
             {
                 masked = masked.replace(REAL_LINE_BREAK_MARKER, REAL_LINE_BREAK_PLACEHOLDER);
             }
-            masked
+            Ok(masked)
         })
         .collect()
 }

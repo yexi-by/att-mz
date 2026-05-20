@@ -32,7 +32,7 @@ pub(super) fn collect_placeholder_detail(
 
     match build_placeholders(item, rules).and_then(|placeholder_build| {
         let translation_lines_with_placeholders =
-            mask_translation_controls(item, rules, &placeholder_build.placeholder_map);
+            mask_translation_controls(item, rules, &placeholder_build.placeholder_map)?;
         verify_placeholders(
             item,
             rules,

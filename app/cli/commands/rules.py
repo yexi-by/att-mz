@@ -245,6 +245,47 @@ async def run_import_placeholder_rules_command(args: argparse.Namespace) -> int:
     return 1 if report.status == "error" else 0
 
 
+async def run_validate_structured_placeholder_rules_command(args: argparse.Namespace) -> int:
+    """执行 `validate-structured-placeholder-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    sample_texts = read_optional_str_list_arg(args, "sample") or []
+    service = AgentToolkitService()
+    report = await service.validate_structured_placeholder_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+        sample_texts=sample_texts,
+    )
+    write_report_outputs(report=report, args=args, title="结构化占位符规则校验报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_scan_structured_placeholder_candidates_command(args: argparse.Namespace) -> int:
+    """执行 `scan-structured-placeholder-candidates` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.scan_structured_placeholder_candidates(
+        game_title=game_title,
+        rules_text=rules_text,
+    )
+    write_report_outputs(report=report, args=args, title="结构化占位符覆盖扫描报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_import_structured_placeholder_rules_command(args: argparse.Namespace) -> int:
+    """执行 `import-structured-placeholder-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.import_structured_placeholder_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+    )
+    write_report_outputs(report=report, args=args, title="结构化占位符规则导入报告")
+    return 1 if report.status == "error" else 0
+
+
 async def run_validate_plugin_rules_command(args: argparse.Namespace) -> int:
     """执行 `validate-plugin-rules` 命令。"""
     game_title = await resolve_target_game_title(args)

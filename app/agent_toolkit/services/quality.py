@@ -58,9 +58,11 @@ class QualityAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
+            structured_rules = await self._resolve_structured_rules(session=session)
             text_rules = TextRules.from_setting(
                 setting.text_rules,
                 custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
             )
             game_data = await self._load_game_data(session)
             translated_items = await session.read_translated_items()
@@ -240,9 +242,11 @@ class QualityAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
+            structured_rules = await self._resolve_structured_rules(session=session)
             text_rules = TextRules.from_setting(
                 setting.text_rules,
                 custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
             )
             game_data = await self._load_game_data(session)
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
@@ -502,7 +506,12 @@ class QualityAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             game_data = await self._load_game_data(session)
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
@@ -602,7 +611,12 @@ class QualityAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             game_data = await self._load_game_data(session)
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,

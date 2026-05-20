@@ -174,7 +174,7 @@ async def verify_translation_batch(
 
         try:
             item.verify_placeholders(text_rules)
-            item.restore_placeholders()
+            item.translation_lines = list(item.translation_lines_with_placeholders)
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
@@ -211,6 +211,7 @@ async def verify_translation_batch(
             )
             continue
 
+        item.restore_placeholders()
         right_items.append(item)
 
     if right_items:

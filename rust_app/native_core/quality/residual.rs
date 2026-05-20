@@ -6,9 +6,9 @@ use regex::{Regex, RegexBuilder};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-use super::super::controls::replace_control_sequences;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeSourceResidualRule, NativeTranslationItem};
+use super::super::placeholders::{build_placeholders, mask_translation_controls};
 use super::super::rules::PLACEHOLDER_RE;
 
 #[derive(Debug, Clone)]
@@ -97,8 +97,18 @@ pub(super) fn collect_residual_detail(
         .get(&item.location_path)
         .map(|rule| rule.allowed_terms.as_slice())
         .unwrap_or(&[]);
+    let control_masked_lines = match build_placeholders(item, rules).and_then(|placeholder_build| {
+        mask_translation_controls(item, rules, &placeholder_build.placeholder_map)
+    }) {
+        Ok(lines) => lines,
+        Err(reason) => {
+            let mut detail = base_detail(item);
+            detail.insert("reason".to_string(), json!(reason));
+            return Some(Value::Object(detail));
+        }
+    };
     let checked_lines = mask_allowed_terms(
-        &item.translation_lines,
+        &control_masked_lines,
         allowed_terms,
         rules.source_residual_terms_ignore_case,
     );
@@ -323,8 +333,7 @@ fn check_source_residual(lines: &[String], rules: &CompiledRules) -> Result<(), 
 }
 
 fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> String {
-    let stripped_controls = replace_control_sequences(text, rules, |_| String::new());
-    let stripped_placeholders = PLACEHOLDER_RE.replace_all(&stripped_controls, "");
+    let stripped_placeholders = PLACEHOLDER_RE.replace_all(text, "");
     rules
         .residual_escape_sequence_re
         .replace_all(&stripped_placeholders, " ")

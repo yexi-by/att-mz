@@ -45,7 +45,12 @@ class FeedbackAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             translated_items = await session.read_translated_items()
             scope = await TextScopeService().build(
                 session=session,

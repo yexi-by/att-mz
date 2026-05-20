@@ -20,12 +20,15 @@ from app.cli.commands.rules import (
     run_import_placeholder_rules_command,
     run_import_plugin_rules_command,
     run_import_source_residual_rules_command,
+    run_import_structured_placeholder_rules_command,
     run_scan_placeholder_candidates_command,
+    run_scan_structured_placeholder_candidates_command,
     run_validate_event_command_rules_command,
     run_validate_note_tag_rules_command,
     run_validate_placeholder_rules_command,
     run_validate_plugin_rules_command,
     run_validate_source_residual_rules_command,
+    run_validate_structured_placeholder_rules_command,
 )
 from app.cli.commands.terminology import run_export_terminology_command, run_import_terminology_command
 from app.cli.commands.translation import (
@@ -71,6 +74,9 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "validate-placeholder-rules": run_validate_placeholder_rules_command,
     "build-placeholder-rules": run_build_placeholder_rules_command,
     "import-placeholder-rules": run_import_placeholder_rules_command,
+    "validate-structured-placeholder-rules": run_validate_structured_placeholder_rules_command,
+    "scan-structured-placeholder-candidates": run_scan_structured_placeholder_candidates_command,
+    "import-structured-placeholder-rules": run_import_structured_placeholder_rules_command,
     "validate-plugin-rules": run_validate_plugin_rules_command,
     "validate-event-command-rules": run_validate_event_command_rules_command,
     "prepare-agent-workspace": run_prepare_agent_workspace_command,

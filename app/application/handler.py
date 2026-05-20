@@ -97,10 +97,11 @@ from app.rmmz.schema import (
     PlaceholderRuleRecord,
     PLUGINS_FILE_NAME,
     PluginTextRuleRecord,
+    StructuredPlaceholderRuleRecord,
     TranslationItem,
     TranslationRunRecord,
 )
-from app.rmmz.control_codes import CustomPlaceholderRule
+from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.llm import LLMHandler, LLMRequestFailure
 from app.rmmz.text_rules import TextRules
 from app.translation import TextTranslation, TranslationBatch, TranslationCache
@@ -162,8 +163,9 @@ class TranslationHandler:
         setting: Setting,
         custom_placeholder_rules_text: str | None = None,
         placeholder_rule_records: list[PlaceholderRuleRecord] | None = None,
+        structured_placeholder_rule_records: list[StructuredPlaceholderRuleRecord] | None = None,
     ) -> TextRules:
-        """加载文本过滤规则和自定义占位符规则。"""
+        """加载文本过滤规则、自定义占位符规则和结构化占位符规则。"""
         if custom_placeholder_rules_text is not None:
             custom_rules = load_custom_placeholder_rules_text(custom_placeholder_rules_text)
             source_label = "CLI 参数"
@@ -180,13 +182,35 @@ class TranslationHandler:
             custom_rules = ()
             source_label = "空规则"
 
+        structured_rules = self._build_structured_placeholder_rules(
+            structured_placeholder_rule_records or []
+        )
         if custom_rules:
             logger.info(f"[tag.phase]已加载自定义占位符规则[/tag.phase] 来源 {source_label} 数量 [tag.count]{len(custom_rules)}[/tag.count] 条")
         elif custom_placeholder_rules_text is not None:
             logger.info("[tag.skip]CLI 指定的自定义占位符规则为空对象[/tag.skip]")
+        if structured_rules:
+            logger.info(f"[tag.phase]已加载结构化占位符规则[/tag.phase] 来源 当前游戏数据库 数量 [tag.count]{len(structured_rules)}[/tag.count] 条")
         return TextRules.from_setting(
             setting.text_rules,
             custom_placeholder_rules=custom_rules,
+            structured_placeholder_rules=structured_rules,
+        )
+
+    def _build_structured_placeholder_rules(
+        self,
+        records: list[StructuredPlaceholderRuleRecord],
+    ) -> tuple[StructuredPlaceholderRule, ...]:
+        """把数据库结构化占位符规则转换成运行时规则。"""
+        return tuple(
+            StructuredPlaceholderRule.create(
+                rule_name=record.rule_name,
+                rule_type=record.rule_type,
+                pattern_text=record.pattern_text,
+                translatable_group=record.translatable_group,
+                protected_groups=dict(record.protected_groups),
+            )
+            for record in records
         )
 
     async def _load_session_game_data(self, session: TargetGameSession) -> GameData:
@@ -335,6 +359,7 @@ class TranslationHandler:
             text_rules = self._load_text_rules(
                 setting=setting,
                 placeholder_rule_records=await session.read_placeholder_rules(),
+                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             resolved_output_path = output_path.resolve()
             report = await export_note_tag_candidates_file(
@@ -430,6 +455,7 @@ class TranslationHandler:
             text_rules = self._load_text_rules(
                 setting=setting,
                 placeholder_rule_records=await session.read_placeholder_rules(),
+                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             import_file = await load_note_tag_rule_import_file(input_path)
             rule_records = build_note_tag_rule_records_from_import(
@@ -520,6 +546,7 @@ class TranslationHandler:
                 setting=setting,
                 custom_placeholder_rules_text=custom_placeholder_rules_text,
                 placeholder_rule_records=placeholder_rule_records,
+                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             return await self._translate_text_in_session(
                 session=session,
@@ -734,6 +761,7 @@ class TranslationHandler:
             text_rules = self._load_text_rules(
                 setting=setting,
                 placeholder_rule_records=await session.read_placeholder_rules(),
+                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             translated_items = await session.read_translated_items()
             translated_items = await self._filter_writable_translation_items(
@@ -868,6 +896,7 @@ class TranslationHandler:
             text_rules = self._load_text_rules(
                 setting=setting,
                 placeholder_rule_records=await session.read_placeholder_rules(),
+                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
             )
             translated_items = await session.read_translated_items()
             translated_items = await self._filter_writable_translation_items(

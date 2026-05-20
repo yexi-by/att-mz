@@ -8,6 +8,7 @@ from .common import (
     GameData,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
+    StructuredPlaceholderRule,
     TargetGameSession,
     TextRules,
     TextScopeService,
@@ -66,7 +67,12 @@ class CoreAgentMixin:
                 session=session,
                 custom_placeholder_rules_text=None,
             )
-            text_rules = TextRules.from_setting(setting.text_rules, custom_placeholder_rules=custom_rules)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
             game_data = await self._load_game_data(session)
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
@@ -113,6 +119,24 @@ class CoreAgentMixin:
             CustomPlaceholderRule.create(
                 pattern_text=record.pattern_text,
                 placeholder_template=record.placeholder_template,
+            )
+            for record in records
+        )
+
+    async def _resolve_structured_rules(
+        self: AgentServiceContext,
+        *,
+        session: TargetGameSession,
+    ) -> tuple[StructuredPlaceholderRule, ...]:
+        """读取当前游戏数据库中的结构化占位符规则。"""
+        records = await session.read_structured_placeholder_rules()
+        return tuple(
+            StructuredPlaceholderRule.create(
+                rule_name=record.rule_name,
+                rule_type=record.rule_type,
+                pattern_text=record.pattern_text,
+                translatable_group=record.translatable_group,
+                protected_groups=dict(record.protected_groups),
             )
             for record in records
         )

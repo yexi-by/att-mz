@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, Self
 
 
-type PlaceholderSource = Literal["standard", "custom"]
+type PlaceholderSource = Literal["standard", "custom", "structured"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,7 @@ class ControlSequenceSpan:
     placeholder: str | None
     custom_template: str | None
     priority: int
+    custom_index_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,87 @@ class CustomPlaceholderRule:
         return cls(
             pattern_text=pattern_text,
             placeholder_template=placeholder_template,
+            pattern=pattern,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredPlaceholderRule:
+    """外部 JSON 提供的结构化占位符规则。"""
+
+    rule_name: str
+    rule_type: str
+    pattern_text: str
+    translatable_group: str
+    protected_groups: dict[str, str]
+    pattern: re.Pattern[str]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        rule_name: str,
+        rule_type: str,
+        pattern_text: str,
+        translatable_group: str,
+        protected_groups: dict[str, str],
+    ) -> Self:
+        """编译并校验单条结构化占位符规则。"""
+        normalized_name = rule_name.strip()
+        if not normalized_name:
+            raise ValueError("结构化占位符规则 name 不能为空")
+        if re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*", normalized_name) is None:
+            raise ValueError(f"结构化占位符规则 name 必须使用大写标识: {rule_name}")
+        if rule_type != "paired_shell":
+            raise ValueError(f"结构化占位符规则 type 当前只支持 paired_shell: {rule_type}")
+        if not pattern_text.strip():
+            raise ValueError("结构化占位符规则 pattern 不能为空")
+        if not translatable_group.strip():
+            raise ValueError("结构化占位符规则 translatable_group 不能为空")
+        if not protected_groups:
+            raise ValueError("结构化占位符规则 protected_groups 不能为空")
+
+        try:
+            pattern = re.compile(pattern_text)
+        except re.error as error:
+            raise ValueError(f"结构化占位符正则无效: {pattern_text}") from error
+        if pattern.search("") is not None:
+            raise ValueError(f"结构化占位符正则不能匹配空字符串: {pattern_text}")
+
+        group_names = set(pattern.groupindex)
+        if translatable_group not in group_names:
+            raise ValueError(f"结构化占位符正则缺少可翻译命名分组: {translatable_group}")
+        if translatable_group in protected_groups:
+            raise ValueError(f"可翻译分组不能同时作为保护分组: {translatable_group}")
+
+        normalized_protected_groups: dict[str, str] = {}
+        for group_name, placeholder_template in protected_groups.items():
+            if group_name not in group_names:
+                raise ValueError(f"结构化占位符正则缺少保护命名分组: {group_name}")
+            if not placeholder_template.strip():
+                raise ValueError(f"结构化占位符保护分组模板不能为空: {group_name}")
+            preview = format_placeholder_template(
+                template=placeholder_template,
+                code="",
+                param="",
+                index=1,
+            )
+            if STANDARD_PLACEHOLDER_PATTERN.fullmatch(preview) is not None:
+                raise ValueError(
+                    f"结构化占位符模板不能生成 RMMZ 标准占位符: {placeholder_template}"
+                )
+            if CUSTOM_PLACEHOLDER_PATTERN.fullmatch(preview) is None:
+                raise ValueError(
+                    f"结构化占位符模板必须生成形如 [CUSTOM_NAME_1] 的方括号占位符，当前生成: {preview}"
+                )
+            normalized_protected_groups[group_name] = placeholder_template
+
+        return cls(
+            rule_name=normalized_name,
+            rule_type=rule_type,
+            pattern_text=pattern_text,
+            translatable_group=translatable_group,
+            protected_groups=normalized_protected_groups,
             pattern=pattern,
         )
 
@@ -380,6 +462,7 @@ __all__: list[str] = [
     "REAL_LINE_BREAK_MARKER",
     "REAL_LINE_BREAK_PLACEHOLDER",
     "STANDARD_PLACEHOLDER_PATTERN",
+    "StructuredPlaceholderRule",
     "SYMBOL_STANDARD_PLACEHOLDERS",
     "format_placeholder_template",
     "iter_raw_control_sequence_candidates",

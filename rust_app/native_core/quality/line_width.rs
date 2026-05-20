@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::super::controls::iter_control_sequence_spans;
+use super::super::controls::iter_control_sequence_spans_lossy;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeTranslationItem};
 use super::super::placeholders::LITERAL_LINE_BREAK_MARKER;
@@ -127,7 +127,7 @@ fn count_line_width_chars(text: &str, rules: &CompiledRules) -> usize {
         .map(|matched| (matched.start(), matched.end()))
         .collect();
     protected_spans.extend(
-        iter_control_sequence_spans(text, rules)
+        iter_control_sequence_spans_lossy(text, rules)
             .into_iter()
             .map(|span| (span.start, span.end)),
     );

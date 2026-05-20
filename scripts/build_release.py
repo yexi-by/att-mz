@@ -158,6 +158,10 @@ def copy_release_resources(release_dir: Path) -> None:
             ("skills", "att-mz", "references", "translation-rule-examples.md"),
         ),
         CopySpec(
+            ROOT / "skills" / "att-mz-release" / "references" / "structured-placeholder-rules.md",
+            ("skills", "att-mz", "references", "structured-placeholder-rules.md"),
+        ),
+        CopySpec(
             ROOT / "skills" / "att-mz-release" / "references" / "plugin-rules-agent-task.md",
             ("skills", "att-mz", "references", "plugin-rules-agent-task.md"),
         ),

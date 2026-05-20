@@ -23,7 +23,13 @@ from app.agent_toolkit.placeholder_scan import (
 from app.agent_toolkit.reports import AgentIssue, AgentReport, issue
 from app.application.file_writer import reset_writable_copies
 from app.application.font_replacement import resolve_replacement_font_path
-from app.config import SettingOverrides, load_custom_placeholder_rules_text
+from app.config import (
+    STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
+    SettingOverrides,
+    empty_structured_placeholder_rules_payload,
+    load_custom_placeholder_rules_text,
+    load_structured_placeholder_rules_text,
+)
 from app.config.environment import load_environment_overrides
 from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.llm import ChatMessage, LLMHandler
@@ -47,6 +53,7 @@ from app.rmmz.control_codes import (
     CustomPlaceholderRule,
     REAL_LINE_BREAK_MARKER,
     REAL_LINE_BREAK_PLACEHOLDER,
+    StructuredPlaceholderRule,
 )
 from app.rmmz.schema import (
     GameData,
@@ -57,6 +64,7 @@ from app.rmmz.schema import (
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
+    StructuredPlaceholderRuleRecord,
     TranslationData,
     TranslationErrorItem,
     TranslationItem,
@@ -173,6 +181,14 @@ class AgentServiceContext(Protocol):
         """按覆盖优先级解析自定义占位符规则。"""
         ...
 
+    async def _resolve_structured_rules(
+        self,
+        *,
+        session: TargetGameSession,
+    ) -> tuple[StructuredPlaceholderRule, ...]:
+        """读取当前游戏的结构化占位符规则。"""
+        ...
+
     async def _check_game(
         self,
         *,
@@ -213,6 +229,34 @@ class AgentServiceContext(Protocol):
         custom_placeholder_rules_text: str | None,
     ) -> AgentReport:
         """扫描疑似自定义控制符候选。"""
+        ...
+
+    async def validate_structured_placeholder_rules(
+        self,
+        *,
+        game_title: str,
+        rules_text: str,
+        sample_texts: Sequence[str],
+    ) -> AgentReport:
+        """校验结构化占位符规则。"""
+        ...
+
+    async def scan_structured_placeholder_candidates(
+        self,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """扫描结构化占位符规则覆盖情况。"""
+        ...
+
+    async def import_structured_placeholder_rules(
+        self,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """导入结构化占位符规则。"""
         ...
 
     async def validate_note_tag_rules(self, *, game_title: str, rules_text: str) -> AgentReport:
@@ -607,6 +651,28 @@ def _placeholder_rule_records_to_import_json(records: Sequence[PlaceholderRuleRe
         record.pattern_text: record.placeholder_template
         for record in records
     }
+
+
+def _structured_placeholder_rule_records_to_import_json(
+    records: Sequence[StructuredPlaceholderRuleRecord],
+) -> JsonObject:
+    """把数据库结构化占位符规则还原为外部 Agent 可编辑的导入 JSON。"""
+    if not records:
+        return empty_structured_placeholder_rules_payload()
+    paired_shell_rules: JsonArray = []
+    for record in sorted(records, key=lambda item: item.rule_name):
+        paired_shell_rules.append(
+            {
+                "name": record.rule_name,
+                "pattern": record.pattern_text,
+                "translatable_group": record.translatable_group,
+                "protected_groups": {
+                    group_name: placeholder_template
+                    for group_name, placeholder_template in sorted(record.protected_groups.items())
+                },
+            }
+        )
+    return {"paired_shell_rules": paired_shell_rules}
 
 
 def _collect_active_translation_location_paths(translation_data_items: Iterable[TranslationData]) -> list[str]:
@@ -1680,13 +1746,14 @@ def _prepare_manual_translation_item(
         translation_lines_with_placeholders=cloned_item.translation_lines_with_placeholders,
     )
     cloned_item.verify_placeholders(text_rules)
-    cloned_item.translation_lines = list(normalized_translation_lines)
+    cloned_item.translation_lines = list(cloned_item.translation_lines_with_placeholders)
     source_residual_rule_set = SourceResidualRuleSet.from_records(source_residual_rules or [])
     check_source_residual_for_item(
         item=cloned_item,
         text_rules=text_rules,
         rule_set=source_residual_rule_set,
     )
+    cloned_item.translation_lines = list(normalized_translation_lines)
     return cloned_item
 
 
@@ -1755,7 +1822,10 @@ __all__: list[str] = [
     'reset_writable_copies',
     'resolve_replacement_font_path',
     'SettingOverrides',
+    'STRUCTURED_PLACEHOLDER_RULES_FILE_NAME',
+    'empty_structured_placeholder_rules_payload',
     'load_custom_placeholder_rules_text',
+    'load_structured_placeholder_rules_text',
     'load_environment_overrides',
     'DEFAULT_SOURCE_LANGUAGE',
     'SourceLanguage',
@@ -1776,6 +1846,7 @@ __all__: list[str] = [
     'parse_plugin_rule_import_text',
     'ControlSequenceSpan',
     'CustomPlaceholderRule',
+    'StructuredPlaceholderRule',
     'REAL_LINE_BREAK_MARKER',
     'REAL_LINE_BREAK_PLACEHOLDER',
     'GameData',
@@ -1786,6 +1857,7 @@ __all__: list[str] = [
     'PlaceholderRuleRecord',
     'PluginTextRuleRecord',
     'SourceResidualRuleRecord',
+    'StructuredPlaceholderRuleRecord',
     'TranslationData',
     'TranslationErrorItem',
     'TranslationItem',
@@ -1867,6 +1939,7 @@ __all__: list[str] = [
     '_event_command_rule_records_to_import_json',
     '_event_rule_filter_sort_key',
     '_placeholder_rule_records_to_import_json',
+    '_structured_placeholder_rule_records_to_import_json',
     '_collect_active_translation_location_paths',
     '_read_reset_translation_location_paths',
     '_build_manual_translation_template_entry',

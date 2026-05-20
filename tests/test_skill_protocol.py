@@ -104,6 +104,9 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json`",
         "`scan-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
         "`import-placeholder-rules --game <游戏标题> --input <规则文件> --json`",
+        "`validate-structured-placeholder-rules --game <游戏标题> --input <规则文件> --json`",
+        "`scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
+        "`import-structured-placeholder-rules --game <游戏标题> --input <规则文件> --json`",
         "`import-terminology --game <游戏标题> --input <字段译名表> --glossary-input <正文术语表> --json`",
         "`import-plugin-rules --game <游戏标题> --input <规则文件> --json`",
         "`import-event-command-rules --game <游戏标题> --input <规则文件> --json`",
@@ -142,6 +145,9 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "### 工作区 JSON 格式契约",
         "`placeholder-rules.json`：顶层必须是对象，格式为 `{正则表达式: 占位符模板}`",
         "禁止写成 `{占位符名: 正则表达式}`",
+        "`structured-placeholder-rules.json`：顶层必须是对象，格式为 `{ \"paired_shell_rules\": [...] }`",
+        "合法空结构是 `{ \"paired_shell_rules\": [] }`",
+        "`references/structured-placeholder-rules.md`",
         "`terminology/field-terms.json`：这是“字段译名表”",
         "MV 的 `speaker_names` 是虚拟名字框说话人术语：由 CLI 从每个对话块首条非空 `401` 正文识别",
         "MV 的 `speaker_names` 虽然放在字段译名表里，但表示虚拟名字框说话人术语，只能写回对应 `401` 说话人行或名字标签",
@@ -339,6 +345,9 @@ def test_att_mz_skill_documents_placeholder_scope_and_mixed_protocol_strategy() 
         "也不要直接整段交给模型",
         "才允许把对应真实路径纳入相应规则或继续翻译",
         "无法确认边界、格式不稳定或可见文本无法从协议壳中安全露出时，排除该文本并在报告中说明风险",
+        "固定协议外壳包住可翻译显示文本",
+        "优先考虑结构化占位符规则",
+        "不是用两条普通正则硬凑开头和结尾",
     ]
 
     for path in skill_paths:
@@ -372,6 +381,38 @@ def test_translation_rule_examples_are_progressive_references_not_skill_rules() 
         "### 插件规则",
         "### 事件指令规则",
         "### Note 标签规则",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
+
+
+def test_structured_placeholder_reference_defines_contract() -> None:
+    """结构化占位符参考文档必须定义可执行的外部契约。"""
+    dev_reference = ROOT / "skills" / "att-mz" / "references" / "structured-placeholder-rules.md"
+    release_reference = ROOT / "skills" / "att-mz-release" / "references" / "structured-placeholder-rules.md"
+    assert dev_reference.exists()
+    assert release_reference.exists()
+    assert release_reference.read_text(encoding="utf-8") == dev_reference.read_text(encoding="utf-8")
+
+    text = dev_reference.read_text(encoding="utf-8")
+    required_phrases = [
+        "# 结构化占位符规则",
+        "普通正则占位符规则并列",
+        "普通规则保护整段不可翻译片段",
+        "结构化规则只保护指定命名分组",
+        "translatable_group",
+        "protected_groups",
+        "paired_shell_rules",
+        "合法空结构",
+        "外部只通过 `<工作区>/structured-placeholder-rules.json` 和三条 CLI 命令与程序交互",
+        "不直接读取外部 JSON",
+        "不要手工改数据库",
+        "validate-structured-placeholder-rules",
+        "scan-structured-placeholder-candidates",
+        "import-structured-placeholder-rules",
+        "不能互相覆盖保护范围",
+        "可翻译分组被任意保护规则覆盖",
+        "源文残留检查会先在占位符仍存在的形态下执行，再恢复外壳",
     ]
     for phrase in required_phrases:
         assert phrase in text
@@ -696,6 +737,15 @@ def test_release_skill_directory_contains_required_references() -> None:
     assert release_example_reference.exists()
     assert release_example_reference.read_text(encoding="utf-8") == example_reference.read_text(encoding="utf-8")
 
+    structured_reference = ROOT / "skills" / "att-mz" / "references" / "structured-placeholder-rules.md"
+    release_structured_reference = (
+        ROOT / "skills" / "att-mz-release" / "references" / "structured-placeholder-rules.md"
+    )
+    assert release_structured_reference.exists()
+    assert release_structured_reference.read_text(encoding="utf-8") == structured_reference.read_text(
+        encoding="utf-8"
+    )
+
 
 def test_project_rules_require_github_workflow_releases_and_skill_sync() -> None:
     """项目规范必须固定 GitHub 工作流发布和双 Skill 同步更新。"""
@@ -730,6 +780,7 @@ def test_release_packaging_script_uses_release_skill_template() -> None:
         '"att-mz-release" / "references"',
         '"subtask-package-mode.md"',
         '"translation-rule-examples.md"',
+        '"structured-placeholder-rules.md"',
         '"plugin-rules-agent-task.md"',
         '"event-command-rules-agent-task.md"',
         "copy_packaged_release_skill",

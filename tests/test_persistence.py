@@ -16,6 +16,7 @@ from app.rmmz.schema import (
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
+    StructuredPlaceholderRuleRecord,
     TranslationErrorItem,
     TranslationItem,
 )
@@ -136,6 +137,19 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         await session.replace_placeholder_rules([placeholder_rule])
         assert await session.read_placeholder_rules() == [placeholder_rule]
+
+        structured_placeholder_rule = StructuredPlaceholderRuleRecord(
+            rule_name="MINI_LABEL",
+            rule_type="paired_shell",
+            pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+            translatable_group="text",
+            protected_groups={
+                "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+                "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+            },
+        )
+        await session.replace_structured_placeholder_rules([structured_placeholder_rule])
+        assert await session.read_structured_placeholder_rules() == [structured_placeholder_rule]
 
         source_residual_rule = SourceResidualRuleRecord(
             rule_id="position:Map001.json/1/0/0",

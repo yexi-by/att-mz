@@ -80,6 +80,8 @@ pub(crate) struct NativeTranslationItem {
 #[derive(Debug, Deserialize)]
 pub(crate) struct NativeTextRules {
     pub(crate) custom_placeholder_rules: Vec<NativeCustomPlaceholderRule>,
+    #[serde(default)]
+    pub(crate) structured_placeholder_rules: Vec<NativeStructuredPlaceholderRule>,
     pub(crate) source_residual_allowed_chars: Vec<String>,
     pub(crate) source_residual_allowed_tail_chars: Vec<String>,
     pub(crate) source_residual_segment_pattern: String,
@@ -95,6 +97,15 @@ pub(crate) struct NativeTextRules {
 pub(crate) struct NativeCustomPlaceholderRule {
     pub(crate) pattern_text: String,
     pub(crate) placeholder_template: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NativeStructuredPlaceholderRule {
+    pub(crate) rule_name: String,
+    pub(crate) rule_type: String,
+    pub(crate) pattern_text: String,
+    pub(crate) translatable_group: String,
+    pub(crate) protected_groups: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,6 +130,7 @@ pub(crate) struct QualityScanOutput {
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledRules {
     pub(crate) custom_placeholder_rules: Vec<CompiledCustomRule>,
+    pub(crate) structured_placeholder_rules: Vec<CompiledStructuredRule>,
     pub(crate) source_residual_allowed_chars: HashSet<char>,
     pub(crate) source_residual_allowed_tail_chars: HashSet<char>,
     pub(crate) allowed_source_residual_terms: Vec<String>,
@@ -137,12 +149,21 @@ pub(crate) struct CompiledCustomRule {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct CompiledStructuredRule {
+    pub(crate) rule_name: String,
+    pub(crate) pattern: FancyRegex,
+    pub(crate) translatable_group: String,
+    pub(crate) protected_groups: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ControlSpan {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) original: String,
     pub(crate) placeholder: Option<String>,
     pub(crate) custom_template: Option<String>,
+    pub(crate) custom_index_key: Option<String>,
     pub(crate) source: SpanSource,
     pub(crate) priority: i32,
 }
@@ -151,6 +172,7 @@ pub(crate) struct ControlSpan {
 pub(crate) enum SpanSource {
     Standard,
     Custom,
+    Structured,
 }
 
 #[derive(Debug)]

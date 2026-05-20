@@ -18,7 +18,7 @@ pub(super) fn collect_text_structure_detail(
 ) -> Option<Value> {
     match build_placeholders(item, rules).and_then(|placeholder_build| {
         let translation_lines_with_placeholders =
-            mask_translation_controls(item, rules, &placeholder_build.placeholder_map);
+            mask_translation_controls(item, rules, &placeholder_build.placeholder_map)?;
         collect_text_structure_errors(
             item,
             &item.translation_lines,

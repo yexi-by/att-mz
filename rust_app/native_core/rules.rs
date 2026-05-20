@@ -7,7 +7,7 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use super::models::{CompiledCustomRule, CompiledRules, NativeTextRules};
+use super::models::{CompiledCustomRule, CompiledRules, CompiledStructuredRule, NativeTextRules};
 
 pub(crate) static INDEXED_STANDARD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\\(?P<code>V|N|P|C|I|PX|PY|FS)\[(?P<param>\d+)\]")
@@ -79,8 +79,50 @@ pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, Str
         });
     }
 
+    let mut structured_placeholder_rules = Vec::new();
+    for rule in rules.structured_placeholder_rules {
+        if rule.rule_type != "paired_shell" {
+            return Err(format!(
+                "Rust 结构化游戏控制符规则类型当前只支持 paired_shell: {}",
+                rule.rule_type
+            ));
+        }
+        let pattern = FancyRegex::new(&rule.pattern_text).map_err(|error| {
+            format!(
+                "Rust 结构化游戏控制符正则无效: {}: {error}",
+                rule.pattern_text
+            )
+        })?;
+        let group_names = pattern
+            .capture_names()
+            .flatten()
+            .map(str::to_string)
+            .collect::<HashSet<String>>();
+        if !group_names.contains(&rule.translatable_group) {
+            return Err(format!(
+                "Rust 结构化游戏控制符正则缺少可翻译命名分组: {}",
+                rule.translatable_group
+            ));
+        }
+        for group_name in rule.protected_groups.keys() {
+            if !group_names.contains(group_name) {
+                return Err(format!(
+                    "Rust 结构化游戏控制符正则缺少保护命名分组: {}",
+                    group_name
+                ));
+            }
+        }
+        structured_placeholder_rules.push(CompiledStructuredRule {
+            rule_name: rule.rule_name,
+            pattern,
+            translatable_group: rule.translatable_group,
+            protected_groups: rule.protected_groups,
+        });
+    }
+
     Ok(CompiledRules {
         custom_placeholder_rules,
+        structured_placeholder_rules,
         source_residual_allowed_chars: collect_chars(rules.source_residual_allowed_chars),
         source_residual_allowed_tail_chars: collect_chars(rules.source_residual_allowed_tail_chars),
         allowed_source_residual_terms: rules.allowed_source_residual_terms,

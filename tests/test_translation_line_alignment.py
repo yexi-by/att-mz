@@ -10,6 +10,7 @@ from app.rmmz.control_codes import (
     CustomPlaceholderRule,
     LITERAL_LINE_BREAK_PLACEHOLDER,
     REAL_LINE_BREAK_PLACEHOLDER,
+    StructuredPlaceholderRule,
 )
 from app.rmmz.schema import ItemType, TranslationErrorItem, TranslationItem
 from app.rmmz.text_rules import TextRules
@@ -106,6 +107,47 @@ async def _verify_single_item(
     right_items = None if right_queue.empty() else await right_queue.get()
     error_items = None if error_queue.empty() else await error_queue.get()
     return right_items, error_items
+
+
+@pytest.mark.asyncio
+async def test_structured_placeholder_residual_check_runs_before_shell_restore() -> None:
+    """结构化外壳恢复前先做源文残留检查，避免 Mini Label 协议词误杀正确译文。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="MINI_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+        },
+    )
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(
+            source_language="en",
+            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_residual_label="英文",
+        ),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["<Mini Label: Alraune>"],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=[
+            "[CUSTOM_MINI_LABEL_OPEN_1]阿尔劳娜[CUSTOM_MINI_LABEL_CLOSE_1]"
+        ],
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["<Mini Label: 阿尔劳娜>"]
 
 
 @pytest.mark.asyncio

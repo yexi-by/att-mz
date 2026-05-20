@@ -127,9 +127,11 @@ class DoctorAgentMixin:
                     session=session,
                     custom_placeholder_rules_text=None,
                 )
+                structured_rules = await self._resolve_structured_rules(session=session)
                 text_rules = TextRules.from_setting(
                     setting.text_rules,
                     custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
                 )
                 game_data = await self._load_game_data(session)
                 plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
@@ -156,6 +158,7 @@ class DoctorAgentMixin:
                 terminology_registry = await session.read_terminology_registry()
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
+                structured_placeholder_rules = await session.read_structured_placeholder_rules()
                 summary["game_registered"] = True
                 summary["source_language"] = session.source_language
                 summary["target_language"] = session.target_language
@@ -170,6 +173,7 @@ class DoctorAgentMixin:
                 summary["note_tag_rules_reviewed_empty"] = note_rules_reviewed_empty
                 summary["note_tag_rules_review_state_stale"] = note_rules_review_state_stale
                 summary["placeholder_rule_count"] = len(placeholder_rules)
+                summary["structured_placeholder_rule_count"] = len(structured_placeholder_rules)
                 summary["terminology_imported"] = terminology_registry is not None
                 summary["glossary_imported"] = terminology_glossary is not None
                 if not plugin_rules and stale_plugin_rule_count == 0:

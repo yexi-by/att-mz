@@ -16,6 +16,7 @@ from app.rmmz.control_codes import (
     LITERAL_ESCAPE_PLACEHOLDERS,
     LITERAL_LINE_BREAK_PLACEHOLDER,
     REAL_LINE_BREAK_PLACEHOLDER,
+    StructuredPlaceholderRule,
 )
 from app.rmmz.schema import SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import TextRules, get_default_text_rules
@@ -447,6 +448,165 @@ def test_custom_prefix_control_keeps_adjacent_dialogue_translatable() -> None:
     item.verify_placeholders(rules)
     item.restore_placeholders()
     assert item.translation_lines == [r"\Shake住手！！！"]
+
+
+def test_structured_placeholder_rule_keeps_shell_and_translates_inner_text() -> None:
+    """结构化规则只保护协议外壳，中间显示文本继续交给模型翻译。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="MINI_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+        },
+    )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["<Mini Label: Alraune>"],
+    )
+
+    item.build_placeholders(rules)
+    assert item.original_lines_with_placeholders == [
+        "[CUSTOM_MINI_LABEL_OPEN_1]Alraune[CUSTOM_MINI_LABEL_CLOSE_1]"
+    ]
+
+    item.translation_lines_with_placeholders = [
+        "[CUSTOM_MINI_LABEL_OPEN_1]阿尔劳娜[CUSTOM_MINI_LABEL_CLOSE_1]"
+    ]
+    item.verify_placeholders(rules)
+    item.restore_placeholders()
+    assert item.translation_lines == ["<Mini Label: 阿尔劳娜>"]
+
+
+def test_structured_placeholder_rule_uses_distinct_indices_for_same_offsets() -> None:
+    """多行同位置命中不同协议外壳时，结构化占位符编号不能跨行撞号。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="TAGGED_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Label\s+id=\d+:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_TAGGED_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_TAGGED_LABEL_CLOSE_{index}]",
+        },
+    )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="long_text",
+        original_lines=["<Label id=1: Alice>", "<Label id=2: Carol>"],
+    )
+
+    item.build_placeholders(rules)
+    assert item.original_lines_with_placeholders == [
+        "[CUSTOM_TAGGED_LABEL_OPEN_1]Alice[CUSTOM_TAGGED_LABEL_CLOSE_1]",
+        "[CUSTOM_TAGGED_LABEL_OPEN_2]Carol[CUSTOM_TAGGED_LABEL_CLOSE_2]",
+    ]
+
+    item.translation_lines_with_placeholders = [
+        "[CUSTOM_TAGGED_LABEL_OPEN_1]爱丽丝[CUSTOM_TAGGED_LABEL_CLOSE_1]",
+        "[CUSTOM_TAGGED_LABEL_OPEN_2]卡萝尔[CUSTOM_TAGGED_LABEL_CLOSE_2]",
+    ]
+    item.verify_placeholders(rules)
+    item.restore_placeholders()
+    assert item.translation_lines == ["<Label id=1: 爱丽丝>", "<Label id=2: 卡萝尔>"]
+
+
+def test_structured_placeholder_rule_rejects_missing_shell_marker() -> None:
+    """模型漏掉结构化协议外壳任意一侧时必须保存失败。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="MINI_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+        },
+    )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["<Mini Label: Alraune>"],
+    )
+
+    item.build_placeholders(rules)
+    item.translation_lines_with_placeholders = ["[CUSTOM_MINI_LABEL_OPEN_1]阿尔劳娜"]
+
+    with pytest.raises(ValueError, match="CUSTOM_MINI_LABEL_CLOSE_1"):
+        item.verify_placeholders(rules)
+
+
+def test_structured_placeholder_rule_rejects_normal_rule_overlap() -> None:
+    """普通正则规则不能抢结构化规则的外壳保护范围。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="MINI_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+        },
+    )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(r">", "[CUSTOM_RAW_CLOSE_{index}]"),
+        ),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["<Mini Label: Alraune>"],
+    )
+
+    with pytest.raises(ValueError, match="重叠"):
+        item.build_placeholders(rules)
+
+
+def test_structured_placeholder_rule_rejects_translatable_group_overlap() -> None:
+    """可翻译分组不能再被普通正则规则保护，否则模型看不到显示文本。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="MINI_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
+            "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
+        },
+    )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(r"Alraune", "[CUSTOM_NAME_{index}]"),
+        ),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["<Mini Label: Alraune>"],
+    )
+
+    with pytest.raises(ValueError, match="可翻译文本分组"):
+        item.build_placeholders(rules)
 
 
 def test_unprotected_control_sequences_must_stay_exact() -> None:

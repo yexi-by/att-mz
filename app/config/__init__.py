@@ -10,6 +10,13 @@ from .custom_placeholder_rules import (
     parse_custom_placeholder_rules,
     resolve_custom_placeholder_rules_path,
 )
+from .structured_placeholder_rules import (
+    STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
+    empty_structured_placeholder_rules_payload,
+    load_structured_placeholder_rules_file,
+    load_structured_placeholder_rules_text,
+    parse_structured_placeholder_rules,
+)
 from .environment import (
     LLM_API_KEY_ENV_NAME,
     LLM_BASE_URL_ENV_NAME,
@@ -38,6 +45,7 @@ __all__: list[str] = [
     "LLMSetting",
     "SettingOverrides",
     "Setting",
+    "STRUCTURED_PLACEHOLDER_RULES_FILE_NAME",
     "StrictBaseModel",
     "TextRulesSetting",
     "TextTranslationSetting",
@@ -49,6 +57,10 @@ __all__: list[str] = [
     "load_custom_placeholder_rules_file",
     "load_custom_placeholder_rules_text",
     "load_environment_overrides",
+    "load_structured_placeholder_rules_file",
+    "load_structured_placeholder_rules_text",
     "parse_custom_placeholder_rules",
+    "parse_structured_placeholder_rules",
     "resolve_custom_placeholder_rules_path",
+    "empty_structured_placeholder_rules_payload",
 ]
