@@ -1598,6 +1598,56 @@ async def test_validate_agent_workspace_blocks_missing_note_tag_rules(
 
 
 @pytest.mark.asyncio
+async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_states(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区空规则文件必须读取数据库里的显式空规则确认状态。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    before_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+    note_import_report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_rule_review_state(
+            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+            scope_hash=plugin_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+            scope_hash=event_command_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+
+    after_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    before_error_codes = {error.code for error in before_report.errors}
+    after_error_codes = {error.code for error in after_report.errors}
+    empty_rule_error_codes = {
+        "plugin_rules_empty_unconfirmed",
+        "event_command_rules_empty_unconfirmed",
+        "note_tag_rules_empty_unconfirmed",
+    }
+    assert empty_rule_error_codes <= before_error_codes
+    assert note_import_report.status == "warning"
+    assert {warning.code for warning in note_import_report.warnings} == {"note_tag_rules_empty"}
+    assert empty_rule_error_codes.isdisjoint(after_error_codes)
+
+
+@pytest.mark.asyncio
 async def test_validate_agent_workspace_reports_invalid_terminology_file(
     minimal_game_dir: Path,
     tmp_path: Path,

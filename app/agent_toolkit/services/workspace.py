@@ -6,10 +6,12 @@ from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
+    GameData,
     JsonArray,
     JsonObject,
     Path,
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
+    TargetGameSession,
     TERMINOLOGY_SUBTASK_GROUPS,
     TerminologyExtraction,
     TerminologyGlossary,
@@ -51,6 +53,15 @@ from .common import (
     shutil,
     write_field_terms_json,
     write_glossary_json,
+)
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    RuleReviewDomain,
+    event_command_rule_scope_hash,
+    note_tag_rule_scope_hash,
+    plugin_rule_scope_hash,
 )
 from app.terminology import collect_terminology_bundle_errors
 
@@ -263,12 +274,13 @@ class WorkspaceAgentMixin:
         event_rules_path = workspace / "event-command-rules.json"
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
+        async with await self.game_registry.open_game(game_title) as session:
+            game_data = await self._load_game_data(session)
+            empty_rule_issues = await _read_empty_rule_review_issues(session=session, game_data=game_data)
         if field_terms_path.exists():
             registry: TerminologyRegistry | None = None
             try:
                 registry = await load_terminology_registry(field_terms_path=field_terms_path)
-                async with await self.game_registry.open_game(game_title) as session:
-                    game_data = await self._load_game_data(session)
                 expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
                     game_data=game_data,
                 ).extract_registry_and_contexts()
@@ -317,7 +329,9 @@ class WorkspaceAgentMixin:
             warnings.extend(plugin_report.warnings)
             details["plugin_rules"] = plugin_report.details
             if _summary_int(plugin_report.summary, "rule_count") == 0:
-                errors.append(issue("plugin_rules_empty_unconfirmed", "插件规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
+                plugin_empty_issue = empty_rule_issues["plugin_rules"]
+                if plugin_empty_issue is not None:
+                    errors.append(plugin_empty_issue)
         else:
             errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
         if note_tag_rules_path.exists():
@@ -327,7 +341,9 @@ class WorkspaceAgentMixin:
             warnings.extend(note_tag_report.warnings)
             details["note_tag_rules"] = note_tag_report.details
             if _summary_int(note_tag_report.summary, "tag_count") == 0:
-                errors.append(issue("note_tag_rules_empty_unconfirmed", "Note 标签规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
+                note_tag_empty_issue = empty_rule_issues["note_tag_rules"]
+                if note_tag_empty_issue is not None:
+                    errors.append(note_tag_empty_issue)
         else:
             errors.append(issue("note_tag_rules_missing", "工作区缺少 note-tag-rules.json"))
         if event_rules_path.exists():
@@ -337,7 +353,9 @@ class WorkspaceAgentMixin:
             warnings.extend(event_report.warnings)
             details["event_command_rules"] = event_report.details
             if _summary_int(event_report.summary, "path_rule_count") == 0:
-                errors.append(issue("event_command_rules_empty_unconfirmed", "事件指令规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
+                event_empty_issue = empty_rule_issues["event_command_rules"]
+                if event_empty_issue is not None:
+                    errors.append(event_empty_issue)
         else:
             errors.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
         if placeholder_rules_path.exists():
@@ -484,3 +502,55 @@ def _summary_int(summary: JsonObject, key: str) -> int:
     if isinstance(raw_value, bool) or not isinstance(raw_value, int):
         raise RuntimeError(f"报告缺少有效计数字段: {key}")
     return raw_value
+
+
+async def _read_empty_rule_review_issues(
+    *,
+    session: TargetGameSession,
+    game_data: GameData,
+) -> dict[str, AgentIssue | None]:
+    """读取工作区空规则文件对应的显式确认状态。"""
+    return {
+        "plugin_rules": await _empty_rule_review_issue(
+            session=session,
+            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+            current_scope_hash=plugin_rule_scope_hash(game_data),
+            unconfirmed_code="plugin_rules_empty_unconfirmed",
+            stale_code="plugin_rules_empty_confirmation_stale",
+            label="插件规则",
+        ),
+        "event_command_rules": await _empty_rule_review_issue(
+            session=session,
+            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+            current_scope_hash=event_command_rule_scope_hash(game_data),
+            unconfirmed_code="event_command_rules_empty_unconfirmed",
+            stale_code="event_command_rules_empty_confirmation_stale",
+            label="事件指令规则",
+        ),
+        "note_tag_rules": await _empty_rule_review_issue(
+            session=session,
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            current_scope_hash=note_tag_rule_scope_hash(game_data),
+            unconfirmed_code="note_tag_rules_empty_unconfirmed",
+            stale_code="note_tag_rules_empty_confirmation_stale",
+            label="Note 标签规则",
+        ),
+    }
+
+
+async def _empty_rule_review_issue(
+    *,
+    session: TargetGameSession,
+    rule_domain: RuleReviewDomain,
+    current_scope_hash: str,
+    unconfirmed_code: str,
+    stale_code: str,
+    label: str,
+) -> AgentIssue | None:
+    """判断空规则文件是否有仍然有效的显式确认。"""
+    state = await session.read_rule_review_state(rule_domain=rule_domain)
+    if state is None or not state.reviewed_empty:
+        return issue(unconfirmed_code, f"{label}为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空")
+    if state.scope_hash != current_scope_hash:
+        return issue(stale_code, f"{label}曾确认为空，但当前游戏内容已经变化，请重新导出并检查规则")
+    return None
