@@ -996,13 +996,76 @@ async def test_mv_virtual_name_box_write_back_rejects_legacy_speaker_line_paths(
     legacy_item.translation_lines = ["向导：", "你好"]
 
     reset_writable_copies(game_data)
-    with pytest.raises(ValueError, match="reset-translations --all"):
+    with pytest.raises(ValueError) as exc_info:
         write_data_text(
             game_data,
             [legacy_item],
             speaker_name_translations={"案内人": "向导"},
             mv_virtual_namebox_rule_records=mv_namebox_rules,
         )
+    message = str(exc_info.value)
+    assert "当前 MV 译文仍包含说话人行" in message
+    assert "文本路径=CommonEvents.json/2/0" in message
+    assert "触发路径=CommonEvents.json/2/1" in message
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_name_box_rule_conflict_reports_text_location(minimal_mv_game_dir: Path) -> None:
+    """MV 虚拟名字框规则冲突时报告触发的正文行路径。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["案内人："]},
+                {"code": 401, "parameters": ["次の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    game_data = await load_game_data(minimal_mv_game_dir)
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
+    item = next(
+        candidate
+        for candidate in extracted["CommonEvents.json"].translation_items
+        if candidate.location_path == "CommonEvents.json/2/0"
+    )
+    item.translation_lines = ["你好"]
+    conflict_rules = [
+        *mv_namebox_rules,
+        MvVirtualNameboxRuleRecord(
+            rule_order=999,
+            rule_name="standalone-colon-copy",
+            pattern_text=r"^(?P<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="translate",
+            render_template="{speaker}：",
+        ),
+    ]
+
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError) as exc_info:
+        write_data_text(
+            game_data,
+            [item],
+            speaker_name_translations={"案内人": "向导"},
+            mv_virtual_namebox_rule_records=conflict_rules,
+        )
+    message = str(exc_info.value)
+    assert "MV 虚拟名字框规则命中冲突" in message
+    assert "文本路径=CommonEvents.json/2/1" in message
+    assert "standalone-colon" in message
+    assert "standalone-colon-copy" in message
 
 
 def test_empty_metadata_title_falls_back_to_game_directory_name(minimal_mv_game_dir: Path) -> None:

@@ -242,6 +242,54 @@ async def test_event_command_rule_import_extracts_and_writes_back(
 
 
 @pytest.mark.asyncio
+async def test_event_command_nested_write_error_reports_location_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """事件指令嵌套参数写回失败时报告当前文本路径。"""
+    game_data = await load_game_data(minimal_game_dir)
+    input_path = tmp_path / "event-command-rules.json"
+    _ = input_path.write_text(
+        json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {
+                            "0": "TestPlugin",
+                            "1": "Show",
+                        },
+                        "paths": [
+                            "$['parameters'][3]['message']",
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    import_file = await load_event_command_rule_import_file(input_path)
+    records = build_event_command_rule_records_from_import(
+        game_data=game_data,
+        import_file=import_file,
+    )
+    item = EventCommandTextExtraction(game_data, records).extract_all_text()[
+        "CommonEvents.json"
+    ].translation_items[0]
+    item.location_path = "CommonEvents.json/1/4/parameters/3/missing"
+    item.translation_lines = ["事件指令译文"]
+
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError) as exc_info:
+        write_data_text(game_data, [item])
+
+    message = str(exc_info.value)
+    assert "CommonEvents.json/1/4/parameters/3/missing" in message
+    assert "事件指令参数键不存在: missing" in message
+
+
+@pytest.mark.asyncio
 async def test_event_command_json_string_leaf_uses_visible_text_protocol(
     minimal_game_dir: Path,
     tmp_path: Path,

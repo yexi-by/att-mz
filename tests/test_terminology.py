@@ -395,6 +395,61 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     assert dynamic_text_parameters[0] == "<\\n[1]>"
 
 
+@pytest.mark.asyncio
+async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
+    minimal_mv_game_dir: Path,
+) -> None:
+    """术语写回遇到 MV 虚拟名字框规则冲突时报告触发路径。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))),
+        "CommonEvents.json",
+    )
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["<受付>"]},
+                {"code": 401, "parameters": ["独立行の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _ = common_events_path.write_text(
+        json.dumps(common_events, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    game_data = await load_game_data(minimal_mv_game_dir)
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    conflict_rules = [
+        *mv_namebox_rules,
+        MvVirtualNameboxRuleRecord(
+            rule_order=999,
+            rule_name="angle-standalone-copy",
+            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="translate",
+            render_template="<{speaker}>",
+        ),
+    ]
+
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError) as exc_info:
+        _ = apply_terminology_translations(
+            game_data,
+            TerminologyRegistry(speaker_names={"受付": "接待员"}),
+            mv_virtual_namebox_rule_records=conflict_rules,
+        )
+
+    message = str(exc_info.value)
+    assert "MV 虚拟名字框规则命中冲突" in message
+    assert "文本路径=CommonEvents.json/2/1" in message
+    assert "angle-standalone" in message
+    assert "angle-standalone-copy" in message
+
+
 def test_speaker_sample_file_name_uses_readable_source_name() -> None:
     """对白样本文件名直接使用清洗后的原文名字。"""
     assert build_speaker_sample_file_name("パティ") == "パティ.json"

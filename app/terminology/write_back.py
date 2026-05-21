@@ -161,9 +161,11 @@ def _write_mv_map_speaker_names(
                 page_object["list"],
                 f"{file_name}.events[{event_index}].pages[{page_index}].list",
             )
+            event_id = _read_json_int(event_object, "id", event_index)
             written_count += _write_mv_virtual_speaker_names_to_commands(
                 game_data=game_data,
                 commands=commands,
+                command_path_prefix=f"{file_name}/{event_id}/{page_index}",
                 translations=translations,
                 mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
@@ -185,9 +187,11 @@ def _write_mv_common_event_speaker_names(
             continue
         event_object = ensure_json_object(event, f"{COMMON_EVENTS_FILE_NAME}[{event_index}]")
         commands = _ensure_command_list(event_object["list"], f"{COMMON_EVENTS_FILE_NAME}[{event_index}].list")
+        event_id = _read_json_int(event_object, "id", event_index)
         written_count += _write_mv_virtual_speaker_names_to_commands(
             game_data=game_data,
             commands=commands,
+            command_path_prefix=f"{COMMON_EVENTS_FILE_NAME}/{event_id}",
             translations=translations,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
@@ -212,9 +216,11 @@ def _write_mv_troop_speaker_names(
         for page_index, page in enumerate(pages):
             page_object = ensure_json_object(page, f"{TROOPS_FILE_NAME}[{troop_index}].pages[{page_index}]")
             commands = _ensure_command_list(page_object["list"], f"{TROOPS_FILE_NAME}[{troop_index}].pages[{page_index}].list")
+            troop_id = _read_json_int(troop_object, "id", troop_index)
             written_count += _write_mv_virtual_speaker_names_to_commands(
                 game_data=game_data,
                 commands=commands,
+                command_path_prefix=f"{TROOPS_FILE_NAME}/{troop_id}/{page_index}",
                 translations=translations,
                 mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
@@ -225,6 +231,7 @@ def _write_mv_virtual_speaker_names_to_commands(
     *,
     game_data: GameData,
     commands: list[JsonObject],
+    command_path_prefix: str,
     translations: dict[str, str],
     mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> int:
@@ -237,6 +244,7 @@ def _write_mv_virtual_speaker_names_to_commands(
             game_data=game_data,
             commands=commands,
             command_index=command_index,
+            command_path_prefix=command_path_prefix,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
         if speaker_command is None:
@@ -338,6 +346,7 @@ def _find_mv_virtual_speaker_command(
     game_data: GameData,
     commands: list[JsonObject],
     command_index: int,
+    command_path_prefix: str,
     mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> tuple[JsonObject, MvVirtualSpeaker] | None:
     """读取 `101` 后首条非空 `401` 并解析 MV 虚拟名字框。"""
@@ -354,6 +363,7 @@ def _find_mv_virtual_speaker_command(
             text=text,
             game_data=game_data,
             rules=mv_virtual_namebox_rules,
+            location_path=f"{command_path_prefix}/{next_index}",
         )
         if virtual_speaker is None:
             return None
@@ -379,6 +389,14 @@ def _write_command_first_parameter(command: JsonObject, text: str) -> None:
         parameters[0] = text
     else:
         parameters.append(text)
+
+
+def _read_json_int(data: JsonObject, key: str, fallback: int) -> int:
+    """读取 JSON 对象中的整数 ID，缺失或类型异常时使用遍历下标。"""
+    value = data.get(key)
+    if type(value) is int:
+        return value
+    return fallback
 
 
 def _write_base_database_terms(*, game_data: GameData, registry: TerminologyRegistry) -> int:

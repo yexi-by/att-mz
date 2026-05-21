@@ -181,23 +181,35 @@ class TerminologyExtraction:
         """按 MV `401` 正文首行协议聚合说话人与对白。"""
         dialogue_map: dict[str, list[str]] = {}
 
-        for map_data in self.game_data.map_data.values():
+        for file_name, map_data in self.game_data.map_data.items():
             for event in map_data.events:
                 if event is None:
                     continue
-                for page in event.pages:
-                    self._append_mv_page_dialogue(dialogue_map, page.commands)
+                for page_index, page in enumerate(event.pages):
+                    self._append_mv_page_dialogue(
+                        dialogue_map,
+                        page.commands,
+                        command_path_prefix=f"{file_name}/{event.id}/{page_index}",
+                    )
 
         for common_event in self.game_data.common_events:
             if common_event is None:
                 continue
-            self._append_mv_page_dialogue(dialogue_map, common_event.commands)
+            self._append_mv_page_dialogue(
+                dialogue_map,
+                common_event.commands,
+                command_path_prefix=f"CommonEvents.json/{common_event.id}",
+            )
 
         for troop in self.game_data.troops:
             if troop is None:
                 continue
-            for page in troop.pages:
-                self._append_mv_page_dialogue(dialogue_map, page.commands)
+            for page_index, page in enumerate(troop.pages):
+                self._append_mv_page_dialogue(
+                    dialogue_map,
+                    page.commands,
+                    command_path_prefix=f"Troops.json/{troop.id}/{page_index}",
+                )
 
         return dialogue_map
 
@@ -220,6 +232,7 @@ class TerminologyExtraction:
         self,
         dialogue_map: dict[str, list[str]],
         commands: list[EventCommand],
+        command_path_prefix: str,
     ) -> None:
         """从 MV 单个事件页的正文首行收集说话人与对白。"""
         for command_index, command in enumerate(commands):
@@ -233,6 +246,7 @@ class TerminologyExtraction:
                 text=lines[first_line_index],
                 game_data=self.game_data,
                 rules=self.mv_virtual_namebox_rules,
+                location_path=f"{command_path_prefix}/{command_index + 1 + first_line_index}",
             )
             if virtual_speaker is None:
                 continue

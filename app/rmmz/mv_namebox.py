@@ -254,6 +254,7 @@ def parse_mv_virtual_speaker_line(
     text: str,
     game_data: GameData,
     rules: tuple[MvVirtualNameboxRule, ...],
+    location_path: str | None = None,
 ) -> MvVirtualSpeaker | None:
     """从 MV `401` 首条非空正文中按外部规则解析虚拟名字框。"""
     normalized_text = text.strip()
@@ -264,10 +265,16 @@ def parse_mv_virtual_speaker_line(
         match = rule.pattern.fullmatch(normalized_text)
         if match is None:
             continue
-        matches.append(_build_virtual_speaker(game_data=game_data, rule=rule, match=match))
+        try:
+            matches.append(_build_virtual_speaker(game_data=game_data, rule=rule, match=match))
+        except ValueError as error:
+            if location_path is None:
+                raise
+            raise ValueError(f"{error}; 文本路径={location_path}") from error
     if len(matches) > 1:
         rule_names = ", ".join(match.rule_name for match in matches)
-        raise ValueError(f"MV 虚拟名字框规则命中冲突: {rule_names}: {normalized_text}")
+        path_message = "" if location_path is None else f"; 文本路径={location_path}"
+        raise ValueError(f"MV 虚拟名字框规则命中冲突{path_message}: 规则={rule_names}; 文本={normalized_text}")
     if not matches:
         return None
     return matches[0]

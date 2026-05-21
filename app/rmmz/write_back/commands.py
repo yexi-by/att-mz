@@ -140,9 +140,13 @@ def write_mv_virtual_name_text_item(
     """按 MV 虚拟名字框协议重建说话人行并写入剥离后的正文。"""
     speaker_line_path, speaker = virtual_speaker
     if not speaker.body_text and speaker_line_path in item.source_line_paths:
-        raise ValueError(
-            "当前 MV 译文仍包含说话人行，请先执行 reset-translations --all 后重新提取和翻译。"
+        message = "；".join(
+            [
+                "当前 MV 译文仍包含说话人行，检查没通过，不能继续写进游戏文件",
+                f"请先精确重置该文本后重新提取和翻译: 文本路径={item.location_path}; 触发路径={speaker_line_path}",
+            ]
         )
+        raise ValueError(message)
 
     render_speaker = read_mv_render_speaker(
         speaker_name_translations=speaker_name_translations,
@@ -326,6 +330,7 @@ def find_mv_virtual_speaker_for_name_command(
             text=text,
             game_data=game_data,
             rules=mv_virtual_namebox_rules,
+            location_path=command_path_from_index(item.location_path, next_index),
         )
         if virtual_speaker is None:
             return None
@@ -526,9 +531,12 @@ def write_event_command_text_item(command: JsonObject, item: TranslationItem, te
         raise ValueError(f"事件指令参数索引越界: {item.location_path}")
 
     translated_text = prepare_single_text_write_value(item=item, text_rules=text_rules)
-    parameters[param_index] = set_event_command_value(
-        current_value=parameters[param_index],
-        path_parts=path_parts[2:],
-        translated_text=translated_text,
-        context=item.location_path,
-    )
+    try:
+        parameters[param_index] = set_event_command_value(
+            current_value=parameters[param_index],
+            path_parts=path_parts[2:],
+            translated_text=translated_text,
+            context=item.location_path,
+        )
+    except ValueError as error:
+        raise ValueError(f"{item.location_path}: {error}") from error

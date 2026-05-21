@@ -267,6 +267,7 @@ class DataTextExtraction:
                     text=text,
                     game_data=self.game_data,
                     rules=self.mv_virtual_namebox_rules,
+                    location_path=location_path,
                 )
                 if virtual_speaker is not None:
                     current_item.role = virtual_speaker.speaker
