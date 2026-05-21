@@ -95,12 +95,14 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
     """执行 `import-event-command-rules` 命令。"""
     game_title = await resolve_target_game_title(args)
     input_path = read_required_path_arg(args, "input")
+    command_codes = read_int_set_arg(args, "codes")
     try:
         async with HandlerSession() as handler:
             summary = await handler.import_event_command_rules(
                 game_title=game_title,
                 input_path=input_path,
                 confirm_empty=read_bool_arg(args, "confirm_empty"),
+                command_codes=command_codes,
             )
     except Exception as error:
         if not read_bool_arg(args, "json_output"):

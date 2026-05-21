@@ -30,6 +30,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
+| `list --json` | 列出当前已注册游戏 | 游戏清单可读取 | 未注册时先执行 add-game |
 | `doctor --no-check-llm --json` | 检查项目静态环境，不请求模型服务 | `status` 不是 `error` | 修环境后重跑，不启动翻译 |
 | `add-game --path <游戏目录> --source-language ja --json` | 按日文源语言注册游戏 | `summary.game_title` 可用于后续 `--game` | 修路径、结构或源语言后重跑 |
 | `add-game --path <游戏目录> --source-language en --json` | 按英文源语言注册游戏 | `summary.game_title` 可用于后续 `--game` | 修路径、结构或源语言后重跑 |
@@ -41,9 +42,11 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
-| `prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json` | 导出候选文件、规则草稿和已保存规则 | 工作区文件存在，`summary.workspace` 指向目标目录 | 删除不完整工作区后重跑 |
+| `prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json` | 导出候选文件、规则草稿和已保存规则；需要覆盖事件指令默认编码时加 `--code CODE` | 工作区文件存在，`summary.workspace` 指向目标目录，`summary.event_command_codes` 可解释 | 删除不完整工作区后重跑 |
 | `validate-agent-workspace --game <游戏标题> --workspace <工作区> --json` | 总体验收工作区和规则覆盖 | 无 `errors` | 逐项修工作区 JSON 后重跑 |
 | `cleanup-agent-workspace --workspace <工作区> --json` | 清理 CLI 生成的工作区文件 | 命令返回 0 | 缺 `manifest.json` 时先人工确认范围 |
+| `export-plugins-json --game <游戏标题> --output <plugins.json>` | 单独导出当前插件配置 JSON | 输出文件存在 | 重新检查游戏注册和 `js/plugins.js` |
+| `export-event-commands-json --game <游戏标题> --output <候选文件>` | 单独导出配置默认编码的事件指令候选 | 输出文件存在，候选数量可解释 | 需要覆盖默认编码时显式加 `--code CODE` 后重跑 |
 
 ## MV 虚拟名字框
 
@@ -57,11 +60,12 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
+| `export-terminology --game <游戏标题> --output-dir <术语工作目录>` | 导出术语表工程 JSON 和只读上下文 | 输出目录包含字段译名表、正文术语表和子任务文件 | 删除不完整目录后重跑 |
 | `import-terminology --game <游戏标题> --input <字段译名表> --glossary-input <正文术语表> --json` | 保存字段译名表和正文术语表 | `status` 为 `ok` | 修结构、空值或冲突后重跑 |
 | `validate-plugin-rules --game <游戏标题> --input <规则文件> --json` | 校验插件规则路径、字符串叶子命中和当前插件配置哈希 | `status` 为 `ok` | 修 `plugin-rules.json` 后重跑；如果提示插件哈希或当前配置不一致，重新准备工作区，不猜路径 |
-| `import-plugin-rules --game <游戏标题> --input <规则文件> --json` | 保存插件文本规则 | `status` 为 `ok`，或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
+| `import-plugin-rules --game <游戏标题> --input <规则文件> --json` | 保存插件文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
 | `validate-event-command-rules --game <游戏标题> --input <规则文件> --json` | 校验事件指令编码、match 和路径 | 无 `errors` | 修 `event-command-rules.json` 后重跑 |
-| `import-event-command-rules --game <游戏标题> --input <规则文件> --json` | 保存事件指令文本规则 | `status` 为 `ok`，或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
+| `import-event-command-rules --game <游戏标题> --input <规则文件> --json` | 保存事件指令文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；若候选用 `--code` 导出，空规则导入也传同一组 `--code CODE`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
 | `export-note-tag-candidates --game <游戏标题> --output <文件> --json` | 单独导出 Note 标签候选 | 输出文件存在，候选数量可解释 | 异常时检查游戏注册和文件结构 |
 | `validate-note-tag-rules --game <游戏标题> --input <规则文件> --json` | 校验 Note 标签规则 | 无 `errors` | 修 `note-tag-rules.json` 后重跑 |
 | `import-note-tag-rules --game <游戏标题> --input <规则文件> --json` | 保存 Note 标签文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty` | 导错时先导入正确规则，再用备份恢复译文 |
@@ -86,6 +90,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `translate --game <游戏标题> --max-batches 1 --json` | 小批量试跑正文翻译 | 命令正常结束，质量报告无新增规则性事故 | 看状态和质量报告，不盲目全量 |
 | `translate --game <游戏标题> --json` | 继续翻译还没成功保存译文的文本 | 剩余量下降且质量风险可解释 | 连续多轮不下降时转修规则、换模型或手动处理 |
+| `run-all --game <游戏标题> --skip-write-back` | 按固定顺序翻译正文但不写进游戏文件 | 翻译状态可解释，质量检查可继续 | 规则或质量错误未清前不写回 |
+| `run-all --game <游戏标题> --confirm-font-overwrite` | 翻译后执行最终写回并允许字体覆盖 | 用户已单独确认字体覆盖，命令正常结束 | 未确认字体覆盖时不使用 |
 | `translation-status --game <游戏标题> --json` | 查看已保存、剩余和模型失败数量 | 数量能解释 | 数量下降时继续翻译，停滞时分析失败类型 |
 | `text-scope --game <游戏标题> --json` | 查看统一文本范围和规则来源 | `status` 为 `ok` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题> --json` | 对比规则命中、译文和可写范围 | `status` 为 `ok` | 补规则、补译文或精确重置 |
@@ -106,6 +112,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `write-back --game <游戏标题> --json` | 把译文写进游戏文件 | 命令返回 0 且摘要可读 | 停止交付，按错误修质量或规则 |
 | `write-back --game <游戏标题> --confirm-font-overwrite --json` | 写回并覆盖字体引用 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
+| `write-terminology --game <游戏标题>` | 在写回前流程检查通过后写入稳定名词，并保留已保存且可写的正文译文 | 命令返回 0，写入范围可解释 | 术语表、规则前置或质量风险未通过时停止 |
+| `write-terminology --game <游戏标题> --confirm-font-overwrite` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过 | 未确认字体覆盖时不使用 |
 | `restore-font --game <游戏标题> --json` | 按原件还原项目覆盖过的字体引用 | 摘要可解释 | 缺原始备份或替换字体信息时停止说明 |
 | `verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json` | 在真实游戏文件中反查反馈原文 | `status` 为 `ok`，分类可解释 | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理 |
 | `scan-plugin-source-text --game <游戏标题> --output <候选文件> --json` | 扫描插件源码 UI 文本候选 | 输出文件存在 | 候选只供人工审查，不混入插件参数规则 |

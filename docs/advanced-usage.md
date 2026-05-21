@@ -38,13 +38,13 @@ model = "<模型名>"
 timeout = 600
 ```
 
-也可以用环境变量覆盖敏感配置。源码运行时所有命令都使用：
+也可以用环境变量覆盖敏感配置。源码运行时所有命令都使用开发版入口；命令契约写有 `--json` 的步骤输出机器可读报告，只导出文件的步骤按 `--output` 文件验收：
 
 ```powershell
-uv run python main.py --agent-mode <命令> ... --json
+uv run python main.py --agent-mode <命令> ...
 ```
 
-`--agent-mode` 会输出适合外部 Agent 读取的简洁日志；`--json` 会输出机器可读报告。命令返回 `status=error` 时，本阶段不能继续。
+`--agent-mode` 会输出适合外部 Agent 读取的简洁日志；支持 `--json` 的命令会输出机器可读报告。命令返回 `status=error` 时，本阶段不能继续。
 
 ## 环境与游戏注册
 
@@ -113,13 +113,15 @@ uv run python main.py --agent-mode export-terminology --game <游戏标题> --ou
 uv run python main.py --agent-mode import-terminology --game <游戏标题> --input <术语表目录>/field-terms.json --glossary-input <术语表目录>/glossary.json --json
 ```
 
-把稳定名词直接写进游戏文件：
+在规则前置和质量检查通过后，把稳定名词写进游戏文件：
 
 ```powershell
 uv run python main.py --agent-mode write-terminology --game <游戏标题>
 ```
 
-`write-terminology` 当前不支持 `--json`，执行时以终端日志和文件日志确认结果。
+`write-terminology` 会执行写回前流程检查。三类外部规则、普通占位符规则、结构化占位符规则、术语表和已保存译文质量未通过时，命令会停止，不会绕过正文翻译流程直接写入。
+
+命令当前不支持 `--json`，执行时以终端日志和文件日志确认结果。
 
 若本次写入需要覆盖字体引用，必须显式确认：
 

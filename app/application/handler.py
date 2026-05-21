@@ -18,10 +18,13 @@ from app.application.font_replacement import (
 )
 from app.application.flow_gate import (
     assert_workflow_gate_passed,
-    count_event_command_rule_candidates,
+    count_event_command_rule_candidates_for_codes,
     count_note_tag_rule_candidates,
     count_plugin_rule_candidates,
     ensure_empty_rule_import_allowed,
+    event_command_rule_codes_for_setting,
+    event_command_rule_scope_hash_for_command_codes,
+    note_tag_rule_scope_hash_for_text_rules,
 )
 from app.application.runtime import load_runtime_setting
 from app.application.rule_import_backup import write_rule_import_translation_backup
@@ -76,8 +79,6 @@ from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
-    event_command_rule_scope_hash,
-    note_tag_rule_scope_hash,
     plugin_rule_scope_hash,
 )
 from app.plugin_text import (
@@ -395,6 +396,7 @@ class TranslationHandler:
         game_title: str,
         input_path: Path,
         confirm_empty: bool = False,
+        command_codes: set[int] | None = None,
     ) -> EventCommandRuleImportSummary:
         """把外部事件指令规则 JSON 导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
@@ -404,6 +406,7 @@ class TranslationHandler:
                 game_data=game_data,
                 import_file=import_file,
             )
+            empty_review_scope_hash: str | None = None
             if not rule_records:
                 if not confirm_empty:
                     ensure_empty_rule_import_allowed(
@@ -412,10 +415,22 @@ class TranslationHandler:
                         candidate_count=0,
                     )
                 setting = self._load_setting(source_language=session.source_language)
+                effective_command_codes = (
+                    event_command_rule_codes_for_setting(game_data=game_data, setting=setting)
+                    if command_codes is None
+                    else resolve_event_command_codes(command_codes=command_codes, default_command_codes=None)
+                )
                 ensure_empty_rule_import_allowed(
                     rule_label="事件指令规则",
                     confirm_empty=confirm_empty,
-                    candidate_count=count_event_command_rule_candidates(game_data=game_data, setting=setting),
+                    candidate_count=count_event_command_rule_candidates_for_codes(
+                        game_data=game_data,
+                        command_codes=effective_command_codes,
+                    ),
+                )
+                empty_review_scope_hash = event_command_rule_scope_hash_for_command_codes(
+                    game_data=game_data,
+                    command_codes=effective_command_codes,
                 )
             old_rules = {
                 event_command_rule_key(rule): rule
@@ -457,9 +472,11 @@ class TranslationHandler:
             if rule_records:
                 await session.delete_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
             else:
+                if empty_review_scope_hash is None:
+                    raise RuntimeError("事件指令空规则确认范围未计算")
                 await session.replace_rule_review_state(
                     rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-                    scope_hash=event_command_rule_scope_hash(game_data),
+                    scope_hash=empty_review_scope_hash,
                     reviewed_empty=True,
                 )
         imported_path_rule_count = sum(len(record.path_templates) for record in rule_records)
@@ -543,7 +560,10 @@ class TranslationHandler:
             else:
                 await session.replace_rule_review_state(
                     rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                    scope_hash=note_tag_rule_scope_hash(game_data),
+                    scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                        game_data=game_data,
+                        text_rules=text_rules,
+                    ),
                     reviewed_empty=True,
                 )
         imported_tag_count = sum(len(record.tag_names) for record in rule_records)

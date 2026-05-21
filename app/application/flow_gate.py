@@ -33,9 +33,9 @@ from app.rule_review import (
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
-    event_command_rule_scope_hash,
+    event_command_rule_scope_hash_for_codes,
     mv_virtual_namebox_rule_scope_hash,
-    note_tag_rule_scope_hash,
+    note_tag_rule_scope_hash_for_candidates,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
     structured_placeholder_rule_scope_hash,
@@ -72,7 +72,14 @@ async def collect_workflow_gate_errors(
         )
     errors: list[WorkflowGateIssue] = []
     errors.extend(await _terminology_gate_errors(session))
-    errors.extend(await _external_rule_gate_errors(session=session, game_data=game_data))
+    errors.extend(
+        await _external_rule_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+        )
+    )
     errors.extend(
         await _placeholder_gate_errors(
             session=session,
@@ -91,9 +98,16 @@ async def collect_external_text_rule_gate_errors(
     *,
     session: TargetGameSession,
     game_data: GameData,
+    setting: Setting,
+    text_rules: TextRules,
 ) -> list[WorkflowGateIssue]:
     """收集三类外部文本规则未完成导致的前置错误。"""
-    return await _external_rule_gate_errors(session=session, game_data=game_data)
+    return await _external_rule_gate_errors(
+        session=session,
+        game_data=game_data,
+        setting=setting,
+        text_rules=text_rules,
+    )
 
 
 def format_workflow_gate_error(errors: list[WorkflowGateIssue]) -> str:
@@ -156,10 +170,18 @@ def count_plugin_rule_candidates(game_data: GameData) -> int:
 
 def count_event_command_rule_candidates(*, game_data: GameData, setting: Setting) -> int:
     """统计当前配置会导出的事件指令参数候选数量。"""
-    command_codes = resolve_event_command_codes(
-        command_codes=None,
-        default_command_codes=setting.event_command_text.default_codes_for_engine(game_data.layout.engine_kind),
-    )
+    command_codes = event_command_rule_codes_for_setting(game_data=game_data, setting=setting)
+    return count_event_command_rule_candidates_for_codes(game_data=game_data, command_codes=command_codes)
+
+
+def count_event_command_rule_candidates_for_codes(
+    *,
+    game_data: GameData,
+    command_codes: frozenset[int],
+) -> int:
+    """按指定事件指令编码统计参数候选数量。"""
+    if not command_codes:
+        raise ValueError("事件指令编码不能为空")
     seen_samples: set[tuple[int, str]] = set()
     for _path, _display_name, command in iter_all_commands(game_data):
         if command.code not in command_codes:
@@ -169,10 +191,41 @@ def count_event_command_rule_candidates(*, game_data: GameData, setting: Setting
     return len(seen_samples)
 
 
+def event_command_rule_scope_hash_for_setting(*, game_data: GameData, setting: Setting) -> str:
+    """按当前事件指令导出配置计算空规则确认范围哈希。"""
+    command_codes = event_command_rule_codes_for_setting(game_data=game_data, setting=setting)
+    return event_command_rule_scope_hash_for_command_codes(game_data=game_data, command_codes=command_codes)
+
+
+def event_command_rule_codes_for_setting(*, game_data: GameData, setting: Setting) -> frozenset[int]:
+    """读取当前配置实际启用的事件指令编码集合。"""
+    return resolve_event_command_codes(
+        command_codes=None,
+        default_command_codes=setting.event_command_text.default_codes_for_engine(game_data.layout.engine_kind),
+    )
+
+
+def event_command_rule_scope_hash_for_command_codes(
+    *,
+    game_data: GameData,
+    command_codes: frozenset[int],
+) -> str:
+    """按指定事件指令编码计算空规则确认范围哈希。"""
+    if not command_codes:
+        raise ValueError("事件指令编码不能为空")
+    return event_command_rule_scope_hash_for_codes(game_data=game_data, command_codes=command_codes)
+
+
 def count_note_tag_rule_candidates(*, game_data: GameData, text_rules: TextRules) -> int:
     """统计当前 Note 标签候选中实际含可翻译值的数量。"""
     candidates = collect_note_tag_candidates(game_data=game_data, text_rules=text_rules)
     return _candidate_int_sum(candidates, "translatable_hit_count")
+
+
+def note_tag_rule_scope_hash_for_text_rules(*, game_data: GameData, text_rules: TextRules) -> str:
+    """按当前文本规则计算 Note 标签空规则确认范围哈希。"""
+    candidates = collect_note_tag_candidates(game_data=game_data, text_rules=text_rules)
+    return note_tag_rule_scope_hash_for_candidates(candidates)
 
 
 def normal_placeholder_scope_hash(
@@ -262,6 +315,8 @@ async def _external_rule_gate_errors(
     *,
     session: TargetGameSession,
     game_data: GameData,
+    setting: Setting,
+    text_rules: TextRules,
 ) -> list[WorkflowGateIssue]:
     """检查插件、事件指令和 Note 标签外部规则是否完成导入或空结果确认。"""
     errors: list[WorkflowGateIssue] = []
@@ -306,7 +361,10 @@ async def _external_rule_gate_errors(
             await _empty_rule_review_errors(
                 session=session,
                 rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-                current_scope_hash=event_command_rule_scope_hash(game_data),
+                current_scope_hash=event_command_rule_scope_hash_for_setting(
+                    game_data=game_data,
+                    setting=setting,
+                ),
                 label="事件指令规则",
             )
         )
@@ -317,7 +375,10 @@ async def _external_rule_gate_errors(
             await _empty_rule_review_errors(
                 session=session,
                 rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                current_scope_hash=note_tag_rule_scope_hash(game_data),
+                current_scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                    game_data=game_data,
+                    text_rules=text_rules,
+                ),
                 label="Note 标签规则",
             )
         )
@@ -525,12 +586,17 @@ __all__: list[str] = [
     "assert_workflow_gate_passed",
     "collect_structured_placeholder_candidate_details",
     "collect_workflow_gate_errors",
+    "count_event_command_rule_candidates_for_codes",
+    "event_command_rule_scope_hash_for_setting",
+    "event_command_rule_codes_for_setting",
+    "event_command_rule_scope_hash_for_command_codes",
     "count_event_command_rule_candidates",
     "count_note_tag_rule_candidates",
     "count_plugin_rule_candidates",
     "count_uncovered_structured_placeholder_candidates",
     "ensure_empty_rule_import_allowed",
     "format_workflow_gate_error",
+    "note_tag_rule_scope_hash_for_text_rules",
     "normal_placeholder_scope_hash",
     "structured_placeholder_scope_hash",
 ]

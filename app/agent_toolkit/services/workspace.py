@@ -58,12 +58,19 @@ from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
-    event_command_rule_scope_hash,
     mv_virtual_namebox_rule_scope_hash,
-    note_tag_rule_scope_hash,
     plugin_rule_scope_hash,
+)
+from app.application.flow_gate import (
+    event_command_rule_scope_hash_for_setting,
+    event_command_rule_scope_hash_for_command_codes,
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
 )
 from app.rmmz.mv_namebox import (
     MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
@@ -311,10 +318,55 @@ class WorkspaceAgentMixin:
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
+        event_command_codes, event_command_codes_issue = await _read_workspace_event_command_codes(workspace)
+        if event_command_codes_issue is not None:
+            errors.append(event_command_codes_issue)
         async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
             game_data = await self._load_game_data(session)
             mv_virtual_namebox_rule_records = await session.read_mv_virtual_namebox_rules()
-            empty_rule_issues = await _read_empty_rule_review_issues(session=session, game_data=game_data)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
+            translation_data_map = await self._extract_active_translation_data_map(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+            empty_rule_issues = await _read_empty_rule_review_issues(
+                session=session,
+                game_data=game_data,
+                event_command_scope_hash=(
+                    event_command_rule_scope_hash_for_setting(
+                        game_data=game_data,
+                        setting=setting,
+                    )
+                    if event_command_codes is None
+                    else event_command_rule_scope_hash_for_command_codes(
+                        game_data=game_data,
+                        command_codes=event_command_codes,
+                    )
+                ),
+                note_tag_scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                    game_data=game_data,
+                    text_rules=text_rules,
+                ),
+                placeholder_scope_hash=normal_placeholder_scope_hash(
+                    translation_data_map=translation_data_map,
+                    text_rules=text_rules,
+                ),
+                structured_placeholder_scope_hash_value=structured_placeholder_scope_hash(
+                    translation_data_map=translation_data_map,
+                    structured_rules=text_rules.structured_placeholder_rules,
+                ),
+            )
         if field_terms_path.exists():
             registry: TerminologyRegistry | None = None
             try:
@@ -425,7 +477,9 @@ class WorkspaceAgentMixin:
             warnings.extend(placeholder_report.warnings)
             details["placeholder_rules"] = placeholder_report.details
             if _summary_int(placeholder_report.summary, "rule_count") == 0:
-                errors.append(issue("placeholder_rules_empty_unconfirmed", "普通占位符规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
+                placeholder_empty_issue = empty_rule_issues["placeholder_rules"]
+                if placeholder_empty_issue is not None:
+                    errors.append(placeholder_empty_issue)
             try:
                 placeholder_coverage_report = await self.scan_placeholder_candidates(
                     game_title=game_title,
@@ -471,7 +525,9 @@ class WorkspaceAgentMixin:
             )
             details["structured_placeholder_rules"] = structured_placeholder_report.details
             if _summary_int(structured_placeholder_report.summary, "rule_count") == 0:
-                errors.append(issue("structured_placeholder_rules_empty_unconfirmed", "结构化占位符规则为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空"))
+                structured_placeholder_empty_issue = empty_rule_issues["structured_placeholder_rules"]
+                if structured_placeholder_empty_issue is not None:
+                    errors.append(structured_placeholder_empty_issue)
             try:
                 structured_placeholder_coverage_report = await self.scan_structured_placeholder_candidates(
                     game_title=game_title,
@@ -563,6 +619,10 @@ async def _read_empty_rule_review_issues(
     *,
     session: TargetGameSession,
     game_data: GameData,
+    event_command_scope_hash: str,
+    note_tag_scope_hash: str,
+    placeholder_scope_hash: str,
+    structured_placeholder_scope_hash_value: str,
 ) -> dict[str, AgentIssue | None]:
     """读取工作区空规则文件对应的显式确认状态。"""
     return {
@@ -577,7 +637,7 @@ async def _read_empty_rule_review_issues(
         "event_command_rules": await _empty_rule_review_issue(
             session=session,
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-            current_scope_hash=event_command_rule_scope_hash(game_data),
+            current_scope_hash=event_command_scope_hash,
             unconfirmed_code="event_command_rules_empty_unconfirmed",
             stale_code="event_command_rules_empty_confirmation_stale",
             label="事件指令规则",
@@ -599,10 +659,26 @@ async def _read_empty_rule_review_issues(
         "note_tag_rules": await _empty_rule_review_issue(
             session=session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-            current_scope_hash=note_tag_rule_scope_hash(game_data),
+            current_scope_hash=note_tag_scope_hash,
             unconfirmed_code="note_tag_rules_empty_unconfirmed",
             stale_code="note_tag_rules_empty_confirmation_stale",
             label="Note 标签规则",
+        ),
+        "placeholder_rules": await _empty_rule_review_issue(
+            session=session,
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            current_scope_hash=placeholder_scope_hash,
+            unconfirmed_code="placeholder_rules_empty_unconfirmed",
+            stale_code="placeholder_rules_empty_confirmation_stale",
+            label="普通占位符规则",
+        ),
+        "structured_placeholder_rules": await _empty_rule_review_issue(
+            session=session,
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            current_scope_hash=structured_placeholder_scope_hash_value,
+            unconfirmed_code="structured_placeholder_rules_empty_unconfirmed",
+            stale_code="structured_placeholder_rules_empty_confirmation_stale",
+            label="结构化占位符规则",
         ),
     }
 
@@ -623,3 +699,26 @@ async def _empty_rule_review_issue(
     if state.scope_hash != current_scope_hash:
         return issue(stale_code, f"{label}曾确认为空，但当前游戏内容已经变化，请重新导出并检查规则")
     return None
+
+
+async def _read_workspace_event_command_codes(workspace: Path) -> tuple[frozenset[int] | None, AgentIssue | None]:
+    """从工作区 manifest 读取本轮事件指令候选编码。"""
+    manifest_path = workspace / "manifest.json"
+    if not manifest_path.exists():
+        return None, issue("manifest_missing", "工作区缺少 manifest.json，无法确认工作区来源和事件指令编码")
+    try:
+        async with aiofiles.open(manifest_path, "r", encoding="utf-8") as file:
+            raw_manifest = cast(object, json.loads(await file.read()))
+        manifest = ensure_json_object(coerce_json_value(raw_manifest), "manifest")
+        generated = ensure_json_object(manifest.get("generated"), "manifest.generated")
+        raw_codes = ensure_json_array(generated.get("event_command_codes"), "manifest.generated.event_command_codes")
+        codes: set[int] = set()
+        for raw_code in raw_codes:
+            if isinstance(raw_code, bool) or not isinstance(raw_code, int):
+                return None, issue("manifest_invalid", "manifest.generated.event_command_codes 必须是整数数组")
+            codes.add(raw_code)
+        if not codes:
+            return None, issue("manifest_invalid", "manifest.generated.event_command_codes 不能为空")
+        return frozenset(codes), None
+    except Exception as error:
+        return None, issue("manifest_invalid", f"读取工作区 manifest 失败: {type(error).__name__}: {error}")

@@ -82,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_event_command_parser)
     _ = import_event_command_parser.add_argument("--input", required=True, help="外部事件指令规则 JSON 文件")
     _ = import_event_command_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有事件指令规则候选，允许导入空规则")
+    _ = import_event_command_parser.add_argument(
+        "--code",
+        action="extend",
+        nargs="+",
+        type=int,
+        dest="codes",
+        metavar="CODE",
+        help="导入空事件指令规则时对应的事件指令编码数组；传入后覆盖配置文件默认编码数组",
+    )
     _ = import_event_command_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_note_tag_parser = subparsers.add_parser(

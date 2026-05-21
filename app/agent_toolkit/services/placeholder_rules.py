@@ -657,6 +657,8 @@ class PlaceholderRuleAgentMixin:
             external_rule_errors = await collect_external_text_rule_gate_errors(
                 session=session,
                 game_data=game_data,
+                setting=setting,
+                text_rules=empty_rules,
             )
             if external_rule_errors:
                 return AgentReport.from_parts(

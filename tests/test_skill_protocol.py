@@ -1,6 +1,9 @@
 """Skill 执行协议回归测试。"""
 
 from pathlib import Path
+from typing import cast
+
+from app.cli import build_parser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +34,14 @@ REQUIRED_REFERENCE_NAMES = {
 def read(path: Path) -> str:
     """读取 UTF-8 文本。"""
     return path.read_text(encoding="utf-8")
+
+
+def parser_command_names() -> set[str]:
+    """读取 argparse 暴露的命令名集合。"""
+    raw_value = cast(object, getattr(build_parser(), "_att_mz_command_names"))
+    if not isinstance(raw_value, frozenset):
+        raise TypeError("CLI parser 未暴露命令名集合")
+    return {str(command_name) for command_name in raw_value}
 
 
 def test_main_skills_are_progressive_workflow_entrypoints() -> None:
@@ -168,18 +179,41 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "不要把大 JSON 塞进命令行",
         "注册游戏必须显式传 `--source-language ja` 或 `--source-language en`",
         "`doctor --no-check-llm --json`",
+        "`list --json`",
         "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json`",
+        "`export-plugins-json --game <游戏标题> --output <plugins.json>`",
+        "`export-event-commands-json --game <游戏标题> --output <候选文件>`",
         "`validate-plugin-rules --game <游戏标题> --input <规则文件> --json`",
+        "`import-event-command-rules --game <游戏标题> --input <规则文件> --json`",
         "`validate-note-tag-rules --game <游戏标题> --input <规则文件> --json`",
+        "`export-terminology --game <游戏标题> --output-dir <术语工作目录>`",
         "`scan-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
+        "`run-all --game <游戏标题> --skip-write-back`",
         "`translation-status --game <游戏标题> --json`",
         "`audit-coverage --game <游戏标题> --json`",
         "`quality-report --game <游戏标题> --json`",
         "`verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json`",
         "`write-back --game <游戏标题> --json`",
+        "`write-terminology --game <游戏标题>`",
+        "空规则需 `--confirm-empty`",
+        "空规则导入也传同一组 `--code CODE`",
+        "在写回前流程检查通过后写入稳定名词",
         "日文和英文游戏都使用通用源文残留命令",
     ]:
         assert phrase in text
+
+
+def test_cli_command_contract_lists_every_parser_command() -> None:
+    """命令契约覆盖 argparse 暴露的全部命令名。"""
+    command_names = parser_command_names()
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "cli-command-contract.md")
+        missing_commands = [
+            command_name
+            for command_name in sorted(command_names)
+            if f"`{command_name}`" not in text and f"`{command_name} " not in text
+        ]
+        assert missing_commands == []
 
 
 def test_cli_contract_keeps_recovery_and_terminal_antiregression_details() -> None:
@@ -383,6 +417,28 @@ def test_docs_do_not_own_agent_task_contracts() -> None:
     combined_skill_text = read(DEV_SKILL) + "\n" + read(RELEASE_SKILL)
     assert "`docs/plugin-rules-agent-prompt.md`" not in combined_skill_text
     assert "`docs/event-command-rules-agent-prompt.md`" not in combined_skill_text
+
+
+def test_public_docs_describe_json_flag_as_command_contract() -> None:
+    """公开文档不得把不支持 --json 的导出命令写成统一机器输出。"""
+    for path in (ROOT / "README.md", ROOT / "docs" / "release-readme.md"):
+        text = read(path)
+        assert "命令契约写有 --json 的步骤必须保留 --json" in text
+        assert "只导出文件的步骤按 Skill 命令契约使用 --output" in text
+        assert "所有命令使用 .\\att-mz.exe --agent-mode ... --json" not in text
+
+    advanced_usage = read(ROOT / "docs" / "advanced-usage.md")
+    assert "支持 `--json` 的命令会输出机器可读报告" in advanced_usage
+    assert "uv run python main.py --agent-mode <命令> ... --json" not in advanced_usage
+    assert "源码运行时所有命令都使用：" not in advanced_usage
+
+
+def test_database_wiki_documents_configured_event_command_defaults() -> None:
+    """数据库说明必须把事件指令默认编码指向配置入口。"""
+    text = read(ROOT / "docs" / "database-wiki.md")
+
+    assert "`[event_command_text.default_command_codes_by_engine]`" in text
+    assert "会按当前游戏引擎选择默认事件指令编码" not in text
 
 
 def test_subtask_package_mode_document_defines_portable_contract() -> None:

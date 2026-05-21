@@ -8,7 +8,14 @@ from typing import NoReturn, cast
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
-from app.application.flow_gate import collect_workflow_gate_errors
+from app.application.flow_gate import (
+    collect_workflow_gate_errors,
+    event_command_rule_scope_hash_for_command_codes,
+    event_command_rule_scope_hash_for_setting,
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
+)
 from app.application.handler import TranslationHandler
 from app.config import SettingOverrides
 from app.llm import LLMHandler
@@ -39,14 +46,10 @@ from app.rule_review import (
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-    event_command_rule_scope_hash,
     mv_virtual_namebox_rule_scope_hash,
-    note_tag_rule_scope_hash,
-    placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
-    structured_placeholder_rule_scope_hash,
 )
-from app.text_scope import TextScopeEntry, TextScopeResult
+from app.text_scope import TextScopeEntry, TextScopeResult, TextScopeService
 from app.utils.config_loader_utils import load_setting
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
@@ -215,6 +218,8 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     game_data = await load_game_data(minimal_game_dir)
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
@@ -223,12 +228,18 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
         )
         await session.replace_rule_review_state(
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-            scope_hash=event_command_rule_scope_hash(game_data),
+            scope_hash=event_command_rule_scope_hash_for_setting(
+                game_data=game_data,
+                setting=setting,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-            scope_hash=note_tag_rule_scope_hash(game_data),
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
     fresh_report = await service.doctor(game_title="テストゲーム", check_llm=False)
@@ -418,6 +429,45 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
 
     assert translated_items[0].location_path == "CommonEvents.json/1/4/parameters/3/message"
     assert translated_items[0].translation_lines == ["事件指令译文"]
+
+
+@pytest.mark.asyncio
+async def test_import_empty_event_command_rules_records_cli_code_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """事件指令空规则确认使用 CLI 显式编码计算范围。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+    empty_rules_path = tmp_path / "event-command-rules-empty.json"
+    _ = empty_rules_path.write_text("{}\n", encoding="utf-8")
+    game_data = await load_game_data(minimal_game_dir)
+
+    _ = await handler.import_event_command_rules(
+        game_title="テストゲーム",
+        input_path=empty_rules_path,
+        confirm_empty=True,
+        command_codes={999},
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
+
+    assert state is not None
+    assert state.scope_hash == event_command_rule_scope_hash_for_command_codes(
+        game_data=game_data,
+        command_codes=frozenset({999}),
+    )
 
 
 @pytest.mark.asyncio
@@ -1614,22 +1664,34 @@ async def test_workflow_gate_blocks_external_rule_hits_outside_writable_scope(
         )
         await session.replace_rule_review_state(
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-            scope_hash=event_command_rule_scope_hash(game_data),
+            scope_hash=event_command_rule_scope_hash_for_setting(
+                game_data=game_data,
+                setting=setting,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-            scope_hash=note_tag_rule_scope_hash(game_data),
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
-            scope_hash=placeholder_rule_scope_hash([]),
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-            scope_hash=structured_placeholder_rule_scope_hash([]),
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
             reviewed_empty=True,
         )
         errors = await collect_workflow_gate_errors(
@@ -1925,6 +1987,29 @@ async def test_validate_agent_workspace_blocks_missing_note_tag_rules(
 
 
 @pytest.mark.asyncio
+async def test_validate_agent_workspace_blocks_missing_manifest(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区验收必须依赖 manifest 确认来源和事件指令编码。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    (workspace / "manifest.json").unlink()
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert report.status == "error"
+    assert "manifest_missing" in {error.code for error in report.errors}
+
+
+@pytest.mark.asyncio
 async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_states(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1940,6 +2025,11 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
         output_dir=workspace,
         command_codes=None,
     )
+    _ = (workspace / "placeholder-rules.json").write_text("{}\n", encoding="utf-8")
+    _ = (workspace / "structured-placeholder-rules.json").write_text(
+        '{"paired_shell_rules": []}\n',
+        encoding="utf-8",
+    )
     before_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
     note_import_report = await service.import_note_tag_rules(
         game_title="テストゲーム",
@@ -1948,6 +2038,13 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
     )
     game_data = await load_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash=plugin_rule_scope_hash(game_data),
@@ -1955,7 +2052,26 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
         )
         await session.replace_rule_review_state(
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-            scope_hash=event_command_rule_scope_hash(game_data),
+            scope_hash=event_command_rule_scope_hash_for_setting(
+                game_data=game_data,
+                setting=setting,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
             reviewed_empty=True,
         )
 
@@ -1967,11 +2083,48 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
         "plugin_rules_empty_unconfirmed",
         "event_command_rules_empty_unconfirmed",
         "note_tag_rules_empty_unconfirmed",
+        "placeholder_rules_empty_unconfirmed",
+        "structured_placeholder_rules_empty_unconfirmed",
     }
     assert empty_rule_error_codes <= before_error_codes
     assert note_import_report.status == "warning"
     assert {warning.code for warning in note_import_report.warnings} == {"note_tag_rules_empty"}
     assert empty_rule_error_codes.isdisjoint(after_error_codes)
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_uses_manifest_event_command_codes_for_empty_review(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """工作区验收按 manifest 里的事件指令编码确认空规则范围。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path / "app-home"))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes={999},
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_rule_review_state(
+            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+            scope_hash=event_command_rule_scope_hash_for_command_codes(
+                game_data=game_data,
+                command_codes=frozenset({999}),
+            ),
+            reviewed_empty=True,
+        )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+    error_codes = {error.code for error in report.errors}
+
+    assert "event_command_rules_empty_unconfirmed" not in error_codes
+    assert "event_command_rules_empty_confirmation_stale" not in error_codes
 
 
 @pytest.mark.asyncio

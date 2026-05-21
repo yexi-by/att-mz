@@ -33,7 +33,11 @@ from .common import (
     parse_plugin_rule_import_text,
 )
 from app.application.rule_import_backup import write_rule_import_translation_backup
-from app.application.flow_gate import count_note_tag_rule_candidates, ensure_empty_rule_import_allowed
+from app.application.flow_gate import (
+    count_note_tag_rule_candidates,
+    ensure_empty_rule_import_allowed,
+    note_tag_rule_scope_hash_for_text_rules,
+)
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_candidates_payload,
     mv_virtual_namebox_candidate_details,
@@ -46,7 +50,6 @@ from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     mv_virtual_namebox_rule_scope_hash,
-    note_tag_rule_scope_hash,
 )
 
 
@@ -433,7 +436,10 @@ class RuleValidationAgentMixin:
                 else:
                     await session.replace_rule_review_state(
                         rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                        scope_hash=note_tag_rule_scope_hash(game_data),
+                        scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                            game_data=game_data,
+                            text_rules=text_rules,
+                        ),
                         reviewed_empty=True,
                     )
         except Exception as error:

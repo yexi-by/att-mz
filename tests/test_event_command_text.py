@@ -144,6 +144,26 @@ def test_export_event_command_parser_accepts_code_array() -> None:
     assert read_int_set_arg(args, "codes") == {357, 999}
 
 
+def test_import_event_command_parser_accepts_code_array() -> None:
+    """事件指令空规则导入可声明本次审查的编码范围。"""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "import-event-command-rules",
+            "--game",
+            "テストゲーム",
+            "--input",
+            "event-command-rules.json",
+            "--confirm-empty",
+            "--code",
+            "357",
+            "999",
+        ]
+    )
+
+    assert read_int_set_arg(args, "codes") == {357, 999}
+
+
 def test_write_back_parser_accepts_json_output() -> None:
     """write-back 支持输出机器可读摘要和显式字体覆盖确认。"""
     parser = build_parser()

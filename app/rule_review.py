@@ -33,8 +33,16 @@ def plugin_rule_scope_hash(game_data: GameData) -> str:
 
 def event_command_rule_scope_hash(game_data: GameData) -> str:
     """计算事件指令规则空结果审查依赖的当前事件指令参数哈希。"""
+    command_codes = frozenset(command.code for _path, _display_name, command in iter_all_commands(game_data))
+    return event_command_rule_scope_hash_for_codes(game_data=game_data, command_codes=command_codes)
+
+
+def event_command_rule_scope_hash_for_codes(*, game_data: GameData, command_codes: frozenset[int]) -> str:
+    """按指定事件指令编码计算空结果审查依赖的参数哈希。"""
     command_snapshots: JsonArray = []
     for path, _display_name, command in iter_all_commands(game_data):
+        if command.code not in command_codes:
+            continue
         command_snapshots.append(
             {
                 "path": [part for part in path],
@@ -42,7 +50,12 @@ def event_command_rule_scope_hash(game_data: GameData) -> str:
                 "parameters": [parameter for parameter in command.parameters],
             }
         )
-    return _stable_json_hash(command_snapshots)
+    return _stable_json_hash(
+        {
+            "command_codes": [code for code in sorted(command_codes)],
+            "commands": command_snapshots,
+        }
+    )
 
 
 def note_tag_rule_scope_hash(game_data: GameData) -> str:
@@ -51,6 +64,11 @@ def note_tag_rule_scope_hash(game_data: GameData) -> str:
     for file_name, value in sorted(game_data.data.items()):
         _append_note_values(value=value, path=[file_name], notes=notes)
     return _stable_json_hash(notes)
+
+
+def note_tag_rule_scope_hash_for_candidates(candidates: JsonArray) -> str:
+    """按当前 Note 标签候选集合计算空结果审查依赖的哈希。"""
+    return _stable_json_hash(candidates)
 
 
 def placeholder_rule_scope_hash(payload: JsonValue) -> str:
@@ -120,7 +138,9 @@ __all__: list[str] = [
     "RuleReviewDomain",
     "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
     "event_command_rule_scope_hash",
+    "event_command_rule_scope_hash_for_codes",
     "note_tag_rule_scope_hash",
+    "note_tag_rule_scope_hash_for_candidates",
     "parse_rule_review_domain",
     "placeholder_rule_scope_hash",
     "plugin_rule_scope_hash",

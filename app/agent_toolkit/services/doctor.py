@@ -28,11 +28,18 @@ from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
-    event_command_rule_scope_hash,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     mv_virtual_namebox_rule_scope_hash,
-    note_tag_rule_scope_hash,
     plugin_rule_scope_hash,
+)
+from app.application.flow_gate import (
+    collect_structured_placeholder_candidate_details,
+    event_command_rule_scope_hash_for_setting,
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
 )
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
@@ -147,6 +154,10 @@ class DoctorAgentMixin:
                 plugin_review_state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
                 event_review_state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
                 note_review_state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+                placeholder_review_state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+                structured_placeholder_review_state = await session.read_rule_review_state(
+                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN
+                )
                 mv_virtual_namebox_review_state = await session.read_rule_review_state(
                     rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN
                 )
@@ -155,17 +166,60 @@ class DoctorAgentMixin:
                     if game_data.layout.engine_kind == "mv"
                     else []
                 )
+                terminology_registry = await session.read_terminology_registry()
+                terminology_glossary = await session.read_terminology_glossary()
+                placeholder_rules = await session.read_placeholder_rules()
+                structured_placeholder_rules = await session.read_structured_placeholder_rules()
+                translation_data_map = await self._extract_active_translation_data_map(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                )
+                candidates = scan_placeholder_candidates(translation_data_map, text_rules)
+                uncovered_count = count_uncovered_candidates(candidates)
+                structured_candidate_details = collect_structured_placeholder_candidate_details(
+                    translation_data_map=translation_data_map,
+                    structured_rules=text_rules.structured_placeholder_rules,
+                )
+                structured_uncovered_count = sum(
+                    1
+                    for detail in structured_candidate_details
+                    if isinstance(detail, dict) and detail.get("covered") is not True
+                )
                 plugin_rules_reviewed_empty, plugin_rules_review_state_stale = _rule_review_empty_state(
                     state=plugin_review_state,
                     current_scope_hash=plugin_rule_scope_hash(game_data),
                 )
                 event_rules_reviewed_empty, event_rules_review_state_stale = _rule_review_empty_state(
                     state=event_review_state,
-                    current_scope_hash=event_command_rule_scope_hash(game_data),
+                    current_scope_hash=event_command_rule_scope_hash_for_setting(
+                        game_data=game_data,
+                        setting=setting,
+                    ),
                 )
                 note_rules_reviewed_empty, note_rules_review_state_stale = _rule_review_empty_state(
                     state=note_review_state,
-                    current_scope_hash=note_tag_rule_scope_hash(game_data),
+                    current_scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                        game_data=game_data,
+                        text_rules=text_rules,
+                    ),
+                )
+                placeholder_rules_reviewed_empty, placeholder_rules_review_state_stale = _rule_review_empty_state(
+                    state=placeholder_review_state,
+                    current_scope_hash=normal_placeholder_scope_hash(
+                        translation_data_map=translation_data_map,
+                        text_rules=text_rules,
+                    ),
+                )
+                (
+                    structured_placeholder_rules_reviewed_empty,
+                    structured_placeholder_rules_review_state_stale,
+                ) = _rule_review_empty_state(
+                    state=structured_placeholder_review_state,
+                    current_scope_hash=structured_placeholder_scope_hash(
+                        translation_data_map=translation_data_map,
+                        structured_rules=text_rules.structured_placeholder_rules,
+                    ),
                 )
                 mv_virtual_namebox_rules_reviewed_empty, mv_virtual_namebox_rules_review_state_stale = (
                     _rule_review_empty_state(
@@ -175,10 +229,6 @@ class DoctorAgentMixin:
                     if game_data.layout.engine_kind == "mv"
                     else (False, False)
                 )
-                terminology_registry = await session.read_terminology_registry()
-                terminology_glossary = await session.read_terminology_glossary()
-                placeholder_rules = await session.read_placeholder_rules()
-                structured_placeholder_rules = await session.read_structured_placeholder_rules()
                 summary["game_registered"] = True
                 summary["source_language"] = session.source_language
                 summary["target_language"] = session.target_language
@@ -198,6 +248,10 @@ class DoctorAgentMixin:
                 summary["mv_virtual_namebox_rules_review_state_stale"] = mv_virtual_namebox_rules_review_state_stale
                 summary["placeholder_rule_count"] = len(placeholder_rules)
                 summary["structured_placeholder_rule_count"] = len(structured_placeholder_rules)
+                summary["placeholder_rules_reviewed_empty"] = placeholder_rules_reviewed_empty
+                summary["placeholder_rules_review_state_stale"] = placeholder_rules_review_state_stale
+                summary["structured_placeholder_rules_reviewed_empty"] = structured_placeholder_rules_reviewed_empty
+                summary["structured_placeholder_rules_review_state_stale"] = structured_placeholder_rules_review_state_stale
                 summary["terminology_imported"] = terminology_registry is not None
                 summary["glossary_imported"] = terminology_glossary is not None
                 if not plugin_rules and stale_plugin_rule_count == 0:
@@ -227,23 +281,27 @@ class DoctorAgentMixin:
                 if terminology_glossary is None:
                     warnings.append(issue("glossary", "当前游戏尚未导入正文术语表"))
                 if not placeholder_rules:
-                    warnings.append(issue("placeholder_rules", "当前游戏尚未导入自定义占位符规则"))
+                    if placeholder_rules_review_state_stale:
+                        warnings.append(issue("placeholder_rules_review_state_stale", "普通占位符规则曾确认为空，但当前正文候选已变化，请重新扫描并检查普通占位符规则"))
+                    elif not placeholder_rules_reviewed_empty:
+                        warnings.append(issue("placeholder_rules", "当前游戏尚未导入自定义占位符规则"))
+                if not structured_placeholder_rules:
+                    if structured_placeholder_rules_review_state_stale:
+                        warnings.append(issue("structured_placeholder_rules_review_state_stale", "结构化占位符规则曾确认为空，但当前正文候选已变化，请重新扫描并检查结构化占位符规则"))
+                    elif not structured_placeholder_rules_reviewed_empty:
+                        warnings.append(issue("structured_placeholder_rules", "当前游戏尚未导入结构化占位符规则"))
                 font_path = setting.write_back.replacement_font_path
                 if font_path is not None:
                     try:
                         _ = resolve_replacement_font_path(font_path)
                     except (FileNotFoundError, ValueError) as error:
                         warnings.append(issue("replacement_font", f"配置的候选覆盖字体文件不可用: {error}"))
-                translation_data_map = await self._extract_active_translation_data_map(
-                    session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
-                )
-                candidates = scan_placeholder_candidates(translation_data_map, text_rules)
-                uncovered_count = count_uncovered_candidates(candidates)
                 summary["uncovered_placeholder_count"] = uncovered_count
+                summary["uncovered_structured_placeholder_count"] = structured_uncovered_count
                 if uncovered_count:
                     warnings.append(issue("uncovered_placeholder", f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符"))
+                if structured_uncovered_count:
+                    warnings.append(issue("uncovered_structured_placeholder", f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选"))
         except Exception as error:
             errors.append(issue("game", f"目标游戏检查失败: {type(error).__name__}: {error}"))
 
