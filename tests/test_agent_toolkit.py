@@ -2741,8 +2741,8 @@ async def test_manual_long_text_import_splits_overwide_lines(
     setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8")
     setting_text = setting_text.replace("long_text_line_width_limit = 26", "long_text_line_width_limit = 3")
     setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_system.md"',
-        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_system.md").as_posix()}"',
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
     )
     _ = setting_path.write_text(setting_text, encoding="utf-8")
     service = AgentToolkitService(game_registry=registry, setting_path=setting_path)

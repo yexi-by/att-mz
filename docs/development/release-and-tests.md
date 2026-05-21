@@ -35,7 +35,8 @@
 - `scripts/build_release.py`
 - `skills/att-mz/SKILL.md`
 - `skills/att-mz-release/SKILL.md`
-- `prompts/text_translation_system.md`
+- `prompts/text_translation_ja_to_zh_system.md`
+- `prompts/text_translation_en_to_zh_system.md`
 - `tests/`
 
 ## 测试覆盖

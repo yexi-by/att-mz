@@ -443,12 +443,12 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
 
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_system.md"
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
     setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
         encoding="utf-8"
     )
     setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_system.md"',
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
         f'system_prompt_file = "{prompt_path.as_posix()}"',
     )
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
@@ -566,12 +566,12 @@ async def test_direct_write_back_rejects_latest_quality_errors(
     """直接调用业务写回也必须拦截模型翻了但项目检查没通过的译文。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_system.md"
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
     setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
         encoding="utf-8"
     )
     setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_system.md"',
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
         f'system_prompt_file = "{prompt_path.as_posix()}"',
     )
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
@@ -683,12 +683,12 @@ async def test_direct_write_terminology_rejects_missing_workflow_rules(
     """直接调用术语写回也必须经过写入前流程检查。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_system.md"
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
     setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
         encoding="utf-8"
     )
     setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_system.md"',
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
         f'system_prompt_file = "{prompt_path.as_posix()}"',
     )
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")

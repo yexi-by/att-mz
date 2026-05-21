@@ -143,7 +143,8 @@ def copy_release_resources(release_dir: Path) -> None:
         CopySpec(ROOT / "setting.example.toml", ("setting.example.toml",)),
         CopySpec(ROOT / "setting.example.toml", ("setting.toml",)),
         CopySpec(ROOT / "custom_placeholder_rules.json", ("custom_placeholder_rules.json",)),
-        CopySpec(ROOT / "prompts" / "text_translation_system.md", ("prompts", "text_translation_system.md")),
+        CopySpec(ROOT / "prompts" / "text_translation_ja_to_zh_system.md", ("prompts", "text_translation_ja_to_zh_system.md")),
+        CopySpec(ROOT / "prompts" / "text_translation_en_to_zh_system.md", ("prompts", "text_translation_en_to_zh_system.md")),
         CopySpec(ROOT / "fonts" / "NotoSansSC-Regular.ttf", ("fonts", "NotoSansSC-Regular.ttf")),
         CopySpec(
             ROOT / "skills" / "att-mz-release" / "references" / "rpg-maker-mv-mz-world-knowledge.md",

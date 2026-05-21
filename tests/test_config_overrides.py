@@ -130,6 +130,21 @@ def test_english_language_profile_selects_public_prompt(monkeypatch: pytest.Monk
     assert "文件名" not in system_prompt
 
 
+def test_japanese_language_profile_selects_explicit_public_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """日文语言档案使用能表达日文到中文含义的提示词文件名。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+
+    setting = load_setting(setting_path=ROOT / "setting.example.toml", source_language="ja")
+    system_prompt = setting.text_translation.system_prompt
+
+    assert setting.text_translation.system_prompt_file == "prompts/text_translation_ja_to_zh_system.md"
+    assert "RPG Maker 日文到简体中文游戏" in system_prompt
+    assert "text_translation_ja_to_zh_system.md" not in system_prompt
+
+
 def test_default_output_protocol_disables_source_lines(monkeypatch: pytest.MonkeyPatch) -> None:
     """默认提示词要求模型不要输出原文对照字段。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
@@ -190,7 +205,7 @@ def test_custom_prompt_without_template_can_enable_source_lines_protocol(
 def test_default_prompt_files_do_not_request_source_lines() -> None:
     """默认提示词文件不要求模型回传原文，开关补充负责动态声明。"""
     prompt_paths = [
-        ROOT / "prompts" / "text_translation_system.md",
+        ROOT / "prompts" / "text_translation_ja_to_zh_system.md",
         ROOT / "prompts" / "text_translation_en_to_zh_system.md",
     ]
 

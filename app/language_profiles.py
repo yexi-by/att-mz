@@ -6,6 +6,15 @@ from typing import cast
 
 from app.language import SourceLanguage, SourceTextExclusionProfile
 
+JAPANESE_PROMPT_FILE = "prompts/text_translation_ja_to_zh_system.md"
+ENGLISH_PROMPT_FILE = "prompts/text_translation_en_to_zh_system.md"
+BUILTIN_PROMPT_FILES: frozenset[str] = frozenset(
+    {
+        JAPANESE_PROMPT_FILE,
+        ENGLISH_PROMPT_FILE,
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class LanguageProfile:
@@ -26,7 +35,7 @@ class LanguageProfile:
 JAPANESE_PROFILE = LanguageProfile(
     source_language="ja",
     residual_label="日文",
-    prompt_file="prompts/text_translation_system.md",
+    prompt_file=JAPANESE_PROMPT_FILE,
     source_text_required_pattern=r"[\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+",
     source_text_exclusion_profile="none",
     source_residual_segment_pattern=r"[\u3040-\u309F\u30A0-\u30FF]+",
@@ -51,7 +60,7 @@ JAPANESE_PROFILE = LanguageProfile(
 ENGLISH_PROFILE = LanguageProfile(
     source_language="en",
     residual_label="英文",
-    prompt_file="prompts/text_translation_en_to_zh_system.md",
+    prompt_file=ENGLISH_PROMPT_FILE,
     source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
     source_text_exclusion_profile="english_protocol_noise",
     source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
@@ -92,7 +101,7 @@ def apply_language_profile_to_raw_config(
     current_prompt_file = text_translation.get("system_prompt_file")
     if (
         not isinstance(current_prompt_file, str)
-        or current_prompt_file in {JAPANESE_PROFILE.prompt_file, ENGLISH_PROFILE.prompt_file}
+        or current_prompt_file in BUILTIN_PROMPT_FILES
     ):
         text_translation["system_prompt_file"] = profile.prompt_file
 

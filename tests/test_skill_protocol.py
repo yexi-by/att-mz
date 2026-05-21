@@ -792,7 +792,7 @@ def test_release_packaging_script_uses_release_skill_template() -> None:
 
 def test_text_translation_prompt_keeps_protocol_minimal() -> None:
     """正文翻译提示词只说明可见任务，不解释项目内部保护机制。"""
-    text = (ROOT / "prompts" / "text_translation_system.md").read_text(encoding="utf-8")
+    text = (ROOT / "prompts" / "text_translation_ja_to_zh_system.md").read_text(encoding="utf-8")
 
     required_phrases = [
         "`[[术语表]]`",
