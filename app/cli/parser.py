@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     restore_font_parser = subparsers.add_parser(
         "restore-font",
-        help="按原件留档对比还原游戏数据中的字体引用",
+        help="按原始备份对比还原游戏数据中的字体引用",
     )
     add_optional_target_arguments(restore_font_parser)
     _ = restore_font_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")

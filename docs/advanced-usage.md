@@ -283,13 +283,15 @@ uv run python main.py --agent-mode quality-report --game <游戏标题> --json
 uv run python main.py --agent-mode write-back --game <游戏标题> --json
 ```
 
+首次写进游戏文件前，工具会在游戏目录内生成完整原始 `data` 备份 `data_origin`。后续读取源文时使用该备份，当前激活 `data` 目录仍必须保持 RPG Maker 标准文件完整。
+
 如需让配置字体覆盖游戏字体引用：
 
 ```powershell
 uv run python main.py --agent-mode write-back --game <游戏标题> --confirm-font-overwrite --json
 ```
 
-还原项目覆盖过的字体引用：
+按原始备份还原项目覆盖过的字体引用：
 
 ```powershell
 uv run python main.py --agent-mode restore-font --game <游戏标题> --json

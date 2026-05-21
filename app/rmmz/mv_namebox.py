@@ -78,6 +78,7 @@ class MvVirtualSpeaker:
 
     speaker: str
     body_text: str
+    matched_text: str
     rule_name: str
     speaker_policy: MvVirtualNameboxSpeakerPolicy
     source_speaker_text: str
@@ -283,27 +284,52 @@ def validate_mv_virtual_namebox_rules_against_game(
     details: JsonArray = []
     for candidate in collect_mv_virtual_namebox_candidates(game_data):
         matching_rules: list[str] = []
-        virtual_speaker: MvVirtualSpeaker | None = None
+        virtual_speakers: list[MvVirtualSpeaker] = []
         for rule in rules:
             match = rule.pattern.fullmatch(candidate.text.strip())
             if match is None:
                 continue
             matching_rules.append(rule.rule_name)
-            if virtual_speaker is None:
-                try:
-                    virtual_speaker = _build_virtual_speaker(
-                        game_data=game_data,
-                        rule=rule,
-                        match=match,
-                    )
-                except Exception as error:
-                    errors.append(
-                        {
-                            "location_path": candidate.location_path,
-                            "rule_name": rule.rule_name,
-                            "message": f"{type(error).__name__}: {error}",
-                        }
-                    )
+            try:
+                virtual_speaker = _build_virtual_speaker(
+                    game_data=game_data,
+                    rule=rule,
+                    match=match,
+                )
+                virtual_speakers.append(virtual_speaker)
+            except Exception as error:
+                errors.append(
+                    {
+                        "location_path": candidate.location_path,
+                        "rule_name": rule.rule_name,
+                        "text": candidate.text,
+                        "message": f"{type(error).__name__}: {error}",
+                    }
+                )
+                continue
+            if (
+                virtual_speaker.speaker_policy == "translate"
+                and is_actor_name_control_text(virtual_speaker.source_speaker_text)
+            ):
+                errors.append(
+                    {
+                        "location_path": candidate.location_path,
+                        "rule_name": rule.rule_name,
+                        "text": candidate.text,
+                        "source_speaker": virtual_speaker.source_speaker_text,
+                        "message": "标准角色名控制符被 translate 规则命中，请改用 preserve 或 actor_name 规则，并收紧普通规则",
+                    }
+                )
+            if virtual_speaker.render_source() != candidate.text.strip():
+                errors.append(
+                    {
+                        "location_path": candidate.location_path,
+                        "rule_name": virtual_speaker.rule_name,
+                        "message": "规则模板无法重建源文本",
+                        "source": candidate.text.strip(),
+                        "rendered": virtual_speaker.render_source(),
+                    }
+                )
         if len(matching_rules) > 1:
             errors.append(
                 {
@@ -311,22 +337,24 @@ def validate_mv_virtual_namebox_rules_against_game(
                     "message": f"同一候选命中多条规则: {', '.join(matching_rules)}",
                 }
             )
-        if virtual_speaker is not None and virtual_speaker.render_source() != candidate.text.strip():
-            errors.append(
-                {
-                    "location_path": candidate.location_path,
-                    "rule_name": virtual_speaker.rule_name,
-                    "message": "规则模板无法重建源文本",
-                    "source": candidate.text.strip(),
-                    "rendered": virtual_speaker.render_source(),
-                }
-            )
         if matching_rules:
             matching_rule_values: JsonArray = [rule_name for rule_name in matching_rules]
+            following_lines: JsonArray = [line for line in candidate.following_lines[:3]]
+            match_values: JsonArray = [
+                {
+                    "rule_name": virtual_speaker.rule_name,
+                    "speaker": virtual_speaker.speaker,
+                    "source_speaker": virtual_speaker.source_speaker_text,
+                    "speaker_policy": virtual_speaker.speaker_policy,
+                }
+                for virtual_speaker in virtual_speakers
+            ]
             detail: JsonObject = {
                 "location_path": candidate.location_path,
                 "text": candidate.text,
+                "following_lines": following_lines,
                 "matching_rules": matching_rule_values,
+                "matches": match_values,
             }
             details.append(detail)
     return errors, details
@@ -453,6 +481,7 @@ def _build_virtual_speaker(
     return MvVirtualSpeaker(
         speaker=speaker,
         body_text=body_text,
+        matched_text=match.string.strip(),
         rule_name=rule.rule_name,
         speaker_policy=rule.speaker_policy,
         source_speaker_text=source_speaker_text,
@@ -478,7 +507,13 @@ def _actor_name_from_control(*, game_data: GameData, text: str) -> str:
     raise ValueError(f"actor_name 规则无法解析角色 ID: {actor_id}")
 
 
+def is_actor_name_control_text(text: str) -> bool:
+    """判断文本是否是 RPG Maker 标准角色名控制符。"""
+    return ACTOR_NAME_CONTROL_PATTERN.fullmatch(text.strip()) is not None
+
+
 __all__: list[str] = [
+    "is_actor_name_control_text",
     "MvVirtualNameboxCandidate",
     "MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME",
     "MvVirtualNameboxRule",

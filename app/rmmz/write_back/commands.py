@@ -148,6 +148,7 @@ def write_mv_virtual_name_text_item(
         speaker_name_translations=speaker_name_translations,
         virtual_speaker=speaker,
         location_path=item.location_path,
+        speaker_line_path=speaker_line_path,
     )
     translation_lines = prepare_long_text_write_lines(item=item, text_rules=text_rules)
     ensure_mv_translation_body_is_clean(
@@ -353,16 +354,47 @@ def read_first_parameter_text(command: JsonObject) -> str | None:
 def read_mv_translated_speaker(
     *,
     speaker_name_translations: dict[str, str] | None,
-    source_speaker: str,
+    virtual_speaker: MvVirtualSpeaker,
     location_path: str,
+    speaker_line_path: str,
 ) -> str:
     """读取 MV 虚拟名字框说话人的术语译名，缺失时立即阻止写入。"""
     if speaker_name_translations is None:
-        raise ValueError(f"MV 说话人 {source_speaker} 缺少术语译名，请先导入 speaker_names: {location_path}")
-    translated_speaker = speaker_name_translations.get(source_speaker, "").strip()
+        raise ValueError(
+            format_mv_missing_speaker_translation_message(
+                virtual_speaker=virtual_speaker,
+                location_path=location_path,
+                speaker_line_path=speaker_line_path,
+            )
+        )
+    translated_speaker = speaker_name_translations.get(virtual_speaker.speaker, "").strip()
     if not translated_speaker:
-        raise ValueError(f"MV 说话人 {source_speaker} 缺少术语译名，请先导入 speaker_names: {location_path}")
+        raise ValueError(
+            format_mv_missing_speaker_translation_message(
+                virtual_speaker=virtual_speaker,
+                location_path=location_path,
+                speaker_line_path=speaker_line_path,
+            )
+        )
     return translated_speaker
+
+
+def format_mv_missing_speaker_translation_message(
+    *,
+    virtual_speaker: MvVirtualSpeaker,
+    location_path: str,
+    speaker_line_path: str,
+) -> str:
+    """生成 MV 虚拟名字框缺少术语译名时的定位信息。"""
+    return (
+        "MV 说话人缺少术语译名，请先导入 speaker_names: "
+        f"文本路径={location_path}; "
+        f"触发路径={speaker_line_path}; "
+        f"规则={virtual_speaker.rule_name}; "
+        f"原始匹配={virtual_speaker.matched_text}; "
+        f"原始说话人={virtual_speaker.source_speaker_text}; "
+        f"术语键={virtual_speaker.speaker}"
+    )
 
 
 def read_mv_render_speaker(
@@ -370,6 +402,7 @@ def read_mv_render_speaker(
     speaker_name_translations: dict[str, str] | None,
     virtual_speaker: MvVirtualSpeaker,
     location_path: str,
+    speaker_line_path: str,
 ) -> str:
     """读取写回用说话人文本，动态控制符保持原样。"""
     if not virtual_speaker.requires_translation:
@@ -378,8 +411,9 @@ def read_mv_render_speaker(
         return virtual_speaker.speaker
     return read_mv_translated_speaker(
         speaker_name_translations=speaker_name_translations,
-        source_speaker=virtual_speaker.speaker,
+        virtual_speaker=virtual_speaker,
         location_path=location_path,
+        speaker_line_path=speaker_line_path,
     )
 
 

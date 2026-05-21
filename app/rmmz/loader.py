@@ -26,6 +26,7 @@ from app.rmmz.schema import (
     GameData,
     GameLayout,
     JS_DIRECTORY_NAME,
+    MAP_INFOS_FILE_NAME,
     MAP_PATTERN,
     PLUGINS_FILE_NAME,
     PLUGINS_JS_PATTERN,
@@ -50,21 +51,23 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 
 
 async def load_game_data(game_path: str | Path) -> GameData:
-    """从 RPG Maker 游戏根目录加载翻译源数据，原件留档存在时优先读取留档。"""
+    """从 RPG Maker 游戏根目录加载翻译源数据，完整原始备份存在时优先读取备份。"""
     return await _load_game_data(game_path, use_origin_backups=True)
 
 
 async def load_active_game_data(game_path: str | Path) -> GameData:
-    """从 RPG Maker 游戏根目录加载当前激活文件，不读取原件留档。"""
+    """从 RPG Maker 游戏根目录加载当前激活文件，不读取完整原始备份。"""
     return await _load_game_data(game_path, use_origin_backups=False)
 
 
 async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) -> GameData:
     """按指定来源策略加载标准数据文件并构造 `GameData`。"""
     layout = resolve_game_layout(game_path)
-    source_data_dir = layout.data_dir
+    source_data_dir = resolve_data_source_dir(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+    )
     source_plugins_path = layout.source_plugins_path if use_origin_backups else layout.plugins_path
-    origin_data_dir = layout.data_origin_dir
 
     valid_files = sorted(
         (
@@ -78,13 +81,7 @@ async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) ->
 
     file_contents = await asyncio.gather(
         *(
-            _read_text_file(
-                resolve_data_source_file(
-                    active_file_path=file_path,
-                    origin_data_dir=origin_data_dir,
-                    use_origin_backup=use_origin_backups,
-                )
-            )
+            _read_text_file(file_path)
             for file_path in valid_files
         )
     )
@@ -286,21 +283,84 @@ def detect_engine_kind_and_version(*, js_dir: Path, is_www_layout: bool) -> tupl
 def resolve_game_source_paths(game_root: Path) -> tuple[Path, Path, bool]:
     """根据是否存在原件备份解析本次应读取的源数据路径。"""
     layout = resolve_game_layout(game_root)
-    if layout.data_origin_dir.exists() and not layout.data_origin_dir.is_dir():
-        raise NotADirectoryError(f"原件数据留档不是目录: {layout.data_origin_dir}")
+    source_data_dir = resolve_data_source_dir(layout=layout, use_origin_backups=True)
     if not layout.source_plugins_path.exists():
         raise FileNotFoundError(f"插件配置文件不存在: {layout.source_plugins_path}")
-    return layout.data_dir, layout.source_plugins_path, layout.has_origin_backup
+    return source_data_dir, layout.source_plugins_path, layout.has_origin_backup
 
 
 def resolve_data_source_file(*, active_file_path: Path, origin_data_dir: Path, use_origin_backup: bool = True) -> Path:
-    """解析单个 data 文件的读取来源，原件留档存在时优先读取留档。"""
+    """解析单个 data 文件来源；存在完整原始备份时不回退激活文件。"""
     if not use_origin_backup:
         return active_file_path
-    origin_file_path = origin_data_dir / active_file_path.name
-    if origin_file_path.exists():
-        return origin_file_path
+    if origin_data_dir.exists() and not origin_data_dir.is_dir():
+        raise NotADirectoryError(f"原始 data 备份不是目录: {origin_data_dir}")
+    if origin_data_dir.is_dir():
+        return origin_data_dir / active_file_path.name
     return active_file_path
+
+
+def resolve_data_source_dir(*, layout: GameLayout, use_origin_backups: bool) -> Path:
+    """解析本轮读取的 data 源目录，并校验激活目录和原始备份完整性。"""
+    validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
+    if not use_origin_backups:
+        return layout.data_dir
+    if layout.data_origin_dir.exists() and not layout.data_origin_dir.is_dir():
+        raise NotADirectoryError(f"原始 data 备份不是目录: {layout.data_origin_dir}")
+    if layout.data_origin_dir.is_dir():
+        validate_data_directory_integrity(data_dir=layout.data_origin_dir, role="原始 data 备份")
+        return layout.data_origin_dir
+    return layout.data_dir
+
+
+def validate_data_directory_integrity(*, data_dir: Path, role: str) -> None:
+    """校验 RPG Maker 标准 data 目录包含完整标准文件和地图文件。"""
+    if not data_dir.is_dir():
+        raise NotADirectoryError(f"{role}不是目录: {data_dir}")
+    file_names = {
+        file_path.name
+        for file_path in data_dir.iterdir()
+        if file_path.is_file()
+    }
+    missing_fixed_files = sorted(FIXED_FILE_NAMES.difference(file_names))
+    if missing_fixed_files:
+        raise FileNotFoundError(
+            f"{role}缺少 RPG Maker 标准 data 文件: {', '.join(missing_fixed_files)}。"
+            + "data_origin 必须是完整原始 data 备份，请使用干净游戏目录重新注册。"
+        )
+    missing_map_files = collect_missing_map_files_from_map_infos(data_dir=data_dir)
+    if missing_map_files:
+        raise FileNotFoundError(
+            f"{role}的 MapInfos.json 引用了缺失地图文件: {', '.join(missing_map_files)}"
+        )
+
+
+def collect_missing_map_files_from_map_infos(*, data_dir: Path) -> list[str]:
+    """读取 MapInfos.json 并返回缺失的地图文件名。"""
+    map_infos_path = data_dir / MAP_INFOS_FILE_NAME
+    map_infos_value = _decode_json_value(
+        content=map_infos_path.read_text(encoding="utf-8"),
+        source=map_infos_path,
+    )
+    if not isinstance(map_infos_value, list):
+        raise TypeError(f"{MAP_INFOS_FILE_NAME} 顶层必须是数组: {map_infos_path}")
+    expected_map_names: set[str] = set()
+    for index, item in enumerate(map_infos_value):
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            raise TypeError(f"{MAP_INFOS_FILE_NAME}[{index}] 必须是对象或 null")
+        raw_id = item.get("id")
+        if isinstance(raw_id, bool) or not isinstance(raw_id, int):
+            raise TypeError(f"{MAP_INFOS_FILE_NAME}[{index}].id 必须是整数")
+        if raw_id <= 0:
+            continue
+        expected_map_names.add(f"Map{raw_id:03d}.json")
+    return sorted(
+        map_name
+        for map_name in expected_map_names
+        if not (data_dir / map_name).is_file()
+    )
 
 
 class GameDataManager:
@@ -315,13 +375,13 @@ class GameDataManager:
         resolved_game_path = resolve_game_directory(game_path)
         game_title = read_game_title(resolved_game_path)
         layout = resolve_game_layout(resolved_game_path)
-        source_data_dir = layout.data_dir
+        source_data_dir = resolve_data_source_dir(layout=layout, use_origin_backups=True)
         source_plugins_path = layout.source_plugins_path
         has_origin_backup = layout.has_origin_backup
         game_data = await load_game_data(resolved_game_path)
 
         if has_origin_backup:
-            logger.warning(f"[tag.warning]检测到该游戏已经执行过激活版回写，后续会优先读取受影响文件的原件留档[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count] 数据目录 [tag.path]{source_data_dir}[/tag.path] 插件来源 [tag.path]{source_plugins_path}[/tag.path]")
+            logger.warning(f"[tag.warning]检测到该游戏已经执行过激活版回写，后续会优先读取完整原始 data 备份[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count] 数据来源 [tag.path]{source_data_dir}[/tag.path] 插件来源 [tag.path]{source_plugins_path}[/tag.path]")
 
         self.items[game_title] = game_data
 
@@ -386,7 +446,9 @@ __all__: list[str] = [
     "read_game_title_from_package",
     "read_game_title_from_system",
     "resolve_data_source_file",
+    "resolve_data_source_dir",
     "resolve_game_directory",
     "resolve_game_layout",
     "resolve_game_source_paths",
+    "validate_data_directory_integrity",
 ]

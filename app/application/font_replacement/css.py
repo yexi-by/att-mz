@@ -69,7 +69,7 @@ def replace_gamefont_css_references(
     return len(records), records
 
 def backup_gamefont_css_file(*, css_path: Path) -> None:
-    """首次修改字体样式表前保存原件留档。"""
+    """首次修改字体样式表前保存原始备份。"""
     origin_path = css_path.with_name(GAMEFONT_CSS_ORIGIN_FILE_NAME)
     if origin_path.exists():
         return

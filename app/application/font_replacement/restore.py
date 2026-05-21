@@ -1,4 +1,4 @@
-"""按原件留档还原字体引用。"""
+"""按原始备份还原字体引用。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def restore_font_references_from_origin_backups(
     game_data: GameData | None = None,
     replacement_font_names: list[str],
 ) -> OriginFontRestoreSummary:
-    """对比激活版和原件留档，把覆盖字体引用替回原来的字体引用。"""
+    """对比激活版和原始备份，把覆盖字体引用替回原来的字体引用。"""
     if game_data is not None:
         layout = game_data.layout
     elif game_root is not None:
@@ -51,7 +51,7 @@ def restore_font_references_from_origin_backups(
         and not origin_plugins_path.exists()
         and not origin_gamefont_css_path.exists()
     ):
-        raise FileNotFoundError("字体还原需要 data_origin、plugins_origin.js 或 gamefont_origin.css 原件留档")
+        raise FileNotFoundError("字体还原需要 data_origin、plugins_origin.js 或 gamefont_origin.css 原始备份")
 
     restored_field_count = 0
     restored_reference_count = 0

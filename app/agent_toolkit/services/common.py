@@ -590,7 +590,7 @@ def _agent_workflow_manifest(
                 "round": 0,
                 "name": "mv_virtual_namebox_rules",
                 "owner": "主代理",
-                "description": "MV 游戏必须先由主代理阅读 MV 虚拟名字框规则文档，填写 mv-virtual-namebox-rules.json，并通过 validate/import。",
+                "description": "MV 游戏必须先由主代理阅读 MV 虚拟名字框规则文档，填写 mv-virtual-namebox-rules.json，运行 validate 后逐条审查 details.newly_matched_candidates，确认非说话人样本已被规则排除，再导入规则。",
                 "candidate_file": "mv-virtual-namebox-candidates.json",
                 "final_file": "mv-virtual-namebox-rules.json",
                 "import_command": "import-mv-virtual-namebox-rules --game <游戏标题> --input <工作区>/mv-virtual-namebox-rules.json --json",

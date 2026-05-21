@@ -94,12 +94,16 @@ class RuleValidationAgentMixin:
         warnings: list[AgentIssue] = []
         details: JsonObject = {"rules": [], "matched_candidates": []}
         records: list[MvVirtualNameboxRuleRecord] = []
+        existing_records: list[MvVirtualNameboxRuleRecord] = []
         candidate_count = 0
         matched_candidate_count = 0
+        newly_matched_candidate_count = 0
         try:
             records = parse_mv_virtual_namebox_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 game_data = await self._load_game_data(session)
+                if game_data.layout.engine_kind == "mv":
+                    existing_records = await session.read_mv_virtual_namebox_rules()
             if game_data.layout.engine_kind != "mv":
                 errors.append(issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用"))
                 return AgentReport.from_parts(
@@ -109,6 +113,7 @@ class RuleValidationAgentMixin:
                         "rule_count": 0,
                         "candidate_count": 0,
                         "matched_candidate_count": 0,
+                        "newly_matched_candidate_count": 0,
                     },
                     details=details,
                 )
@@ -123,9 +128,21 @@ class RuleValidationAgentMixin:
                 for error_detail in rule_errors
             )
             matched_candidate_count = len(match_details)
+            _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_game(
+                game_data=game_data,
+                records=existing_records,
+            )
+            existing_match_keys = _mv_namebox_match_keys(existing_match_details)
+            newly_matched_candidates: JsonArray = [
+                detail
+                for detail in match_details
+                if _mv_namebox_match_key(detail) not in existing_match_keys
+            ]
+            newly_matched_candidate_count = len(newly_matched_candidates)
             details = {
                 "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
                 "matched_candidates": match_details,
+                "newly_matched_candidates": newly_matched_candidates,
                 "candidate_count": candidate_count,
             }
             if not records:
@@ -142,6 +159,7 @@ class RuleValidationAgentMixin:
                 "rule_count": len(records),
                 "candidate_count": candidate_count,
                 "matched_candidate_count": matched_candidate_count,
+                "newly_matched_candidate_count": newly_matched_candidate_count,
             },
             details=details,
         )
@@ -754,6 +772,27 @@ def _summary_int_from_payload(payload: JsonObject, key: str) -> int:
     if isinstance(raw_value, bool) or not isinstance(raw_value, int):
         raise RuntimeError(f"MV 虚拟名字框候选导出缺少有效计数字段: {key}")
     return raw_value
+
+
+def _mv_namebox_match_key(detail: JsonValue) -> tuple[str, str] | None:
+    """生成虚拟名字框候选命中身份，用于对比已保存规则。"""
+    if not isinstance(detail, dict):
+        return None
+    location_path = detail.get("location_path")
+    text = detail.get("text")
+    if isinstance(location_path, str) and isinstance(text, str):
+        return location_path, text
+    return None
+
+
+def _mv_namebox_match_keys(details: JsonArray) -> set[tuple[str, str]]:
+    """读取一组虚拟名字框候选命中的身份集合。"""
+    keys: set[tuple[str, str]] = set()
+    for detail in details:
+        key = _mv_namebox_match_key(detail)
+        if key is not None:
+            keys.add(key)
+    return keys
 
 
 def _format_mv_namebox_rule_error(error_detail: JsonValue) -> str:

@@ -1028,7 +1028,7 @@ class TranslationHandler:
         game_title: str,
         setting_overrides: SettingOverrides | None = None,
     ) -> FontRestoreSummary:
-        """按原件留档对比还原游戏数据中的字体引用。"""
+        """按原始备份对比还原游戏数据中的字体引用。"""
         async with await self.game_registry.open_game(game_title) as session:
             setting = self._load_setting(
                 setting_overrides=setting_overrides,

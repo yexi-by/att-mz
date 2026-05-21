@@ -1,7 +1,7 @@
 """游戏文件回写编排。
 
-每次写回前按文件粒度补齐本轮实际受影响的原始文件留档。已存在的原件留档
-保持不变，避免后续新增受影响文件直接覆盖原文。
+第一次写回前创建完整原始 `data/` 备份。已存在的 `data_origin/` 必须本身完整；
+不完整留档会直接报错，不做兼容迁移。
 """
 
 import copy
@@ -15,6 +15,7 @@ from app.rmmz.schema import (
     GameData,
     PLUGINS_FILE_NAME,
 )
+from app.rmmz.loader import validate_data_directory_integrity
 from app.rmmz.text_rules import JsonValue
 
 
@@ -38,10 +39,12 @@ def write_game_files(game_data: GameData, game_root: Path | None = None) -> None
         active_data_dir=active_data_dir,
         active_plugins_path=active_plugins_path,
     )
-    backup_affected_original_files(
-        changed_data_files=changed_data_files,
+    ensure_full_data_origin_backup(
         active_data_dir=active_data_dir,
         origin_data_dir=origin_data_dir,
+        temp_dir=game_data.layout.content_root,
+    )
+    backup_original_plugins_file(
         plugins_changed=plugins_changed,
         active_plugins_path=active_plugins_path,
         origin_plugins_path=origin_plugins_path,
@@ -95,32 +98,48 @@ def ensure_active_layout_exists(*, active_data_dir: Path, active_plugins_path: P
         raise FileNotFoundError(f"激活插件配置文件不存在: {active_plugins_path}")
 
 
-def backup_affected_original_files(
+def ensure_full_data_origin_backup(
     *,
-    changed_data_files: list[str],
     active_data_dir: Path,
     origin_data_dir: Path,
+    temp_dir: Path,
+) -> None:
+    """确保 `data_origin/` 是首次写回前的完整原始 data 备份。"""
+    validate_data_directory_integrity(data_dir=active_data_dir, role="激活数据目录")
+    if origin_data_dir.exists():
+        validate_data_directory_integrity(data_dir=origin_data_dir, role="原始 data 备份")
+        return
+
+    origin_data_dir.parent.mkdir(parents=True, exist_ok=True)
+    temp_backup_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"{origin_data_dir.name}_",
+            dir=temp_dir,
+        )
+    )
+    try:
+        _ = shutil.copytree(active_data_dir, temp_backup_dir, dirs_exist_ok=True)
+        validate_data_directory_integrity(data_dir=temp_backup_dir, role="临时原始 data 备份")
+        _ = temp_backup_dir.replace(origin_data_dir)
+    except Exception:
+        cleanup_path(temp_backup_dir)
+        raise
+
+
+def backup_original_plugins_file(
+    *,
     plugins_changed: bool,
     active_plugins_path: Path,
     origin_plugins_path: Path,
 ) -> None:
-    """写回前逐个补齐本轮受影响文件的原件留档。"""
-    if changed_data_files:
-        origin_data_dir.mkdir(parents=True, exist_ok=True)
-        for file_name in changed_data_files:
-            source_path = active_data_dir / file_name
-            target_path = origin_data_dir / file_name
-            if target_path.exists():
-                continue
-            if not source_path.exists():
-                raise FileNotFoundError(f"待备份原始 data 文件不存在: {source_path}")
-            _ = shutil.copy2(source_path, target_path)
+    """写回插件配置前保存原始 `plugins.js`。"""
+    if not plugins_changed:
+        return
 
-    if plugins_changed:
-        if origin_plugins_path.exists():
-            return
-        origin_plugins_path.parent.mkdir(parents=True, exist_ok=True)
-        _ = shutil.copy2(active_plugins_path, origin_plugins_path)
+    if origin_plugins_path.exists():
+        return
+    origin_plugins_path.parent.mkdir(parents=True, exist_ok=True)
+    _ = shutil.copy2(active_plugins_path, origin_plugins_path)
 
 
 def replace_changed_data_files(
@@ -183,6 +202,7 @@ def cleanup_path(target_path: Path) -> None:
 
 __all__: list[str] = [
     "collect_changed_data_file_names",
+    "ensure_full_data_origin_backup",
     "is_plugins_file_changed",
     "reset_writable_copies",
     "write_game_files",

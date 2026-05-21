@@ -222,7 +222,7 @@ def restore_font_references_in_text_by_origin(
     origin_text: str,
     target_font_names: list[str],
 ) -> tuple[str, int]:
-    """只在完整字体引用位置按原件留档还原字体名。"""
+    """只在完整字体引用位置按原始备份还原字体名。"""
     restored_text, reference_count = restore_complete_font_reference_text(
         active_text=active_text,
         origin_text=origin_text,

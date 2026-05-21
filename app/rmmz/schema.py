@@ -436,7 +436,7 @@ class GameLayout:
 
     @property
     def has_origin_backup(self) -> bool:
-        """判断当前游戏是否已经存在原件留档。"""
+        """判断当前游戏是否已经存在原始备份。"""
         return self.data_origin_dir.exists() or self.plugins_origin_path.exists()
 
 
@@ -457,7 +457,7 @@ class GameData:
 
     def __post_init__(self) -> None:
         """确保标准核心文件已经加载。"""
-        required_files = {SYSTEM_FILE_NAME, COMMON_EVENTS_FILE_NAME, TROOPS_FILE_NAME}
+        required_files = FIXED_FILE_NAMES
         missing_files = sorted(required_files.difference(self.data))
         if missing_files:
             raise ValueError(f"游戏缺少必要标准文件: {', '.join(missing_files)}")

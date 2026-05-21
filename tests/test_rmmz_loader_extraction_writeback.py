@@ -1,6 +1,7 @@
 """RPG Maker MV/MZ 标准数据加载、提取与正文回写测试。"""
 
 import json
+import shutil
 from pathlib import Path
 from typing import cast
 
@@ -893,13 +894,19 @@ async def test_mv_virtual_name_box_write_back_requires_speaker_translation(minim
     item.translation_lines = ["你好"]
 
     reset_writable_copies(game_data)
-    with pytest.raises(ValueError, match="缺少术语译名"):
+    with pytest.raises(ValueError) as exc_info:
         write_data_text(
             game_data,
             [item],
             speaker_name_translations={},
             mv_virtual_namebox_rule_records=mv_namebox_rules,
         )
+    message = str(exc_info.value)
+    assert "缺少术语译名" in message
+    assert "文本路径=CommonEvents.json/2/0" in message
+    assert "触发路径=CommonEvents.json/2/1" in message
+    assert "规则=standalone-colon" in message
+    assert "原始匹配=案内人：" in message
 
 
 @pytest.mark.asyncio
@@ -1708,9 +1715,10 @@ async def test_long_text_write_back_ignores_trailing_empty_translation_lines(min
 
 
 @pytest.mark.asyncio
-async def test_first_write_back_only_archives_affected_data_files(minimal_game_dir: Path) -> None:
-    """首次磁盘回写把受影响原文件复制到 `data_origin/`。"""
+async def test_first_write_back_archives_complete_original_data_snapshot(minimal_game_dir: Path) -> None:
+    """首次磁盘回写把完整原始 data 复制到 `data_origin/`。"""
     game_data = await load_game_data(minimal_game_dir)
+    active_data_names = sorted(path.name for path in (minimal_game_dir / "data").glob("*.json"))
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -1723,12 +1731,19 @@ async def test_first_write_back_only_archives_affected_data_files(minimal_game_d
     write_data_text(game_data, [item])
     write_game_files(game_data, minimal_game_dir)
 
-    assert (minimal_game_dir / "data_origin" / "CommonEvents.json").exists()
-    assert not (minimal_game_dir / "data_origin" / "System.json").exists()
+    origin_data_dir = minimal_game_dir / "data_origin"
+    origin_data_names = sorted(path.name for path in origin_data_dir.glob("*.json"))
+    assert origin_data_names == active_data_names
+    assert (origin_data_dir / "Animations.json").exists()
+    assert (origin_data_dir / "CommonEvents.json").exists()
+    assert (origin_data_dir / "MapInfos.json").exists()
+    assert (origin_data_dir / "System.json").exists()
+    assert (origin_data_dir / "Tilesets.json").exists()
+    assert (origin_data_dir / "UnknownPluginData.json").exists()
     assert not (minimal_game_dir / "js" / "plugins_origin.js").exists()
 
     active_common_events = ensure_json_array(
-        game_data.writable_data["CommonEvents.json"],
+        _read_test_json(minimal_game_dir / "data" / "CommonEvents.json"),
         "CommonEvents",
     )
     active_event = ensure_json_object(active_common_events[1], "CommonEvents[1]")
@@ -1742,8 +1757,8 @@ async def test_first_write_back_only_archives_affected_data_files(minimal_game_d
 
 
 @pytest.mark.asyncio
-async def test_old_game_reads_archived_files_and_adds_missing_backups(minimal_game_dir: Path) -> None:
-    """留档布局优先读取原件留档，后续写回补齐新增受影响文件留档。"""
+async def test_written_game_reads_complete_origin_without_mutating_snapshot(minimal_game_dir: Path) -> None:
+    """已有完整原始 data 备份时，后续写回不修改 `data_origin/`。"""
     first_game_data = await load_game_data(minimal_game_dir)
     extracted = DataTextExtraction(first_game_data, get_default_text_rules()).extract_all_text()
     common_item = next(
@@ -1755,6 +1770,11 @@ async def test_old_game_reads_archived_files_and_adds_missing_backups(minimal_ga
     reset_writable_copies(first_game_data)
     write_data_text(first_game_data, [common_item])
     write_game_files(first_game_data, minimal_game_dir)
+    origin_data_dir = minimal_game_dir / "data_origin"
+    origin_snapshot = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(origin_data_dir.glob("*.json"), key=lambda candidate: candidate.name)
+    }
 
     reloaded_game_data = await load_game_data(minimal_game_dir)
     reloaded_extracted = DataTextExtraction(reloaded_game_data, get_default_text_rules()).extract_all_text()
@@ -1774,8 +1794,12 @@ async def test_old_game_reads_archived_files_and_adds_missing_backups(minimal_ga
     reset_writable_copies(reloaded_game_data)
     write_data_text(reloaded_game_data, [actor_item])
     write_game_files(reloaded_game_data, minimal_game_dir)
+    assert {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(origin_data_dir.glob("*.json"), key=lambda candidate: candidate.name)
+    } == origin_snapshot
 
-    origin_actors_path = minimal_game_dir / "data_origin" / "Actors.json"
+    origin_actors_path = origin_data_dir / "Actors.json"
     assert origin_actors_path.exists()
     origin_actors = ensure_json_array(_read_test_json(origin_actors_path), "data_origin/Actors.json")
     active_actors = ensure_json_array(_read_test_json(minimal_game_dir / "data" / "Actors.json"), "Actors.json")
@@ -1794,6 +1818,77 @@ async def test_old_game_reads_archived_files_and_adds_missing_backups(minimal_ga
     origin_plugins_path = minimal_game_dir / "js" / "plugins_origin.js"
     assert origin_plugins_path.exists()
     assert "プラグイン本文" in origin_plugins_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_loader_rejects_missing_fixed_active_data_file(minimal_game_dir: Path) -> None:
+    """激活 data 缺标准文件时禁止加载游戏。"""
+    (minimal_game_dir / "data" / "Animations.json").unlink()
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        _ = await load_game_data(minimal_game_dir)
+
+    message = str(exc_info.value)
+    assert "激活数据目录" in message
+    assert "Animations.json" in message
+
+
+@pytest.mark.asyncio
+async def test_loader_rejects_map_infos_with_missing_map_file(minimal_game_dir: Path) -> None:
+    """MapInfos.json 引用不存在的地图文件时禁止加载游戏。"""
+    map_infos_path = minimal_game_dir / "data" / "MapInfos.json"
+    map_infos = ensure_json_array(_read_test_json(map_infos_path), "MapInfos.json")
+    map_infos.append(
+        {
+            "id": 14,
+            "expanded": False,
+            "name": "",
+            "order": 14,
+            "parentId": 0,
+            "scrollX": 0,
+            "scrollY": 0,
+        }
+    )
+    _rewrite_json(map_infos_path, map_infos)
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        _ = await load_game_data(minimal_game_dir)
+
+    message = str(exc_info.value)
+    assert "MapInfos.json" in message
+    assert "Map014.json" in message
+
+
+@pytest.mark.asyncio
+async def test_loader_rejects_incomplete_data_origin(minimal_game_dir: Path) -> None:
+    """data_origin 必须是完整原始 data 备份。"""
+    origin_data_dir = minimal_game_dir / "data_origin"
+    origin_data_dir.mkdir()
+    _ = shutil.copy2(
+        minimal_game_dir / "data" / "CommonEvents.json",
+        origin_data_dir / "CommonEvents.json",
+    )
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        _ = await load_game_data(minimal_game_dir)
+
+    message = str(exc_info.value)
+    assert "原始 data 备份" in message
+    assert "Animations.json" in message
+
+
+@pytest.mark.asyncio
+async def test_loader_rejects_active_missing_file_even_when_origin_is_complete(minimal_game_dir: Path) -> None:
+    """激活 data 损坏时不能靠完整 data_origin 掩盖。"""
+    _ = shutil.copytree(minimal_game_dir / "data", minimal_game_dir / "data_origin")
+    (minimal_game_dir / "data" / "Animations.json").unlink()
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        _ = await load_game_data(minimal_game_dir)
+
+    message = str(exc_info.value)
+    assert "激活数据目录" in message
+    assert "Animations.json" in message
 
 
 @pytest.mark.asyncio
@@ -1939,7 +2034,7 @@ async def test_restore_font_references_restores_mv_gamefont_css_without_rolling_
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """字体还原会按 gamefont.css 原件留档恢复 MV 字体族入口。"""
+    """字体还原会按 gamefont.css 原始备份恢复 MV 字体族入口。"""
     fonts_dir = minimal_mv_game_dir / "www" / "fonts"
     fonts_dir.mkdir()
     old_font = "YujiSyuku-Regular.ttf"
@@ -1997,7 +2092,7 @@ async def test_restore_font_references_uses_origin_backups_without_rolling_back_
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """字体还原按原件留档替回旧字体引用，不回滚已经写入的译文。"""
+    """字体还原按原始备份替回旧字体引用，不回滚已经写入的译文。"""
     fonts_dir = minimal_game_dir / "fonts"
     fonts_dir.mkdir()
     old_font = "OldFont.woff"

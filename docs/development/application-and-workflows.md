@@ -2,7 +2,7 @@
 
 ## 职责
 
-`app.application` 承载用户用例编排。`TranslationHandler` 是 CLI 调用的稳定门面，负责注册游戏、导入规则、正文翻译、写入游戏文件、术语表流程、字体处理和运行摘要。`app.application.use_cases` 放置可独立测试的用例辅助逻辑。字体替换能力位于 `app.application.font_replacement`，按入口服务、CSS 处理、文件读写、引用替换、原件留档还原、Rust 扫描适配和摘要模型拆分。
+`app.application` 承载用户用例编排。`TranslationHandler` 是 CLI 调用的稳定门面，负责注册游戏、导入规则、正文翻译、写入游戏文件、术语表流程、字体处理和运行摘要。`app.application.use_cases` 放置可独立测试的用例辅助逻辑。字体替换能力位于 `app.application.font_replacement`，按入口服务、CSS 处理、文件读写、引用替换、原始备份还原、Rust 扫描适配和摘要模型拆分。
 
 ## 输入
 

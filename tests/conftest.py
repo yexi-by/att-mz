@@ -13,6 +13,42 @@ def write_json(path: Path, value: JsonValue) -> None:
     _ = path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def write_complete_standard_data_files(data_dir: Path, *, map_ids: list[int]) -> None:
+    """补齐测试游戏必须存在的 RPG Maker 标准 data 文件。"""
+    supplemental_files: dict[str, JsonValue] = {
+        "Actors.json": [None, {"id": 1, "name": "", "note": "", "nickname": "", "profile": ""}],
+        "Animations.json": [None, {"id": 1, "name": ""}],
+        "Armors.json": [None, {"id": 1, "name": "", "note": "", "description": ""}],
+        "Classes.json": [None, {"id": 1, "name": "", "note": ""}],
+        "Enemies.json": [None, {"id": 1, "name": "", "note": ""}],
+        "Items.json": [None, {"id": 1, "name": "", "note": "", "description": ""}],
+        "Skills.json": [None, {"id": 1, "name": "", "note": "", "description": "", "message1": ""}],
+        "States.json": [None, {"id": 1, "name": "", "note": ""}],
+        "Tilesets.json": [None, {"id": 1, "name": "", "note": ""}],
+        "Weapons.json": [None, {"id": 1, "name": "", "note": "", "description": ""}],
+        "MapInfos.json": [
+            None,
+            *(
+                {
+                    "id": map_id,
+                    "expanded": False,
+                    "name": "",
+                    "order": index,
+                    "parentId": 0,
+                    "scrollX": 0,
+                    "scrollY": 0,
+                }
+                for index, map_id in enumerate(map_ids, start=1)
+            ),
+        ],
+    }
+    for file_name, value in supplemental_files.items():
+        path = data_dir / file_name
+        if path.exists():
+            continue
+        write_json(path, value)
+
+
 @pytest.fixture
 def minimal_game_dir(tmp_path: Path) -> Path:
     """创建只包含核心流程所需文件的最小 MZ 游戏目录。"""
@@ -217,6 +253,7 @@ def minimal_game_dir(tmp_path: Path) -> Path:
         ],
     )
     write_json(data_dir / "UnknownPluginData.json", [{"id": 1, "name": "これは無視される"}])
+    write_complete_standard_data_files(data_dir, map_ids=[1, 2])
 
     plugins: list[JsonValue] = [
         {
@@ -373,6 +410,7 @@ def minimal_mv_game_dir(tmp_path: Path) -> Path:
             },
         ],
     )
+    write_complete_standard_data_files(data_dir, map_ids=[1])
 
     plugins: list[JsonValue] = [
         {
@@ -523,6 +561,7 @@ def minimal_english_game_dir(tmp_path: Path) -> Path:
             },
         ],
     )
+    write_complete_standard_data_files(data_dir, map_ids=[1])
 
     plugins: list[JsonValue] = [
         {

@@ -1,6 +1,7 @@
 """Agent 工具包诊断、扫描和质量报告测试。"""
 
 import json
+import shutil
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -90,6 +91,24 @@ def _mv_virtual_namebox_rules_text() -> str:
     )
 
 
+def _broad_mv_angle_namebox_rules_text() -> str:
+    """生成会吞掉尖括号候选的测试用 MV 虚拟名字框规则 JSON。"""
+    return json.dumps(
+        {
+            "rules": [
+                {
+                    "name": "broad-angle",
+                    "pattern": r"^<(?P<speaker>[^>\r\n]{1,80})>$",
+                    "speaker_group": "speaker",
+                    "speaker_policy": "translate",
+                    "render_template": "<{speaker}>",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
 async def _install_minimal_external_text_rules(
     *,
     registry: GameRegistry,
@@ -165,6 +184,25 @@ async def test_doctor_creates_missing_db_directory(tmp_path: Path) -> None:
     error_codes = {error.code for error in report.errors}
     assert "db_dir" not in error_codes
     assert db_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_missing_standard_data_file(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """doctor 会把目标游戏标准 data 文件缺失报告为错误。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    (minimal_game_dir / "data" / "Animations.json").unlink()
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.doctor(game_title="テストゲーム", check_llm=False)
+
+    assert report.status == "error"
+    game_errors = [error.message for error in report.errors if error.code == "game"]
+    assert game_errors
+    assert "Animations.json" in game_errors[0]
 
 
 @pytest.mark.asyncio
@@ -444,6 +482,74 @@ async def test_mv_virtual_namebox_rule_commands_validate_import_and_reject_mz(
         records = await session.read_mv_virtual_namebox_rules()
     assert len(records) == 1
     assert records[0].rule_name == "standalone-colon"
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_namebox_validation_reports_overwide_angle_rule_hits(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """校验会指出尖括号宽规则误吞动态控制符，并列出新命中的候选。"""
+    mv_common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    raw_value = coerce_json_value(cast(object, json.loads(mv_common_events_path.read_text(encoding="utf-8"))))
+    mv_common_events = ensure_json_array(raw_value, "CommonEvents.json")
+    mv_common_events.extend(
+        [
+            {
+                "id": 2,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<\\n[1]>"]},
+                    {"code": 401, "parameters": ["動的名の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 3,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["<シナリオ>"]},
+                    {"code": 401, "parameters": ["制作表示です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+        ]
+    )
+    _ = mv_common_events_path.write_text(json.dumps(raw_value, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    validate_report = await service.validate_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_broad_mv_angle_namebox_rules_text(),
+    )
+    import_report = await service.import_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_broad_mv_angle_namebox_rules_text(),
+    )
+    details = ensure_json_object(validate_report.details, "details")
+    newly_matched_candidates = ensure_json_array(
+        details["newly_matched_candidates"],
+        "details.newly_matched_candidates",
+    )
+    newly_matched_texts: set[str] = set()
+    for index, raw_detail in enumerate(newly_matched_candidates):
+        detail = ensure_json_object(raw_detail, f"details.newly_matched_candidates[{index}]")
+        text = detail.get("text")
+        if isinstance(text, str):
+            newly_matched_texts.add(text)
+    validate_json = validate_report.to_json_text()
+    newly_matched_count = validate_report.summary["newly_matched_candidate_count"]
+
+    assert validate_report.status == "error"
+    assert import_report.status == "error"
+    assert "broad-angle" in validate_json
+    assert "标准角色名控制符被 translate 规则命中" in validate_json
+    assert isinstance(newly_matched_count, int)
+    assert newly_matched_count >= 2
+    assert "<\\n[1]>" in newly_matched_texts
+    assert "<シナリオ>" in newly_matched_texts
 
 
 @pytest.mark.asyncio
@@ -886,10 +992,10 @@ async def test_feedback_verification_reads_active_files_not_origin_backups(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """反馈反查必须检查当前激活文件，不能把原件留档误报成激活文件残留。"""
+    """反馈反查必须检查当前激活文件，不能把原始备份误报成激活文件残留。"""
     items_path = minimal_game_dir / "data" / "Items.json"
     origin_data_dir = minimal_game_dir / "data_origin"
-    origin_data_dir.mkdir()
+    _ = shutil.copytree(minimal_game_dir / "data", origin_data_dir)
     origin_items = coerce_json_value(cast(object, json.loads(items_path.read_text(encoding="utf-8"))))
     active_items = coerce_json_value(cast(object, json.loads(items_path.read_text(encoding="utf-8"))))
     origin_item = ensure_json_object(ensure_json_array(origin_items, "origin Items.json")[1], "origin Items.json[1]")
@@ -1633,6 +1739,7 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     assert len(subagent_rounds) == 2
     assert zero_round["name"] == "mv_virtual_namebox_rules"
     assert zero_round["owner"] == "主代理"
+    assert "details.newly_matched_candidates" in str(zero_round["description"])
     assert first_round["name"] == "terminology_candidates"
     assert "mv-virtual-namebox-candidates.json" in manifest_files
     assert "mv-virtual-namebox-rules.json" in manifest_files
