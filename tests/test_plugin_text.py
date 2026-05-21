@@ -151,14 +151,14 @@ def test_plugin_rule_import_rejects_non_integer_plugin_index() -> None:
             _ = parse_plugin_rule_import_text(json.dumps(payload, ensure_ascii=False))
 
 
-def test_plugin_rule_import_rejects_legacy_name_mapping_schema() -> None:
-    """旧的插件名映射格式不再属于插件规则外部协议。"""
-    legacy_payload = {
+def test_plugin_rule_import_rejects_name_mapping_schema() -> None:
+    """插件名映射对象不是插件规则外部协议。"""
+    payload = {
         "TestPlugin": ["$['parameters']['Message']"],
     }
 
     with pytest.raises(TypeError, match="顶层必须是数组"):
-        _ = parse_plugin_rule_import_text(json.dumps(legacy_payload, ensure_ascii=False))
+        _ = parse_plugin_rule_import_text(json.dumps(payload, ensure_ascii=False))
 
 
 @pytest.mark.asyncio

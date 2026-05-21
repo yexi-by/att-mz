@@ -1,6 +1,7 @@
 """多游戏数据库管理模块。"""
 
 from pathlib import Path
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Self, cast, override
 
@@ -47,6 +48,7 @@ from .sql import (
     CREATE_TEXT_GLOSSARY_TERMS_TABLE,
     CREATE_FIELD_TRANSLATION_TERMS_TABLE,
     CURRENT_SCHEMA_VERSION,
+    EXPECTED_STATIC_TABLE_NAMES,
     LANGUAGE_SETTINGS_KEY,
     METADATA_KEY,
     SCHEMA_VERSION_KEY,
@@ -60,6 +62,22 @@ from .sql import (
 )
 from .terminology_records import TerminologyRecordSessionMixin
 from .translation_records import TranslationRecordSessionMixin
+
+type ColumnSchemaSignature = tuple[int, str, str, int, str | None, int]
+type ForeignKeySchemaSignature = tuple[int, int, str, str, str, str, str, str]
+type IndexSchemaSignature = tuple[int, str, int, tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class TableSchemaSignature:
+    """单张 SQLite 表的当前结构签名。"""
+
+    columns: tuple[ColumnSchemaSignature, ...]
+    foreign_keys: tuple[ForeignKeySchemaSignature, ...]
+    indexes: tuple[IndexSchemaSignature, ...]
+
+
+type DatabaseSchemaSignature = dict[str, TableSchemaSignature]
 
 async def open_connection(db_path: Path) -> aiosqlite.Connection:
     """打开 SQLite 连接并设置统一行工厂。"""
@@ -93,36 +111,180 @@ async def read_table_names(connection: aiosqlite.Connection) -> set[str]:
     return table_names
 
 
-def legacy_terminology_table_names() -> set[str]:
-    """返回已废弃的术语表物理表名，用于不兼容升级检测。"""
-    return {
-        "terminology_" + "terms",
-        "terminology_" + "glossary_terms",
-        "terminology_" + "import_state",
-    }
-
-
-def _old_database_error(db_path: Path) -> RuntimeError:
-    """构造旧数据库格式的统一失败信息。"""
+def _schema_mismatch_error(db_path: Path, detail: str) -> RuntimeError:
+    """构造当前数据库结构校验失败信息。"""
     return RuntimeError(
-        f"旧数据库格式已废弃，请删除对应游戏数据库后重新注册游戏，再重新导入规则和译名: {db_path}"
+        f"数据库结构不符合当前版本，请删除对应游戏数据库后重新注册游戏，再重新导入规则和译名: {db_path}；{detail}"
     )
 
 
 async def ensure_schema_compatible(connection: aiosqlite.Connection, db_path: Path) -> None:
-    """确认已有数据库是当前不兼容版本，旧库直接拒绝打开。"""
+    """确认已有数据库完整匹配当前 schema。"""
     table_names = await read_table_names(connection)
-    if table_names & legacy_terminology_table_names():
-        raise _old_database_error(db_path)
-    if "schema_version" not in table_names:
-        raise _old_database_error(db_path)
+    expected_table_names = set(EXPECTED_STATIC_TABLE_NAMES)
+    internal_table_names = {"sqlite_sequence"}
+    missing_table_names = sorted(expected_table_names - table_names)
+    unexpected_table_names = sorted(table_names - expected_table_names - internal_table_names)
+    if missing_table_names:
+        raise _schema_mismatch_error(db_path, f"缺少表 {', '.join(missing_table_names)}")
+    if unexpected_table_names:
+        raise _schema_mismatch_error(db_path, f"存在未声明表 {', '.join(unexpected_table_names)}")
+
+    expected_schema = await build_current_schema_signature()
+    actual_schema = await read_database_schema_signature(
+        connection=connection,
+        table_names=EXPECTED_STATIC_TABLE_NAMES,
+    )
+    mismatched_schema_tables = [
+        table_name
+        for table_name in EXPECTED_STATIC_TABLE_NAMES
+        if actual_schema.get(table_name) != expected_schema.get(table_name)
+    ]
+    if mismatched_schema_tables:
+        raise _schema_mismatch_error(db_path, f"表结构不匹配 {', '.join(mismatched_schema_tables)}")
+
     try:
         async with connection.execute(SELECT_SCHEMA_VERSION, (SCHEMA_VERSION_KEY,)) as cursor:
             row = await cursor.fetchone()
     except aiosqlite.Error as error:
-        raise _old_database_error(db_path) from error
+        raise _schema_mismatch_error(db_path, "schema_version 不可读取") from error
     if row is None or row[0] != CURRENT_SCHEMA_VERSION:
-        raise _old_database_error(db_path)
+        raise _schema_mismatch_error(db_path, "schema_version 不是当前版本")
+
+
+async def build_current_schema_signature() -> DatabaseSchemaSignature:
+    """用当前建表 SQL 生成标准数据库结构签名。"""
+    connection = await aiosqlite.connect(":memory:")
+    connection.row_factory = aiosqlite.Row
+    try:
+        _ = await connection.execute("PRAGMA foreign_keys = ON")
+        await create_static_tables(connection)
+        return await read_database_schema_signature(
+            connection=connection,
+            table_names=EXPECTED_STATIC_TABLE_NAMES,
+        )
+    finally:
+        await connection.close()
+
+
+async def read_database_schema_signature(
+    *,
+    connection: aiosqlite.Connection,
+    table_names: tuple[str, ...],
+) -> DatabaseSchemaSignature:
+    """读取指定表集合的列、外键和索引结构签名。"""
+    schema: DatabaseSchemaSignature = {}
+    for table_name in table_names:
+        schema[table_name] = TableSchemaSignature(
+            columns=await read_table_column_schema(connection=connection, table_name=table_name),
+            foreign_keys=await read_table_foreign_key_schema(connection=connection, table_name=table_name),
+            indexes=await read_table_index_schema(connection=connection, table_name=table_name),
+        )
+    return schema
+
+
+async def read_table_column_schema(
+    *,
+    connection: aiosqlite.Connection,
+    table_name: str,
+) -> tuple[ColumnSchemaSignature, ...]:
+    """读取单表列定义签名。"""
+    async with connection.execute(f"PRAGMA table_info([{table_name}])") as cursor:
+        rows = await cursor.fetchall()
+    return tuple(
+        (
+            row_int_value(row, "cid"),
+            row_text_value(row, "name"),
+            row_text_value(row, "type"),
+            row_int_value(row, "notnull"),
+            row_optional_text_value(row, "dflt_value"),
+            row_int_value(row, "pk"),
+        )
+        for row in rows
+    )
+
+
+async def read_table_foreign_key_schema(
+    *,
+    connection: aiosqlite.Connection,
+    table_name: str,
+) -> tuple[ForeignKeySchemaSignature, ...]:
+    """读取单表外键定义签名。"""
+    async with connection.execute(f"PRAGMA foreign_key_list([{table_name}])") as cursor:
+        rows = await cursor.fetchall()
+    return tuple(
+        (
+            row_int_value(row, "id"),
+            row_int_value(row, "seq"),
+            row_text_value(row, "table"),
+            row_text_value(row, "from"),
+            row_text_value(row, "to"),
+            row_text_value(row, "on_update"),
+            row_text_value(row, "on_delete"),
+            row_text_value(row, "match"),
+        )
+        for row in rows
+    )
+
+
+async def read_table_index_schema(
+    *,
+    connection: aiosqlite.Connection,
+    table_name: str,
+) -> tuple[IndexSchemaSignature, ...]:
+    """读取单表唯一索引和主键索引签名。"""
+    async with connection.execute(f"PRAGMA index_list([{table_name}])") as cursor:
+        rows = await cursor.fetchall()
+    signatures: list[IndexSchemaSignature] = []
+    for row in rows:
+        index_name = row_text_value(row, "name")
+        columns = await read_index_column_names(connection=connection, index_name=index_name)
+        signatures.append(
+            (
+                row_int_value(row, "unique"),
+                row_text_value(row, "origin"),
+                row_int_value(row, "partial"),
+                columns,
+            )
+        )
+    return tuple(sorted(signatures))
+
+
+async def read_index_column_names(
+    *,
+    connection: aiosqlite.Connection,
+    index_name: str,
+) -> tuple[str, ...]:
+    """读取索引覆盖的列名。"""
+    async with connection.execute(f"PRAGMA index_info([{index_name}])") as cursor:
+        rows = await cursor.fetchall()
+    return tuple(row_text_value(row, "name") for row in rows)
+
+
+def row_text_value(row: aiosqlite.Row, key: str) -> str:
+    """从 SQLite 行读取字符串字段。"""
+    value = cast(object, row[key])
+    if not isinstance(value, str):
+        raise RuntimeError(f"数据库结构字段不是字符串: {key}")
+    return value
+
+
+def row_optional_text_value(row: aiosqlite.Row, key: str) -> str | None:
+    """从 SQLite 行读取可空字符串字段。"""
+    value = cast(object, row[key])
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"数据库结构字段不是字符串或空值: {key}")
+    return value
+
+
+def row_int_value(row: aiosqlite.Row, key: str) -> int:
+    """从 SQLite 行读取整数字段。"""
+    value = cast(object, row[key])
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError(f"数据库结构字段不是整数: {key}")
+    return value
 
 
 async def create_static_tables(connection: aiosqlite.Connection) -> None:
@@ -233,17 +395,17 @@ async def read_metadata(connection: aiosqlite.Connection, db_path: Path) -> Game
 
 
 async def read_language_settings(connection: aiosqlite.Connection, db_path: Path) -> LanguageSettings:
-    """读取当前游戏语言设置；缺失时要求先补齐语言档案。"""
+    """读取当前游戏语言设置；缺失时要求重新注册游戏。"""
     try:
         async with connection.execute(SELECT_LANGUAGE_SETTINGS, (LANGUAGE_SETTINGS_KEY,)) as cursor:
             row = await cursor.fetchone()
     except aiosqlite.Error as error:
         raise RuntimeError(
-            f"数据库缺少语言设置表，请先用独立脚本为该数据库写入语言档案: {db_path}"
+            f"数据库语言设置表不可读取，请重新注册游戏: {db_path}"
         ) from error
     if row is None:
         raise RuntimeError(
-            f"数据库缺少语言设置记录，请先用独立脚本为该数据库写入语言档案: {db_path}"
+            f"数据库缺少语言设置记录，请重新注册游戏: {db_path}"
         )
     source_language = parse_source_language(row_str(row, "source_language", db_path))
     target_language = row_str(row, "target_language", db_path).strip()
@@ -314,7 +476,8 @@ class GameRegistry:
                     raise RuntimeError(
                         f"数据库元数据标题与文件名目标不一致: {db_path}"
                     )
-            await create_static_tables(connection)
+            if not db_already_exists:
+                await create_static_tables(connection)
             await write_metadata(connection, game_title, resolved_game_path, layout)
             await write_language_settings(connection, source_language)
         except Exception:
@@ -355,7 +518,6 @@ class GameRegistry:
                 db_path=db_path,
             )
             language_settings = await read_language_settings(connection=connection, db_path=db_path)
-            await create_static_tables(connection)
             if metadata.game_title != game_title:
                 raise RuntimeError(
                     f"数据库元数据标题不匹配: 期望 {game_title}，实际 {metadata.game_title}"

@@ -157,7 +157,7 @@ uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> -
 
 空规则不会默认保存。只有当前扫描候选确实为空时，才允许在导入命令中追加 `--confirm-empty` 保存“已确认没有规则”的状态；如果候选仍存在，导入会报错。
 
-如果规则变化导致一部分已保存译文不再属于当前规则范围，导入命令会先把这些译文备份到 `outputs/rule-import-backups/<游戏标题>/...json`，再清理项目数据库里的旧译文记录。JSON 报告会返回 `deleted_translations_backed_up` 告警，并在 `summary.deleted_translation_backup_path` 给出备份文件路径。若确认规则导错，先重新导入正确规则，再用 `import-manual-translations --game <游戏标题> --input <备份文件> --json` 恢复这些译文。
+如果规则变化导致一部分已保存译文不再属于当前规则范围，导入命令会先把这些译文备份到 `outputs/rule-import-backups/<游戏标题>/...json`，再清理项目数据库里的已保存译文记录。JSON 报告会返回 `deleted_translations_backed_up` 告警，并在 `summary.deleted_translation_backup_path` 给出备份文件路径。若确认规则导错，先重新导入正确规则，再用 `import-manual-translations --game <游戏标题> --input <备份文件> --json` 恢复这些译文。
 
 ## 游戏控制符规则
 

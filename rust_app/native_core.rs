@@ -101,7 +101,7 @@ mod tests {
             "source_residual_rules": [
                 {
                     "rule_id": "broken:1",
-                    "rule_type": "legacy",
+                    "rule_type": "unknown",
                     "location_path": "Map001.json/1/0/0",
                     "pattern_text": "",
                     "allowed_terms": [],

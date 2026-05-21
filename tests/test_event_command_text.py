@@ -106,8 +106,8 @@ def test_event_command_code_resolution_uses_configured_default_array() -> None:
     ) == frozenset({102, 103})
 
 
-def test_event_command_setting_prefers_engine_default_over_legacy_default() -> None:
-    """按引擎默认编码优先于旧默认编码，显式编码仍由调用方覆盖。"""
+def test_event_command_setting_prefers_engine_default_over_common_default() -> None:
+    """按引擎默认编码优先于通用默认编码，显式编码仍由调用方覆盖。"""
     setting = EventCommandTextSetting.model_validate(
         {
             "default_command_codes": [357],

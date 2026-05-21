@@ -47,20 +47,6 @@ class TerminologyRecordSessionMixin(SessionMixinBase):
         )
         await self.connection.commit()
 
-    async def replace_terminology_registry(
-        self,
-        registry: TerminologyRegistry,
-    ) -> None:
-        """用一次外部导入结果替换当前游戏的全部术语表条目。"""
-        _ = await self.connection.execute(DELETE_ALL_FIELD_TRANSLATION_TERMS)
-        for category, entries in registry.as_category_map().items():
-            for source_text, translated_text in entries.items():
-                _ = await self.connection.execute(
-                    INSERT_FIELD_TRANSLATION_TERM,
-                    (category, source_text, translated_text),
-                )
-        await self.connection.commit()
-
     async def read_terminology_registry(self) -> TerminologyRegistry | None:
         """从数据库读取当前游戏已导入的字段译名表。"""
         async with self.connection.execute(SELECT_FIELD_TRANSLATION_TERMS) as cursor:
@@ -85,19 +71,6 @@ class TerminologyRecordSessionMixin(SessionMixinBase):
             translated_text = row_str(row, "translated_text", self.db_path)
             category_map[category][source_text] = translated_text
         return TerminologyRegistry.from_category_map(category_map)
-
-    async def replace_terminology_glossary(
-        self,
-        glossary: TerminologyGlossary,
-    ) -> None:
-        """用一次外部导入结果替换当前游戏的正文术语表。"""
-        _ = await self.connection.execute(DELETE_ALL_TEXT_GLOSSARY_TERMS)
-        for source_text, translated_text in glossary.terms.items():
-            _ = await self.connection.execute(
-                INSERT_TEXT_GLOSSARY_TERM,
-                (source_text, translated_text),
-            )
-        await self.connection.commit()
 
     async def read_terminology_glossary(self) -> TerminologyGlossary | None:
         """从数据库读取当前游戏已导入的正文术语表。"""

@@ -530,7 +530,7 @@ def test_docs_do_not_own_agent_task_contracts() -> None:
 
 
 def test_documentation_uses_current_feedback_cli_names() -> None:
-    """文档和 Skill 不得保留已废弃的反馈闭环命令名。"""
+    """文档和 Skill 只使用当前反馈闭环命令名。"""
     checked_paths = [
         ROOT / "README.md",
         ROOT / "docs" / "advanced-usage.md",

@@ -14,7 +14,7 @@
 
 | 表名 | 职责 | 主要写入入口 |
 |------|------|--------------|
-| `schema_version` | 保存当前数据库 schema 版本；旧库和缺版本库会直接拒绝打开 | `add-game` |
+| `schema_version` | 保存当前数据库 schema 版本；版本或表结构不匹配会直接拒绝打开 | `add-game` |
 | `metadata` | 保存当前数据库绑定的游戏目录、真实内容目录、引擎类型和版本 | `add-game` |
 | `language_settings` | 保存当前游戏的源语言和目标语言 | `add-game` |
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
@@ -44,7 +44,7 @@
 - `location_path` 是文本在游戏里的内部位置，只用于绑定导出、导入、质量检查和写回流程。面向用户说明时应说“文本在游戏里的内部位置”。
 - `item_type` 当前取值为 `long_text`、`array`、`short_text`。
 - `engine_kind` 当前取值为 `mv`、`mz`。
-- 打开数据库时会校验 `schema_version`。旧数据库、缺版本库和含废弃术语表名的数据库会直接报错，提示删除对应游戏数据库后重新注册并重新导入规则和译名；正式代码不会做运行时兼容迁移。
+- 打开数据库时会校验 `schema_version`、项目声明的完整表集合、列定义、外键和唯一索引。结构不匹配会直接报错，提示删除对应游戏数据库后重新注册并重新导入规则和译名；正式代码只创建新库，不在运行时修补已有库。
 
 ## CLI 与 Skill 对齐
 

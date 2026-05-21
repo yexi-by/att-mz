@@ -8,6 +8,7 @@ import pytest
 
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
+from app.persistence.sql import CURRENT_SCHEMA_VERSION, EXPECTED_STATIC_TABLE_NAMES
 from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
     EventCommandParameterFilter,
@@ -20,6 +21,81 @@ from app.rmmz.schema import (
     TranslationErrorItem,
     TranslationItem,
 )
+
+
+def read_sqlite_table_names(db_path: Path) -> set[str]:
+    """读取测试数据库中的表名集合。"""
+    with sqlite3.connect(db_path) as connection:
+        table_rows = cast(
+            list[tuple[str]],
+            connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
+        )
+    return {row[0] for row in table_rows}
+
+
+def create_database_with_invalid_table_shapes(db_path: Path, tmp_path: Path) -> None:
+    """创建表名完整但业务表结构错误的测试数据库。"""
+    with sqlite3.connect(db_path) as connection:
+        for table_name in EXPECTED_STATIC_TABLE_NAMES:
+            if table_name == "schema_version":
+                _ = connection.execute(
+                    "CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)"
+                )
+                _ = connection.execute(
+                    "INSERT INTO schema_version (schema_key, version) VALUES ('current', ?)",
+                    (CURRENT_SCHEMA_VERSION,),
+                )
+                continue
+            if table_name == "metadata":
+                _ = connection.execute(
+                    """
+                    CREATE TABLE metadata (
+                        metadata_key TEXT PRIMARY KEY,
+                        game_title TEXT NOT NULL,
+                        game_path TEXT NOT NULL,
+                        engine_kind TEXT NOT NULL,
+                        content_root TEXT NOT NULL,
+                        engine_version TEXT NOT NULL
+                    )
+                    """
+                )
+                _ = connection.execute(
+                    """
+                    INSERT INTO metadata (
+                        metadata_key,
+                        game_title,
+                        game_path,
+                        engine_kind,
+                        content_root,
+                        engine_version
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "current_game",
+                        "BrokenSchema",
+                        str(tmp_path),
+                        "mz",
+                        str(tmp_path),
+                        "1.0.0",
+                    ),
+                )
+                continue
+            if table_name == "language_settings":
+                _ = connection.execute(
+                    """
+                    CREATE TABLE language_settings (
+                        settings_key TEXT PRIMARY KEY,
+                        source_language TEXT NOT NULL,
+                        target_language TEXT NOT NULL
+                    )
+                    """
+                )
+                _ = connection.execute(
+                    "INSERT INTO language_settings (settings_key, source_language, target_language) VALUES ('current', 'ja', 'zh-Hans')"
+                )
+                continue
+            _ = connection.execute(f"CREATE TABLE [{table_name}] (wrong_column TEXT)")
 
 
 @pytest.mark.asyncio
@@ -229,6 +305,17 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
 
 
 @pytest.mark.asyncio
+async def test_register_game_creates_declared_static_table_set(minimal_game_dir: Path, tmp_path: Path) -> None:
+    """注册新游戏时创建的静态表集合必须等于项目声明。"""
+    registry = GameRegistry(tmp_path / "db")
+
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    table_names = read_sqlite_table_names(record.db_path)
+    assert table_names - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
+
+
+@pytest.mark.asyncio
 async def test_register_game_updates_source_language_setting(
     minimal_english_game_dir: Path,
     tmp_path: Path,
@@ -260,7 +347,7 @@ async def test_source_residual_rule_type_must_be_known(minimal_game_dir: Path, t
             """,
             (
                 "broken:1",
-                "legacy",
+                "unknown",
                 "Map001.json/1/0/0",
                 "",
                 "[]",
@@ -274,12 +361,17 @@ async def test_source_residual_rule_type_must_be_known(minimal_game_dir: Path, t
 
 
 @pytest.mark.asyncio
-async def test_open_game_requires_language_settings_without_creating_empty_table(tmp_path: Path) -> None:
-    """缺少语言设置的数据库会直接报错，运行时不会写入空语言表。"""
+async def test_open_game_rejects_incomplete_schema_without_creating_missing_tables(tmp_path: Path) -> None:
+    """数据库表集合不完整时直接报错，运行时不会补建缺失表。"""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    db_path = db_dir / "Legacy.db"
+    db_path = db_dir / "Incomplete.db"
     with sqlite3.connect(db_path) as connection:
+        _ = connection.execute("CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)")
+        _ = connection.execute(
+            "INSERT INTO schema_version (schema_key, version) VALUES ('current', ?)",
+            (CURRENT_SCHEMA_VERSION,),
+        )
         _ = connection.execute(
             """
             CREATE TABLE metadata (
@@ -306,7 +398,7 @@ async def test_open_game_requires_language_settings_without_creating_empty_table
             """,
             (
                 "current_game",
-                "Legacy",
+                "Incomplete",
                 str(tmp_path),
                 "mz",
                 str(tmp_path),
@@ -315,33 +407,38 @@ async def test_open_game_requires_language_settings_without_creating_empty_table
         )
     registry = GameRegistry(db_dir)
 
-    with pytest.raises(RuntimeError, match="旧数据库格式已废弃"):
-        _ = await registry.open_game("Legacy")
+    with pytest.raises(RuntimeError, match="数据库结构不符合当前版本"):
+        _ = await registry.open_game("Incomplete")
 
-    with sqlite3.connect(db_path) as connection:
-        # sqlite3 类型存根无法表达当前 SELECT 的行形状，这里立即收窄为字符串元组列表。
-        table_rows = cast(
-            list[tuple[str]],
-            connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
-        )
-        table_names = {row[0] for row in table_rows}
+    table_names = read_sqlite_table_names(db_path)
     assert "language_settings" not in table_names
+    assert "translation_items" not in table_names
 
 
 @pytest.mark.asyncio
-async def test_open_game_rejects_database_with_legacy_terminology_tables(tmp_path: Path) -> None:
-    """即使版本号伪装成当前值，含废弃术语表名的数据库也必须拒绝打开。"""
+async def test_open_game_rejects_database_with_undeclared_table(minimal_game_dir: Path, tmp_path: Path) -> None:
+    """数据库包含项目未声明的业务表时必须拒绝打开。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    db_path = record.db_path
+    with sqlite3.connect(db_path) as connection:
+        _ = connection.execute("CREATE TABLE external_debug_table (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(RuntimeError, match="数据库结构不符合当前版本"):
+        _ = await registry.open_game(record.game_title)
+
+
+@pytest.mark.asyncio
+async def test_open_game_rejects_database_with_invalid_table_shapes(tmp_path: Path) -> None:
+    """数据库表名完整但表结构不匹配时必须拒绝打开。"""
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    db_path = db_dir / "LegacyTerms.db"
-    with sqlite3.connect(db_path) as connection:
-        _ = connection.execute("CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)")
-        _ = connection.execute("INSERT INTO schema_version (schema_key, version) VALUES ('current', 2)")
-        _ = connection.execute("CREATE TABLE terminology_terms (category TEXT, source_text TEXT, translated_text TEXT)")
+    db_path = db_dir / "BrokenSchema.db"
+    create_database_with_invalid_table_shapes(db_path=db_path, tmp_path=tmp_path)
     registry = GameRegistry(db_dir)
 
-    with pytest.raises(RuntimeError, match="旧数据库格式已废弃"):
-        _ = await registry.open_game("LegacyTerms")
+    with pytest.raises(RuntimeError, match="表结构不匹配"):
+        _ = await registry.open_game("BrokenSchema")
 
 
 @pytest.mark.asyncio

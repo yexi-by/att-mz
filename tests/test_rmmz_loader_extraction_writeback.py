@@ -962,8 +962,8 @@ async def test_mv_virtual_name_box_write_back_keeps_dynamic_speaker_without_tran
 
 
 @pytest.mark.asyncio
-async def test_mv_virtual_name_box_write_back_rejects_legacy_speaker_line_paths(minimal_mv_game_dir: Path) -> None:
-    """旧 MV 译文如果还把独立说话人行当正文，写回时必须提示完整重置。"""
+async def test_mv_virtual_name_box_write_back_rejects_speaker_line_paths_in_body(minimal_mv_game_dir: Path) -> None:
+    """MV 译文把独立说话人行当正文时，写回必须提示完整重置。"""
     common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
     common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
     common_events.append(
@@ -991,15 +991,15 @@ async def test_mv_virtual_name_box_write_back_rejects_legacy_speaker_line_paths(
         for candidate in extracted["CommonEvents.json"].translation_items
         if candidate.location_path == "CommonEvents.json/2/0"
     )
-    legacy_item = item.model_copy(deep=True)
-    legacy_item.source_line_paths = ["CommonEvents.json/2/1", "CommonEvents.json/2/2"]
-    legacy_item.translation_lines = ["向导：", "你好"]
+    invalid_item = item.model_copy(deep=True)
+    invalid_item.source_line_paths = ["CommonEvents.json/2/1", "CommonEvents.json/2/2"]
+    invalid_item.translation_lines = ["向导：", "你好"]
 
     reset_writable_copies(game_data)
     with pytest.raises(ValueError) as exc_info:
         write_data_text(
             game_data,
-            [legacy_item],
+            [invalid_item],
             speaker_name_translations={"案内人": "向导"},
             mv_virtual_namebox_rule_records=mv_namebox_rules,
         )
