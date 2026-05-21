@@ -24,6 +24,7 @@ DEFAULT_OUTPUT_DIR = ROOT / "dist"
 RELEASE_DIRECTORY_NAME = "att-mz"
 DEFAULT_ZIP_NAME = "att-mz-windows-x86_64.zip"
 RELEASE_SKILL_SOURCE = ROOT / "skills" / "att-mz-release" / "SKILL.md"
+RELEASE_SKILL_REFERENCES_SOURCE = ROOT / "skills" / "att-mz-release" / "references"
 RELEASE_README_SOURCE = ROOT / "docs" / "release-readme.md"
 
 
@@ -146,37 +147,14 @@ def copy_release_resources(release_dir: Path) -> None:
         CopySpec(ROOT / "prompts" / "text_translation_ja_to_zh_system.md", ("prompts", "text_translation_ja_to_zh_system.md")),
         CopySpec(ROOT / "prompts" / "text_translation_en_to_zh_system.md", ("prompts", "text_translation_en_to_zh_system.md")),
         CopySpec(ROOT / "fonts" / "NotoSansSC-Regular.ttf", ("fonts", "NotoSansSC-Regular.ttf")),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "rpg-maker-mv-mz-world-knowledge.md",
-            ("skills", "att-mz", "references", "rpg-maker-mv-mz-world-knowledge.md"),
-        ),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "subtask-package-mode.md",
-            ("skills", "att-mz", "references", "subtask-package-mode.md"),
-        ),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "translation-rule-examples.md",
-            ("skills", "att-mz", "references", "translation-rule-examples.md"),
-        ),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "structured-placeholder-rules.md",
-            ("skills", "att-mz", "references", "structured-placeholder-rules.md"),
-        ),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "mv-virtual-namebox-rules.md",
-            ("skills", "att-mz", "references", "mv-virtual-namebox-rules.md"),
-        ),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "plugin-rules-agent-task.md",
-            ("skills", "att-mz", "references", "plugin-rules-agent-task.md"),
-        ),
-        CopySpec(
-            ROOT / "skills" / "att-mz-release" / "references" / "event-command-rules-agent-task.md",
-            ("skills", "att-mz", "references", "event-command-rules-agent-task.md"),
-        ),
     ]
     for spec in copy_specs:
         copy_file(spec.source, release_dir.joinpath(*spec.target_parts))
+    for reference_path in sorted(RELEASE_SKILL_REFERENCES_SOURCE.glob("*.md")):
+        copy_file(
+            reference_path,
+            release_dir / "skills" / "att-mz" / "references" / reference_path.name,
+        )
     copy_packaged_release_skill(release_dir / "skills" / "att-mz" / "SKILL.md")
 
     for directory_parts in (("data", "db"), ("logs",), ("outputs",)):
