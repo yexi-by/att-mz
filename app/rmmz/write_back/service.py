@@ -9,12 +9,14 @@ from app.rmmz.schema import (
     COMMON_EVENTS_FILE_NAME,
     GameData,
     MAP_PATTERN,
+    MvVirtualNameboxRuleRecord,
     PLUGINS_FILE_NAME,
     SYSTEM_FILE_NAME,
     TROOPS_FILE_NAME,
     TranslationItem,
 )
 from app.rmmz.text_rules import TextRules
+from app.rmmz.mv_namebox import runtime_mv_virtual_namebox_rules
 
 from .commands import command_item_sort_key, write_command_item
 from .note_tags import is_note_tag_location_path, write_note_tag_item
@@ -26,9 +28,13 @@ def write_data_text(
     items: list[TranslationItem],
     text_rules: TextRules | None = None,
     speaker_name_translations: dict[str, str] | None = None,
+    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
 ) -> None:
     """将最终翻译文本写入 `data/` 目录游戏数据的内存副本。"""
     command_items: list[TranslationItem] = []
+    mv_virtual_namebox_rules = runtime_mv_virtual_namebox_rules(
+        mv_virtual_namebox_rule_records or []
+    )
     for item in items:
         ensure_no_internal_placeholder_tokens(
             lines=item.translation_lines,
@@ -55,6 +61,7 @@ def write_data_text(
             item=item,
             text_rules=text_rules,
             speaker_name_translations=speaker_name_translations,
+            mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
 
 

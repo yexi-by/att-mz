@@ -10,6 +10,7 @@ from app.rmmz import DataTextExtraction
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     GameData,
+    MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
     PLUGINS_FILE_NAME,
     PluginTextRuleRecord,
@@ -43,6 +44,7 @@ class TextScopeService:
         )
         event_rules = await session.read_event_command_text_rules()
         note_tag_rules = await session.read_note_tag_text_rules()
+        mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
         if translated_items is None:
             translated_items = await session.read_translated_items()
         translated_paths = {item.location_path for item in translated_items}
@@ -53,6 +55,7 @@ class TextScopeService:
             plugin_rules=plugin_rules,
             event_rules=event_rules,
             note_tag_rules=note_tag_rules,
+            mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
         active_items = {
             item.location_path: item
@@ -122,9 +125,14 @@ def build_translation_data_map(
     plugin_rules: list[PluginTextRuleRecord],
     event_rules: list[EventCommandTextRuleRecord],
     note_tag_rules: list[NoteTagTextRuleRecord],
+    mv_virtual_namebox_rules: list[MvVirtualNameboxRuleRecord] | None = None,
 ) -> dict[str, TranslationData]:
     """按同一组规则构建当前可翻译文本集合。"""
-    translation_data_map = DataTextExtraction(game_data, text_rules).extract_all_text()
+    translation_data_map = DataTextExtraction(
+        game_data,
+        text_rules,
+        mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+    ).extract_all_text()
     merge_translation_data_map(
         translation_data_map,
         EventCommandTextExtraction(game_data, event_rules, text_rules).extract_all_text(),

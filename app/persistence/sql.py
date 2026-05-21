@@ -16,6 +16,7 @@ PLACEHOLDER_RULES_TABLE_NAME = "placeholder_rules"
 STRUCTURED_PLACEHOLDER_RULES_TABLE_NAME = "structured_placeholder_rules"
 STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE_NAME = "structured_placeholder_rule_groups"
 SOURCE_RESIDUAL_RULES_TABLE_NAME = "source_residual_rules"
+MV_VIRTUAL_NAMEBOX_RULES_TABLE_NAME = "mv_virtual_namebox_rules"
 RULE_REVIEW_STATES_TABLE_NAME = "rule_review_states"
 FONT_REPLACEMENT_RECORDS_TABLE_NAME = "font_replacement_records"
 TRANSLATION_RUNS_TABLE_NAME = "translation_runs"
@@ -24,7 +25,7 @@ TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 
 CREATE_SCHEMA_VERSION_TABLE = f"""
@@ -91,6 +92,22 @@ CREATE_SOURCE_RESIDUAL_RULES_TABLE = f"""
         allowed_terms TEXT NOT NULL,
         check_group   TEXT NOT NULL,
         reason        TEXT NOT NULL
+    )
+;
+"""
+
+CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{MV_VIRTUAL_NAMEBOX_RULES_TABLE_NAME}] (
+        rule_order      INTEGER NOT NULL,
+        rule_name       TEXT NOT NULL,
+        pattern_text    TEXT NOT NULL,
+        speaker_group   TEXT NOT NULL,
+        body_group      TEXT NOT NULL,
+        speaker_policy  TEXT NOT NULL,
+        render_template TEXT NOT NULL,
+        PRIMARY KEY (rule_order),
+        UNIQUE (rule_name)
     )
 ;
 """
@@ -408,6 +425,14 @@ INSERT_SOURCE_RESIDUAL_RULE = f"""
 ;
 """
 
+INSERT_MV_VIRTUAL_NAMEBOX_RULE = f"""
+--sql
+    INSERT OR REPLACE INTO [{MV_VIRTUAL_NAMEBOX_RULES_TABLE_NAME}]
+    (rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+;
+"""
+
 UPSERT_RULE_REVIEW_STATE = f"""
 --sql
     INSERT OR REPLACE INTO [{RULE_REVIEW_STATES_TABLE_NAME}]
@@ -648,6 +673,14 @@ SELECT_SOURCE_RESIDUAL_RULES = f"""
 ;
 """
 
+SELECT_MV_VIRTUAL_NAMEBOX_RULES = f"""
+--sql
+    SELECT rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template
+    FROM [{MV_VIRTUAL_NAMEBOX_RULES_TABLE_NAME}]
+    ORDER BY rule_order
+;
+"""
+
 SELECT_RULE_REVIEW_STATE = f"""
 --sql
     SELECT rule_domain, scope_hash, reviewed_empty, updated_at
@@ -767,6 +800,12 @@ DELETE_ALL_SOURCE_RESIDUAL_RULES = f"""
 ;
 """
 
+DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES = f"""
+--sql
+    DELETE FROM [{MV_VIRTUAL_NAMEBOX_RULES_TABLE_NAME}]
+;
+"""
+
 DELETE_RULE_REVIEW_STATE = f"""
 --sql
     DELETE FROM [{RULE_REVIEW_STATES_TABLE_NAME}]
@@ -811,6 +850,7 @@ __all__: list[str] = [
     "CREATE_SOURCE_RESIDUAL_RULES_TABLE",
     "CREATE_LANGUAGE_SETTINGS_TABLE",
     "CREATE_METADATA_TABLE",
+    "CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE",
     "CREATE_NOTE_TAG_TEXT_RULES_TABLE",
     "CREATE_PLACEHOLDER_RULES_TABLE",
     "CREATE_PLUGIN_TEXT_RULES_TABLE",
@@ -827,6 +867,7 @@ __all__: list[str] = [
     "DELETE_ALL_STRUCTURED_PLACEHOLDER_RULE_GROUPS",
     "DELETE_ALL_STRUCTURED_PLACEHOLDER_RULES",
     "DELETE_ALL_FONT_REPLACEMENT_RECORDS",
+    "DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES",
     "DELETE_ALL_SOURCE_RESIDUAL_RULES",
     "DELETE_ALL_EVENT_COMMAND_TEXT_RULE_FILTERS",
     "DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS",
@@ -855,6 +896,7 @@ __all__: list[str] = [
     "INSERT_SOURCE_RESIDUAL_RULE",
     "UPSERT_RULE_REVIEW_STATE",
     "INSERT_FONT_REPLACEMENT_RECORD",
+    "INSERT_MV_VIRTUAL_NAMEBOX_RULE",
     "INSERT_PLUGIN_TEXT_RULE",
     "INSERT_TRANSLATION_QUALITY_ERROR",
     "INSERT_FIELD_TRANSLATION_TERM",
@@ -865,6 +907,7 @@ __all__: list[str] = [
     "INSERT_TRANSLATION",
     "METADATA_KEY",
     "METADATA_TABLE_NAME",
+    "MV_VIRTUAL_NAMEBOX_RULES_TABLE_NAME",
     "NOTE_TAG_TEXT_RULES_TABLE_NAME",
     "PLACEHOLDER_RULES_TABLE_NAME",
     "PLUGIN_TEXT_RULES_TABLE_NAME",
@@ -879,6 +922,7 @@ __all__: list[str] = [
     "SELECT_LANGUAGE_SETTINGS",
     "SELECT_NOTE_TAG_TEXT_RULES",
     "SELECT_LATEST_TRANSLATION_RUN",
+    "SELECT_MV_VIRTUAL_NAMEBOX_RULES",
     "SELECT_SOURCE_RESIDUAL_RULES",
     "SELECT_FONT_REPLACEMENT_RECORDS",
     "SELECT_LLM_FAILURES_BY_RUN",

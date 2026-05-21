@@ -55,6 +55,11 @@ from app.rmmz.control_codes import (
     REAL_LINE_BREAK_PLACEHOLDER,
     StructuredPlaceholderRule,
 )
+from app.rmmz.placeholder_mapping import (
+    OriginalPlaceholderQueues,
+    build_original_placeholder_queues,
+    consume_original_placeholder,
+)
 from app.rmmz.schema import (
     GameData,
     EventCommandTextRuleRecord,
@@ -258,6 +263,15 @@ class AgentServiceContext(Protocol):
         confirm_empty: bool = False,
     ) -> AgentReport:
         """导入结构化占位符规则。"""
+        ...
+
+    async def validate_mv_virtual_namebox_rules(
+        self,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """校验 MV 虚拟名字框规则。"""
         ...
 
     async def validate_note_tag_rules(self, *, game_title: str, rules_text: str) -> AgentReport:
@@ -535,9 +549,13 @@ async def _write_terminology_subtask_files(*, field_terms_path: Path, subtasks_d
     return summary
 
 
-def _agent_workflow_manifest(terminology_subtask_summary: JsonObject) -> JsonObject:
+def _agent_workflow_manifest(
+    *,
+    engine_kind: str,
+    terminology_subtask_summary: JsonObject,
+) -> JsonObject:
     """生成写入 manifest 的 Agent 工作流说明。"""
-    return {
+    manifest: JsonObject = {
         "subagent_rounds": [
             {
                 "round": 1,
@@ -566,6 +584,19 @@ def _agent_workflow_manifest(terminology_subtask_summary: JsonObject) -> JsonObj
             "description": "两轮子代理任务全部完成并导入后，主代理才能亲自生成、审查、覆盖扫描、校验并导入占位符规则。",
         },
     }
+    if engine_kind == "mv":
+        manifest["main_agent_rounds"] = [
+            {
+                "round": 0,
+                "name": "mv_virtual_namebox_rules",
+                "owner": "主代理",
+                "description": "MV 游戏必须先由主代理阅读 MV 虚拟名字框规则文档，填写 mv-virtual-namebox-rules.json，并通过 validate/import。",
+                "candidate_file": "mv-virtual-namebox-candidates.json",
+                "final_file": "mv-virtual-namebox-rules.json",
+                "import_command": "import-mv-virtual-namebox-rules --game <游戏标题> --input <工作区>/mv-virtual-namebox-rules.json --json",
+            }
+        ]
+    return manifest
 
 
 def _merge_terminology_registry(
@@ -764,8 +795,17 @@ def _build_translation_line_break_count_detail(
     cloned_item = item.model_copy(deep=True)
     cloned_item.build_placeholders(text_rules)
     normalized_lines = text_rules.normalize_translation_lines(translation_lines)
+    placeholder_queues = build_original_placeholder_queues(
+        item=cloned_item,
+        text_rules=text_rules,
+    )
     translation_lines_with_placeholders = [
-        _mask_translation_controls(line=line, item=cloned_item, text_rules=text_rules)
+        _mask_translation_controls(
+            line=line,
+            item=cloned_item,
+            text_rules=text_rules,
+            placeholder_queues=placeholder_queues,
+        )
         for line in normalized_lines
     ]
     original_lines = cloned_item.original_lines_with_placeholders or cloned_item.original_lines
@@ -1694,19 +1734,26 @@ def _is_path_inside(path: Path, parent: Path) -> bool:
         return False
 
 
-def _mask_translation_controls(*, line: str, item: TranslationItem, text_rules: TextRules) -> str:
+def _mask_translation_controls(
+    *,
+    line: str,
+    item: TranslationItem,
+    text_rules: TextRules,
+    placeholder_queues: OriginalPlaceholderQueues,
+) -> str:
     """把译文中的控制符转换成占位符以便复用数量校验。"""
-    reverse_map = {original: placeholder for placeholder, original in item.placeholder_map.items()}
-
     def replacer(span: ControlSequenceSpan) -> str:
         """把已知控制符还原成对应占位符，未知控制符标记为风险。"""
-        placeholder = reverse_map.get(span.original)
+        placeholder = consume_original_placeholder(
+            queues=placeholder_queues,
+            original=span.original,
+        )
         if placeholder is not None:
             return placeholder
         return "[CUSTOM_UNEXPECTED_1]"
 
     masked_line = text_rules.replace_rm_control_sequences(line, replacer)
-    if reverse_map.get(REAL_LINE_BREAK_MARKER) == REAL_LINE_BREAK_PLACEHOLDER:
+    if item.placeholder_map.get(REAL_LINE_BREAK_PLACEHOLDER) == REAL_LINE_BREAK_MARKER:
         return masked_line.replace(REAL_LINE_BREAK_MARKER, REAL_LINE_BREAK_PLACEHOLDER)
     return masked_line
 
@@ -1737,8 +1784,17 @@ def _prepare_manual_translation_item(
 
     cloned_item = item.model_copy(deep=True)
     cloned_item.build_placeholders(text_rules)
+    placeholder_queues = build_original_placeholder_queues(
+        item=cloned_item,
+        text_rules=text_rules,
+    )
     cloned_item.translation_lines_with_placeholders = [
-        _mask_translation_controls(line=line, item=cloned_item, text_rules=text_rules)
+        _mask_translation_controls(
+            line=line,
+            item=cloned_item,
+            text_rules=text_rules,
+            placeholder_queues=placeholder_queues,
+        )
         for line in normalized_translation_lines
     ]
     validate_translation_text_structure(

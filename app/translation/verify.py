@@ -11,6 +11,10 @@ from json_repair import repair_json
 from pydantic import BaseModel, RootModel
 
 from app.rmmz.schema import ErrorType, TranslationErrorItem, TranslationItem
+from app.rmmz.placeholder_mapping import (
+    build_original_placeholder_queues,
+    consume_original_placeholder,
+)
 from app.rmmz.text_rules import ControlSequenceSpan, TextRules
 from app.source_residual import SourceResidualRuleSet, check_source_residual_for_item
 from app.rmmz.text_layout import (
@@ -249,13 +253,22 @@ def _mask_known_translation_controls(
     text_rules: TextRules,
 ) -> list[str]:
     """把模型返回的原始控制符修回本条原文对应的占位符。"""
-    reverse_map = {original: placeholder for placeholder, original in item.placeholder_map.items()}
+    placeholder_queues = build_original_placeholder_queues(
+        item=item,
+        text_rules=text_rules,
+    )
+    known_originals = set(placeholder_queues)
 
     def replacer(span: ControlSequenceSpan) -> str:
         """只修回原文已有的控制符，未知控制符继续交给后续校验。"""
-        placeholder = reverse_map.get(span.original)
+        placeholder = consume_original_placeholder(
+            queues=placeholder_queues,
+            original=span.original,
+        )
         if placeholder is not None:
             return placeholder
+        if span.original in known_originals:
+            return "[CUSTOM_UNEXPECTED_1]"
         return span.original
 
     return [

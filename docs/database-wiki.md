@@ -23,13 +23,14 @@
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
 | `event_command_text_rule_paths` | 保存事件指令规则组的可翻译参数路径 | `import-event-command-rules` |
+| `mv_virtual_namebox_rules` | 保存 MV 虚拟名字框外部规则 | `import-mv-virtual-namebox-rules` |
 | `terminology_field_terms` | 保存字段译名表，例如地图名、数据库名称和系统类型译名 | `import-terminology` |
 | `text_glossary_terms` | 保存正文翻译提示词使用的正文术语表 | `import-terminology` |
 | `terminology_bundle_state` | 标记字段译名表和正文术语表已经作为同一批导入 | `import-terminology` |
 | `placeholder_rules` | 保存当前游戏专用的自定义控制符保护规则 | `import-placeholder-rules` |
 | `structured_placeholder_rules` | 保存当前游戏专用结构化占位符规则主体 | `import-structured-placeholder-rules` |
 | `structured_placeholder_rule_groups` | 保存结构化占位符规则中的保护分组模板 | `import-structured-placeholder-rules` |
-| `rule_review_states` | 保存空插件规则、空事件指令规则、空 Note 规则和空占位符规则的显式确认状态 | `import-* --confirm-empty` |
+| `rule_review_states` | 保存空插件规则、空事件指令规则、空 Note 规则、空 MV 虚拟名字框规则和空占位符规则的显式确认状态 | `import-* --confirm-empty` |
 | `source_residual_rules` | 保存允许保留源语言片段的例外规则 | `import-source-residual-rules` |
 | `font_replacement_records` | 保存最近一次字体覆盖产生的可还原字体引用记录 | `write-back --confirm-font-overwrite`、`write-terminology --confirm-font-overwrite` |
 | `translation_runs` | 保存正文翻译运行状态和统计快照 | `translate` |
@@ -50,6 +51,7 @@
 - `add-game` 负责解析游戏布局，并把 `metadata` 的游戏目录、真实内容目录、引擎类型和版本写入数据库，同时把当前游戏源语言写入 `language_settings`。
 - `list --json` 会展示 `game_title`、`game_path`、`content_root`、`engine_kind`、`engine_version`、`source_language`、`target_language` 和 `db_path`，用于快速确认已注册游戏是否绑定到正确内容目录和语言档案。
 - `prepare-agent-workspace --json` 会在摘要和详情里展示引擎类型、引擎版本、真实内容目录、实际数据目录和当前源语言；外部 Agent 应以这个工作区输出为准。
+- MV 游戏的 `prepare-agent-workspace --json` 会导出 `mv-virtual-namebox-candidates.json` 和 `mv-virtual-namebox-rules.json`；第零轮导入规则后需要重新准备工作区，让第一轮术语文件按已保存规则生成。
 - `export-event-commands-json` 未显式传入 `--code` 时，会按当前游戏引擎选择默认事件指令编码：MV 使用 `356`，MZ 使用 `357`。
 - Skill 只要求 Agent 读取 CLI 输出和工作区文件，不要求也不允许 Agent 直接读取或修改数据库表。
 
@@ -182,9 +184,30 @@
 - 规则组删除时，路径通过外键级联删除。
 - 导入时必须显式声明事件指令编码，业务代码不会按固定编码猜测复杂插件参数文本。
 
+### `mv_virtual_namebox_rules`
+
+保存当前 MV 游戏的虚拟名字框外部规则。规则只用于 MV；MZ 使用标准 `101.parameters[4]` 名字框字段，不读取这张表。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `rule_order` | `INTEGER` | 主键 | 规则匹配顺序 |
+| `rule_name` | `TEXT` | 唯一，非空 | 规则名称 |
+| `pattern_text` | `TEXT` | 非空 | 完整匹配 `101` 后首条非空 `401` 清理文本的正则 |
+| `speaker_group` | `TEXT` | 非空 | 说话人命名分组 |
+| `body_group` | `TEXT` | 非空 | 同一行正文命名分组；没有正文组时保存空字符串 |
+| `speaker_policy` | `TEXT` | 非空 | `translate`、`preserve` 或 `actor_name` |
+| `render_template` | `TEXT` | 非空 | 写回 `401` 文本时使用的渲染模板 |
+
+维护规则：
+
+- `import-mv-virtual-namebox-rules` 会校验规则 JSON、候选命中冲突和源文重建结果，然后整体替换此表内容。
+- 空规则文件必须通过 `--confirm-empty` 显式确认，并把当前候选范围写入 `rule_review_states`。
+- MV 的正文提取、`speaker_names` 术语提取、术语写回、正文写回、翻译前检查和质量检查只读取已保存规则或已确认空规则状态。
+- MZ 调用 MV 虚拟名字框规则命令会返回错误。
+
 ### `terminology_field_terms`
 
-保存字段译名表。它负责写回稳定字段，例如地图显示名、数据库名称、系统类型，以及 MZ 标准名字框等。MV 的说话人术语也会保存在 `speaker_names` 中，用于术语统一、正文翻译提示词命中，以及重建对应的 `401` 虚拟名字框；不会写入 `101.parameters[4]`。
+保存字段译名表。它负责写回稳定字段，例如地图显示名、数据库名称、系统类型，以及 MZ 标准名字框等。MV 的说话人术语也会保存在 `speaker_names` 中，用于术语统一、正文翻译提示词命中，以及按已保存 MV 虚拟名字框规则重建对应的 `401` 文本；不会写入 `101.parameters[4]`。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -202,7 +225,7 @@
 - 字段译名表有条目时，正文术语表不得为空。
 - 字段译名表中已经填写译名的词条，必须在正文术语表中存在同原文、同译名的规范术语。
 - MV 标准 `101` 通常没有第 5 个名字框参数，不能为了写入说话人而补齐字段。
-- MV 的 `speaker_names` 来源于每个对话块首条非空 `401` 正文识别出的虚拟名字框说话人；它会用于重建对应 `401` 说话人行或名字标签，但不会写入 `101.parameters[4]`。
+- MV 的 `speaker_names` 来源于已保存 MV 虚拟名字框规则命中的说话人；它会用于重建对应 `401` 说话人行或名字标签，但不会写入 `101.parameters[4]`。
 
 ### `text_glossary_terms`
 

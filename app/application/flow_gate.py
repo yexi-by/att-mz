@@ -22,16 +22,19 @@ from app.persistence import TargetGameSession
 from app.plugin_text import collect_plugin_json_string_leaf_candidates, extract_plugin_name
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.control_codes import StructuredPlaceholderRule
+from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 from app.rmmz.schema import GameData, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonValue, TextRules
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
     event_command_rule_scope_hash,
+    mv_virtual_namebox_rule_scope_hash,
     note_tag_rule_scope_hash,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
@@ -282,6 +285,20 @@ async def _external_rule_gate_errors(
                 label="插件规则",
             )
         )
+
+    if game_data.layout.engine_kind == "mv":
+        mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
+        if not mv_virtual_namebox_rules:
+            errors.extend(
+                await _empty_rule_review_errors(
+                    session=session,
+                    rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+                    current_scope_hash=mv_virtual_namebox_rule_scope_hash(
+                        mv_virtual_namebox_candidate_details(game_data)
+                    ),
+                    label="MV 虚拟名字框规则",
+                )
+            )
 
     event_rules = await session.read_event_command_text_rules()
     if not event_rules:

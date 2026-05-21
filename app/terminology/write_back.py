@@ -5,21 +5,38 @@ from app.rmmz.schema import (
     Code,
     GameData,
     MAP_PATTERN,
+    MvVirtualNameboxRuleRecord,
     SYSTEM_FILE_NAME,
     TROOPS_FILE_NAME,
 )
-from app.rmmz.speaker import MvVirtualSpeaker, parse_mv_virtual_speaker_line
+from app.rmmz.mv_namebox import (
+    MvVirtualNameboxRule,
+    MvVirtualSpeaker,
+    parse_mv_virtual_speaker_line,
+    runtime_mv_virtual_namebox_rules,
+)
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, ensure_json_array, ensure_json_object
 
 from .extraction import BASE_NAME_CATEGORIES, SYSTEM_TERM_CATEGORIES, is_translatable_terminology_source
 from .schemas import TerminologyRegistry
 
 
-def apply_terminology_translations(game_data: GameData, registry: TerminologyRegistry) -> int:
+def apply_terminology_translations(
+    game_data: GameData,
+    registry: TerminologyRegistry,
+    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
+) -> int:
     """把术语表译名写入可稳定定位的游戏字段。"""
+    mv_virtual_namebox_rules = runtime_mv_virtual_namebox_rules(
+        mv_virtual_namebox_rule_records or []
+    )
     written_count = 0
     written_count += _write_map_display_names(game_data=game_data, translations=registry.map_display_names)
-    written_count += _write_speaker_names(game_data=game_data, translations=registry.speaker_names)
+    written_count += _write_speaker_names(
+        game_data=game_data,
+        translations=registry.speaker_names,
+        mv_virtual_namebox_rules=mv_virtual_namebox_rules,
+    )
     written_count += _write_base_database_terms(game_data=game_data, registry=registry)
     written_count += _write_system_terms(game_data=game_data, registry=registry)
     return written_count
@@ -49,7 +66,12 @@ def _write_map_display_names(*, game_data: GameData, translations: dict[str, str
     return written_count
 
 
-def _write_speaker_names(*, game_data: GameData, translations: dict[str, str]) -> int:
+def _write_speaker_names(
+    *,
+    game_data: GameData,
+    translations: dict[str, str],
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
+) -> int:
     """按当前引擎写回名字框或 MV 虚拟名字框译名。"""
     clean_translations = _filled_translations(translations)
     if not clean_translations:
@@ -58,6 +80,7 @@ def _write_speaker_names(*, game_data: GameData, translations: dict[str, str]) -
         return _write_mv_virtual_speaker_names(
             game_data=game_data,
             translations=clean_translations,
+            mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
     if game_data.layout.engine_kind != "mz":
         return 0
@@ -83,6 +106,7 @@ def _write_mv_virtual_speaker_names(
     *,
     game_data: GameData,
     translations: dict[str, str],
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> int:
     """写回 MV `401` 首行协议抽象出的虚拟名字框。"""
     written_count = 0
@@ -93,6 +117,7 @@ def _write_mv_virtual_speaker_names(
                 file_name=file_name,
                 data=data,
                 translations=translations,
+                mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
             continue
         if file_name == COMMON_EVENTS_FILE_NAME:
@@ -100,6 +125,7 @@ def _write_mv_virtual_speaker_names(
                 game_data=game_data,
                 data=data,
                 translations=translations,
+                mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
             continue
         if file_name == TROOPS_FILE_NAME:
@@ -107,6 +133,7 @@ def _write_mv_virtual_speaker_names(
                 game_data=game_data,
                 data=data,
                 translations=translations,
+                mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
     return written_count
 
@@ -117,6 +144,7 @@ def _write_mv_map_speaker_names(
     file_name: str,
     data: JsonValue,
     translations: dict[str, str],
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> int:
     """写回地图事件中的 MV 虚拟名字框。"""
     written_count = 0
@@ -137,6 +165,7 @@ def _write_mv_map_speaker_names(
                 game_data=game_data,
                 commands=commands,
                 translations=translations,
+                mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
     return written_count
 
@@ -146,6 +175,7 @@ def _write_mv_common_event_speaker_names(
     game_data: GameData,
     data: JsonValue,
     translations: dict[str, str],
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> int:
     """写回公共事件中的 MV 虚拟名字框。"""
     written_count = 0
@@ -159,6 +189,7 @@ def _write_mv_common_event_speaker_names(
             game_data=game_data,
             commands=commands,
             translations=translations,
+            mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
     return written_count
 
@@ -168,6 +199,7 @@ def _write_mv_troop_speaker_names(
     game_data: GameData,
     data: JsonValue,
     translations: dict[str, str],
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> int:
     """写回敌群事件中的 MV 虚拟名字框。"""
     written_count = 0
@@ -184,6 +216,7 @@ def _write_mv_troop_speaker_names(
                 game_data=game_data,
                 commands=commands,
                 translations=translations,
+                mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
     return written_count
 
@@ -193,6 +226,7 @@ def _write_mv_virtual_speaker_names_to_commands(
     game_data: GameData,
     commands: list[JsonObject],
     translations: dict[str, str],
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> int:
     """写回单个事件指令列表中的 MV 虚拟名字框。"""
     written_count = 0
@@ -203,6 +237,7 @@ def _write_mv_virtual_speaker_names_to_commands(
             game_data=game_data,
             commands=commands,
             command_index=command_index,
+            mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
         if speaker_command is None:
             continue
@@ -303,6 +338,7 @@ def _find_mv_virtual_speaker_command(
     game_data: GameData,
     commands: list[JsonObject],
     command_index: int,
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> tuple[JsonObject, MvVirtualSpeaker] | None:
     """读取 `101` 后首条非空 `401` 并解析 MV 虚拟名字框。"""
     next_index = command_index + 1
@@ -314,7 +350,11 @@ def _find_mv_virtual_speaker_command(
         if text is None or not text.strip():
             next_index += 1
             continue
-        virtual_speaker = parse_mv_virtual_speaker_line(text=text, game_data=game_data)
+        virtual_speaker = parse_mv_virtual_speaker_line(
+            text=text,
+            game_data=game_data,
+            rules=mv_virtual_namebox_rules,
+        )
         if virtual_speaker is None:
             return None
         return command, virtual_speaker

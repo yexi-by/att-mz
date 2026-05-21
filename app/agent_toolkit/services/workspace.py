@@ -56,12 +56,21 @@ from .common import (
 )
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     RuleReviewDomain,
     event_command_rule_scope_hash,
+    mv_virtual_namebox_rule_scope_hash,
     note_tag_rule_scope_hash,
     plugin_rule_scope_hash,
+)
+from app.rmmz.mv_namebox import (
+    MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
+    MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME,
+    mv_virtual_namebox_candidate_details,
+    mv_virtual_namebox_candidates_payload,
+    mv_virtual_namebox_rule_records_to_import_json,
 )
 from app.terminology import collect_terminology_bundle_errors
 
@@ -113,6 +122,7 @@ class WorkspaceAgentMixin:
             )
             note_tag_rules = await session.read_note_tag_text_rules()
             event_rules = await session.read_event_command_text_rules()
+            mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             placeholder_records = await session.read_placeholder_rules()
             structured_placeholder_records = await session.read_structured_placeholder_rules()
             custom_rules = await self._resolve_custom_rules(session=session, custom_placeholder_rules_text=None)
@@ -127,7 +137,11 @@ class WorkspaceAgentMixin:
                 game_data=game_data,
                 text_rules=text_rules,
             )
-        terminology_summary = await export_terminology_artifacts(game_data=game_data, output_dir=target_dir / "terminology")
+        terminology_summary = await export_terminology_artifacts(
+            game_data=game_data,
+            output_dir=target_dir / "terminology",
+            mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+        )
         if terminology_registry is not None:
             exported_registry = await load_terminology_registry(field_terms_path=terminology_summary.field_terms_path)
             merged_registry = _merge_terminology_registry(
@@ -194,6 +208,19 @@ class WorkspaceAgentMixin:
             structured_placeholder_rules_path,
             _structured_placeholder_rule_records_to_import_json(structured_placeholder_records),
         )
+        mv_virtual_namebox_candidates_path: Path | None = None
+        mv_virtual_namebox_rules_path: Path | None = None
+        mv_virtual_namebox_candidate_count = 0
+        if game_data.layout.engine_kind == "mv":
+            mv_virtual_namebox_candidates_path = target_dir / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
+            mv_candidates_payload = mv_virtual_namebox_candidates_payload(game_data)
+            mv_virtual_namebox_candidate_count = _summary_int(mv_candidates_payload, "candidate_count")
+            await _write_json_object(mv_virtual_namebox_candidates_path, mv_candidates_payload)
+            mv_virtual_namebox_rules_path = target_dir / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
+            await _write_json_object(
+                mv_virtual_namebox_rules_path,
+                mv_virtual_namebox_rule_records_to_import_json(mv_virtual_namebox_rules),
+            )
         generated_summary: JsonObject = {
             "engine": game_data.layout.engine_label,
             "engine_kind": game_data.layout.engine_kind,
@@ -220,6 +247,8 @@ class WorkspaceAgentMixin:
             "placeholder_rule_count": len(placeholder_records),
             "placeholder_rule_draft_count": len(placeholder_rule_drafts),
             "structured_placeholder_rule_count": len(structured_placeholder_records),
+            "mv_virtual_namebox_candidate_count": mv_virtual_namebox_candidate_count,
+            "mv_virtual_namebox_rule_count": len(mv_virtual_namebox_rules),
         }
         manifest_files: JsonArray = [
             str(terminology_summary.field_terms_path),
@@ -237,6 +266,10 @@ class WorkspaceAgentMixin:
             str(placeholder_rules_path),
             str(structured_placeholder_rules_path),
         ]
+        if mv_virtual_namebox_candidates_path is not None:
+            manifest_files.append(str(mv_virtual_namebox_candidates_path))
+        if mv_virtual_namebox_rules_path is not None:
+            manifest_files.append(str(mv_virtual_namebox_rules_path))
         manifest: JsonObject = {
             "files": manifest_files,
             "generated": generated_summary,
@@ -250,7 +283,10 @@ class WorkspaceAgentMixin:
                 "js_dir": str(game_data.layout.js_dir),
                 "plugins_path": str(game_data.layout.plugins_path),
             },
-            "workflow": _agent_workflow_manifest(terminology_subtask_summary),
+            "workflow": _agent_workflow_manifest(
+                engine_kind=game_data.layout.engine_kind,
+                terminology_subtask_summary=terminology_subtask_summary,
+            ),
         }
         manifest_path = target_dir / "manifest.json"
         async with aiofiles.open(manifest_path, "w", encoding="utf-8") as file:
@@ -272,10 +308,12 @@ class WorkspaceAgentMixin:
         plugin_rules_path = workspace / "plugin-rules.json"
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
+        mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_game_data(session)
+            mv_virtual_namebox_rule_records = await session.read_mv_virtual_namebox_rules()
             empty_rule_issues = await _read_empty_rule_review_issues(session=session, game_data=game_data)
         if field_terms_path.exists():
             registry: TerminologyRegistry | None = None
@@ -283,6 +321,7 @@ class WorkspaceAgentMixin:
                 registry = await load_terminology_registry(field_terms_path=field_terms_path)
                 expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
                     game_data=game_data,
+                    mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
                 ).extract_registry_and_contexts()
                 _validate_terminology_registry_shape(
                     imported_registry=registry,
@@ -358,6 +397,22 @@ class WorkspaceAgentMixin:
                     errors.append(event_empty_issue)
         else:
             errors.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
+        if game_data.layout.engine_kind == "mv":
+            if mv_virtual_namebox_rules_path.exists():
+                async with aiofiles.open(mv_virtual_namebox_rules_path, "r", encoding="utf-8") as file:
+                    mv_namebox_report = await self.validate_mv_virtual_namebox_rules(
+                        game_title=game_title,
+                        rules_text=await file.read(),
+                    )
+                errors.extend(mv_namebox_report.errors)
+                warnings.extend(mv_namebox_report.warnings)
+                details["mv_virtual_namebox_rules"] = mv_namebox_report.details
+                if _summary_int(mv_namebox_report.summary, "rule_count") == 0:
+                    mv_namebox_empty_issue = empty_rule_issues["mv_virtual_namebox_rules"]
+                    if mv_namebox_empty_issue is not None:
+                        errors.append(mv_namebox_empty_issue)
+            else:
+                errors.append(issue("mv_virtual_namebox_rules_missing", f"MV 工作区缺少 {MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME}"))
         if placeholder_rules_path.exists():
             async with aiofiles.open(placeholder_rules_path, "r", encoding="utf-8") as file:
                 placeholder_rules_text = await file.read()
@@ -526,6 +581,20 @@ async def _read_empty_rule_review_issues(
             unconfirmed_code="event_command_rules_empty_unconfirmed",
             stale_code="event_command_rules_empty_confirmation_stale",
             label="事件指令规则",
+        ),
+        "mv_virtual_namebox_rules": (
+            await _empty_rule_review_issue(
+                session=session,
+                rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+                current_scope_hash=mv_virtual_namebox_rule_scope_hash(
+                    mv_virtual_namebox_candidate_details(game_data)
+                ),
+                unconfirmed_code="mv_virtual_namebox_rules_empty_unconfirmed",
+                stale_code="mv_virtual_namebox_rules_empty_confirmation_stale",
+                label="MV 虚拟名字框规则",
+            )
+            if game_data.layout.engine_kind == "mv"
+            else None
         ),
         "note_tag_rules": await _empty_rule_review_issue(
             session=session,

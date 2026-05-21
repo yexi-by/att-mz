@@ -838,6 +838,7 @@ class TranslationHandler:
                 )
 
             reset_writable_copies(game_data)
+            mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             data_item_count = sum(
                 1 for item in translated_items if not item.location_path.startswith(f"{PLUGINS_FILE_NAME}/")
             )
@@ -850,6 +851,7 @@ class TranslationHandler:
                     speaker_name_translations=(
                         terminology_registry.speaker_names if terminology_registry is not None else None
                     ),
+                    mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
                 )
                 if data_item_count:
                     advance_progress(data_item_count)
@@ -858,7 +860,11 @@ class TranslationHandler:
                     advance_progress(plugin_item_count)
             terminology_written_count = 0
             if terminology_registry is not None:
-                terminology_written_count = apply_terminology_translations(game_data, terminology_registry)
+                terminology_written_count = apply_terminology_translations(
+                    game_data,
+                    terminology_registry,
+                    mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+                )
             font_summary = build_empty_font_replacement_summary()
             if confirm_font_overwrite:
                 font_summary = apply_font_replacement(
@@ -893,9 +899,11 @@ class TranslationHandler:
         """导出术语表工程文件。"""
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
+            mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             summary = await export_terminology_artifacts(
                 game_data=game_data,
                 output_dir=output_dir,
+                mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
             )
             logger.success(f"[tag.success]术语表工程导出完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 字段译名表 [tag.path]{summary.field_terms_path}[/tag.path] 正文术语表 [tag.path]{summary.glossary_path}[/tag.path] 上下文目录 [tag.path]{summary.contexts_dir}[/tag.path]")
             return summary
@@ -911,8 +919,10 @@ class TranslationHandler:
             game_data = await self._load_session_game_data(session)
             registry = await load_terminology_registry(field_terms_path=input_path)
             glossary = await load_terminology_glossary(glossary_path=glossary_input_path)
+            mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
                 game_data=game_data,
+                mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
             ).extract_registry_and_contexts()
             validate_terminology_registry_shape(
                 imported_registry=registry,
@@ -978,16 +988,22 @@ class TranslationHandler:
                 raise RuntimeError("当前游戏数据库中没有已导入术语表，请先执行 import-terminology")
 
             reset_writable_copies(game_data)
+            mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             if translated_items:
                 write_data_text(
                     game_data,
                     translated_items,
                     text_rules=text_rules,
                     speaker_name_translations=registry.speaker_names,
+                    mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
                 )
                 write_plugin_text(game_data, translated_items)
 
-            written_count = apply_terminology_translations(game_data, registry)
+            written_count = apply_terminology_translations(
+                game_data,
+                registry,
+                mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+            )
             set_progress(0, max(written_count, 1))
             advance_progress(written_count)
             font_summary = build_empty_font_replacement_summary()

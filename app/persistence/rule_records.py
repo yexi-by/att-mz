@@ -6,6 +6,8 @@ from app.rule_review import RuleReviewDomain, parse_rule_review_domain
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
+    MvVirtualNameboxRuleRecord,
+    MvVirtualNameboxSpeakerPolicy,
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
@@ -21,6 +23,7 @@ from .sql import (
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_FILTERS,
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS,
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_PATHS,
+    DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES,
     DELETE_ALL_NOTE_TAG_TEXT_RULES,
     DELETE_ALL_PLACEHOLDER_RULES,
     DELETE_ALL_PLUGIN_TEXT_RULES,
@@ -31,6 +34,7 @@ from .sql import (
     INSERT_EVENT_COMMAND_TEXT_RULE_FILTER,
     INSERT_EVENT_COMMAND_TEXT_RULE_GROUP,
     INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
+    INSERT_MV_VIRTUAL_NAMEBOX_RULE,
     INSERT_NOTE_TAG_TEXT_RULE,
     INSERT_PLACEHOLDER_RULE,
     INSERT_PLUGIN_TEXT_RULE,
@@ -40,6 +44,7 @@ from .sql import (
     SELECT_EVENT_COMMAND_TEXT_RULE_FILTERS,
     SELECT_EVENT_COMMAND_TEXT_RULE_GROUPS,
     SELECT_EVENT_COMMAND_TEXT_RULE_PATHS,
+    SELECT_MV_VIRTUAL_NAMEBOX_RULES,
     SELECT_NOTE_TAG_TEXT_RULES,
     SELECT_PLACEHOLDER_RULES,
     SELECT_PLUGIN_TEXT_RULES,
@@ -306,6 +311,47 @@ class RuleRecordSessionMixin(SessionMixinBase):
             for row in rows
         ]
 
+    async def replace_mv_virtual_namebox_rules(
+        self,
+        rules: list[MvVirtualNameboxRuleRecord],
+    ) -> None:
+        """用当前游戏专用规则替换数据库中的 MV 虚拟名字框规则。"""
+        _ = await self.connection.execute(DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES)
+        for rule in rules:
+            _ = await self.connection.execute(
+                INSERT_MV_VIRTUAL_NAMEBOX_RULE,
+                (
+                    rule.rule_order,
+                    rule.rule_name,
+                    rule.pattern_text,
+                    rule.speaker_group,
+                    rule.body_group,
+                    rule.speaker_policy,
+                    rule.render_template,
+                ),
+            )
+        await self.connection.commit()
+
+    async def read_mv_virtual_namebox_rules(self) -> list[MvVirtualNameboxRuleRecord]:
+        """读取当前游戏专用 MV 虚拟名字框规则。"""
+        async with self.connection.execute(SELECT_MV_VIRTUAL_NAMEBOX_RULES) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            MvVirtualNameboxRuleRecord(
+                rule_order=row_int(row, "rule_order", self.db_path),
+                rule_name=row_str(row, "rule_name", self.db_path),
+                pattern_text=row_str(row, "pattern_text", self.db_path),
+                speaker_group=row_str(row, "speaker_group", self.db_path),
+                body_group=row_str(row, "body_group", self.db_path),
+                speaker_policy=_parse_mv_virtual_namebox_speaker_policy(
+                    row_str(row, "speaker_policy", self.db_path),
+                    self.db_path,
+                ),
+                render_template=row_str(row, "render_template", self.db_path),
+            )
+            for row in rows
+        ]
+
     async def replace_rule_review_state(
         self,
         *,
@@ -346,3 +392,14 @@ class RuleRecordSessionMixin(SessionMixinBase):
             reviewed_empty=row_int(row, "reviewed_empty", self.db_path) == 1,
             updated_at=row_str(row, "updated_at", self.db_path),
         )
+
+
+def _parse_mv_virtual_namebox_speaker_policy(value: str, db_path: object) -> MvVirtualNameboxSpeakerPolicy:
+    """校验数据库中的 MV 虚拟名字框说话人策略。"""
+    if value == "translate":
+        return "translate"
+    if value == "preserve":
+        return "preserve"
+    if value == "actor_name":
+        return "actor_name"
+    raise RuntimeError(f"mv_virtual_namebox_rules.speaker_policy 非法，请重新导入规则: {db_path}")

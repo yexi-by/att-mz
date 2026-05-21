@@ -151,6 +151,75 @@ async def test_structured_placeholder_residual_check_runs_before_shell_restore()
 
 
 @pytest.mark.asyncio
+async def test_model_raw_structured_shells_keep_original_placeholder_order() -> None:
+    """模型返回真实结构化外壳时，相同外壳字符按原文顺序映射回编号。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="BRACKET_TITLE",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",
+            "close": "[CUSTOM_BRACKET_TITLE_CLOSE_{index}]",
+        },
+    )
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="Skills.json/282/description",
+        item_type="short_text",
+        original_lines=["【自身の我慢-5】【MP＋10】【相手の我慢　↑】"],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=["【自身忍耐-5】【MP＋10】【对方忍耐　↑】"],
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["【自身忍耐-5】【MP＋10】【对方忍耐　↑】"]
+
+
+@pytest.mark.asyncio
+async def test_model_raw_structured_shells_reject_extra_known_marker() -> None:
+    """模型额外新增同类结构化外壳时，不能因队列耗尽而漏过校验。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="BRACKET_TITLE",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",
+            "close": "[CUSTOM_BRACKET_TITLE_CLOSE_{index}]",
+        },
+    )
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="Skills.json/282/description",
+        item_type="short_text",
+        original_lines=["【自身の我慢-5】【MP＋10】"],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=["【自身忍耐-5】【MP＋10】【额外】"],
+        text_rules=text_rules,
+    )
+
+    assert right_items is None
+    assert error_items is not None
+    assert error_items[0].error_type == "控制符不匹配"
+    assert "CUSTOM_UNEXPECTED_1" in "\n".join(error_items[0].error_detail)
+
+
+@pytest.mark.asyncio
 async def test_multiline_short_text_keeps_existing_line_breaks_without_wrapping() -> None:
     """单值多行显示文本保留原有换行结构，不自动新增换行。"""
     text_rules = _build_text_rules(width_limit=8)

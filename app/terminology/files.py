@@ -10,7 +10,7 @@ from typing import cast
 import aiofiles
 
 from app.rmmz.json_types import coerce_json_value, ensure_json_object
-from app.rmmz.schema import GameData
+from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord
 
 from .extraction import SPEAKER_SAMPLE_DIRECTORY_NAME, TerminologyExtraction, build_speaker_sample_file_name
 from .schemas import (
@@ -48,6 +48,7 @@ async def export_terminology_artifacts(
     *,
     game_data: GameData,
     output_dir: Path,
+    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
 ) -> TerminologyExportSummary:
     """导出字段译名表、正文术语表和外部 Agent 可读取的只读上下文。"""
     target_dir = output_dir.resolve()
@@ -57,7 +58,10 @@ async def export_terminology_artifacts(
     contexts_dir.mkdir(parents=True, exist_ok=True)
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    registry, speaker_contexts, database_contexts = TerminologyExtraction(game_data=game_data).extract_registry_and_contexts()
+    registry, speaker_contexts, database_contexts = TerminologyExtraction(
+        game_data=game_data,
+        mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+    ).extract_registry_and_contexts()
     field_terms_path = target_dir / FIELD_TERMS_FILE_NAME
     glossary_path = target_dir / GLOSSARY_FILE_NAME
     await write_field_terms_json(field_terms_path, registry)

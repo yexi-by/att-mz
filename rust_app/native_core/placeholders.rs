@@ -2,7 +2,7 @@
 //!
 //! 本模块负责把游戏控制符映射为占位符，并校验译文是否完整保留这些协议片段。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::controls::{
     collect_unprotected_control_sequences, format_control_counts, format_custom_placeholder,
@@ -147,13 +147,18 @@ pub(crate) fn verify_placeholders(
         collect_placeholder_tokens(&placeholder_build.original_lines_with_placeholders);
     let translated_placeholders = collect_placeholder_tokens(translation_lines_with_placeholders);
 
-    if original_placeholders.is_empty() && !translated_placeholders.is_empty() {
-        let mut sorted: Vec<String> = translated_placeholders.into_iter().collect();
-        sorted.sort();
-        errors.push(format!(
-            "原文不包含任何占位符，但译文新增了以下占位符: {}",
-            sorted.join("、")
-        ));
+    let mut extra_placeholders: Vec<String> = translated_placeholders
+        .difference(&original_placeholders)
+        .cloned()
+        .collect();
+    if !extra_placeholders.is_empty() {
+        extra_placeholders.sort();
+        let message = if original_placeholders.is_empty() {
+            "原文不包含任何占位符，但译文新增了以下占位符"
+        } else {
+            "译文新增了原文没有的占位符"
+        };
+        errors.push(format!("{}: {}", message, extra_placeholders.join("、")));
     }
 
     if !placeholder_build.placeholder_map.is_empty() {
@@ -209,28 +214,60 @@ pub(crate) fn collect_placeholder_tokens(lines: &[String]) -> HashSet<String> {
 pub(crate) fn mask_translation_controls(
     item: &NativeTranslationItem,
     rules: &CompiledRules,
-    placeholder_map: &HashMap<String, String>,
+    placeholder_build: &PlaceholderBuild,
 ) -> Result<Vec<String>, String> {
-    let reverse_map: HashMap<String, String> = placeholder_map
-        .iter()
-        .map(|(placeholder, original)| (original.clone(), placeholder.clone()))
-        .collect();
+    let mut reverse_map = build_original_placeholder_queues(placeholder_build);
     item.translation_lines
         .iter()
         .map(|line| {
             let mut masked = replace_control_sequences(line, rules, |span| {
                 reverse_map
-                    .get(&span.original)
-                    .cloned()
+                    .get_mut(&span.original)
+                    .and_then(VecDeque::pop_front)
                     .unwrap_or_else(|| "[CUSTOM_UNEXPECTED_1]".to_string())
             })?;
-            if reverse_map
-                .get(REAL_LINE_BREAK_MARKER)
-                .is_some_and(|placeholder| placeholder == REAL_LINE_BREAK_PLACEHOLDER)
+            if placeholder_build
+                .placeholder_map
+                .get(REAL_LINE_BREAK_PLACEHOLDER)
+                .is_some_and(|original| original == REAL_LINE_BREAK_MARKER)
             {
                 masked = masked.replace(REAL_LINE_BREAK_MARKER, REAL_LINE_BREAK_PLACEHOLDER);
             }
             Ok(masked)
         })
         .collect()
+}
+
+fn build_original_placeholder_queues(
+    placeholder_build: &PlaceholderBuild,
+) -> HashMap<String, VecDeque<String>> {
+    let mut queues: HashMap<String, VecDeque<String>> = HashMap::new();
+    for line in &placeholder_build.original_lines_with_placeholders {
+        for matched in PLACEHOLDER_RE.find_iter(line) {
+            let placeholder = matched.as_str();
+            if let Some(original) = placeholder_build.placeholder_map.get(placeholder) {
+                queues
+                    .entry(original.clone())
+                    .or_default()
+                    .push_back(placeholder.to_string());
+            }
+        }
+    }
+    if !queues.is_empty() {
+        return queues;
+    }
+
+    for (placeholder, original) in &placeholder_build.placeholder_map {
+        let repeat_count = placeholder_build
+            .placeholder_counts
+            .get(placeholder)
+            .copied()
+            .unwrap_or(1)
+            .max(1);
+        let queue = queues.entry(original.clone()).or_default();
+        for _index in 0..repeat_count {
+            queue.push_back(placeholder.clone());
+        }
+    }
+    queues
 }

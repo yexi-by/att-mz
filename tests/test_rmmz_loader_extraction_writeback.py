@@ -27,6 +27,7 @@ from app.rmmz.control_codes import CustomPlaceholderRule
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
+    MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
     PLUGINS_FILE_NAME,
     PlaceholderRuleRecord,
@@ -70,6 +71,66 @@ def _translated_test_line_preserving_controls(line: str, text_rules: TextRules) 
     if not visible_text_inserted:
         translated_parts.append("测试")
     return "".join(translated_parts)
+
+
+def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
+    """生成测试用 MV 虚拟名字框外部规则。"""
+    return [
+        MvVirtualNameboxRuleRecord(
+            rule_order=0,
+            rule_name="quote-inline",
+            pattern_text=r"^(?P<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?P<connector>[:：]?「)(?P<body>.*)$",
+            speaker_group="speaker",
+            body_group="body",
+            speaker_policy="translate",
+            render_template="{speaker}{connector}{body}",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=1,
+            rule_name="standalone-colon",
+            pattern_text=r"^(?P<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="translate",
+            render_template="{speaker}：",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=2,
+            rule_name="actor-inline",
+            pattern_text=r"^(?P<speaker>\\[Nn]\[(?P<actor_id>1)\])(?P<separator>[:：])(?P<body>.*)$",
+            speaker_group="speaker",
+            body_group="body",
+            speaker_policy="actor_name",
+            render_template="{speaker}{separator}{body}",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=3,
+            rule_name="yep-inline",
+            pattern_text=r"^(?P<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?P<speaker>[^>\r\n]{1,80})>(?P<body>.*)$",
+            speaker_group="speaker",
+            body_group="body",
+            speaker_policy="translate",
+            render_template="{command}<{speaker}>{body}",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=4,
+            rule_name="angle-standalone",
+            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="translate",
+            render_template="<{speaker}>",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=5,
+            rule_name="dynamic-angle",
+            pattern_text=r"^<(?P<speaker>\\[Nn]\[\d+\])>\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="preserve",
+            render_template="<{speaker}>",
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -216,7 +277,12 @@ async def test_mv_data_extraction_reads_role_from_first_401(
     _rewrite_json(common_events_path, common_events)
 
     game_data = await load_game_data(minimal_mv_game_dir)
-    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
     items_by_path = {
         item.location_path: item
         for data in extracted.values()
@@ -245,13 +311,45 @@ async def test_mv_data_extraction_reads_role_from_first_401(
     assert items_by_path["CommonEvents.json/9/0"].source_line_paths == ["CommonEvents.json/9/2"]
     assert items_by_path["CommonEvents.json/10/0"].role == "店員"
     assert items_by_path["CommonEvents.json/10/0"].original_lines == ["大文字制御の本文です"]
-    assert items_by_path["CommonEvents.json/11/0"].role == "MV勇者"
+    assert items_by_path["CommonEvents.json/11/0"].role == "\\n[1]"
     assert items_by_path["CommonEvents.json/11/0"].original_lines == ["動的名の本文です"]
     assert items_by_path["CommonEvents.json/11/0"].source_line_paths == ["CommonEvents.json/11/2"]
     assert items_by_path["CommonEvents.json/12/0"].role == "旁白"
     assert items_by_path["CommonEvents.json/12/0"].original_lines == ["こちらはステラ（1戦目）の回想です。"]
     assert items_by_path["CommonEvents.json/13/0"].role == "旁白"
     assert items_by_path["CommonEvents.json/13/0"].original_lines == ["<ステラ><ソフィア>", "複合名の本文です"]
+
+
+@pytest.mark.asyncio
+async def test_mv_data_extraction_without_virtual_namebox_rules_keeps_401_as_body(
+    minimal_mv_game_dir: Path,
+) -> None:
+    """MV 没有外部规则时不会用内置格式猜测虚拟名字框。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["案内人："]},
+                {"code": 401, "parameters": ["次の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    game_data = await load_game_data(minimal_mv_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    item = next(
+        candidate
+        for candidate in extracted["CommonEvents.json"].translation_items
+        if candidate.location_path == "CommonEvents.json/2/0"
+    )
+
+    assert item.role == "旁白"
+    assert item.original_lines == ["案内人：", "次の本文です"]
 
 
 @pytest.mark.asyncio
@@ -685,7 +783,12 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
     _rewrite_json(common_events_path, common_events)
 
     game_data = await load_game_data(minimal_mv_game_dir)
-    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
     items_by_path = {
         item.location_path: item
         for data in extracted.values()
@@ -712,6 +815,7 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
             items_by_path["CommonEvents.json/8/0"],
         ],
         speaker_name_translations={"案内人": "向导", "店員": "店员", "MV勇者": "勇者"},
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
     )
 
     writable_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
@@ -748,7 +852,7 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
     assert ensure_json_array(ensure_json_object(standalone_commands[2], "standalone.body")["parameters"], "standalone.body.parameters")[0] == "你好"
     assert ensure_json_array(ensure_json_object(inline_commands[1], "inline.speaker")["parameters"], "inline.speaker.parameters")[0] == "向导「你好」"
     assert ensure_json_array(ensure_json_object(yep_commands[1], "yep.speaker")["parameters"], "yep.speaker.parameters")[0] == "\\n<店员>欢迎光临"
-    assert ensure_json_array(ensure_json_object(actor_commands[1], "actor.speaker")["parameters"], "actor.speaker.parameters")[0] == "勇者：勇者正文"
+    assert ensure_json_array(ensure_json_object(actor_commands[1], "actor.speaker")["parameters"], "actor.speaker.parameters")[0] == "勇者:勇者正文"
     assert ensure_json_array(ensure_json_object(angle_commands[1], "angle.speaker")["parameters"], "angle.speaker.parameters")[0] == "<向导>"
     assert ensure_json_array(ensure_json_object(angle_commands[2], "angle.body")["parameters"], "angle.body.parameters")[0] == "独立正文"
     assert ensure_json_array(ensure_json_object(upper_commands[1], "upper.speaker")["parameters"], "upper.speaker.parameters")[0] == "\\N<店员>大写正文"
@@ -775,7 +879,12 @@ async def test_mv_virtual_name_box_write_back_requires_speaker_translation(minim
     _rewrite_json(common_events_path, common_events)
 
     game_data = await load_game_data(minimal_mv_game_dir)
-    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
     item = next(
         candidate
         for candidate in extracted["CommonEvents.json"].translation_items
@@ -785,7 +894,12 @@ async def test_mv_virtual_name_box_write_back_requires_speaker_translation(minim
 
     reset_writable_copies(game_data)
     with pytest.raises(ValueError, match="缺少术语译名"):
-        write_data_text(game_data, [item], speaker_name_translations={})
+        write_data_text(
+            game_data,
+            [item],
+            speaker_name_translations={},
+            mv_virtual_namebox_rule_records=mv_namebox_rules,
+        )
 
 
 @pytest.mark.asyncio
@@ -809,7 +923,12 @@ async def test_mv_virtual_name_box_write_back_keeps_dynamic_speaker_without_tran
     _rewrite_json(common_events_path, common_events)
 
     game_data = await load_game_data(minimal_mv_game_dir)
-    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
     item = next(
         candidate
         for candidate in extracted["CommonEvents.json"].translation_items
@@ -818,7 +937,12 @@ async def test_mv_virtual_name_box_write_back_keeps_dynamic_speaker_without_tran
     item.translation_lines = ["动态正文"]
 
     reset_writable_copies(game_data)
-    write_data_text(game_data, [item], speaker_name_translations={})
+    write_data_text(
+        game_data,
+        [item],
+        speaker_name_translations={},
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    )
 
     writable_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
     commands = ensure_json_array(
@@ -849,7 +973,12 @@ async def test_mv_virtual_name_box_write_back_rejects_legacy_speaker_line_paths(
     _rewrite_json(common_events_path, common_events)
 
     game_data = await load_game_data(minimal_mv_game_dir)
-    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
     item = next(
         candidate
         for candidate in extracted["CommonEvents.json"].translation_items
@@ -865,6 +994,7 @@ async def test_mv_virtual_name_box_write_back_rejects_legacy_speaker_line_paths(
             game_data,
             [legacy_item],
             speaker_name_translations={"案内人": "向导"},
+            mv_virtual_namebox_rule_records=mv_namebox_rules,
         )
 
 

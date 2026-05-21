@@ -341,3 +341,40 @@ async def run_import_source_residual_rules_command(args: argparse.Namespace) -> 
     report = await service.import_source_residual_rules(game_title=game_title, rules_text=rules_text)
     write_report_outputs(report=report, args=args, title="源文残留例外规则导入报告")
     return 1 if report.status == "error" else 0
+
+
+async def run_export_mv_virtual_namebox_candidates_command(args: argparse.Namespace) -> int:
+    """执行 `export-mv-virtual-namebox-candidates` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    output_path = read_required_path_arg(args, "output")
+    service = AgentToolkitService()
+    report = await service.export_mv_virtual_namebox_candidates(
+        game_title=game_title,
+        output_path=output_path,
+    )
+    write_report_outputs(report=report, args=args, title="MV 虚拟名字框候选导出报告", write_output_file=False)
+    return 1 if report.status == "error" else 0
+
+
+async def run_validate_mv_virtual_namebox_rules_command(args: argparse.Namespace) -> int:
+    """执行 `validate-mv-virtual-namebox-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.validate_mv_virtual_namebox_rules(game_title=game_title, rules_text=rules_text)
+    write_report_outputs(report=report, args=args, title="MV 虚拟名字框规则校验报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_import_mv_virtual_namebox_rules_command(args: argparse.Namespace) -> int:
+    """执行 `import-mv-virtual-namebox-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.import_mv_virtual_namebox_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+        confirm_empty=read_bool_arg(args, "confirm_empty"),
+    )
+    write_report_outputs(report=report, args=args, title="MV 虚拟名字框规则导入报告")
+    return 1 if report.status == "error" else 0

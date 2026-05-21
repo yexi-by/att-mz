@@ -10,11 +10,16 @@ from app.rmmz.schema import (
     Code,
     GameData,
     MAP_PATTERN,
+    MvVirtualNameboxRuleRecord,
     SYSTEM_FILE_NAME,
     TranslationData,
     TranslationItem,
 )
-from app.rmmz.speaker import parse_mv_virtual_speaker_line
+from app.rmmz.mv_namebox import (
+    MvVirtualNameboxRule,
+    parse_mv_virtual_speaker_line,
+    runtime_mv_virtual_namebox_rules,
+)
 from app.rmmz.text_rules import TextRules
 from app.rmmz.commands import iter_all_commands
 
@@ -25,10 +30,18 @@ type CommandListKey = tuple[str | int, ...]
 class DataTextExtraction:
     """标准 RPG Maker MV/MZ data 文本提取器。"""
 
-    def __init__(self, game_data: GameData, text_rules: TextRules) -> None:
+    def __init__(
+        self,
+        game_data: GameData,
+        text_rules: TextRules,
+        mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
+    ) -> None:
         """初始化提取器。"""
         self.game_data: GameData = game_data
         self.text_rules: TextRules = text_rules
+        self.mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...] = runtime_mv_virtual_namebox_rules(
+            mv_virtual_namebox_rule_records or []
+        )
 
     def extract_all_text(self) -> dict[str, TranslationData]:
         """全量提取标准 `data/` 目录中的可翻译文本。"""
@@ -253,6 +266,7 @@ class DataTextExtraction:
                 virtual_speaker = parse_mv_virtual_speaker_line(
                     text=text,
                     game_data=self.game_data,
+                    rules=self.mv_virtual_namebox_rules,
                 )
                 if virtual_speaker is not None:
                     current_item.role = virtual_speaker.speaker

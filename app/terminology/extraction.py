@@ -3,8 +3,13 @@
 import re
 
 from app.rmmz.game_data import BaseItem, EventCommand
+from app.rmmz.mv_namebox import (
+    MvVirtualNameboxRule,
+    parse_mv_virtual_speaker_line,
+    runtime_mv_virtual_namebox_rules,
+)
 from app.rmmz.schema import Code, GameData
-from app.rmmz.speaker import parse_mv_virtual_speaker_line
+from app.rmmz.schema import MvVirtualNameboxRuleRecord
 
 from .schemas import (
     DatabaseTermContext,
@@ -51,9 +56,16 @@ FILE_NAME_CHAR_TRANSLATION = str.maketrans(
 class TerminologyExtraction:
     """从游戏数据中提取术语表和只读语义上下文。"""
 
-    def __init__(self, game_data: GameData) -> None:
+    def __init__(
+        self,
+        game_data: GameData,
+        mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
+    ) -> None:
         """初始化提取器。"""
         self.game_data: GameData = game_data
+        self.mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...] = runtime_mv_virtual_namebox_rules(
+            mv_virtual_namebox_rule_records or []
+        )
 
     def extract_registry_and_contexts(
         self,
@@ -220,6 +232,7 @@ class TerminologyExtraction:
             virtual_speaker = parse_mv_virtual_speaker_line(
                 text=lines[first_line_index],
                 game_data=self.game_data,
+                rules=self.mv_virtual_namebox_rules,
             )
             if virtual_speaker is None:
                 continue

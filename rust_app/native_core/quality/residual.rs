@@ -97,9 +97,9 @@ pub(super) fn collect_residual_detail(
         .get(&item.location_path)
         .map(|rule| rule.allowed_terms.as_slice())
         .unwrap_or(&[]);
-    let control_masked_lines = match build_placeholders(item, rules).and_then(|placeholder_build| {
-        mask_translation_controls(item, rules, &placeholder_build.placeholder_map)
-    }) {
+    let control_masked_lines = match build_placeholders(item, rules)
+        .and_then(|placeholder_build| mask_translation_controls(item, rules, &placeholder_build))
+    {
         Ok(lines) => lines,
         Err(reason) => {
             let mut detail = base_detail(item);

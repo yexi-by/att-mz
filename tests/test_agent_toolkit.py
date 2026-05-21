@@ -37,7 +37,9 @@ from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     event_command_rule_scope_hash,
+    mv_virtual_namebox_rule_scope_hash,
     note_tag_rule_scope_hash,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
@@ -45,6 +47,7 @@ from app.rule_review import (
 )
 from app.text_scope import TextScopeEntry, TextScopeResult
 from app.utils.config_loader_utils import load_setting
+from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -67,6 +70,24 @@ def load_json_array(path: Path) -> list[object]:
 def _contains_japanese_test_char(text: str) -> bool:
     """判断测试样本文本是否含有日文假名。"""
     return any("\u3040" <= char <= "\u30ff" for char in text)
+
+
+def _mv_virtual_namebox_rules_text() -> str:
+    """生成测试用 MV 虚拟名字框规则 JSON。"""
+    return json.dumps(
+        {
+            "rules": [
+                {
+                    "name": "standalone-colon",
+                    "pattern": r"^(?P<speaker>案内人)：$",
+                    "speaker_group": "speaker",
+                    "speaker_policy": "translate",
+                    "render_template": "{speaker}：",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
 
 
 async def _install_minimal_external_text_rules(
@@ -199,6 +220,56 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
 
 
 @pytest.mark.asyncio
+async def test_doctor_reports_mv_virtual_namebox_rule_state(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """doctor 会报告 MV 虚拟名字框规则导入和空规则确认状态。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    missing_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
+    empty_report = await service.import_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text='{"rules":[]}',
+        confirm_empty=True,
+    )
+    confirmed_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
+
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 99,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["新しい候補："]},
+                {"code": 401, "parameters": ["本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+    stale_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
+
+    missing_warning_codes = {warning.code for warning in missing_report.warnings}
+    confirmed_warning_codes = {warning.code for warning in confirmed_report.warnings}
+    stale_warning_codes = {warning.code for warning in stale_report.warnings}
+    assert empty_report.status == "warning"
+    assert "mv_virtual_namebox_rules" in missing_warning_codes
+    assert missing_report.summary["mv_virtual_namebox_rule_count"] == 0
+    assert missing_report.summary["mv_virtual_namebox_rules_reviewed_empty"] is False
+    assert "mv_virtual_namebox_rules" not in confirmed_warning_codes
+    assert confirmed_report.summary["mv_virtual_namebox_rule_count"] == 0
+    assert confirmed_report.summary["mv_virtual_namebox_rules_reviewed_empty"] is True
+    assert confirmed_report.summary["mv_virtual_namebox_rules_review_state_stale"] is False
+    assert stale_report.summary["mv_virtual_namebox_rules_reviewed_empty"] is False
+    assert stale_report.summary["mv_virtual_namebox_rules_review_state_stale"] is True
+    assert "mv_virtual_namebox_rules_review_state_stale" in stale_warning_codes
+
+
+@pytest.mark.asyncio
 async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -309,6 +380,124 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
 
     assert translated_items[0].location_path == "CommonEvents.json/1/4/parameters/3/message"
     assert translated_items[0].translation_lines == ["事件指令译文"]
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_namebox_rule_commands_validate_import_and_reject_mz(
+    minimal_mv_game_dir: Path,
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """MV 虚拟名字框规则只能用于 MV，并通过 CLI 服务校验后保存。"""
+    mv_common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    mv_common_events = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(mv_common_events_path.read_text(encoding="utf-8")))),
+        "CommonEvents.json",
+    )
+    mv_common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["案内人："]},
+                {"code": 401, "parameters": ["本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _ = mv_common_events_path.write_text(json.dumps(mv_common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    candidates_path = tmp_path / "mv-namebox-candidates.json"
+
+    export_report = await service.export_mv_virtual_namebox_candidates(
+        game_title="MVテストゲーム",
+        output_path=candidates_path,
+    )
+    validate_report = await service.validate_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_mv_virtual_namebox_rules_text(),
+    )
+    import_report = await service.import_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_mv_virtual_namebox_rules_text(),
+    )
+    mz_report = await service.validate_mv_virtual_namebox_rules(
+        game_title="テストゲーム",
+        rules_text=_mv_virtual_namebox_rules_text(),
+    )
+
+    assert export_report.status in {"ok", "warning"}
+    assert candidates_path.exists()
+    candidate_count = export_report.summary["candidate_count"]
+    assert isinstance(candidate_count, int)
+    assert candidate_count >= 1
+    assert validate_report.status == "ok"
+    assert validate_report.summary["rule_count"] == 1
+    assert validate_report.summary["matched_candidate_count"] == 1
+    assert import_report.status == "ok"
+    assert import_report.summary["rule_count"] == 1
+    assert {error.code for error in mz_report.errors} == {"mv_virtual_namebox_rules_forbidden"}
+    async with await registry.open_game("MVテストゲーム") as session:
+        records = await session.read_mv_virtual_namebox_rules()
+    assert len(records) == 1
+    assert records[0].rule_name == "standalone-colon"
+
+
+@pytest.mark.asyncio
+async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """MV 翻译流程在虚拟名字框规则未导入也未确认空规则时阻断。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("MVテストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        game_data = await load_game_data(minimal_mv_game_dir)
+        session.set_game_data(game_data)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        before_errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+        )
+    empty_rejected_report = await service.import_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text='{"rules":[]}',
+    )
+    empty_import_report = await service.import_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text='{"rules":[]}',
+        confirm_empty=True,
+    )
+    async with await registry.open_game("MVテストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        game_data = await load_game_data(minimal_mv_game_dir)
+        session.set_game_data(game_data)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        after_errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+        )
+        state = await session.read_rule_review_state(rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
+
+    assert "mv_virtual_namebox_missing" in {error.code for error in before_errors}
+    assert empty_rejected_report.status == "error"
+    assert empty_import_report.status == "warning"
+    assert "mv_virtual_namebox_missing" not in {error.code for error in after_errors}
+    assert state is not None
+    assert state.scope_hash == mv_virtual_namebox_rule_scope_hash(
+        mv_virtual_namebox_candidate_details(game_data)
+    )
 
 
 @pytest.mark.asyncio
@@ -1203,6 +1392,8 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert report.summary["placeholder_rule_draft_count"] == 1
     assert report.summary["structured_placeholder_rule_count"] == 0
     assert report.summary["terminology_subtask_count"] == 5
+    assert "main_agent_rounds" not in workflow
+    assert len(subagent_rounds) == 2
     assert first_round["name"] == "terminology_candidates"
     assert first_round["owner"] == "主代理"
     assert second_round["name"] == "external_text_rules"
@@ -1408,14 +1599,43 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     )
 
     event_commands = load_json_object(workspace / "event-commands.json")
+    mv_namebox_candidates = load_json_object(workspace / "mv-virtual-namebox-candidates.json")
+    mv_namebox_rules = load_json_object(workspace / "mv-virtual-namebox-rules.json")
     manifest = load_json_object(workspace / "manifest.json")
     layout = ensure_json_object(coerce_json_value(manifest["layout"]), "manifest.layout")
+    workflow = ensure_json_object(coerce_json_value(manifest["workflow"]), "manifest.workflow")
+    subagent_rounds = ensure_json_array(
+        coerce_json_value(cast(object, workflow["subagent_rounds"])),
+        "manifest.workflow.subagent_rounds",
+    )
+    main_agent_rounds = ensure_json_array(
+        coerce_json_value(cast(object, workflow["main_agent_rounds"])),
+        "manifest.workflow.main_agent_rounds",
+    )
+    zero_round = ensure_json_object(main_agent_rounds[0], "manifest.workflow.main_agent_rounds[0]")
+    first_round = ensure_json_object(subagent_rounds[0], "manifest.workflow.subagent_rounds[0]")
     commands = ensure_json_array(coerce_json_value(event_commands["356"]), "event-commands.356")
+    manifest_files = "\n".join(
+        item
+        for item in ensure_json_array(coerce_json_value(manifest["files"]), "manifest.files")
+        if isinstance(item, str)
+    )
     assert report.status == "ok"
     assert report.summary["engine_kind"] == "mv"
     assert report.summary["event_command_codes"] == [356]
+    assert report.summary["mv_virtual_namebox_candidate_count"] == mv_namebox_candidates["candidate_count"]
+    assert report.summary["mv_virtual_namebox_rule_count"] == 0
     assert layout["engine_kind"] == "mv"
     assert "www" in str(layout["data_dir"])
+    assert mv_namebox_candidates["engine_kind"] == "mv"
+    assert isinstance(mv_namebox_candidates["candidates"], list)
+    assert mv_namebox_rules == {"rules": []}
+    assert len(subagent_rounds) == 2
+    assert zero_round["name"] == "mv_virtual_namebox_rules"
+    assert zero_round["owner"] == "主代理"
+    assert first_round["name"] == "terminology_candidates"
+    assert "mv-virtual-namebox-candidates.json" in manifest_files
+    assert "mv-virtual-namebox-rules.json" in manifest_files
     assert len(commands) == 1
 
 
@@ -1884,6 +2104,72 @@ async def test_manual_pending_translation_export_and_import(
     translated_by_path = {item.location_path: item for item in translated_items}
     assert translated_by_path[target_path].translation_lines == ["你好"]
     assert quality_errors == []
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_keeps_repeated_structured_shell_indices(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """人工译文里的多个相同结构化外壳按原文顺序映射回各自编号。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["description"] = "慎重に相手のおっぱいを揉んで愛撫する。\n【自身の我慢-5】【MP＋10】【相手の我慢　↑】"
+    _ = items_path.write_text(
+        json.dumps(items, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_structured_placeholder_rules(
+            [
+                StructuredPlaceholderRuleRecord(
+                    rule_name="BRACKET_TITLE",
+                    rule_type="paired_shell",
+                    pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+                    translatable_group="text",
+                    protected_groups={
+                        "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",
+                        "close": "[CUSTOM_BRACKET_TITLE_CLOSE_{index}]",
+                    },
+                )
+            ]
+        )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    target_path = "Items.json/1/description"
+    target_entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
+    target_entry["translation_lines"] = [
+        "慎重地揉捏对方的胸部进行爱抚。\n【自身忍耐-5】【MP＋10】【对方忍耐　↑】"
+    ]
+    _ = pending_path.write_text(
+        json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    import_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert export_report.status == "ok"
+    assert import_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    translated_by_path = {item.location_path: item for item in translated_items}
+    assert translated_by_path[target_path].translation_lines == [
+        "慎重地揉捏对方的胸部进行爱抚。\n【自身忍耐-5】【MP＋10】【对方忍耐　↑】"
+    ]
 
 
 @pytest.mark.asyncio
@@ -3245,6 +3531,84 @@ def test_native_quality_accepts_structured_placeholder_lookahead_pattern() -> No
 
     assert details.placeholder_risk_items == []
     assert details.source_residual_items == []
+
+
+def test_native_quality_accepts_repeated_structured_shell_markers() -> None:
+    """Rust 质检按原文顺序反查重复结构化外壳，不把所有外壳归到最后编号。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        structured_placeholder_rules=(
+            StructuredPlaceholderRule.create(
+                rule_name="BRACKET_TITLE",
+                rule_type="paired_shell",
+                pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+                translatable_group="text",
+                protected_groups={
+                    "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",
+                    "close": "[CUSTOM_BRACKET_TITLE_CLOSE_{index}]",
+                },
+            ),
+        ),
+    )
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="Skills.json/282/description",
+                item_type="short_text",
+                role=None,
+                original_lines=["【自身の我慢-5】【MP＋10】【相手の我慢　↑】"],
+                source_line_paths=["Skills.json/282/description"],
+                translation_lines=["【自身忍耐-5】【MP＋10】【对方忍耐　↑】"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert details.placeholder_risk_items == []
+    assert details.text_structure_items == []
+    assert details.source_residual_items == []
+
+
+def test_native_quality_rejects_extra_repeated_structured_shell_marker() -> None:
+    """Rust 质检遇到额外同类结构化外壳时必须报告占位符风险。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        structured_placeholder_rules=(
+            StructuredPlaceholderRule.create(
+                rule_name="BRACKET_TITLE",
+                rule_type="paired_shell",
+                pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+                translatable_group="text",
+                protected_groups={
+                    "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",
+                    "close": "[CUSTOM_BRACKET_TITLE_CLOSE_{index}]",
+                },
+            ),
+        ),
+    )
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="Skills.json/282/description",
+                item_type="short_text",
+                role=None,
+                original_lines=["【自身の我慢-5】【MP＋10】"],
+                source_line_paths=["Skills.json/282/description"],
+                translation_lines=["【自身忍耐-5】【MP＋10】【额外】"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert len(details.placeholder_risk_items) == 1
+    assert "CUSTOM_UNEXPECTED_1" in json.dumps(
+        details.placeholder_risk_items,
+        ensure_ascii=False,
+    )
 
 
 @pytest.mark.asyncio

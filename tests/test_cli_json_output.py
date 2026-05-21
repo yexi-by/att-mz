@@ -361,6 +361,37 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "--json",
         ]
     )
+    mv_namebox_export_args = parser.parse_args(
+        [
+            "export-mv-virtual-namebox-candidates",
+            "--game",
+            "demo",
+            "--output",
+            "mv-virtual-namebox-candidates.json",
+            "--json",
+        ]
+    )
+    mv_namebox_validate_args = parser.parse_args(
+        [
+            "validate-mv-virtual-namebox-rules",
+            "--game",
+            "demo",
+            "--input",
+            "mv-virtual-namebox-rules.json",
+            "--json",
+        ]
+    )
+    mv_namebox_import_args = parser.parse_args(
+        [
+            "import-mv-virtual-namebox-rules",
+            "--game",
+            "demo",
+            "--input",
+            "mv-virtual-namebox-rules.json",
+            "--confirm-empty",
+            "--json",
+        ]
+    )
     terminology_import_args = parser.parse_args(
         [
             "import-terminology",
@@ -393,6 +424,11 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
     assert namespace_optional_str(residual_args, "rules") is None
     assert namespace_optional_str(residual_import_args, "input") == "source-residual-rules.json"
     assert getattr(residual_import_args, "json_output") is True
+    assert namespace_optional_str(mv_namebox_export_args, "output") == "mv-virtual-namebox-candidates.json"
+    assert namespace_optional_str(mv_namebox_validate_args, "input") == "mv-virtual-namebox-rules.json"
+    assert namespace_optional_str(mv_namebox_import_args, "input") == "mv-virtual-namebox-rules.json"
+    assert getattr(mv_namebox_import_args, "confirm_empty") is True
+    assert getattr(mv_namebox_import_args, "json_output") is True
     assert namespace_optional_str(terminology_import_args, "input") == "terminology/field-terms.json"
     assert namespace_optional_str(terminology_import_args, "glossary_input") == "terminology/glossary.json"
     assert getattr(terminology_import_args, "json_output") is True

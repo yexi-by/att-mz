@@ -26,12 +26,15 @@ from .common import (
 from app.persistence import RuleReviewStateRecord
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     event_command_rule_scope_hash,
+    mv_virtual_namebox_rule_scope_hash,
     note_tag_rule_scope_hash,
     plugin_rule_scope_hash,
 )
+from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
 
 class DoctorAgentMixin:
@@ -140,9 +143,18 @@ class DoctorAgentMixin:
                 )
                 event_rules = await session.read_event_command_text_rules()
                 note_tag_rules = await session.read_note_tag_text_rules()
+                mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
                 plugin_review_state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
                 event_review_state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
                 note_review_state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+                mv_virtual_namebox_review_state = await session.read_rule_review_state(
+                    rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN
+                )
+                mv_virtual_namebox_candidates = (
+                    mv_virtual_namebox_candidate_details(game_data)
+                    if game_data.layout.engine_kind == "mv"
+                    else []
+                )
                 plugin_rules_reviewed_empty, plugin_rules_review_state_stale = _rule_review_empty_state(
                     state=plugin_review_state,
                     current_scope_hash=plugin_rule_scope_hash(game_data),
@@ -155,6 +167,14 @@ class DoctorAgentMixin:
                     state=note_review_state,
                     current_scope_hash=note_tag_rule_scope_hash(game_data),
                 )
+                mv_virtual_namebox_rules_reviewed_empty, mv_virtual_namebox_rules_review_state_stale = (
+                    _rule_review_empty_state(
+                        state=mv_virtual_namebox_review_state,
+                        current_scope_hash=mv_virtual_namebox_rule_scope_hash(mv_virtual_namebox_candidates),
+                    )
+                    if game_data.layout.engine_kind == "mv"
+                    else (False, False)
+                )
                 terminology_registry = await session.read_terminology_registry()
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
@@ -166,12 +186,16 @@ class DoctorAgentMixin:
                 summary["stale_plugin_rule_count"] = stale_plugin_rule_count
                 summary["event_command_rule_count"] = sum(len(rule.path_templates) for rule in event_rules)
                 summary["note_tag_rule_count"] = sum(len(rule.tag_names) for rule in note_tag_rules)
+                summary["mv_virtual_namebox_candidate_count"] = len(mv_virtual_namebox_candidates)
+                summary["mv_virtual_namebox_rule_count"] = len(mv_virtual_namebox_rules)
                 summary["plugin_rules_reviewed_empty"] = plugin_rules_reviewed_empty
                 summary["plugin_rules_review_state_stale"] = plugin_rules_review_state_stale
                 summary["event_command_rules_reviewed_empty"] = event_rules_reviewed_empty
                 summary["event_command_rules_review_state_stale"] = event_rules_review_state_stale
                 summary["note_tag_rules_reviewed_empty"] = note_rules_reviewed_empty
                 summary["note_tag_rules_review_state_stale"] = note_rules_review_state_stale
+                summary["mv_virtual_namebox_rules_reviewed_empty"] = mv_virtual_namebox_rules_reviewed_empty
+                summary["mv_virtual_namebox_rules_review_state_stale"] = mv_virtual_namebox_rules_review_state_stale
                 summary["placeholder_rule_count"] = len(placeholder_rules)
                 summary["structured_placeholder_rule_count"] = len(structured_placeholder_rules)
                 summary["terminology_imported"] = terminology_registry is not None
@@ -193,6 +217,11 @@ class DoctorAgentMixin:
                         warnings.append(issue("note_tag_rules_review_state_stale", "Note 标签规则曾确认为空，但当前 Note 文本已变化，请重新导出并检查 Note 标签规则"))
                     elif not note_rules_reviewed_empty:
                         warnings.append(issue("note_tag_rules", "当前游戏尚未导入 Note 标签文本规则"))
+                if game_data.layout.engine_kind == "mv" and not mv_virtual_namebox_rules:
+                    if mv_virtual_namebox_rules_review_state_stale:
+                        warnings.append(issue("mv_virtual_namebox_rules_review_state_stale", "MV 虚拟名字框规则曾确认为空，但当前候选已变化，请重新导出并检查 MV 虚拟名字框规则"))
+                    elif not mv_virtual_namebox_rules_reviewed_empty:
+                        warnings.append(issue("mv_virtual_namebox_rules", "当前 MV 游戏尚未导入 MV 虚拟名字框规则"))
                 if terminology_registry is None:
                     warnings.append(issue("terminology", "当前游戏尚未导入字段译名表"))
                 if terminology_glossary is None:

@@ -134,8 +134,15 @@ def test_att_mz_skill_defines_two_round_subagent_protocol() -> None:
         "`references/structured-placeholder-rules.md`",
         "`terminology/field-terms.json`：这是“字段译名表”",
         "字段译名表不允许空值",
-        "MV 的 `speaker_names` 是虚拟名字框说话人术语：由 CLI 从每个对话块首条非空 `401` 正文识别",
+        "MV 的 `speaker_names` 是虚拟名字框说话人术语：由已导入 MV 虚拟名字框规则从每个对话块首条非空 `401` 正文识别",
         "MV 的 `speaker_names` 虽然放在字段译名表里，但表示虚拟名字框说话人术语，只能写回对应 `401` 说话人行或名字标签",
+        "`references/mv-virtual-namebox-rules.md`",
+        "MV 第零轮",
+        "`mv-virtual-namebox-candidates.json`",
+        "`mv-virtual-namebox-rules.json`",
+        "`export-mv-virtual-namebox-candidates --game <游戏标题> --output <候选文件> --json`",
+        "`validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --json`",
+        "`import-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --json`",
         "`terminology/glossary.json`：这是“正文术语表”",
         "`source == translated` 是合法术语",
         "正文术语表必须只保留 `terms` 顶层对象",
@@ -662,8 +669,15 @@ def test_release_skill_uses_packaged_cli_contract() -> None:
         "### 工作区 JSON 格式契约",
         "### 源码排障边界",
         "需要阅读或修改 A.T.T MZ 项目源码时，必须切换到源码仓库和开发版 Skill",
-        "MV 的 `speaker_names` 是虚拟名字框说话人术语：由 CLI 从每个对话块首条非空 `401` 正文识别",
+        "MV 的 `speaker_names` 是虚拟名字框说话人术语：由已导入 MV 虚拟名字框规则从每个对话块首条非空 `401` 正文识别",
         "MV 的 `speaker_names` 虽然放在字段译名表里，但表示虚拟名字框说话人术语，只能写回对应 `401` 说话人行或名字标签",
+        "`references/mv-virtual-namebox-rules.md`",
+        "MV 第零轮",
+        "`mv-virtual-namebox-candidates.json`",
+        "`mv-virtual-namebox-rules.json`",
+        "`export-mv-virtual-namebox-candidates --game <游戏标题> --output <候选文件> --json`",
+        "`validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --json`",
+        "`import-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --json`",
         "第二轮子代理任务契约",
         "`quality-report --json` 有错误时禁止写进游戏文件",
         "普通写回不会覆盖字体",
@@ -732,6 +746,15 @@ def test_release_skill_directory_contains_required_references() -> None:
         encoding="utf-8"
     )
 
+    mv_namebox_reference = ROOT / "skills" / "att-mz" / "references" / "mv-virtual-namebox-rules.md"
+    release_mv_namebox_reference = (
+        ROOT / "skills" / "att-mz-release" / "references" / "mv-virtual-namebox-rules.md"
+    )
+    assert release_mv_namebox_reference.exists()
+    assert release_mv_namebox_reference.read_text(encoding="utf-8") == mv_namebox_reference.read_text(
+        encoding="utf-8"
+    )
+
 
 def test_release_packaging_script_uses_release_skill_template() -> None:
     """发布脚本必须把发行版 Skill 作为发行包内的 att-mz Skill。"""
@@ -744,6 +767,7 @@ def test_release_packaging_script_uses_release_skill_template() -> None:
         '"subtask-package-mode.md"',
         '"translation-rule-examples.md"',
         '"structured-placeholder-rules.md"',
+        '"mv-virtual-namebox-rules.md"',
         '"plugin-rules-agent-task.md"',
         '"event-command-rules-agent-task.md"',
         "copy_packaged_release_skill",

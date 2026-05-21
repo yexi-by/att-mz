@@ -250,6 +250,31 @@ def build_parser() -> argparse.ArgumentParser:
     _ = import_source_residual_source_group.add_argument("--input", help="源文残留例外规则 JSON 文件")
     _ = import_source_residual_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
+    export_mv_namebox_parser = subparsers.add_parser(
+        "export-mv-virtual-namebox-candidates",
+        help="导出 MV 虚拟名字框候选，供主代理填写规则",
+    )
+    add_optional_target_arguments(export_mv_namebox_parser)
+    _ = export_mv_namebox_parser.add_argument("--output", required=True, help="写出的候选 JSON 文件")
+    _ = export_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    validate_mv_namebox_parser = subparsers.add_parser(
+        "validate-mv-virtual-namebox-rules",
+        help="校验 MV 虚拟名字框规则 JSON",
+    )
+    add_optional_target_arguments(validate_mv_namebox_parser)
+    _ = validate_mv_namebox_parser.add_argument("--input", required=True, help="MV 虚拟名字框规则 JSON 文件")
+    _ = validate_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    import_mv_namebox_parser = subparsers.add_parser(
+        "import-mv-virtual-namebox-rules",
+        help="把 MV 虚拟名字框规则写入当前游戏数据库",
+    )
+    add_optional_target_arguments(import_mv_namebox_parser)
+    _ = import_mv_namebox_parser.add_argument("--input", required=True, help="MV 虚拟名字框规则 JSON 文件")
+    _ = import_mv_namebox_parser.add_argument("--confirm-empty", action="store_true", help="确认当前 MV 游戏不需要虚拟名字框规则，允许导入空规则")
+    _ = import_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
     translate_parser = subparsers.add_parser("translate", help="翻译指定游戏的正文")
     add_optional_target_arguments(translate_parser)
     _ = translate_parser.add_argument(

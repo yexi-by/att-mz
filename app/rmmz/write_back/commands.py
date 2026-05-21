@@ -1,7 +1,14 @@
 """RPG Maker 事件指令文本写入。"""
 
-from app.rmmz.schema import Code, GameData, MAP_PATTERN, COMMON_EVENTS_FILE_NAME, TROOPS_FILE_NAME, TranslationItem
-from app.rmmz.speaker import MvVirtualSpeaker, parse_mv_virtual_speaker_line
+from app.rmmz.mv_namebox import MvVirtualNameboxRule, MvVirtualSpeaker, parse_mv_virtual_speaker_line
+from app.rmmz.schema import (
+    Code,
+    GameData,
+    MAP_PATTERN,
+    COMMON_EVENTS_FILE_NAME,
+    TROOPS_FILE_NAME,
+    TranslationItem,
+)
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, ensure_json_object
 
 from .locators import (
@@ -38,6 +45,7 @@ def write_command_item(
     item: TranslationItem,
     text_rules: TextRules | None,
     speaker_name_translations: dict[str, str] | None,
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...] = (),
 ) -> None:
     """将事件指令相关译文写入数据副本。"""
     commands, command_index = locate_commands(
@@ -58,6 +66,7 @@ def write_command_item(
                 item=item,
                 text_rules=text_rules,
                 speaker_name_translations=speaker_name_translations,
+                mv_virtual_namebox_rules=mv_virtual_namebox_rules,
             )
             return
 
@@ -93,10 +102,15 @@ def write_name_text_item(
     item: TranslationItem,
     text_rules: TextRules | None,
     speaker_name_translations: dict[str, str] | None,
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> None:
     """写入普通名字框后的长文本，MV 会先重建虚拟名字框。"""
     if game_data.layout.engine_kind == "mv":
-        virtual_speaker = find_mv_virtual_speaker_for_name_command(game_data=game_data, item=item)
+        virtual_speaker = find_mv_virtual_speaker_for_name_command(
+            game_data=game_data,
+            item=item,
+            mv_virtual_namebox_rules=mv_virtual_namebox_rules,
+        )
         if virtual_speaker is not None:
             write_mv_virtual_name_text_item(
                 game_data=game_data,
@@ -291,6 +305,7 @@ def find_mv_virtual_speaker_for_name_command(
     *,
     game_data: GameData,
     item: TranslationItem,
+    mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...],
 ) -> tuple[str, MvVirtualSpeaker] | None:
     """定位 MV `101` 后首条非空 `401` 中的虚拟名字框。"""
     commands, command_index = locate_commands(
@@ -306,7 +321,11 @@ def find_mv_virtual_speaker_for_name_command(
         if text is None or not text.strip():
             next_index += 1
             continue
-        virtual_speaker = parse_mv_virtual_speaker_line(text=text, game_data=game_data)
+        virtual_speaker = parse_mv_virtual_speaker_line(
+            text=text,
+            game_data=game_data,
+            rules=mv_virtual_namebox_rules,
+        )
         if virtual_speaker is None:
             return None
         return command_path_from_index(item.location_path, next_index), virtual_speaker

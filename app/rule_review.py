@@ -15,6 +15,7 @@ type RuleReviewDomain = Literal[
     "note_tag_text",
     "placeholder_rules",
     "structured_placeholder_rules",
+    "mv_virtual_namebox",
 ]
 
 PLUGIN_TEXT_RULE_DOMAIN: RuleReviewDomain = "plugin_text"
@@ -22,6 +23,7 @@ EVENT_COMMAND_TEXT_RULE_DOMAIN: RuleReviewDomain = "event_command_text"
 NOTE_TAG_TEXT_RULE_DOMAIN: RuleReviewDomain = "note_tag_text"
 PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "placeholder_rules"
 STRUCTURED_PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "structured_placeholder_rules"
+MV_VIRTUAL_NAMEBOX_RULE_DOMAIN: RuleReviewDomain = "mv_virtual_namebox"
 
 
 def plugin_rule_scope_hash(game_data: GameData) -> str:
@@ -58,6 +60,11 @@ def placeholder_rule_scope_hash(payload: JsonValue) -> str:
 
 def structured_placeholder_rule_scope_hash(payload: JsonValue) -> str:
     """计算结构化占位符空结果审查依赖的当前候选哈希。"""
+    return _stable_json_hash(payload)
+
+
+def mv_virtual_namebox_rule_scope_hash(payload: JsonValue) -> str:
+    """计算 MV 虚拟名字框空规则审查依赖的当前候选哈希。"""
     return _stable_json_hash(payload)
 
 
@@ -99,6 +106,8 @@ def parse_rule_review_domain(value: str) -> RuleReviewDomain:
         return PLACEHOLDER_RULE_DOMAIN
     if value == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
         return STRUCTURED_PLACEHOLDER_RULE_DOMAIN
+    if value == MV_VIRTUAL_NAMEBOX_RULE_DOMAIN:
+        return MV_VIRTUAL_NAMEBOX_RULE_DOMAIN
     raise ValueError(f"未知外部规则审查领域: {value}")
 
 
@@ -107,6 +116,7 @@ __all__: list[str] = [
     "NOTE_TAG_TEXT_RULE_DOMAIN",
     "PLACEHOLDER_RULE_DOMAIN",
     "PLUGIN_TEXT_RULE_DOMAIN",
+    "MV_VIRTUAL_NAMEBOX_RULE_DOMAIN",
     "RuleReviewDomain",
     "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
     "event_command_rule_scope_hash",
@@ -114,5 +124,6 @@ __all__: list[str] = [
     "parse_rule_review_domain",
     "placeholder_rule_scope_hash",
     "plugin_rule_scope_hash",
+    "mv_virtual_namebox_rule_scope_hash",
     "structured_placeholder_rule_scope_hash",
 ]

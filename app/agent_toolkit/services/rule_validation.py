@@ -9,6 +9,7 @@ from .common import (
     EventCommandTextExtraction,
     JsonArray,
     JsonObject,
+    JsonValue,
     NoteTagTextExtraction,
     PLUGINS_FILE_NAME,
     Path,
@@ -19,6 +20,7 @@ from .common import (
     _json_items_by_location_path,
     _note_tag_item_matches_rule,
     _preview_event_command_write_back,
+    _write_json_object,
     build_event_command_rule_records_from_import,
     build_note_tag_rule_records_from_import,
     build_plugin_rule_records_from_import,
@@ -32,11 +34,172 @@ from .common import (
 )
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.flow_gate import count_note_tag_rule_candidates, ensure_empty_rule_import_allowed
-from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, note_tag_rule_scope_hash
+from app.rmmz.mv_namebox import (
+    mv_virtual_namebox_candidates_payload,
+    mv_virtual_namebox_candidate_details,
+    mv_virtual_namebox_rule_records_to_import_json,
+    parse_mv_virtual_namebox_rule_import_text,
+    validate_mv_virtual_namebox_rules_against_game,
+)
+from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rule_review import (
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    mv_virtual_namebox_rule_scope_hash,
+    note_tag_rule_scope_hash,
+)
 
 
 class RuleValidationAgentMixin:
     """承载 AgentToolkitService 的 RuleValidationAgentMixin 命令族。"""
+
+    async def export_mv_virtual_namebox_candidates(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        output_path: Path,
+    ) -> AgentReport:
+        """导出 MV 虚拟名字框候选，供主代理填写外部规则。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            game_data = await self._load_game_data(session)
+        if game_data.layout.engine_kind != "mv":
+            return AgentReport.from_parts(
+                errors=[issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用")],
+                warnings=[],
+                summary={"output": str(output_path), "candidate_count": 0},
+                details={},
+            )
+        payload = mv_virtual_namebox_candidates_payload(game_data)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        await _write_json_object(output_path, payload)
+        candidate_count = _summary_int_from_payload(payload, "candidate_count")
+        warnings: list[AgentIssue] = []
+        if candidate_count == 0:
+            warnings.append(issue("mv_virtual_namebox_candidates_empty", "当前 MV 游戏没有发现 `101` 后首条非空 `401` 候选"))
+        return AgentReport.from_parts(
+            errors=[],
+            warnings=warnings,
+            summary={"output": str(output_path), "candidate_count": candidate_count},
+            details=payload,
+        )
+
+    async def validate_mv_virtual_namebox_rules(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """校验 MV 虚拟名字框规则 JSON 文本并报告候选命中情况。"""
+        errors: list[AgentIssue] = []
+        warnings: list[AgentIssue] = []
+        details: JsonObject = {"rules": [], "matched_candidates": []}
+        records: list[MvVirtualNameboxRuleRecord] = []
+        candidate_count = 0
+        matched_candidate_count = 0
+        try:
+            records = parse_mv_virtual_namebox_rule_import_text(rules_text)
+            async with await self.game_registry.open_game(game_title) as session:
+                game_data = await self._load_game_data(session)
+            if game_data.layout.engine_kind != "mv":
+                errors.append(issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用"))
+                return AgentReport.from_parts(
+                    errors=errors,
+                    warnings=[],
+                    summary={
+                        "rule_count": 0,
+                        "candidate_count": 0,
+                        "matched_candidate_count": 0,
+                    },
+                    details=details,
+                )
+            candidates = mv_virtual_namebox_candidate_details(game_data)
+            candidate_count = len(candidates)
+            rule_errors, match_details = validate_mv_virtual_namebox_rules_against_game(
+                game_data=game_data,
+                records=records,
+            )
+            errors.extend(
+                issue("mv_virtual_namebox_rules_invalid", _format_mv_namebox_rule_error(error_detail))
+                for error_detail in rule_errors
+            )
+            matched_candidate_count = len(match_details)
+            details = {
+                "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
+                "matched_candidates": match_details,
+                "candidate_count": candidate_count,
+            }
+            if not records:
+                warnings.append(issue("mv_virtual_namebox_rules_empty", "MV 虚拟名字框规则为空"))
+            elif matched_candidate_count == 0 and candidate_count > 0:
+                warnings.append(issue("mv_virtual_namebox_rules_no_hits", "MV 虚拟名字框规则没有命中任何候选"))
+        except Exception as error:
+            errors.append(issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则不可导入: {type(error).__name__}: {error}"))
+            records = []
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=warnings,
+            summary={
+                "rule_count": len(records),
+                "candidate_count": candidate_count,
+                "matched_candidate_count": matched_candidate_count,
+            },
+            details=details,
+        )
+
+    async def import_mv_virtual_namebox_rules(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        rules_text: str,
+        confirm_empty: bool = False,
+    ) -> AgentReport:
+        """校验并导入当前 MV 游戏的虚拟名字框规则。"""
+        try:
+            records = parse_mv_virtual_namebox_rule_import_text(rules_text)
+            if not records and not confirm_empty:
+                raise RuntimeError("MV 虚拟名字框规则为空，必须确认当前游戏不需要虚拟名字框后传 --confirm-empty")
+            async with await self.game_registry.open_game(game_title) as session:
+                game_data = await self._load_game_data(session)
+                if game_data.layout.engine_kind != "mv":
+                    raise RuntimeError("MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用")
+                rule_errors, match_details = validate_mv_virtual_namebox_rules_against_game(
+                    game_data=game_data,
+                    records=records,
+                )
+                if rule_errors:
+                    messages = "；".join(_format_mv_namebox_rule_error(error_detail) for error_detail in rule_errors)
+                    raise RuntimeError(messages)
+                await session.replace_mv_virtual_namebox_rules(records)
+                if records:
+                    await session.delete_rule_review_state(rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
+                else:
+                    await session.replace_rule_review_state(
+                        rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+                        scope_hash=mv_virtual_namebox_rule_scope_hash(
+                            mv_virtual_namebox_candidate_details(game_data)
+                        ),
+                        reviewed_empty=True,
+                    )
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则导入失败: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={"rule_count": 0, "matched_candidate_count": 0},
+                details={},
+            )
+        warnings = [] if records else [issue("mv_virtual_namebox_rules_empty", "已导入空 MV 虚拟名字框规则")]
+        return AgentReport.from_parts(
+            errors=[],
+            warnings=warnings,
+            summary={
+                "rule_count": len(records),
+                "matched_candidate_count": len(match_details),
+            },
+            details={
+                "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
+                "matched_candidates": match_details,
+            },
+        )
 
     async def export_note_tag_candidates(
         self: AgentServiceContext,
@@ -583,3 +746,29 @@ class RuleValidationAgentMixin:
             },
             details=details,
         )
+
+
+def _summary_int_from_payload(payload: JsonObject, key: str) -> int:
+    """从导出载荷读取整数统计字段。"""
+    raw_value = payload.get(key)
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise RuntimeError(f"MV 虚拟名字框候选导出缺少有效计数字段: {key}")
+    return raw_value
+
+
+def _format_mv_namebox_rule_error(error_detail: JsonValue) -> str:
+    """把 MV 虚拟名字框规则校验明细转换成一句用户可读错误。"""
+    if not isinstance(error_detail, dict):
+        return str(error_detail)
+    message_value = error_detail.get("message")
+    message = message_value if isinstance(message_value, str) and message_value else "规则校验失败"
+    location_value = error_detail.get("location_path")
+    rule_value = error_detail.get("rule_name")
+    prefixes: list[str] = []
+    if isinstance(location_value, str) and location_value:
+        prefixes.append(location_value)
+    if isinstance(rule_value, str) and rule_value:
+        prefixes.append(rule_value)
+    if not prefixes:
+        return message
+    return f"{' / '.join(prefixes)}: {message}"

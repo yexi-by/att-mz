@@ -12,7 +12,7 @@ from app.application.file_writer import reset_writable_copies
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
 from app.rmmz import DataTextExtraction, load_game_data
-from app.rmmz.schema import TranslationData, TranslationItem
+from app.rmmz.schema import MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
 from app.rmmz.text_rules import coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.terminology import (
     SpeakerDialogueContext,
@@ -32,6 +32,48 @@ from app.translation import iter_translation_context_batches
 def json_dump_text(registry: TerminologyRegistry) -> str:
     """把术语表转成可搜索的测试文本。"""
     return json.dumps(registry.model_dump(mode="json"), ensure_ascii=False)
+
+
+def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
+    """生成测试用 MV 虚拟名字框外部规则。"""
+    return [
+        MvVirtualNameboxRuleRecord(
+            rule_order=0,
+            rule_name="quote-inline",
+            pattern_text=r"^(?P<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?P<connector>[:：]?「)(?P<body>.*)$",
+            speaker_group="speaker",
+            body_group="body",
+            speaker_policy="translate",
+            render_template="{speaker}{connector}{body}",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=1,
+            rule_name="actor-inline",
+            pattern_text=r"^(?P<speaker>\\[Nn]\[(?P<actor_id>1)\])(?P<separator>[:：])(?P<body>.*)$",
+            speaker_group="speaker",
+            body_group="body",
+            speaker_policy="actor_name",
+            render_template="{speaker}{separator}{body}",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=2,
+            rule_name="angle-standalone",
+            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="translate",
+            render_template="<{speaker}>",
+        ),
+        MvVirtualNameboxRuleRecord(
+            rule_order=3,
+            rule_name="dynamic-angle",
+            pattern_text=r"^<(?P<speaker>\\[Nn]\[\d+\])>\s*$",
+            speaker_group="speaker",
+            body_group="",
+            speaker_policy="preserve",
+            render_template="<{speaker}>",
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -265,9 +307,11 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     )
 
     game_data = await load_game_data(minimal_mv_game_dir)
+    mv_namebox_rules = _mv_virtual_namebox_rule_records()
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "mv-speaker-terminology",
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
     )
     registry = TerminologyRegistry.model_validate_json(
         summary.field_terms_path.read_text(encoding="utf-8")
@@ -293,7 +337,11 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     assert contexts_by_name["MV勇者"] == ["役者の本文です"]
     assert contexts_by_name["受付"] == ["独立行の本文です"]
 
-    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    extracted = DataTextExtraction(
+        game_data,
+        get_default_text_rules(),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
+    ).extract_all_text()
     prompt_batches = list(
         iter_translation_context_batches(
             translation_data=extracted["CommonEvents.json"],
@@ -317,6 +365,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     written_count = apply_terminology_translations(
         game_data,
         TerminologyRegistry(speaker_names={"案内人": "向导", "MV勇者": "勇者", "受付": "接待员"}),
+        mv_virtual_namebox_rule_records=mv_namebox_rules,
     )
 
     assert written_count == 3
@@ -333,7 +382,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     actor_commands = ensure_json_array(actor_event["list"], "CommonEvents[3].list")
     actor_text_command = ensure_json_object(actor_commands[1], "CommonEvents[3].list[1]")
     actor_text_parameters = ensure_json_array(actor_text_command["parameters"], "CommonEvents[3].list[1].parameters")
-    assert actor_text_parameters[0] == "勇者："
+    assert actor_text_parameters[0] == "勇者:"
     angle_event = ensure_json_object(current_events[5], "CommonEvents[5]")
     angle_commands = ensure_json_array(angle_event["list"], "CommonEvents[5].list")
     angle_text_command = ensure_json_object(angle_commands[1], "CommonEvents[5].list[1]")

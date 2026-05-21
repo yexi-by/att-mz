@@ -27,6 +27,7 @@ type ItemType = Literal["long_text", "array", "short_text"]
 type ErrorType = Literal["模型返回不可解析", "AI漏翻", "文本结构不匹配", "控制符不匹配", "源文残留", "选项行数不匹配"]
 type TranslationRunStatus = Literal["running", "completed", "blocked", "cancelled", "failed", "stopped"]
 type SourceResidualRuleType = Literal["position", "structural"]
+type MvVirtualNameboxSpeakerPolicy = Literal["translate", "preserve", "actor_name"]
 type LlmFailureCategory = Literal[
     "rate_limit",
     "timeout",
@@ -167,9 +168,13 @@ class TranslationItem(BaseModel):
             self.translation_lines_with_placeholders
         )
 
-        if not original_placeholders and translated_placeholders:
-            joined_placeholders = "、".join(sorted(translated_placeholders))
-            errors.append(f"原文不包含任何占位符，但译文新增了以下占位符: {joined_placeholders}")
+        extra_placeholders = translated_placeholders - original_placeholders
+        if extra_placeholders:
+            joined_placeholders = "、".join(sorted(extra_placeholders))
+            if not original_placeholders:
+                errors.append(f"原文不包含任何占位符，但译文新增了以下占位符: {joined_placeholders}")
+            else:
+                errors.append(f"译文新增了原文没有的占位符: {joined_placeholders}")
 
         if self.placeholder_map:
             combined_text = "".join(self.translation_lines_with_placeholders).lower()
@@ -273,6 +278,18 @@ class SourceResidualRuleRecord(BaseModel):
     allowed_terms: list[str] = Field(default_factory=list)
     check_group: str = ""
     reason: str
+
+
+class MvVirtualNameboxRuleRecord(BaseModel):
+    """当前游戏导入的 MV 虚拟名字框规则。"""
+
+    rule_order: int = Field(ge=0)
+    rule_name: str
+    pattern_text: str
+    speaker_group: str
+    body_group: str = ""
+    speaker_policy: MvVirtualNameboxSpeakerPolicy
+    render_template: str
 
 
 class FontReplacementRecord(BaseModel):
@@ -463,6 +480,8 @@ __all__: list[str] = [
     "JS_DIRECTORY_NAME",
     "MAP_INFOS_FILE_NAME",
     "MAP_PATTERN",
+    "MvVirtualNameboxRuleRecord",
+    "MvVirtualNameboxSpeakerPolicy",
     "NoteTagTextRuleRecord",
     "PluginTextRuleRecord",
     "PlaceholderRuleRecord",
