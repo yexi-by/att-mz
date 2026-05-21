@@ -90,8 +90,10 @@ uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题>
 外部 Agent 填写完成后，先校验工作区：
 
 ```powershell
-uv run python main.py --agent-mode validate-agent-workspace --game <游戏标题> --workspace <工作区> --json
+uv run python main.py --agent-mode validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告> --json
 ```
+
+该命令的 stdout 是摘要报告，完整 `details` 明细写入 `--output` 指定文件。
 
 临时文件完成导入后可以清理：
 

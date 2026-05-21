@@ -8,6 +8,8 @@ uv run python main.py --agent-mode <命令> ...
 
 需要机器读取结果时使用 `--json` 或 `--output <文件>`。长任务会在 stderr 输出无 ANSI 进度行，stdout 的最终 JSON 才是命令结果。
 
+`validate-agent-workspace` 和 `validate-mv-virtual-namebox-rules` 的 `--json` stdout 是摘要报告；需要完整 `details` 明细时加 `--output <完整报告>`，stdout 仍只读摘要。
+
 文件型规则一律用 `--input <文件>`，不要用 `--rules "$(cat ...)"`，不要把大 JSON 塞进命令行。
 
 ## 编码与 Windows 终端
@@ -43,7 +45,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
 | `prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json` | 导出候选文件、规则草稿和已保存规则；需要覆盖事件指令默认编码时加 `--code CODE` | 工作区文件存在，`summary.workspace` 指向目标目录，`summary.event_command_codes` 可解释 | 删除不完整工作区后重跑 |
-| `validate-agent-workspace --game <游戏标题> --workspace <工作区> --json` | 总体验收工作区和规则覆盖 | 无 `errors` | 逐项修工作区 JSON 后重跑 |
+| `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告> --json` | 总体验收工作区和规则覆盖；stdout 摘要、完整明细写入报告文件 | 无 `errors` | 逐项修工作区 JSON 后重跑 |
 | `cleanup-agent-workspace --workspace <工作区> --json` | 清理 CLI 生成的工作区文件 | 命令返回 0 | 缺 `manifest.json` 时先人工确认范围 |
 | `export-plugins-json --game <游戏标题> --output <plugins.json>` | 单独导出当前插件配置 JSON | 输出文件存在 | 重新检查游戏注册和 `js/plugins.js` |
 | `export-event-commands-json --game <游戏标题> --output <候选文件>` | 单独导出配置默认编码的事件指令候选 | 输出文件存在，候选数量可解释 | 需要覆盖默认编码时显式加 `--code CODE` 后重跑 |
@@ -53,7 +55,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
 | `export-mv-virtual-namebox-candidates --game <游戏标题> --output <候选文件> --json` | 单独导出 MV 候选 | 输出文件存在；MZ 调用返回 error | 候选为空时可确认空规则 |
-| `validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --json` | 校验正则、模板和新增命中 | `status` 不是 `error`，且新增命中样本已确认 | 修规则文件后重跑 |
+| `validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --output <完整报告> --json` | 校验正则、模板和新增命中；stdout 摘要、完整明细写入报告文件 | `status` 不是 `error`，且新增命中样本已确认 | 修规则文件后重跑 |
 | `import-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --json` | 保存当前 MV 游戏规则 | `status` 为 `ok`；空规则需 `--confirm-empty` | 导入后重新准备工作区 |
 
 ## 术语与外部文本规则

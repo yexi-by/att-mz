@@ -21,6 +21,8 @@ from app.cli import parser_command_names
 from app.cli import registered_command_names
 from app.cli import write_report_outputs
 from app.cli.errors import CliArgumentError
+from app.cli.reports import build_sampled_stdout_report
+from app.cli_main import format_argument_error_message
 from app.cli.commands.rules import (
     build_deleted_translation_backup_details,
     build_deleted_translation_warnings,
@@ -28,7 +30,7 @@ from app.cli.commands.rules import (
 from app.cli.commands.registry import run_list_command
 from app.cli.runtime import build_setting_overrides
 from app.application.summaries import TextTranslationSummary
-from app.rmmz.json_types import coerce_json_value, ensure_json_object
+from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,35 @@ def test_json_import_command_reports_business_error_as_parseable_json(
     assert payload["status"] == "error"
     assert first_error["code"] == "placeholder_rules_invalid"
     assert "CLI 运行开始" not in captured.out
+
+
+def test_placeholder_coverage_misuse_reports_json_suggestion(
+    capsys: CaptureFixture[str],
+) -> None:
+    """常见 coverage 误用命令在 JSON 模式下给出可解析的候选命令建议。"""
+    exit_code = main(["scan-placeholder-coverage", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
+    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
+    message = first_error["message"]
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    assert isinstance(message, str)
+    assert "scan-placeholder-candidates" in message
+
+
+def test_structured_placeholder_coverage_misuse_reports_terminal_suggestion() -> None:
+    """常见结构化 coverage 误用命令在终端错误文案中给出候选命令建议。"""
+    message = format_argument_error_message(
+        ("scan-structured-placeholder-coverage",),
+        "invalid choice: 'scan-structured-placeholder-coverage'",
+    )
+
+    assert "scan-structured-placeholder-candidates" in message
 
 
 def test_placeholder_rule_commands_accept_input_files() -> None:
@@ -378,6 +409,8 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "mv-virtual-namebox-rules.json",
+            "--output",
+            "mv-virtual-namebox-report.json",
             "--json",
         ]
     )
@@ -426,12 +459,35 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
     assert getattr(residual_import_args, "json_output") is True
     assert namespace_optional_str(mv_namebox_export_args, "output") == "mv-virtual-namebox-candidates.json"
     assert namespace_optional_str(mv_namebox_validate_args, "input") == "mv-virtual-namebox-rules.json"
+    assert namespace_optional_str(mv_namebox_validate_args, "output") == "mv-virtual-namebox-report.json"
     assert namespace_optional_str(mv_namebox_import_args, "input") == "mv-virtual-namebox-rules.json"
     assert getattr(mv_namebox_import_args, "confirm_empty") is True
     assert getattr(mv_namebox_import_args, "json_output") is True
     assert namespace_optional_str(terminology_import_args, "input") == "terminology/field-terms.json"
     assert namespace_optional_str(terminology_import_args, "glossary_input") == "terminology/glossary.json"
     assert getattr(terminology_import_args, "json_output") is True
+
+
+def test_validate_agent_workspace_command_accepts_output_file() -> None:
+    """工作区总体验收命令支持把完整报告写到文件。"""
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "validate-agent-workspace",
+            "--game",
+            "demo",
+            "--workspace",
+            "workspace",
+            "--output",
+            "validate-agent-workspace-report.json",
+            "--json",
+        ]
+    )
+
+    assert namespace_optional_str(args, "workspace") == "workspace"
+    assert namespace_optional_str(args, "output") == "validate-agent-workspace-report.json"
+    assert getattr(args, "json_output") is True
 
 
 def test_translate_quality_errors_do_not_fail_process() -> None:
@@ -722,6 +778,54 @@ def test_report_output_can_leave_data_output_file_untouched(
     payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
     assert payload["status"] == "ok"
     assert output_path.read_text(encoding="utf-8") == data_json
+
+
+def test_validation_report_output_writes_full_file_and_prints_summary(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """大校验报告的完整明细写入文件，stdout 只保留计数和前 20 条样例。"""
+    output_path = tmp_path / "validation-report.json"
+    report = AgentReport(
+        status="ok",
+        summary={"candidate_count": 25},
+        details={
+            "matched_candidates": [
+                {
+                    "index": index,
+                    "matches": [{"rule": f"rule-{index}-{match_index}"} for match_index in range(3)],
+                }
+                for index in range(25)
+            ],
+        },
+    )
+
+    write_report_outputs(
+        report=report,
+        stdout_report=build_sampled_stdout_report(report),
+        args=Namespace(output=str(output_path), json_output=True),
+        title="校验报告",
+    )
+
+    captured = capsys.readouterr()
+    stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    output_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(output_path.read_text(encoding="utf-8")))),
+        "output JSON",
+    )
+    stdout_details = ensure_json_object(stdout_payload["details"], "stdout details")
+    output_details = ensure_json_object(output_payload["details"], "output details")
+    stdout_matches = ensure_json_object(stdout_details["matched_candidates"], "stdout matched_candidates")
+    stdout_samples = ensure_json_array(stdout_matches["samples"], "stdout matched_candidates.samples")
+    output_matches = ensure_json_array(output_details["matched_candidates"], "output matched_candidates")
+    first_sample = ensure_json_object(stdout_samples[0], "stdout matched_candidates.samples[0]")
+    first_sample_matches = ensure_json_object(first_sample["matches"], "stdout sample matches")
+
+    assert stdout_matches["count"] == 25
+    assert len(stdout_samples) == 20
+    assert stdout_matches["omitted_count"] == 5
+    assert first_sample_matches["count"] == 3
+    assert len(output_matches) == 25
 
 
 def test_placeholder_rule_build_report_can_leave_rule_file_untouched(

@@ -14,6 +14,10 @@ from app.agent_toolkit.reports import issue
 from app.application.handler import FontRestoreSummary, TextTranslationSummary, WriteBackSummary
 from app.cli.arguments import read_bool_arg, read_optional_path_arg
 from app.observability import console, logger
+from app.rmmz.json_types import JsonArray, JsonObject, JsonValue
+
+
+REPORT_STDOUT_SAMPLE_LIMIT = 20
 
 
 def build_translate_summary_report(summary: TextTranslationSummary) -> AgentReport:
@@ -80,25 +84,74 @@ def build_font_restore_summary_report(summary: FontRestoreSummary) -> AgentRepor
     )
 
 
+def build_sampled_stdout_report(
+    report: AgentReport,
+    *,
+    sample_limit: int = REPORT_STDOUT_SAMPLE_LIMIT,
+) -> AgentReport:
+    """把大报告明细裁剪为适合 stdout 的摘要报告。"""
+    return AgentReport(
+        status=report.status,
+        errors=list(report.errors),
+        warnings=list(report.warnings),
+        summary=dict(report.summary),
+        details=_summarize_json_object(report.details, sample_limit=sample_limit),
+    )
+
+
+def _summarize_json_object(value: JsonObject, *, sample_limit: int) -> JsonObject:
+    """递归裁剪 JSON 对象里的数组明细。"""
+    summary: JsonObject = {}
+    for key, child in value.items():
+        summary[key] = _summarize_json_value(child, sample_limit=sample_limit)
+    return summary
+
+
+def _summarize_json_value(value: JsonValue, *, sample_limit: int) -> JsonValue:
+    """把 JSON 值转换为摘要值。"""
+    if isinstance(value, list):
+        return _summarize_json_array(value, sample_limit=sample_limit)
+    if isinstance(value, dict):
+        return _summarize_json_object(value, sample_limit=sample_limit)
+    return value
+
+
+def _summarize_json_array(value: JsonArray, *, sample_limit: int) -> JsonObject:
+    """把数组转换为计数、样例和省略数量。"""
+    effective_limit = max(0, sample_limit)
+    samples: JsonArray = [
+        _summarize_json_value(item, sample_limit=sample_limit)
+        for item in value[:effective_limit]
+    ]
+    return {
+        "count": len(value),
+        "samples": samples,
+        "omitted_count": max(0, len(value) - effective_limit),
+    }
+
+
 def write_report_outputs(
     *,
     report: AgentReport,
     args: argparse.Namespace,
     title: str,
     write_output_file: bool = True,
+    stdout_report: AgentReport | None = None,
 ) -> None:
     """按用户参数输出 Agent 工具包报告。"""
     output_path = read_optional_path_arg(args, "output") if write_output_file else None
     json_text = report.to_json_text()
+    display_report = stdout_report or report
+    display_json_text = display_report.to_json_text()
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         _ = output_path.write_text(f"{json_text}\n", encoding="utf-8")
 
     if read_bool_arg(args, "json_output"):
-        print(json_text)
+        print(display_json_text)
         return
 
-    render_agent_report(report=report, title=title)
+    render_agent_report(report=display_report, title=title)
     if output_path is not None:
         logger.success(f"[tag.success]JSON 报告已写出[/tag.success] 文件 [tag.path]{output_path}[/tag.path]")
 
@@ -131,8 +184,10 @@ def render_agent_report(*, report: AgentReport, title: str) -> None:
 
 __all__ = [
     "build_font_restore_summary_report",
+    "build_sampled_stdout_report",
     "build_translate_summary_report",
     "build_write_back_summary_report",
+    "REPORT_STDOUT_SAMPLE_LIMIT",
     "render_agent_report",
     "write_report_outputs",
 ]

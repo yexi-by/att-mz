@@ -19,6 +19,7 @@ from .common import (
     TextRules,
     _agent_workflow_manifest,
     _build_custom_placeholder_rule_draft,
+    _collect_terminology_duplicate_translation_samples,
     _collect_plugin_json_string_leaf_candidate_details,
     _collect_plugin_source_text_candidates,
     _event_command_rule_records_to_import_json,
@@ -391,6 +392,7 @@ class WorkspaceAgentMixin:
                     "filled_count": registry.filled_entry_count(),
                     "speaker_count": len(registry.speaker_names),
                     "map_count": len(registry.map_display_names),
+                    "duplicate_translation_samples": _collect_terminology_duplicate_translation_samples(registry),
                 }
         else:
             errors.append(issue("terminology_missing", "工作区缺少 terminology/field-terms.json"))

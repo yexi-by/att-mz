@@ -74,6 +74,7 @@ def test_main_skill_matrix_uses_cohesive_work_units() -> None:
     expected_rows = [
         "| 启动与注册 |",
         "| MV 虚拟名字框 |",
+        "| 术语概念 |",
         "| 术语工程 |",
         "| 外部文本规则 |",
         "| 占位符收束 |",
@@ -174,6 +175,7 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
     for phrase in [
         "默认前缀",
         "uv run python main.py --agent-mode <命令> ...",
+        "`validate-agent-workspace` 和 `validate-mv-virtual-namebox-rules` 的 `--json` stdout 是摘要报告",
         "文件型规则一律用 `--input <文件>`",
         "不要用 `--rules \"$(cat ...)\"`",
         "不要把大 JSON 塞进命令行",
@@ -181,6 +183,7 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`doctor --no-check-llm --json`",
         "`list --json`",
         "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json`",
+        "`validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告> --json`",
         "`export-plugins-json --game <游戏标题> --output <plugins.json>`",
         "`export-event-commands-json --game <游戏标题> --output <候选文件>`",
         "`validate-plugin-rules --game <游戏标题> --input <规则文件> --json`",
@@ -188,6 +191,7 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`validate-note-tag-rules --game <游戏标题> --input <规则文件> --json`",
         "`export-terminology --game <游戏标题> --output-dir <术语工作目录>`",
         "`scan-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
+        "`validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --output <完整报告> --json`",
         "`run-all --game <游戏标题> --skip-write-back`",
         "`translation-status --game <游戏标题> --json`",
         "`audit-coverage --game <游戏标题> --json`",
@@ -252,6 +256,7 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
         "structured-placeholder-rules.json",
         "terminology/field-terms.json",
         "terminology/glossary.json",
+        "正文术语表不是字段译名表副本",
         "plugin-rules.json",
         "event-command-rules.json",
         "note-tag-rules.json",
@@ -267,6 +272,18 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
         assert phrase in text
 
 
+def test_mv_virtual_namebox_reference_warns_about_combo_speaker_keys() -> None:
+    """MV 虚拟名字框 reference 暴露组合名字框审查点。"""
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "mv-virtual-namebox-rules.md")
+        for phrase in [
+            "`<角色A><角色B>`",
+            "按当前游戏候选和显示规则审查",
+            "不要默认把组合 key 当成通用工具缺陷",
+        ]:
+            assert phrase in text
+
+
 def test_terminology_reference_defines_first_round_contract() -> None:
     """术语 reference 承载第一轮子代理和主代理合并职责。"""
     text = read(DEV_REFERENCES / "terminology-workflow.md")
@@ -275,6 +292,10 @@ def test_terminology_reference_defines_first_round_contract() -> None:
         "terminology/subtasks/sources/speaker_and_actor_terms.json",
         "terminology/subtasks/candidates/equipment_terms.json",
         "术语候选子代理任务必须包含",
+        "术语表概念",
+        "正文术语表清洗流程",
+        "不是字段译名表去重后的全集",
+        "字段译名表里只服务写回的原文可以不进入正文术语表",
         "主代理合并职责",
         "字段译名表的 value 是最终写进游戏字段的完整文本",
         "正文术语表只保留 `terms` 顶层对象",

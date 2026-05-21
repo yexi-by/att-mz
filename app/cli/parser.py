@@ -273,6 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(validate_mv_namebox_parser)
     _ = validate_mv_namebox_parser.add_argument("--input", required=True, help="MV 虚拟名字框规则 JSON 文件")
+    _ = validate_mv_namebox_parser.add_argument("--output", help="写出完整 JSON 报告文件")
     _ = validate_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_mv_namebox_parser = subparsers.add_parser(
@@ -454,6 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(validate_workspace_parser)
     _ = validate_workspace_parser.add_argument("--workspace", required=True, help="Agent 临时工作区目录")
+    _ = validate_workspace_parser.add_argument("--output", help="写出完整 JSON 报告文件")
     _ = validate_workspace_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     cleanup_workspace_parser = subparsers.add_parser(

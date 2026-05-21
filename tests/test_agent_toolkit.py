@@ -38,7 +38,7 @@ from app.rmmz.schema import (
 )
 from app.rmmz.text_rules import TextRules
 from app.runtime_paths import APP_HOME_ENV_NAME
-from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.terminology import TerminologyCategory, TerminologyGlossary, TerminologyRegistry
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
@@ -1552,6 +1552,8 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert len(subagent_rounds) == 2
     assert first_round["name"] == "terminology_candidates"
     assert first_round["owner"] == "主代理"
+    assert "正文术语表清洗规则" in str(first_round["description"])
+    assert "非字段表副本" in str(first_round["description"])
     assert second_round["name"] == "external_text_rules"
     assert "placeholder_phase" in workflow
     assert "plugin-json-string-leaf-candidates.json" in json.dumps(report.details, ensure_ascii=False)
@@ -1961,6 +1963,67 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     assert "plugin_rules_missing" not in warning_codes
     assert "event_command_rules_missing" not in warning_codes
     assert "terminology_empty_translation" not in warning_codes
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_reports_duplicate_translation_samples(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区验收报告为字段译名表重复译名 warning 附带可审查样例。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    field_terms_path = workspace / "terminology" / "field-terms.json"
+    exported_registry = TerminologyRegistry.model_validate(load_json_object(field_terms_path))
+    filled_map: dict[TerminologyCategory, dict[str, str]] = {
+        category: {
+            source_text: f"{source_text}译"
+            for source_text in entries
+        }
+        for category, entries in exported_registry.as_category_map().items()
+    }
+    field_term_keys: list[tuple[TerminologyCategory, str]] = [
+        (category, source_text)
+        for category, entries in filled_map.items()
+        for source_text in entries
+    ]
+    assert len(field_term_keys) >= 2
+    for category, source_text in field_term_keys[:2]:
+        filled_map[category][source_text] = "共同译名"
+    filled_registry = TerminologyRegistry.from_category_map(filled_map)
+    _ = field_terms_path.write_text(
+        f"{json.dumps(filled_registry.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n",
+        encoding="utf-8",
+    )
+
+    validation_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+    terminology_details = ensure_json_object(validation_report.details["terminology"], "details.terminology")
+    samples = ensure_json_array(
+        terminology_details["duplicate_translation_samples"],
+        "details.terminology.duplicate_translation_samples",
+    )
+    target_sample: JsonObject | None = None
+    for index, raw_sample in enumerate(samples):
+        sample = ensure_json_object(raw_sample, f"duplicate_translation_samples[{index}]")
+        if sample.get("translation") == "共同译名":
+            target_sample = sample
+            break
+    assert target_sample is not None
+    sources = ensure_json_array(target_sample["sources"], "duplicate_translation_samples.sources")
+    first_source = ensure_json_object(sources[0], "duplicate_translation_samples.sources[0]")
+    warning_codes = {warning.code for warning in validation_report.warnings}
+
+    assert "terminology_duplicate_translation" in warning_codes
+    assert len(samples) <= 10
+    assert len(sources) == 2
+    assert set(first_source) == {"category", "source_text"}
 
 
 @pytest.mark.asyncio

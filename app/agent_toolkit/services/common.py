@@ -561,7 +561,7 @@ def _agent_workflow_manifest(
                 "round": 1,
                 "name": "terminology_candidates",
                 "owner": "主代理",
-                "description": "主代理按字段译名类别拆分任务，子代理只写候选文件；主代理必须逐项审查、统一译名、亲自修改并合并回 terminology/field-terms.json，同时维护 terminology/glossary.json 后才能导入数据库。",
+                "description": "主代理按字段译名类别拆分任务，子代理只写候选文件；主代理必须先阅读术语概念和正文术语表清洗规则，再逐项审查、统一译名、亲自修改并合并回 terminology/field-terms.json，同时维护非字段表副本的 terminology/glossary.json 后才能导入数据库。",
                 "subtasks": terminology_subtask_summary,
                 "final_file": "terminology/field-terms.json",
                 "glossary_file": "terminology/glossary.json",
@@ -1562,6 +1562,41 @@ def _validate_terminology_registry(registry: TerminologyRegistry) -> list[AgentI
     return warnings
 
 
+def _collect_terminology_duplicate_translation_samples(
+    registry: TerminologyRegistry,
+    *,
+    group_limit: int = 10,
+    source_limit: int = 20,
+) -> JsonArray:
+    """收集字段译名表重复译名样例，方便主代理审查同译是否合理。"""
+    translations: dict[str, JsonArray] = {}
+    for category, entries in registry.as_category_map().items():
+        for source_text, translated_text in entries.items():
+            translation = translated_text.strip()
+            if not translation:
+                continue
+            source_detail: JsonObject = {
+                "category": category,
+                "source_text": source_text,
+            }
+            translations.setdefault(translation, []).append(source_detail)
+
+    samples: JsonArray = []
+    for translation in sorted(translations):
+        sources = translations[translation]
+        if len(sources) <= 1:
+            continue
+        samples.append(
+            {
+                "translation": translation,
+                "sources": sources[:source_limit],
+            }
+        )
+        if len(samples) >= group_limit:
+            break
+    return samples
+
+
 def _validate_terminology_registry_shape(
     *,
     imported_registry: TerminologyRegistry,
@@ -2044,6 +2079,7 @@ __all__: list[str] = [
     '_collect_placeholder_preview_samples',
     '_collect_unprotected_control_warning_samples',
     '_validate_terminology_registry',
+    '_collect_terminology_duplicate_translation_samples',
     '_validate_terminology_registry_shape',
     '_first_original_line_samples',
     '_build_rule_metric_detail',

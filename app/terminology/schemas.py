@@ -190,7 +190,7 @@ def collect_terminology_bundle_errors(
     registry: TerminologyRegistry | None,
     glossary: TerminologyGlossary | None,
 ) -> list[str]:
-    """返回字段译名表和正文术语表的同步校验错误。"""
+    """返回字段译名表和正文术语表的一致性校验错误。"""
     errors: list[str] = []
     if registry is None:
         errors.append("当前游戏尚未导入字段译名表")
@@ -205,37 +205,51 @@ def collect_terminology_bundle_errors(
     empty_count = total_count - filled_count
     if empty_count:
         errors.append(f"字段译名表还有 {empty_count} 个词条没有填写译名")
-    missing_terms: list[str] = []
+
+    field_translations = _collect_filled_field_term_translations(registry)
+    conflicting_field_terms = [
+        source_text
+        for source_text, translated_texts in field_translations.items()
+        if len(translated_texts) > 1
+    ]
+    if conflicting_field_terms:
+        errors.append(
+            f"字段译名表同一原文存在多个译名: {_format_term_samples(conflicting_field_terms)}"
+        )
+
     mismatched_terms: list[str] = []
-    for source_text, translated_text in _iter_filled_field_terms(registry):
-        glossary_translation = glossary.terms.get(source_text)
-        if glossary_translation is None:
-            missing_terms.append(source_text)
+    for source_text, glossary_translation in glossary.terms.items():
+        translated_texts = field_translations.get(source_text)
+        if translated_texts is None:
             continue
-        if glossary_translation != translated_text:
+        if glossary_translation not in translated_texts:
             mismatched_terms.append(source_text)
-    if missing_terms:
-        sample_text = "、".join(missing_terms[:5])
-        suffix = "" if len(missing_terms) <= 5 else f" 等 {len(missing_terms)} 个"
-        errors.append(f"正文术语表缺少字段译名表中已填写的规范术语: {sample_text}{suffix}")
     if mismatched_terms:
-        sample_text = "、".join(mismatched_terms[:5])
-        suffix = "" if len(mismatched_terms) <= 5 else f" 等 {len(mismatched_terms)} 个"
-        errors.append(f"正文术语表与字段译名表存在译名不一致: {sample_text}{suffix}")
+        errors.append(
+            f"正文术语表与字段译名表存在同名术语译名不一致: {_format_term_samples(mismatched_terms)}"
+        )
     return errors
 
 
-def _iter_filled_field_terms(registry: TerminologyRegistry) -> list[tuple[str, str]]:
-    """按类别顺序返回字段译名表中已填写的词条。"""
-    terms: list[tuple[str, str]] = []
+def _collect_filled_field_term_translations(registry: TerminologyRegistry) -> dict[str, set[str]]:
+    """按规范原文汇总字段译名表中已填写的译名。"""
+    terms: dict[str, set[str]] = {}
     for entries in registry.as_category_map().values():
         for source_text, translated_text in entries.items():
             normalized_source_text = source_text.strip()
             normalized_translated_text = translated_text.strip()
             if not normalized_source_text or not normalized_translated_text:
                 continue
-            terms.append((normalized_source_text, normalized_translated_text))
+            terms.setdefault(normalized_source_text, set()).add(normalized_translated_text)
     return terms
+
+
+def _format_term_samples(source_texts: list[str]) -> str:
+    """格式化错误信息中的少量术语样本。"""
+    sample_text = "、".join(source_texts[:5])
+    if len(source_texts) <= 5:
+        return sample_text
+    return f"{sample_text} 等 {len(source_texts)} 个"
 
 
 def _normalize_required_mapping(entries: dict[str, str], field_name: str) -> dict[str, str]:

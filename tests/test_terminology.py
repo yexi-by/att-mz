@@ -16,6 +16,7 @@ from app.rmmz.schema import MvVirtualNameboxRuleRecord, TranslationData, Transla
 from app.rmmz.text_rules import coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.terminology import (
     SpeakerDialogueContext,
+    TerminologyCategory,
     TerminologyGlossary,
     TerminologyPromptIndex,
     TerminologyRegistry,
@@ -23,6 +24,7 @@ from app.terminology import (
     export_terminology_artifacts,
     load_terminology_glossary,
     load_terminology_registry,
+    validate_terminology_bundle,
 )
 from app.terminology.extraction import build_speaker_sample_file_name
 from app.terminology.files import reserve_speaker_sample_file_name
@@ -191,6 +193,97 @@ async def test_import_terminology_rejects_field_terms_without_glossary(
     async with await registry.open_game("テストゲーム") as session:
         assert await session.read_terminology_registry() is None
         assert await session.read_terminology_glossary() is None
+
+
+@pytest.mark.asyncio
+async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_terms(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """正文术语表可以从带包装字段中清洗出规范术语。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))),
+        "CommonEvents.json",
+    )
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    name_command = ensure_json_object(commands[0], "CommonEvents[1].list[0]")
+    parameters = ensure_json_array(name_command["parameters"], "CommonEvents[1].list[0].parameters")
+    parameters[4] = "/cソフィア"
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    game_data = await load_game_data(minimal_game_dir)
+    summary = await export_terminology_artifacts(
+        game_data=game_data,
+        output_dir=tmp_path / "terminology",
+    )
+    exported_registry = await load_terminology_registry(field_terms_path=summary.field_terms_path)
+    filled_category_map: dict[TerminologyCategory, dict[str, str]] = {
+        category: {
+            source_text: "/c索菲亚" if source_text == "/cソフィア" else f"{source_text}译"
+            for source_text in entries
+        }
+        for category, entries in exported_registry.as_category_map().items()
+    }
+    filled_registry = TerminologyRegistry.from_category_map(filled_category_map)
+    cleaned_glossary = TerminologyGlossary(terms={"ソフィア": "索菲亚"})
+    _ = summary.field_terms_path.write_text(
+        f"{filled_registry.model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+    _ = summary.glossary_path.write_text(
+        f"{cleaned_glossary.model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+    try:
+        import_summary = await handler.import_terminology(
+            game_title="テストゲーム",
+            input_path=summary.field_terms_path,
+            glossary_input_path=summary.glossary_path,
+        )
+    finally:
+        await handler.close()
+
+    assert import_summary.glossary_term_count == 1
+    async with await registry.open_game("テストゲーム") as session:
+        stored_registry = await session.read_terminology_registry()
+        stored_glossary = await session.read_terminology_glossary()
+    assert stored_registry is not None
+    assert stored_registry.speaker_names["/cソフィア"] == "/c索菲亚"
+    assert stored_glossary == cleaned_glossary
+
+
+def test_terminology_bundle_allows_glossary_to_omit_field_only_terms() -> None:
+    """字段写回专用条目不必原样进入正文术语表。"""
+    validate_terminology_bundle(
+        registry=TerminologyRegistry(
+            speaker_names={"/cソフィア": "/c索菲亚"},
+            skill_names={"ステラの命乞いを見るための技": "观看斯特拉求饶用技能"},
+        ),
+        glossary=TerminologyGlossary(terms={"ソフィア": "索菲亚"}),
+    )
+
+
+def test_terminology_bundle_rejects_same_source_conflicts() -> None:
+    """字段表内部和同名正文术语仍然必须保持译名一致。"""
+    with pytest.raises(ValueError, match="同一原文存在多个译名"):
+        validate_terminology_bundle(
+            registry=TerminologyRegistry(
+                actor_names={"ソフィア": "索菲亚"},
+                enemy_names={"ソフィア": "苏菲亚"},
+            ),
+            glossary=TerminologyGlossary(terms={"ソフィア": "索菲亚"}),
+        )
+
+    with pytest.raises(ValueError, match="同名术语译名不一致"):
+        validate_terminology_bundle(
+            registry=TerminologyRegistry(actor_names={"ソフィア": "索菲亚"}),
+            glossary=TerminologyGlossary(terms={"ソフィア": "苏菲亚"}),
+        )
 
 
 @pytest.mark.asyncio

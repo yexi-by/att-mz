@@ -19,7 +19,7 @@ from app.cli.arguments import (
     read_text_file,
 )
 from app.cli.runtime import HandlerSession, resolve_optional_target_game_title, resolve_target_game_title
-from app.cli.reports import write_report_outputs
+from app.cli.reports import build_sampled_stdout_report, write_report_outputs
 from app.rmmz.text_rules import JsonObject
 
 
@@ -364,7 +364,12 @@ async def run_validate_mv_virtual_namebox_rules_command(args: argparse.Namespace
     rules_text = await read_text_file(read_required_path_arg(args, "input"))
     service = AgentToolkitService()
     report = await service.validate_mv_virtual_namebox_rules(game_title=game_title, rules_text=rules_text)
-    write_report_outputs(report=report, args=args, title="MV 虚拟名字框规则校验报告")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="MV 虚拟名字框规则校验报告",
+        stdout_report=build_sampled_stdout_report(report),
+    )
     return 1 if report.status == "error" else 0
 
 

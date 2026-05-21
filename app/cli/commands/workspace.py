@@ -10,7 +10,7 @@ import argparse
 from app.agent_toolkit import AgentToolkitService
 from app.cli.arguments import read_int_set_arg, read_required_path_arg
 from app.cli.runtime import resolve_target_game_title
-from app.cli.reports import write_report_outputs
+from app.cli.reports import build_sampled_stdout_report, write_report_outputs
 
 
 async def run_prepare_agent_workspace_command(args: argparse.Namespace) -> int:
@@ -34,7 +34,12 @@ async def run_validate_agent_workspace_command(args: argparse.Namespace) -> int:
     workspace = read_required_path_arg(args, "workspace")
     service = AgentToolkitService()
     report = await service.validate_agent_workspace(game_title=game_title, workspace=workspace)
-    write_report_outputs(report=report, args=args, title="Agent 工作区校验报告")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="Agent 工作区校验报告",
+        stdout_report=build_sampled_stdout_report(report),
+    )
     return 1 if report.status == "error" else 0
 
 
