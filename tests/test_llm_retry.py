@@ -140,10 +140,65 @@ async def test_recoverable_llm_error_retries_in_translation_layer(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_fatal_llm_error_stops_without_retry(tmp_path: Path) -> None:
-    """不可恢复错误会立即抛出，调用次数保持为首次请求。"""
-    setup_logger(use_console=False, file_path=tmp_path / "fatal.log", enqueue_file_log=False)
+async def test_empty_llm_response_retries_in_translation_layer(tmp_path: Path) -> None:
+    """模型空响应由翻译层按业务策略重试。"""
+    setup_logger(use_console=False, file_path=tmp_path / "empty-response.log", enqueue_file_log=False)
     handler = FakeLLMHandler(failures=[EmptyLLMResponseError("空响应")])
+
+    result = await request_with_recoverable_retry(
+        llm_handler=handler,
+        model="fake-model",
+        messages=[ChatMessage(role="user", text="你好")],
+        retry_count=3,
+        retry_delay=0,
+        task_label="测试任务",
+    )
+
+    assert result == "成功"
+    assert handler.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_llm_response_exhaustion_records_retryable_failure(tmp_path: Path) -> None:
+    """模型空响应重试耗尽后记录为可恢复模型故障。"""
+    setup_logger(use_console=False, file_path=tmp_path / "empty-response-exhausted.log", enqueue_file_log=False)
+    handler = FakeLLMHandler(
+        failures=[
+            EmptyLLMResponseError("空响应"),
+            EmptyLLMResponseError("空响应"),
+        ]
+    )
+
+    with pytest.raises(LLMRequestFailure) as caught_error:
+        _ = await request_with_recoverable_retry(
+            llm_handler=handler,
+            model="fake-model",
+            messages=[ChatMessage(role="user", text="你好")],
+            retry_count=1,
+            retry_delay=0,
+            task_label="测试任务",
+        )
+
+    assert handler.call_count == 2
+    assert caught_error.value.info.retryable is True
+    assert caught_error.value.info.category == "unknown"
+    assert caught_error.value.attempt_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_llm_error_stops_without_retry(tmp_path: Path) -> None:
+    """不可恢复错误会立即抛出，调用次数保持为首次请求。"""
+    setup_logger(use_console=False, file_path=tmp_path / "unrecoverable.log", enqueue_file_log=False)
+    request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+    handler = FakeLLMHandler(
+        failures=[
+            APIStatusError(
+                "鉴权失败",
+                response=httpx.Response(401, request=request),
+                body=None,
+            )
+        ]
+    )
 
     with pytest.raises(LLMRequestFailure) as caught_error:
         _ = await request_with_recoverable_retry(
@@ -157,6 +212,7 @@ async def test_fatal_llm_error_stops_without_retry(tmp_path: Path) -> None:
 
     assert handler.call_count == 1
     assert caught_error.value.info.retryable is False
+    assert caught_error.value.info.category == "fatal"
     assert caught_error.value.attempt_count == 1
 
 

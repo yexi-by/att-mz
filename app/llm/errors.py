@@ -44,9 +44,11 @@ def is_recoverable_llm_error(error: Exception) -> bool:
     """
     判断 LLM 请求错误是否适合重试。
 
-    可恢复错误仅包含连接故障、超时、限流、冲突和服务端 5xx。
-    鉴权、权限、参数、模型不存在、响应为空等错误会立即向上抛出。
+    可恢复错误包含连接故障、超时、限流、冲突、服务端 5xx 和响应空文本。
+    鉴权、权限、参数、模型不存在等错误会立即向上抛出。
     """
+    if isinstance(error, EmptyLLMResponseError):
+        return True
     if isinstance(error, APIConnectionError | APITimeoutError | RateLimitError | InternalServerError | ConflictError):
         return True
     if isinstance(error, APIStatusError):
