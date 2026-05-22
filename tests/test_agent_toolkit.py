@@ -43,10 +43,12 @@ from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
+    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     mv_virtual_namebox_rule_scope_hash,
+    plugin_source_rule_scope_hash,
     plugin_rule_scope_hash,
 )
 from app.text_scope import TextScopeEntry, TextScopeResult, TextScopeService
@@ -1016,7 +1018,7 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
         "\n".join(
             [
                 "Window_Base.prototype.drawText('プラグイン直書き', 0, 0, 320);",
-                "Window_Base.prototype.drawText('img/system/IconSet.png', 0, 0, 320);",
+                "Window_Base.prototype.drawText('img/system/日本語.png', 0, 0, 320);",
             ]
         ),
         encoding="utf-8",
@@ -1037,7 +1039,16 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
     ast_report = await service.export_plugin_source_ast_map(game_title="テストゲーム", output_path=ast_map_path)
     risk_report = load_json_object(risk_report_path)
     ast_map = load_json_object(ast_map_path)
-    candidates = ensure_json_array(coerce_json_value(ast_map["candidates"]), "plugin-source-ast-map.candidates")
+    ast_files = ensure_json_array(coerce_json_value(ast_map["files"]), "plugin-source-ast-map.files")
+    candidates: JsonArray = []
+    for ast_file in ast_files:
+        ast_file_object = ensure_json_object(coerce_json_value(ast_file), "plugin-source-ast-map.files[]")
+        candidates.extend(
+            ensure_json_array(
+                coerce_json_value(ast_file_object["candidates"]),
+                "plugin-source-ast-map.files[].candidates",
+            )
+        )
     occurrence_count = verify_report.summary["occurrence_count"]
 
     assert verify_report.status == "error"
@@ -1068,9 +1079,9 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
     resource_candidate = next(
         ensure_json_object(coerce_json_value(candidate), "candidate")
         for candidate in candidates
-        if ensure_json_object(coerce_json_value(candidate), "candidate").get("text") == "img/system/IconSet.png"
+        if ensure_json_object(coerce_json_value(candidate), "candidate").get("text") == "img/system/日本語.png"
     )
-    assert resource_candidate["structural_flags"] == ["resource_path_like", "identifier_or_path_like"]
+    assert resource_candidate["structural_flags"] == ["resource_path_like"]
 
 
 @pytest.mark.asyncio
@@ -2189,6 +2200,55 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
     assert note_import_report.status == "warning"
     assert {warning.code for warning in note_import_report.warnings} == {"note_tag_rules_empty"}
     assert empty_rule_error_codes.isdisjoint(after_error_codes)
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_rejects_high_risk_empty_plugin_source_review(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """高风险插件源码空规则即使有旧确认状态，工作区验收也必须报错。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_json_text))),
+        "plugins",
+    )
+    plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir()
+    _ = (plugin_source_dir / "HighRiskSource.js").write_text(
+        "\n".join(
+            f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"
+            for i in range(301)
+        ),
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_rule_review_state(
+            rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
+            scope_hash=plugin_source_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert "plugin_source_rules_empty_high_risk" in {error.code for error in report.errors}
 
 
 @pytest.mark.asyncio

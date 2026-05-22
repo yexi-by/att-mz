@@ -79,7 +79,7 @@ def _collect_plugin_source_write_back_probe_reasons(
     game_data: GameData,
     probe_items: list[TranslationItem],
 ) -> dict[str, str]:
-    """逐条预演插件源码 AST 写回，返回不可写原因。"""
+    """批量预演插件源码 AST 写回，失败时逐条定位不可写原因。"""
     plugin_source_items = [
         item
         for item in probe_items
@@ -90,14 +90,18 @@ def _collect_plugin_source_write_back_probe_reasons(
     reasons: dict[str, str] = {}
     original_writable_files = dict(game_data.writable_plugin_source_files)
     try:
+        try:
+            write_plugin_source_text(game_data, plugin_source_items)
+            return {}
+        except Exception:
+            game_data.writable_plugin_source_files = dict(original_writable_files)
         for item in plugin_source_items:
-            before_item_files = dict(game_data.writable_plugin_source_files)
             try:
                 write_plugin_source_text(game_data, [item])
             except Exception as error:
                 reasons[item.location_path] = f"插件源码写回预演失败: {error}"
             finally:
-                game_data.writable_plugin_source_files = before_item_files
+                game_data.writable_plugin_source_files = dict(original_writable_files)
     finally:
         game_data.writable_plugin_source_files = original_writable_files
     return reasons

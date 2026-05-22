@@ -25,17 +25,33 @@ from .common import (
 class CoreAgentMixin:
     """承载 AgentToolkitService 的 CoreAgentMixin 命令族。"""
 
-    async def _load_game_data(self: AgentServiceContext, session: TargetGameSession) -> GameData:
+    async def _load_game_data(
+        self: AgentServiceContext,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = True,
+    ) -> GameData:
         """加载单游戏数据并绑定到会话。"""
         from app.rmmz.loader import load_game_data
 
-        game_data = await load_game_data(session.game_path)
+        game_data = await load_game_data(
+            session.game_path,
+            include_plugin_source_files=include_plugin_source_files,
+        )
         session.set_game_data(game_data)
         return game_data
 
-    async def _load_active_game_data(self: AgentServiceContext, session: TargetGameSession) -> GameData:
+    async def _load_active_game_data(
+        self: AgentServiceContext,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = True,
+    ) -> GameData:
         """加载当前激活游戏文件，供真实文件反查使用。"""
-        return await load_active_game_data(session.game_path)
+        return await load_active_game_data(
+            session.game_path,
+            include_plugin_source_files=include_plugin_source_files,
+        )
 
     async def _extract_active_translation_data_map(
         self: AgentServiceContext,

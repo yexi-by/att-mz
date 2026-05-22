@@ -1,6 +1,6 @@
 [project]
 name = "att-mz"
-version = "0.1.5"
+version = "0.1.6"
 description = "Autonomous Translation Toolkit for RPG Maker MZ"
 requires-python = ">=3.14"
 dependencies = [

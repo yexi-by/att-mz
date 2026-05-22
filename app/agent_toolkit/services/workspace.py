@@ -56,6 +56,7 @@ from .common import (
 )
 from app.plugin_source_text import (
     build_plugin_source_scan,
+    collect_plugin_source_review_coverage,
     plugin_source_rule_records_to_import_json,
 )
 from app.rule_review import (
@@ -183,6 +184,10 @@ class WorkspaceAgentMixin:
                 text_rules=text_rules,
             )
             plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            plugin_source_review = collect_plugin_source_review_coverage(
+                scan=plugin_source_scan,
+                rule_records=plugin_source_rules,
+            )
         terminology_summary = await export_terminology_artifacts(
             game_data=game_data,
             output_dir=target_dir / "terminology",
@@ -292,6 +297,12 @@ class WorkspaceAgentMixin:
             "plugin_source_candidate_count": len(plugin_source_scan.candidates),
             "plugin_source_high_risk": plugin_source_scan.risk.high_risk,
             "plugin_source_rule_count": sum(len(rule.selectors) for rule in plugin_source_rules),
+            "plugin_source_excluded_selector_count": sum(
+                len(rule.excluded_selectors)
+                for rule in plugin_source_rules
+            ),
+            "plugin_source_reviewed_selector_count": plugin_source_review.reviewed_selector_count,
+            "plugin_source_unreviewed_count": len(plugin_source_review.unreviewed_candidates),
             "stale_plugin_rule_count": stale_plugin_rule_count,
             "note_tag_candidate_count": note_tag_report.candidate_tag_count,
             "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
@@ -389,10 +400,13 @@ class WorkspaceAgentMixin:
                 game_data=game_data,
                 text_rules=text_rules,
             )
-            plugin_source_required = build_plugin_source_scan(
+            plugin_source_scan = build_plugin_source_scan(
                 game_data=game_data,
                 text_rules=text_rules,
-            ).risk.high_risk
+            )
+            plugin_source_required = plugin_source_scan.risk.high_risk
+            stored_plugin_source_rules = await session.read_plugin_source_text_rules()
+            plugin_source_started = bool(stored_plugin_source_rules)
             empty_rule_issues = await _read_empty_rule_review_issues(
                 session=session,
                 game_data=game_data,
@@ -488,7 +502,19 @@ class WorkspaceAgentMixin:
                 )
             errors.extend(plugin_source_report.errors)
             plugin_source_warnings = plugin_source_report.warnings
-            if not plugin_source_required and _summary_int(plugin_source_report.summary, "selector_count") == 0:
+            plugin_source_reviewed_count = _summary_int(plugin_source_report.summary, "reviewed_selector_count")
+            promoted_plugin_source_warnings: list[AgentIssue] = []
+            kept_plugin_source_warnings: list[AgentIssue] = []
+            for warning in plugin_source_warnings:
+                if warning.code == "plugin_source_review_incomplete" and (
+                    plugin_source_required or plugin_source_reviewed_count > 0
+                ):
+                    promoted_plugin_source_warnings.append(warning)
+                else:
+                    kept_plugin_source_warnings.append(warning)
+            plugin_source_warnings = kept_plugin_source_warnings
+            errors.extend(promoted_plugin_source_warnings)
+            if not plugin_source_required and plugin_source_reviewed_count == 0:
                 plugin_source_warnings = [
                     warning
                     for warning in plugin_source_warnings
@@ -496,10 +522,21 @@ class WorkspaceAgentMixin:
                 ]
             warnings.extend(plugin_source_warnings)
             details["plugin_source_rules"] = plugin_source_report.details
-            if _summary_int(plugin_source_report.summary, "selector_count") == 0:
-                plugin_source_empty_issue = empty_rule_issues["plugin_source_rules"]
-                if plugin_source_required and plugin_source_empty_issue is not None:
-                    errors.append(plugin_source_empty_issue)
+            if plugin_source_reviewed_count == 0:
+                if plugin_source_required:
+                    errors.append(
+                        issue(
+                            "plugin_source_rules_empty_high_risk",
+                            "插件源码风险较高，但工作区没有保存任何已审查的插件源码 selector；请先完成插件源码 AST 审查",
+                        )
+                    )
+                elif plugin_source_started:
+                    errors.append(
+                        issue(
+                            "plugin_source_rules_empty_started",
+                            "插件源码支线已有审查结果，但工作区没有保存任何插件源码 selector；请补全翻译或排除 selector",
+                        )
+                    )
         else:
             errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
         if note_tag_rules_path.exists():

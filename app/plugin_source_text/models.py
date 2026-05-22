@@ -27,6 +27,7 @@ class PluginSourceCandidate:
     context: str
     api: str
     key: str
+    ast_context: JsonObject
     active: bool
     confidence: str
     structural_flags: tuple[str, ...]
@@ -41,6 +42,7 @@ class PluginSourceCandidate:
             "context": self.context,
             "api": self.api,
             "key": self.key,
+            "ast_context": {key: value for key, value in self.ast_context.items()},
             "active": self.active,
             "confidence": self.confidence,
             "structural_flags": [flag for flag in self.structural_flags],
@@ -127,7 +129,6 @@ class PluginSourceScan:
             "enabled_plugin_files": enabled_plugin_files,
             "candidate_count": len(self.candidates),
             "files": [file_scan.to_json_object() for file_scan in self.files],
-            "candidates": [candidate.to_json_object() for candidate in self.candidates],
         }
 
     def risk_report_json(self) -> JsonObject:
@@ -154,6 +155,7 @@ class PluginSourceRuleImportEntry(BaseModel):
 
     file: str
     selectors: list[str] = Field(default_factory=list)
+    excluded_selectors: list[str] = Field(default_factory=list)
 
 
 class PluginSourceRuleImportFile(BaseModel):

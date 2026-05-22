@@ -19,14 +19,29 @@ class NativeJavaScriptAstModule(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class NativeJavaScriptAstContext:
+    """Rust AST 返回的字符串节点事实语境。"""
+
+    node_kind: str
+    property_key: str
+    property_path: tuple[str, ...]
+    call_name: str
+    call_argument_index: int | None
+    return_function_name: str
+    assignment_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class NativeJavaScriptStringSpan:
     """Rust AST 返回的源码字符串节点范围。"""
 
+    kind: str
     quote: str
     start_index: int
     end_index: int
     content_start_index: int
     content_end_index: int
+    ast_context: NativeJavaScriptAstContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +85,7 @@ def _parse_native_span(value: JsonValue, index: int) -> NativeJavaScriptStringSp
     """把单个 AST 范围从 JSON 收窄成 Python 结构。"""
     span = ensure_json_object(value, f"native_javascript_ast_result.spans[{index}]")
     return NativeJavaScriptStringSpan(
+        kind=_ensure_string(span["kind"], f"native_javascript_ast_result.spans[{index}].kind"),
         quote=_ensure_string(span["quote"], f"native_javascript_ast_result.spans[{index}].quote"),
         start_index=_ensure_int(span["start_index"], f"native_javascript_ast_result.spans[{index}].start_index"),
         end_index=_ensure_int(span["end_index"], f"native_javascript_ast_result.spans[{index}].end_index"),
@@ -81,6 +97,40 @@ def _parse_native_span(value: JsonValue, index: int) -> NativeJavaScriptStringSp
             span["content_end_index"],
             f"native_javascript_ast_result.spans[{index}].content_end_index",
         ),
+        ast_context=_parse_native_ast_context(
+            span.get("ast_context"),
+            f"native_javascript_ast_result.spans[{index}].ast_context",
+        ),
+    )
+
+
+def _parse_native_ast_context(value: JsonValue | None, label: str) -> NativeJavaScriptAstContext:
+    """把 AST 上下文 JSON 收窄成 Python 结构。"""
+    if value is None:
+        return NativeJavaScriptAstContext(
+            node_kind="",
+            property_key="",
+            property_path=(),
+            call_name="",
+            call_argument_index=None,
+            return_function_name="",
+            assignment_name="",
+        )
+    context = ensure_json_object(value, label)
+    return NativeJavaScriptAstContext(
+        node_kind=_ensure_string(context["node_kind"], f"{label}.node_kind"),
+        property_key=_ensure_string(context["property_key"], f"{label}.property_key"),
+        property_path=tuple(
+            _ensure_string(item, f"{label}.property_path[{index}]")
+            for index, item in enumerate(ensure_json_array(context["property_path"], f"{label}.property_path"))
+        ),
+        call_name=_ensure_string(context["call_name"], f"{label}.call_name"),
+        call_argument_index=_ensure_optional_int(context["call_argument_index"], f"{label}.call_argument_index"),
+        return_function_name=_ensure_string(
+            context["return_function_name"],
+            f"{label}.return_function_name",
+        ),
+        assignment_name=_ensure_string(context["assignment_name"], f"{label}.assignment_name"),
     )
 
 
@@ -98,7 +148,17 @@ def _ensure_int(value: object, label: str) -> int:
     return value
 
 
+def _ensure_optional_int(value: object, label: str) -> int | None:
+    """校验 JSON 字段是整数或 null。"""
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise TypeError(f"{label} 必须是整数或 null")
+    return value
+
+
 __all__ = [
+    "NativeJavaScriptAstContext",
     "NativeJavaScriptStringScan",
     "NativeJavaScriptStringSpan",
     "parse_native_javascript_string_spans",

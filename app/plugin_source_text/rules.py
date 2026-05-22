@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import TextRules
 
-from .models import PluginSourceScan
+from .models import PluginSourceCandidate, PluginSourceScan
 from .scanner import build_plugin_source_scan
 
 
@@ -17,6 +17,18 @@ class StalePluginSourceTextRule:
 
     file_name: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceReviewCoverage:
+    """插件源码候选被外部审查结果覆盖的统计。"""
+
+    required: bool
+    translate_selector_count: int
+    excluded_selector_count: int
+    reviewed_selector_count: int
+    active_candidate_count: int
+    unreviewed_candidates: tuple[PluginSourceCandidate, ...]
 
 
 def filter_fresh_plugin_source_text_rules(
@@ -61,7 +73,8 @@ def filter_fresh_plugin_source_text_rules(
             )
             continue
         available_selectors = {candidate.selector for candidate in file_scan.candidates}
-        missing_selectors = [selector for selector in record.selectors if selector not in available_selectors]
+        record_selectors = [*record.selectors, *record.excluded_selectors]
+        missing_selectors = [selector for selector in record_selectors if selector not in available_selectors]
         if missing_selectors:
             stale_rules.append(
                 StalePluginSourceTextRule(
@@ -74,7 +87,46 @@ def filter_fresh_plugin_source_text_rules(
     return fresh_rules, stale_rules
 
 
+def collect_plugin_source_review_coverage(
+    *,
+    scan: PluginSourceScan,
+    rule_records: list[PluginSourceTextRuleRecord],
+) -> PluginSourceReviewCoverage:
+    """按 AST 地图统计插件源码候选是否已被归入翻译或排除。"""
+    reviewed_selectors_by_file: dict[str, set[str]] = {}
+    translate_selector_count = 0
+    excluded_selector_count = 0
+    for record in rule_records:
+        reviewed_selectors = reviewed_selectors_by_file.setdefault(record.file_name, set())
+        reviewed_selectors.update(record.selectors)
+        reviewed_selectors.update(record.excluded_selectors)
+        translate_selector_count += len(record.selectors)
+        excluded_selector_count += len(record.excluded_selectors)
+
+    active_candidates = tuple(candidate for candidate in scan.candidates if candidate.active)
+    required = scan.risk.high_risk or bool(rule_records)
+    if required:
+        unreviewed_candidates = tuple(
+            candidate
+            for candidate in active_candidates
+            if candidate.selector not in reviewed_selectors_by_file.get(candidate.file_name, set())
+        )
+    else:
+        unreviewed_candidates = ()
+    reviewed_selector_count = translate_selector_count + excluded_selector_count
+    return PluginSourceReviewCoverage(
+        required=required,
+        translate_selector_count=translate_selector_count,
+        excluded_selector_count=excluded_selector_count,
+        reviewed_selector_count=reviewed_selector_count,
+        active_candidate_count=len(active_candidates),
+        unreviewed_candidates=unreviewed_candidates,
+    )
+
+
 __all__ = [
+    "PluginSourceReviewCoverage",
     "StalePluginSourceTextRule",
+    "collect_plugin_source_review_coverage",
     "filter_fresh_plugin_source_text_rules",
 ]

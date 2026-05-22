@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 
-from app.native_javascript_ast import parse_native_javascript_string_spans
+from app.native_javascript_ast import NativeJavaScriptAstContext, parse_native_javascript_string_spans
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import GameData
-from app.rmmz.text_rules import TextRules
+from app.rmmz.text_rules import JsonObject, TextRules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
 from .models import PluginSourceCandidate, PluginSourceFileScan, PluginSourceRisk, PluginSourceScan
@@ -118,16 +119,43 @@ def find_candidate_by_selector(
     active: bool,
     text_rules: TextRules,
 ) -> PluginSourceCandidate | None:
-    """重新扫描源码并按 selector 定位候选。"""
-    for candidate in _scan_source_candidates(
+    """扫描源码并按 selector 定位候选。"""
+    return build_plugin_source_candidate_index(
         file_name=file_name,
         source=source,
         active=active,
         text_rules=text_rules,
-    ):
-        if candidate.selector == selector:
-            return candidate
-    return None
+    ).by_selector.get(selector)
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceCandidateIndex:
+    """单个插件源码文件的候选索引。"""
+
+    candidates: tuple[PluginSourceCandidate, ...]
+    by_selector: dict[str, PluginSourceCandidate]
+
+
+def build_plugin_source_candidate_index(
+    *,
+    file_name: str,
+    source: str,
+    active: bool,
+    text_rules: TextRules,
+) -> PluginSourceCandidateIndex:
+    """扫描单个源码文件一次，并生成 selector 到候选的索引。"""
+    candidates = tuple(
+        _scan_source_candidates(
+            file_name=file_name,
+            source=source,
+            active=active,
+            text_rules=text_rules,
+        )
+    )
+    return PluginSourceCandidateIndex(
+        candidates=candidates,
+        by_selector={candidate.selector: candidate for candidate in candidates},
+    )
 
 
 def _enabled_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
@@ -153,6 +181,7 @@ def _scan_source_candidates(
 ) -> list[PluginSourceCandidate]:
     """扫描单个 JS 源码中的字符串字面量候选。"""
     spans = _collect_string_literal_spans(source)
+    newline_indexes = _collect_newline_indexes(source)
     candidates: list[PluginSourceCandidate] = []
     for span in spans:
         raw_text = source[span.content_start_index:span.content_end_index]
@@ -161,17 +190,18 @@ def _scan_source_candidates(
             continue
         structural_flags = tuple(_plugin_source_text_structural_flags(text))
         should_translate = text_rules.should_translate_source_text(text)
-        api = _call_api_before(source, span.start_index)
-        key = _property_key_before(source, span.start_index)
+        if not should_translate:
+            continue
+        api = span.ast_context.call_name or _call_api_before(source, span.start_index)
+        key = span.ast_context.property_key or _property_key_before(source, span.start_index)
         confidence = _candidate_confidence(
             text=text,
             should_translate=should_translate,
             api=api,
             key=key,
+            ast_context=span.ast_context,
             structural_flags=structural_flags,
         )
-        if confidence == "ignored" and not (api or key):
-            continue
         candidates.append(
             PluginSourceCandidate(
                 file_name=file_name,
@@ -183,7 +213,7 @@ def _scan_source_candidates(
                 text=text,
                 raw_text=raw_text,
                 quote=span.quote,
-                line=source.count("\n", 0, span.start_index) + 1,
+                line=_line_number_for_index(newline_indexes=newline_indexes, index=span.start_index),
                 start_index=span.start_index,
                 end_index=span.end_index,
                 content_start_index=span.content_start_index,
@@ -191,6 +221,7 @@ def _scan_source_candidates(
                 context=_candidate_context(api=api, key=key),
                 api=api,
                 key=key,
+                ast_context=span.ast_context.to_json_object(),
                 active=active,
                 confidence=confidence,
                 structural_flags=structural_flags,
@@ -199,15 +230,52 @@ def _scan_source_candidates(
     return candidates
 
 
+def _collect_newline_indexes(source: str) -> list[int]:
+    """收集换行位置，供大量候选快速计算行号。"""
+    return [index for index, char in enumerate(source) if char == "\n"]
+
+
+def _line_number_for_index(*, newline_indexes: list[int], index: int) -> int:
+    """根据预计算换行位置返回源码行号。"""
+    return bisect_right(newline_indexes, index) + 1
+
+
 @dataclass(frozen=True, slots=True)
 class _StringLiteralSpan:
     """源码字符串字面量范围。"""
 
+    kind: str
     quote: str
     start_index: int
     end_index: int
     content_start_index: int
     content_end_index: int
+    ast_context: "_StringAstContext"
+
+
+@dataclass(frozen=True, slots=True)
+class _StringAstContext:
+    """源码字符串节点的事实 AST 上下文。"""
+
+    node_kind: str = ""
+    property_key: str = ""
+    property_path: tuple[str, ...] = ()
+    call_name: str = ""
+    call_argument_index: int | None = None
+    return_function_name: str = ""
+    assignment_name: str = ""
+
+    def to_json_object(self) -> JsonObject:
+        """转换成 AST 地图可序列化对象。"""
+        return {
+            "node_kind": self.node_kind,
+            "property_key": self.property_key,
+            "property_path": [part for part in self.property_path],
+            "call_name": self.call_name,
+            "call_argument_index": self.call_argument_index,
+            "return_function_name": self.return_function_name,
+            "assignment_name": self.assignment_name,
+        }
 
 
 def _collect_string_literal_spans(source: str) -> list[_StringLiteralSpan]:
@@ -228,14 +296,29 @@ def _collect_native_string_literal_spans(source: str) -> list[_StringLiteralSpan
         return None
     return [
         _StringLiteralSpan(
+            kind=span.kind,
             quote=span.quote,
             start_index=span.start_index,
             end_index=span.end_index,
             content_start_index=span.content_start_index,
             content_end_index=span.content_end_index,
+            ast_context=_native_ast_context_to_internal(span.ast_context),
         )
         for span in scan.spans
     ]
+
+
+def _native_ast_context_to_internal(context: NativeJavaScriptAstContext) -> _StringAstContext:
+    """转换原生 AST 上下文结构。"""
+    return _StringAstContext(
+        node_kind=context.node_kind,
+        property_key=context.property_key,
+        property_path=context.property_path,
+        call_name=context.call_name,
+        call_argument_index=context.call_argument_index,
+        return_function_name=context.return_function_name,
+        assignment_name=context.assignment_name,
+    )
 
 
 def _collect_string_literal_spans_fallback(source: str) -> list[_StringLiteralSpan]:
@@ -273,11 +356,13 @@ def _collect_string_literal_spans_fallback(source: str) -> list[_StringLiteralSp
             if current == char:
                 spans.append(
                     _StringLiteralSpan(
+                        kind="string",
                         quote=char,
                         start_index=start_index,
                         end_index=index + 1,
                         content_start_index=start_index + 1,
                         content_end_index=index,
+                        ast_context=_StringAstContext(node_kind="string"),
                     )
                 )
                 index += 1
@@ -311,20 +396,23 @@ def _candidate_confidence(
     should_translate: bool,
     api: str,
     key: str,
+    ast_context: _StringAstContext,
     structural_flags: tuple[str, ...],
 ) -> str:
     """按上下文给源码字符串候选分级。"""
     if not should_translate:
         return "ignored"
     if "resource_path_like" in structural_flags or "number_like" in structural_flags:
-        return "ignored"
+        return "weak"
     if api and any(api.endswith(suffix) or api == suffix for suffix in STRONG_CALL_SUFFIXES):
         return "strong"
     if key in STRONG_TEXT_KEYS:
         return "strong"
+    if ast_context.return_function_name or ast_context.assignment_name or ast_context.property_path:
+        return "medium"
     if len(text) >= 8 and "identifier_or_path_like" not in structural_flags:
         return "medium"
-    return "ignored"
+    return "weak"
 
 
 def _candidate_context(*, api: str, key: str) -> str:
@@ -393,6 +481,8 @@ def _plugin_source_text_structural_flags(text: str) -> list[str]:
 
 
 __all__ = [
+    "PluginSourceCandidateIndex",
+    "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
     "build_plugin_source_scan",
     "candidate_selector_for_span",

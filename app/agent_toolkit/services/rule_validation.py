@@ -40,6 +40,8 @@ from app.application.flow_gate import (
 from app.plugin_source_text import (
     PluginSourceTextExtraction,
     build_plugin_source_rule_records_from_import,
+    build_plugin_source_scan,
+    collect_plugin_source_review_coverage,
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
@@ -693,6 +695,7 @@ class RuleValidationAgentMixin:
         errors: list[AgentIssue] = []
         warnings: list[AgentIssue] = []
         details: JsonObject = {"rules": []}
+        unreviewed_count = 0
         try:
             import_file = parse_plugin_source_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
@@ -709,15 +712,20 @@ class RuleValidationAgentMixin:
                 )
                 game_data = await self._load_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
+            scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
             records = build_plugin_source_rule_records_from_import(
                 game_data=game_data,
                 import_file=import_file,
                 text_rules=text_rules,
+                scan=scan,
             )
+            review = collect_plugin_source_review_coverage(scan=scan, rule_records=records)
+            unreviewed_count = len(review.unreviewed_candidates)
             extracted_map = PluginSourceTextExtraction(
                 game_data,
                 rule_records=records,
                 text_rules=text_rules,
+                scan=scan,
             ).extract_all_text()
             extracted_items = [
                 item
@@ -741,7 +749,10 @@ class RuleValidationAgentMixin:
                     "file": record.file_name,
                     "file_hash": record.file_hash,
                     "selector_count": len(record.selectors),
+                    "excluded_selector_count": len(record.excluded_selectors),
+                    "reviewed_selector_count": len(record.selectors) + len(record.excluded_selectors),
                     "selectors": list(record.selectors),
+                    "excluded_selectors": list(record.excluded_selectors),
                     **_build_rule_metric_detail(
                         record_items=record_items,
                         translated_paths=translated_paths,
@@ -757,20 +768,37 @@ class RuleValidationAgentMixin:
             ]
             if not records:
                 warnings.append(issue("plugin_source_rules_empty", "插件源码规则为空"))
-            if records and not extracted_items:
+            excluded_selector_count = sum(len(record.excluded_selectors) for record in records)
+            if records and not extracted_items and excluded_selector_count == 0:
                 warnings.append(issue("plugin_source_rules_no_hits", "插件源码规则没有提取到任何可翻译文本"))
+            if unreviewed_count:
+                review_issue = issue(
+                    "plugin_source_review_incomplete",
+                    f"插件源码规则还有 {unreviewed_count} 个候选未归入翻译或排除",
+                )
+                if scan.risk.high_risk or records:
+                    errors.append(review_issue)
+                else:
+                    warnings.append(review_issue)
         except Exception as error:
             errors.append(issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}"))
             records = []
             extracted_items = []
             translated_paths = set()
             unwritable_items = []
+            unreviewed_count = 0
         return AgentReport.from_parts(
             errors=errors,
             warnings=warnings,
             summary={
                 "file_count": len(records),
                 "selector_count": sum(len(record.selectors) for record in records),
+                "excluded_selector_count": sum(len(record.excluded_selectors) for record in records),
+                "reviewed_selector_count": sum(
+                    len(record.selectors) + len(record.excluded_selectors)
+                    for record in records
+                ),
+                "unreviewed_selector_count": unreviewed_count,
                 "hit_count": len(extracted_items),
                 "extractable_count": len(extracted_items),
                 "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
@@ -803,22 +831,53 @@ class RuleValidationAgentMixin:
                     structured_placeholder_rules=structured_rules,
                 )
                 game_data = await self._load_game_data(session)
+                scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
                 records = build_plugin_source_rule_records_from_import(
                     game_data=game_data,
                     import_file=import_file,
                     text_rules=text_rules,
+                    scan=scan,
                 )
+                old_records = await session.read_plugin_source_text_rules()
+                review = collect_plugin_source_review_coverage(scan=scan, rule_records=records)
+                unreviewed_count = len(review.unreviewed_candidates)
+                reviewed_selector_count = sum(
+                    len(record.selectors) + len(record.excluded_selectors)
+                    for record in records
+                )
+                if unreviewed_count and (scan.risk.high_risk or records or old_records):
+                    return AgentReport.from_parts(
+                        errors=[
+                            issue(
+                                "plugin_source_review_incomplete",
+                                f"插件源码规则还有 {unreviewed_count} 个候选未归入翻译或排除",
+                            )
+                        ],
+                        warnings=[],
+                        summary={
+                            "file_count": len(records),
+                            "selector_count": sum(len(record.selectors) for record in records),
+                            "excluded_selector_count": sum(len(record.excluded_selectors) for record in records),
+                            "reviewed_selector_count": reviewed_selector_count,
+                            "unreviewed_selector_count": unreviewed_count,
+                            "deleted_translation_items": 0,
+                            "deleted_translation_backup_path": "",
+                        },
+                        details={
+                            "rules": plugin_source_rule_records_to_import_json(records),
+                        },
+                    )
                 if not records:
                     ensure_empty_rule_confirmed(
                         rule_label="插件源码规则",
                         confirm_empty=confirm_empty,
                     )
-                old_records = await session.read_plugin_source_text_rules()
                 old_paths = collect_translation_data_paths(
                     PluginSourceTextExtraction(
                         game_data,
                         rule_records=old_records,
                         text_rules=text_rules,
+                        scan=scan,
                     ).extract_all_text()
                 )
                 new_paths = collect_translation_data_paths(
@@ -826,6 +885,7 @@ class RuleValidationAgentMixin:
                         game_data,
                         rule_records=records,
                         text_rules=text_rules,
+                        scan=scan,
                     ).extract_all_text()
                 )
                 stale_paths = sorted(old_paths - new_paths)
@@ -857,12 +917,17 @@ class RuleValidationAgentMixin:
                 summary={
                     "file_count": 0,
                     "selector_count": 0,
+                    "excluded_selector_count": 0,
+                    "reviewed_selector_count": 0,
+                    "unreviewed_selector_count": 0,
                     "deleted_translation_items": 0,
                     "deleted_translation_backup_path": "",
                 },
                 details={},
             )
         warnings = [] if records else [issue("plugin_source_rules_empty", "已导入空插件源码规则")]
+        if unreviewed_count:
+            warnings.append(issue("plugin_source_review_incomplete", f"插件源码规则还有 {unreviewed_count} 个候选未归入翻译或排除"))
         if deleted_translation_items > 0 and deleted_translation_backup_path is not None:
             warnings.append(
                 issue(
@@ -876,6 +941,12 @@ class RuleValidationAgentMixin:
             summary={
                 "file_count": len(records),
                 "selector_count": sum(len(record.selectors) for record in records),
+                "excluded_selector_count": sum(len(record.excluded_selectors) for record in records),
+                "reviewed_selector_count": sum(
+                    len(record.selectors) + len(record.excluded_selectors)
+                    for record in records
+                ),
+                "unreviewed_selector_count": unreviewed_count,
                 "deleted_translation_items": deleted_translation_items,
                 "deleted_translation_backup_path": deleted_translation_backup_path or "",
             },

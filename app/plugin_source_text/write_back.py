@@ -8,7 +8,7 @@ from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .extraction import parse_plugin_source_location_path
-from .scanner import find_candidate_by_selector
+from .scanner import build_plugin_source_candidate_index
 
 
 def write_plugin_source_text(
@@ -17,52 +17,51 @@ def write_plugin_source_text(
     text_rules: TextRules | None = None,
 ) -> None:
     """把插件源码译文写入可写源码副本。"""
-    rules = text_rules
-    replacements_by_file: dict[str, list[tuple[int, int, str]]] = {}
+    rules = text_rules if text_rules is not None else get_default_text_rules()
+    items_by_file: dict[str, list[tuple[str, TranslationItem]]] = {}
     for item in items:
         parsed = parse_plugin_source_location_path(item.location_path)
         if parsed is None:
             continue
         file_name, selector = parsed
-        if rules is not None:
-            ensure_no_internal_placeholder_tokens(
-                lines=item.translation_lines,
-                context=item.location_path,
-                text_rules=rules,
-            )
-        else:
-            ensure_no_internal_placeholder_tokens(
-                lines=item.translation_lines,
-                context=item.location_path,
-            )
+        ensure_no_internal_placeholder_tokens(
+            lines=item.translation_lines,
+            context=item.location_path,
+            text_rules=rules,
+        )
         if len(item.translation_lines) != 1:
             raise ValueError(f"插件源码短文本只能写入 1 行译文: {item.location_path}")
+        items_by_file.setdefault(file_name, []).append((selector, item))
+
+    replacements_by_file: dict[str, list[tuple[int, int, str]]] = {}
+    for file_name, file_items in items_by_file.items():
         source = game_data.writable_plugin_source_files.get(file_name)
         if source is None:
             raise ValueError(f"插件源码文件不存在: {file_name}")
         _ensure_javascript_ast_valid(source=source, file_name=file_name)
-        candidate = find_candidate_by_selector(
+        candidate_index = build_plugin_source_candidate_index(
             source=source,
             file_name=file_name,
-            selector=selector,
             active=True,
-            text_rules=rules if rules is not None else get_default_text_rules(),
+            text_rules=rules,
         )
-        if candidate is None:
-            raise ValueError(f"插件源码 selector 已失效: {item.location_path}")
-        if item.original_lines != [candidate.text]:
-            raise ValueError(f"插件源码原文已变化，请重新导出 AST 地图: {item.location_path}")
-        written_text = _escape_js_string_content(
-            text=item.translation_lines[0].strip(),
-            quote=candidate.quote,
-        )
-        replacements_by_file.setdefault(file_name, []).append(
-            (
-                candidate.content_start_index,
-                candidate.content_end_index,
-                written_text,
+        for selector, item in file_items:
+            candidate = candidate_index.by_selector.get(selector)
+            if candidate is None:
+                raise ValueError(f"插件源码 selector 已失效: {item.location_path}")
+            if item.original_lines != [candidate.text]:
+                raise ValueError(f"插件源码原文已变化，请重新导出 AST 地图: {item.location_path}")
+            written_text = _escape_js_string_content(
+                text=item.translation_lines[0].strip(),
+                quote=candidate.quote,
             )
-        )
+            replacements_by_file.setdefault(file_name, []).append(
+                (
+                    candidate.content_start_index,
+                    candidate.content_end_index,
+                    written_text,
+                )
+            )
 
     for file_name, replacements in replacements_by_file.items():
         content = game_data.writable_plugin_source_files[file_name]

@@ -11,7 +11,7 @@ from pydantic import TypeAdapter
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value
 
-from .models import PluginSourceRuleImportEntry, PluginSourceRuleImportFile
+from .models import PluginSourceRuleImportEntry, PluginSourceRuleImportFile, PluginSourceScan
 from .scanner import build_plugin_source_file_hash, build_plugin_source_scan
 
 RULE_IMPORT_ADAPTER: TypeAdapter[list[PluginSourceRuleImportEntry]] = TypeAdapter(
@@ -34,11 +34,13 @@ def build_plugin_source_rule_records_from_import(
     game_data: GameData,
     import_file: PluginSourceRuleImportFile,
     text_rules: TextRules,
+    scan: PluginSourceScan | None = None,
 ) -> list[PluginSourceTextRuleRecord]:
     """按当前游戏源码校验外部插件源码规则并转换为数据库记录。"""
     if not import_file.rules:
         return []
-    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    if scan is None:
+        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     file_scans = {file_scan.file_name: file_scan for file_scan in scan.files}
     selectors_by_file = {
         file_scan.file_name: {candidate.selector for candidate in file_scan.candidates}
@@ -59,14 +61,29 @@ def build_plugin_source_rule_records_from_import(
             raise ValueError(f"插件源码文件未在 plugins.js 中启用，不能导入规则: {file_name}")
         selectors = _validate_selectors(
             file_name=file_name,
+            selector_label="selector",
             selectors=entry.selectors,
             available_selectors=selectors_by_file[file_name],
+            allow_empty=True,
         )
+        excluded_selectors = _validate_selectors(
+            file_name=file_name,
+            selector_label="排除 selector",
+            selectors=entry.excluded_selectors,
+            available_selectors=selectors_by_file[file_name],
+            allow_empty=True,
+        )
+        overlap_selectors = sorted(set(selectors) & set(excluded_selectors))
+        if overlap_selectors:
+            raise ValueError(f"插件源码 selector 不能同时翻译和排除: {file_name}: {'、'.join(overlap_selectors[:5])}")
+        if not selectors and not excluded_selectors:
+            raise ValueError(f"插件源码规则缺少 selector: {file_name}")
         records.append(
             PluginSourceTextRuleRecord(
                 file_name=file_name,
                 file_hash=build_plugin_source_file_hash(game_data.plugin_source_files[file_name]),
                 selectors=selectors,
+                excluded_selectors=excluded_selectors,
             )
         )
     return records
@@ -78,6 +95,7 @@ def plugin_source_rule_records_to_import_json(records: list[PluginSourceTextRule
         {
             "file": record.file_name,
             "selectors": [selector for selector in record.selectors],
+            "excluded_selectors": [selector for selector in record.excluded_selectors],
         }
         for record in sorted(records, key=lambda item: item.file_name)
     ]
@@ -98,21 +116,23 @@ def _validate_plugin_source_file_name(file_name: str) -> str:
 def _validate_selectors(
     *,
     file_name: str,
+    selector_label: str,
     selectors: list[str],
     available_selectors: set[str],
+    allow_empty: bool = False,
 ) -> list[str]:
     """校验 selector 非空、无重复且能命中当前 AST 地图。"""
     cleaned_selectors = [selector.strip() for selector in selectors if selector.strip()]
-    if not cleaned_selectors:
+    if not cleaned_selectors and not allow_empty:
         raise ValueError(f"插件源码规则缺少 selector: {file_name}")
     duplicate_selectors = sorted(
         selector for selector, count in Counter(cleaned_selectors).items() if count > 1
     )
     if duplicate_selectors:
-        raise ValueError(f"插件源码 selector 重复: {file_name}: {'、'.join(duplicate_selectors)}")
+        raise ValueError(f"插件源码 {selector_label} 重复: {file_name}: {'、'.join(duplicate_selectors)}")
     missing_selectors = sorted(selector for selector in cleaned_selectors if selector not in available_selectors)
     if missing_selectors:
-        raise ValueError(f"插件源码 selector 未命中当前 AST 地图: {file_name}: {'、'.join(missing_selectors[:5])}")
+        raise ValueError(f"插件源码 {selector_label} 未命中当前 AST 地图: {file_name}: {'、'.join(missing_selectors[:5])}")
     return cleaned_selectors
 
 

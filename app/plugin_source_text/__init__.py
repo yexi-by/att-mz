@@ -19,8 +19,15 @@ from .models import (
     PluginSourceRuleImportFile,
     PluginSourceScan,
 )
-from .rules import StalePluginSourceTextRule, filter_fresh_plugin_source_text_rules
+from .rules import (
+    PluginSourceReviewCoverage,
+    StalePluginSourceTextRule,
+    collect_plugin_source_review_coverage,
+    filter_fresh_plugin_source_text_rules,
+)
 from .scanner import (
+    PluginSourceCandidateIndex,
+    build_plugin_source_candidate_index,
     build_plugin_source_file_hash,
     build_plugin_source_scan,
     find_candidate_by_selector,
@@ -28,16 +35,20 @@ from .scanner import (
 
 __all__ = [
     "PluginSourceCandidate",
+    "PluginSourceCandidateIndex",
     "PluginSourceFileScan",
     "PluginSourceRisk",
     "PluginSourceRuleImportEntry",
     "PluginSourceRuleImportFile",
     "PluginSourceScan",
     "PluginSourceTextExtraction",
+    "PluginSourceReviewCoverage",
     "StalePluginSourceTextRule",
+    "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
     "build_plugin_source_rule_records_from_import",
     "build_plugin_source_scan",
+    "collect_plugin_source_review_coverage",
     "filter_fresh_plugin_source_text_rules",
     "find_candidate_by_selector",
     "parse_plugin_source_location_path",

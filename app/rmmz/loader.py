@@ -51,17 +51,30 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 )
 
 
-async def load_game_data(game_path: str | Path) -> GameData:
+async def load_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
     """从 RPG Maker 游戏根目录加载翻译源数据，完整原始备份存在时优先读取备份。"""
-    return await _load_game_data(game_path, use_origin_backups=True)
+    return await _load_game_data(
+        game_path,
+        use_origin_backups=True,
+        include_plugin_source_files=include_plugin_source_files,
+    )
 
 
-async def load_active_game_data(game_path: str | Path) -> GameData:
+async def load_active_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
     """从 RPG Maker 游戏根目录加载当前激活文件，不读取完整原始备份。"""
-    return await _load_game_data(game_path, use_origin_backups=False)
+    return await _load_game_data(
+        game_path,
+        use_origin_backups=False,
+        include_plugin_source_files=include_plugin_source_files,
+    )
 
 
-async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) -> GameData:
+async def _load_game_data(
+    game_path: str | Path,
+    *,
+    use_origin_backups: bool,
+    include_plugin_source_files: bool,
+) -> GameData:
     """按指定来源策略加载标准数据文件并构造 `GameData`。"""
     layout = resolve_game_layout(game_path)
     source_data_dir = resolve_data_source_dir(
@@ -121,10 +134,13 @@ async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) ->
     plugins_content = await _read_text_file(source_plugins_path)
     data[PLUGINS_FILE_NAME] = plugins_content
     plugins_js = _parse_plugins_js_text(plugins_content)
-    plugin_source_files, plugin_source_read_errors = await _read_plugin_source_files(
-        layout=layout,
-        use_origin_backups=use_origin_backups,
-    )
+    if include_plugin_source_files:
+        plugin_source_files, plugin_source_read_errors = await _read_plugin_source_files(
+            layout=layout,
+            use_origin_backups=use_origin_backups,
+        )
+    else:
+        plugin_source_files, plugin_source_read_errors = {}, {}
 
     if system is None or common_events is None or troops is None:
         raise ValueError("游戏缺少 System.json、CommonEvents.json 或 Troops.json，禁止启动")

@@ -116,9 +116,17 @@ class RuleRecordSessionMixin(SessionMixinBase):
                     file_name=file_name,
                     file_hash=row_str(row, "file_hash", self.db_path),
                     selectors=[],
+                    excluded_selectors=[],
                 )
                 grouped_records[file_name] = record
-            record.selectors.append(row_str(row, "selector", self.db_path))
+            selector = row_str(row, "selector", self.db_path)
+            selector_kind = row_str(row, "selector_kind", self.db_path)
+            if selector_kind == "translate":
+                record.selectors.append(selector)
+            elif selector_kind == "excluded":
+                record.excluded_selectors.append(selector)
+            else:
+                raise RuntimeError(f"插件源码规则 selector 类型无效: {selector_kind}")
         return list(grouped_records.values())
 
     async def replace_plugin_source_text_rules(
@@ -135,6 +143,17 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         rule_record.file_name,
                         rule_record.file_hash,
                         selector,
+                        "translate",
+                    ),
+                )
+            for selector in rule_record.excluded_selectors:
+                _ = await self.connection.execute(
+                    INSERT_PLUGIN_SOURCE_TEXT_RULE,
+                    (
+                        rule_record.file_name,
+                        rule_record.file_hash,
+                        selector,
+                        "excluded",
                     ),
                 )
         await self.connection.commit()

@@ -240,7 +240,7 @@ class TranslationHandler:
         resolved_game_path = resolve_game_directory(game_path)
         layout = resolve_game_layout(resolved_game_path)
         game_title = read_game_title(resolved_game_path)
-        _ = await load_game_data(resolved_game_path)
+        _ = await load_game_data(resolved_game_path, include_plugin_source_files=False)
         record = await self.game_registry.register_game(
             resolved_game_path,
             source_language=source_language,

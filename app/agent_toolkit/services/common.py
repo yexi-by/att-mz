@@ -141,11 +141,21 @@ class AgentServiceContext(Protocol):
     llm_check: LlmCheckFunc
     setting_path: str | Path | None
 
-    async def _load_game_data(self, session: TargetGameSession) -> GameData:
+    async def _load_game_data(
+        self,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = True,
+    ) -> GameData:
         """加载游戏数据并绑定当前数据库会话。"""
         ...
 
-    async def _load_active_game_data(self, session: TargetGameSession) -> GameData:
+    async def _load_active_game_data(
+        self,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = True,
+    ) -> GameData:
         """加载当前激活游戏文件。"""
         ...
 

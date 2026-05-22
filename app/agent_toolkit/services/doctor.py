@@ -143,7 +143,11 @@ class DoctorAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_game_data(session)
+                plugin_source_rules = await session.read_plugin_source_text_rules()
+                game_data = await self._load_game_data(
+                    session,
+                    include_plugin_source_files=bool(plugin_source_rules),
+                )
                 plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
                     session=session,
                     game_data=game_data,

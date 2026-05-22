@@ -20,7 +20,12 @@ from app.event_command_text import resolve_event_command_codes
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import TargetGameSession
 from app.plugin_text import collect_plugin_json_string_leaf_candidates, extract_plugin_name
-from app.plugin_source_text import build_plugin_source_scan, filter_fresh_plugin_source_text_rules
+from app.plugin_source_text import (
+    PluginSourceScan,
+    build_plugin_source_scan,
+    collect_plugin_source_review_coverage,
+    filter_fresh_plugin_source_text_rules,
+)
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.control_codes import StructuredPlaceholderRule
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
@@ -32,7 +37,6 @@ from app.rule_review import (
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
-    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
     event_command_rule_scope_hash_for_codes,
@@ -40,7 +44,6 @@ from app.rule_review import (
     note_tag_rule_scope_hash_for_candidates,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
-    plugin_source_rule_scope_hash,
     structured_placeholder_rule_scope_hash,
 )
 from app.terminology import collect_terminology_bundle_errors
@@ -64,6 +67,7 @@ async def collect_workflow_gate_errors(
     custom_placeholder_rules_supplied: bool,
     translated_items: list[TranslationItem] | None = None,
     scope: TextScopeResult | None = None,
+    plugin_source_scan: PluginSourceScan | None = None,
 ) -> list[WorkflowGateIssue]:
     """收集当前游戏不能继续翻译或写入的全部硬闸错误。"""
     if scope is None:
@@ -74,7 +78,14 @@ async def collect_workflow_gate_errors(
             translated_items=translated_items,
         )
     errors: list[WorkflowGateIssue] = []
-    errors.extend(await _plugin_source_rule_gate_errors(session=session, game_data=game_data, text_rules=text_rules))
+    errors.extend(
+        await _plugin_source_rule_gate_errors(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+            scan=plugin_source_scan,
+        )
+    )
     errors.extend(await _terminology_gate_errors(session))
     errors.extend(
         await _external_rule_gate_errors(
@@ -129,6 +140,7 @@ async def assert_workflow_gate_passed(
     custom_placeholder_rules_supplied: bool,
     translated_items: list[TranslationItem] | None = None,
     scope: TextScopeResult | None = None,
+    plugin_source_scan: PluginSourceScan | None = None,
 ) -> None:
     """不满足流程前置条件时立刻中断当前任务。"""
     errors = await collect_workflow_gate_errors(
@@ -139,6 +151,7 @@ async def assert_workflow_gate_passed(
         custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
         translated_items=translated_items,
         scope=scope,
+        plugin_source_scan=plugin_source_scan,
     )
     if errors:
         raise RuntimeError(format_workflow_gate_error(errors))
@@ -403,9 +416,11 @@ async def _plugin_source_rule_gate_errors(
     session: TargetGameSession,
     game_data: GameData,
     text_rules: TextRules,
+    scan: PluginSourceScan | None = None,
 ) -> list[WorkflowGateIssue]:
     """高风险插件源码文本必须先确认并导入源码规则。"""
-    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    if scan is None:
+        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     records = await session.read_plugin_source_text_rules()
     fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
         game_data=game_data,
@@ -420,20 +435,27 @@ async def _plugin_source_rule_gate_errors(
                 message=f"存在 {len(stale_records)} 个过期插件源码规则，请重新导入插件源码规则",
             )
         ]
-    if not scan.risk.high_risk:
+    if not scan.risk.high_risk and not fresh_records:
         return []
-    if fresh_records:
-        return []
-    state = await session.read_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN)
-    current_scope_hash = plugin_source_rule_scope_hash(game_data)
-    if state is not None and state.reviewed_empty and state.scope_hash == current_scope_hash:
+    if scan.risk.high_risk and not fresh_records:
+        return [
+            WorkflowGateIssue(
+                code="plugin_source_text_high_risk",
+                message=(
+                    "发现大量插件源码文本候选，可能有玩家可见正文存放在 js/plugins 源码文件中；"
+                    "正文翻译已暂停，请先确认并完成插件源码 AST 分析支线，导入插件源码规则后再继续"
+                ),
+            )
+        ]
+    coverage = collect_plugin_source_review_coverage(scan=scan, rule_records=fresh_records)
+    if not coverage.unreviewed_candidates:
         return []
     return [
         WorkflowGateIssue(
-            code="plugin_source_text_high_risk",
+            code="plugin_source_review_incomplete",
             message=(
-                "发现大量插件源码文本候选，可能有玩家可见正文存放在 js/plugins 源码文件中；"
-                "正文翻译已暂停，请先确认并完成插件源码 AST 分析支线，导入插件源码规则后再继续"
+                f"插件源码支线还有 {len(coverage.unreviewed_candidates)} 个候选未由外部 Agent 归入翻译或排除；"
+                "请补全插件源码规则后再继续"
             ),
         )
     ]

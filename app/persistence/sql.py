@@ -26,7 +26,7 @@ TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -258,6 +258,7 @@ CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE = f"""
         file_name TEXT NOT NULL,
         file_hash TEXT NOT NULL,
         selector  TEXT NOT NULL,
+        selector_kind TEXT NOT NULL CHECK (selector_kind IN ('translate', 'excluded')),
         PRIMARY KEY (file_name, selector)
     )
 ;
@@ -369,8 +370,8 @@ INSERT_PLUGIN_TEXT_RULE = f"""
 INSERT_PLUGIN_SOURCE_TEXT_RULE = f"""
 --sql
     INSERT OR REPLACE INTO [{PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME}]
-    (file_name, file_hash, selector)
-    VALUES (?, ?, ?)
+    (file_name, file_hash, selector, selector_kind)
+    VALUES (?, ?, ?, ?)
 ;
 """
 
@@ -614,9 +615,9 @@ SELECT_PLUGIN_TEXT_RULES = f"""
 
 SELECT_PLUGIN_SOURCE_TEXT_RULES = f"""
 --sql
-    SELECT file_name, file_hash, selector
+    SELECT file_name, file_hash, selector, selector_kind
     FROM [{PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME}]
-    ORDER BY file_name, selector
+    ORDER BY file_name, selector_kind, selector
 ;
 """
 

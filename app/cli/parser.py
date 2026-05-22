@@ -221,7 +221,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_plugin_source_parser)
     _ = import_plugin_source_parser.add_argument("--input", required=True, help="插件源码规则 JSON 文件")
-    _ = import_plugin_source_parser.add_argument("--confirm-empty", action="store_true", help="确认当前游戏不需要插件源码规则，允许导入空规则")
+    _ = import_plugin_source_parser.add_argument(
+        "--confirm-empty",
+        action="store_true",
+        help="确认低风险项目未启动插件源码支线，允许导入空规则",
+    )
     _ = import_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_pending_parser = subparsers.add_parser(

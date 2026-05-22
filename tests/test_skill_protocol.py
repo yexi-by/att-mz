@@ -315,7 +315,7 @@ def test_external_rule_references_define_second_round_contracts() -> None:
     workflow_text = read(DEV_REFERENCES / "external-rules-workflow.md")
     for phrase in [
         "插件规则、事件指令规则和 Note 标签规则可以并行处理",
-        "插件源码文本只在高风险且用户确认后处理",
+        "插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动",
         "三类外部规则全部导入后，才能重新生成和收束占位符规则",
         "plugin-rules-agent-task.md",
         "event-command-rules-agent-task.md",
@@ -523,6 +523,34 @@ def test_public_docs_describe_json_flag_as_command_contract() -> None:
     assert "支持 `--json` 的命令会输出机器可读报告" in advanced_usage
     assert "uv run python main.py --agent-mode <命令> ... --json" not in advanced_usage
     assert "源码运行时所有命令都使用：" not in advanced_usage
+
+
+def test_public_readme_describes_plugin_source_side_branch_commands() -> None:
+    """发行版 README 必须把插件源码支线写成风险扫描到规则导入的完整流程。"""
+    text = read(ROOT / "README.md")
+    for phrase in [
+        "插件源码文本默认只做风险扫描",
+        "高风险或用户明确要求处理时，再按 AST 地图导出、规则校验和规则导入流程处理",
+        "扫描插件源码文本风险",
+        "导出插件源码 AST 地图",
+        "校验插件源码规则",
+        "导入插件源码规则",
+        "export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json",
+        "validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json",
+        "import-plugin-source-rules --game <游戏标题> --input <规则文件> --json",
+    ]:
+        assert phrase in text
+    assert "插件源码扫描只会输出候选文本" not in text
+    assert "扫描插件源码文本候选" not in text
+
+
+def test_plugin_source_skill_allows_explicit_low_risk_request() -> None:
+    """插件源码 Skill 必须表达低风险默认不启动，但用户明确要求时可以启动支线。"""
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        task_text = read(references / "plugin-source-text-agent-task.md")
+        workflow_text = read(references / "external-rules-workflow.md")
+        assert "低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务" in task_text
+        assert "插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动" in workflow_text
 
 
 def test_database_wiki_documents_configured_event_command_defaults() -> None:

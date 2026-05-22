@@ -355,6 +355,7 @@ class PluginSourceTextRuleRecord(BaseModel):
     file_name: str
     file_hash: str
     selectors: list[str] = Field(default_factory=list)
+    excluded_selectors: list[str] = Field(default_factory=list)
 
 
 class NoteTagTextRuleRecord(BaseModel):

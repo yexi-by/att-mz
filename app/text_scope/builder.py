@@ -7,6 +7,8 @@ from app.note_tag_text import NoteTagTextExtraction
 from app.persistence import TargetGameSession
 from app.plugin_text import PluginTextExtraction
 from app.plugin_source_text import PluginSourceTextExtraction, filter_fresh_plugin_source_text_rules
+from app.plugin_source_text.models import PluginSourceScan
+from app.plugin_source_text.scanner import build_plugin_source_scan
 from app.rmmz import DataTextExtraction
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
@@ -45,10 +47,17 @@ class TextScopeService:
             game_data=game_data,
         )
         event_rules = await session.read_event_command_text_rules()
+        plugin_source_rule_records = await session.read_plugin_source_text_rules()
+        plugin_source_scan = (
+            build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            if plugin_source_rule_records
+            else None
+        )
         plugin_source_rules, _stale_plugin_source_rules = filter_fresh_plugin_source_text_rules(
             game_data=game_data,
-            rule_records=await session.read_plugin_source_text_rules(),
+            rule_records=plugin_source_rule_records,
             text_rules=text_rules,
+            scan=plugin_source_scan,
         )
         note_tag_rules = await session.read_note_tag_text_rules()
         mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
@@ -62,6 +71,7 @@ class TextScopeService:
             plugin_rules=plugin_rules,
             event_rules=event_rules,
             plugin_source_rules=plugin_source_rules,
+            plugin_source_scan=plugin_source_scan,
             note_tag_rules=note_tag_rules,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
@@ -135,6 +145,7 @@ def build_translation_data_map(
     plugin_source_rules: list[PluginSourceTextRuleRecord],
     note_tag_rules: list[NoteTagTextRuleRecord],
     mv_virtual_namebox_rules: list[MvVirtualNameboxRuleRecord] | None = None,
+    plugin_source_scan: PluginSourceScan | None = None,
 ) -> dict[str, TranslationData]:
     """按同一组规则构建当前可翻译文本集合。"""
     translation_data_map = DataTextExtraction(
@@ -152,7 +163,12 @@ def build_translation_data_map(
     )
     merge_translation_data_map(
         translation_data_map,
-        PluginSourceTextExtraction(game_data, plugin_source_rules, text_rules).extract_all_text(),
+        PluginSourceTextExtraction(
+            game_data,
+            plugin_source_rules,
+            text_rules,
+            scan=plugin_source_scan,
+        ).extract_all_text(),
     )
     merge_translation_data_map(
         translation_data_map,

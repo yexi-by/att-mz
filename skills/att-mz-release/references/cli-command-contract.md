@@ -67,8 +67,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `validate-plugin-rules --game <游戏标题> --input <规则文件> --json` | 校验插件规则路径、字符串叶子命中和当前插件配置哈希 | `status` 为 `ok` | 修 `plugin-rules.json` 后重跑；如果提示插件哈希或当前配置不一致，重新准备工作区，不猜路径 |
 | `import-plugin-rules --game <游戏标题> --input <规则文件> --json` | 保存插件文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
 | `export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json` | 用户确认高风险后导出插件源码 AST 地图 | 输出文件存在，风险摘要和候选数量可解释 | 只处理 `js/plugins` 直接 `.js` 文件；异常时停止正文翻译 |
-| `validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 校验插件源码 selector 和当前源码哈希 | `status` 为 `ok` | 修 `plugin-source-rules.json` 后重跑；selector 失效时重新导出 AST 地图 |
-| `import-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 保存插件源码文本规则 | `status` 为 `ok`；高风险空规则需用户确认后传 `--confirm-empty` | 导入后重新扫描占位符候选，再进入正文翻译 |
+| `validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 校验插件源码 selector、排除 selector 和当前源码哈希 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 修 `plugin-source-rules.json` 后重跑；selector 失效时重新导出 AST 地图 |
+| `import-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 保存插件源码文本规则 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 导入后重新扫描占位符候选，再进入正文翻译 |
 | `validate-event-command-rules --game <游戏标题> --input <规则文件> --json` | 校验事件指令编码、match 和路径 | 无 `errors` | 修 `event-command-rules.json` 后重跑 |
 | `import-event-command-rules --game <游戏标题> --input <规则文件> --json` | 保存事件指令文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；若候选用 `--code` 导出，空规则导入也传同一组 `--code CODE`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
 | `export-note-tag-candidates --game <游戏标题> --output <文件> --json` | 单独导出 Note 标签候选 | 输出文件存在，候选数量可解释 | 异常时检查游戏注册和文件结构 |

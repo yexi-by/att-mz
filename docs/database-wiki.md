@@ -136,13 +136,14 @@
 |------|------|------|------|
 | `file_name` | `TEXT` | 主键 | 插件源码文件名，只允许直接 `.js` 文件名 |
 | `file_hash` | `TEXT` | 非空 | 插件源码文件哈希，用于发现规则和当前源码不匹配 |
-| `selector` | `TEXT` | 主键 | 指向可翻译源码字符串节点的 AST selector |
+| `selector` | `TEXT` | 主键 | 指向源码字符串节点的 AST selector |
+| `selector_kind` | `TEXT` | 非空 | `translate` 表示进入正文翻译，`excluded` 表示已审查但不翻译 |
 
 维护规则：
 
-- `import-plugin-source-rules` 校验文件名、启用状态、文件哈希和 selector 命中后整体替换此表内容。
+- `import-plugin-source-rules` 校验文件名、启用状态、文件哈希、翻译 selector、排除 selector 和重复决策后整体替换此表内容。
 - 主翻译流程只按数据库中已导入的源码规则提取 `js/plugins` 直接插件文件文本。
-- 高风险扫描结果没有对应源码规则时，正文翻译入口会停止并要求用户确认后处理。
+- 高风险扫描结果没有对应源码规则，或已启动支线但仍有候选未归入翻译或排除时，正文翻译入口会停止并要求用户处理。
 
 ### `note_tag_text_rules`
 

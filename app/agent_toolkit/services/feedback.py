@@ -33,8 +33,15 @@ class FeedbackAgentMixin:
                 details={},
             )
         async with await self.game_registry.open_game(game_title) as session:
-            game_data = await self._load_game_data(session)
-            active_game_data = await self._load_active_game_data(session)
+            plugin_source_rules = await session.read_plugin_source_text_rules()
+            game_data = await self._load_game_data(
+                session,
+                include_plugin_source_files=bool(plugin_source_rules),
+            )
+            active_game_data = await self._load_active_game_data(
+                session,
+                include_plugin_source_files=False,
+            )
         occurrences = await _collect_feedback_text_occurrences(
             game_data=active_game_data,
             feedback_texts=feedback_texts,
