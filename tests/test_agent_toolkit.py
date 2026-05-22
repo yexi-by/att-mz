@@ -324,7 +324,7 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件规则为空时默认报错；当前仍有候选时即使确认也不能清理旧译文。"""
+    """插件规则为空时默认报错；显式确认后允许保存当前插件范围的空结果。"""
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path / "app-home"))
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -361,17 +361,22 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
 
     with pytest.raises(RuntimeError, match="--confirm-empty"):
         _ = await handler.import_plugin_rules(game_title="テストゲーム", input_path=empty_rules_path)
-    with pytest.raises(RuntimeError, match="候选"):
-        _ = await handler.import_plugin_rules(
-            game_title="テストゲーム",
-            input_path=empty_rules_path,
-            confirm_empty=True,
-        )
+    summary = await handler.import_plugin_rules(
+        game_title="テストゲーム",
+        input_path=empty_rules_path,
+        confirm_empty=True,
+    )
     async with await registry.open_game("テストゲーム") as session:
         translated_items = await session.read_translated_items()
+        state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
 
-    assert translated_items[0].location_path == "plugins.js/0/Message"
-    assert translated_items[0].translation_lines == ["插件译文"]
+    assert summary.imported_plugin_count == 0
+    assert summary.imported_rule_count == 0
+    assert summary.deleted_translation_items == 1
+    assert summary.deleted_translation_backup_path
+    assert translated_items == []
+    assert state is not None
+    assert state.scope_hash == plugin_rule_scope_hash(await load_game_data(minimal_game_dir))
 
 
 @pytest.mark.asyncio
@@ -380,8 +385,15 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """事件指令规则为空时默认报错，不允许静默清理仍有候选的旧译文。"""
-    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path / "app-home"))
+    """事件指令规则为空时默认报错；显式确认后允许保存当前编码范围的空结果。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
@@ -424,11 +436,27 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
             game_title="テストゲーム",
             input_path=empty_rules_path,
         )
+    summary = await handler.import_event_command_rules(
+        game_title="テストゲーム",
+        input_path=empty_rules_path,
+        confirm_empty=True,
+        command_codes={357},
+    )
     async with await registry.open_game("テストゲーム") as session:
         translated_items = await session.read_translated_items()
+        state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
 
-    assert translated_items[0].location_path == "CommonEvents.json/1/4/parameters/3/message"
-    assert translated_items[0].translation_lines == ["事件指令译文"]
+    game_data = await load_game_data(minimal_game_dir)
+    assert summary.imported_rule_group_count == 0
+    assert summary.imported_path_rule_count == 0
+    assert summary.deleted_translation_items == 1
+    assert summary.deleted_translation_backup_path
+    assert translated_items == []
+    assert state is not None
+    assert state.scope_hash == event_command_rule_scope_hash_for_command_codes(
+        game_data=game_data,
+        command_codes=frozenset({357}),
+    )
 
 
 @pytest.mark.asyncio
@@ -972,7 +1000,7 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """反馈反查和插件源码扫描只报告结构性命中，不自动判定玩家可见语义。"""
+    """反馈反查能提示源码命中，完整候选只能通过 AST 地图导出。"""
     common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
     raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
     common_events = ensure_json_array(coerce_json_value(raw_common_events), str(common_events_path))
@@ -997,15 +1025,19 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     feedback_path = tmp_path / "feedback-texts.json"
-    candidates_path = tmp_path / "plugin-source-candidates.json"
+    risk_report_path = tmp_path / "plugin-source-risk-report.json"
+    ast_map_path = tmp_path / "plugin-source-ast-map.json"
     _ = feedback_path.write_text(
         json.dumps(["こんにちは", "プラグイン直書き", "一行\n二行"], ensure_ascii=False),
         encoding="utf-8",
     )
 
     verify_report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
-    scan_report = await service.scan_plugin_source_text(game_title="テストゲーム", output_path=candidates_path)
-    candidates = load_json_array(candidates_path)
+    scan_report = await service.scan_plugin_source_text(game_title="テストゲーム", output_path=risk_report_path)
+    ast_report = await service.export_plugin_source_ast_map(game_title="テストゲーム", output_path=ast_map_path)
+    risk_report = load_json_object(risk_report_path)
+    ast_map = load_json_object(ast_map_path)
+    candidates = ensure_json_array(coerce_json_value(ast_map["candidates"]), "plugin-source-ast-map.candidates")
     occurrence_count = verify_report.summary["occurrence_count"]
 
     assert verify_report.status == "error"
@@ -1025,6 +1057,10 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
         for occurrence in occurrences
     )
     assert scan_report.status == "ok"
+    assert ast_report.status == "ok"
+    assert "candidates" not in risk_report
+    assert "files" not in risk_report
+    assert risk_report["candidate_count"] == 2
     assert any(
         ensure_json_object(coerce_json_value(candidate), "candidate").get("text") == "プラグイン直書き"
         for candidate in candidates
@@ -2352,6 +2388,49 @@ async def test_note_tag_rule_validation_import_and_pending_export(
     assert "Items.json/1/note/拡張説明" in payload
     assert "Items.json/1/note/ExtendDesc" in payload
     assert "Items.json/2/note/拡張説明" not in payload
+
+
+@pytest.mark.asyncio
+async def test_import_empty_note_tag_rules_allows_confirmed_empty_with_candidates(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Note 标签候选经审查没有玩家可见文本时，可以显式保存空结果。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<PrivateProtocol:内部コード>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    missing_report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+    )
+    confirmed_report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+
+    assert missing_report.status == "error"
+    assert "confirm-empty" in missing_report.errors[0].message
+    assert confirmed_report.status == "warning"
+    assert {warning.code for warning in confirmed_report.warnings} == {"note_tag_rules_empty"}
+    assert state is not None
+    assert state.scope_hash == note_tag_rule_scope_hash_for_text_rules(
+        game_data=game_data,
+        text_rules=text_rules,
+    )
 
 
 @pytest.mark.asyncio

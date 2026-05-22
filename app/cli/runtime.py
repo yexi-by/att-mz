@@ -46,6 +46,7 @@ PARTIAL_WRITE_BACK_BLOCKING_ERROR_CODES: frozenset[str] = frozenset(
         "coverage_unwritable",
         "rule_hits_unwritable",
         "stale_plugin_rules",
+        "stale_plugin_source_rules",
         "stale_saved_translations",
         "stale_source_residual_rules",
         "terminology_bundle",

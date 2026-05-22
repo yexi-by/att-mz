@@ -23,6 +23,7 @@ def reset_writable_copies(game_data: GameData) -> None:
     """重置游戏数据的可写副本，保证每次回写都从加载数据重新套用译文。"""
     game_data.writable_data = copy.deepcopy(game_data.data)
     game_data.writable_plugins_js = copy.deepcopy(game_data.plugins_js)
+    game_data.writable_plugin_source_files = dict(game_data.plugin_source_files)
 
 
 def write_game_files(game_data: GameData, game_root: Path | None = None) -> None:
@@ -31,24 +32,31 @@ def write_game_files(game_data: GameData, game_root: Path | None = None) -> None
     active_data_dir, origin_data_dir, active_plugins_path, origin_plugins_path = build_game_layout_paths(game_data)
     changed_data_files = collect_changed_data_file_names(game_data)
     plugins_changed = is_plugins_file_changed(game_data)
+    changed_plugin_source_files = collect_changed_plugin_source_file_names(game_data)
 
-    if not changed_data_files and not plugins_changed:
+    if not changed_data_files and not plugins_changed and not changed_plugin_source_files:
         return
 
     ensure_active_layout_exists(
         active_data_dir=active_data_dir,
         active_plugins_path=active_plugins_path,
     )
-    ensure_full_data_origin_backup(
-        active_data_dir=active_data_dir,
-        origin_data_dir=origin_data_dir,
-        temp_dir=game_data.layout.content_root,
-    )
-    backup_original_plugins_file(
-        plugins_changed=plugins_changed,
-        active_plugins_path=active_plugins_path,
-        origin_plugins_path=origin_plugins_path,
-    )
+    if changed_data_files or plugins_changed:
+        ensure_full_data_origin_backup(
+            active_data_dir=active_data_dir,
+            origin_data_dir=origin_data_dir,
+            temp_dir=game_data.layout.content_root,
+        )
+        backup_original_plugins_file(
+            plugins_changed=plugins_changed,
+            active_plugins_path=active_plugins_path,
+            origin_plugins_path=origin_plugins_path,
+        )
+    if changed_plugin_source_files:
+        backup_original_plugin_source_files(
+            game_data=game_data,
+            changed_file_names=changed_plugin_source_files,
+        )
 
     replace_changed_data_files(
         game_data=game_data,
@@ -63,6 +71,10 @@ def write_game_files(game_data: GameData, game_root: Path | None = None) -> None
             data=plugins_content,
             temp_dir=active_plugins_path.parent,
         )
+    replace_changed_plugin_source_files(
+        game_data=game_data,
+        changed_file_names=changed_plugin_source_files,
+    )
 
 
 def collect_changed_data_file_names(game_data: GameData) -> list[str]:
@@ -82,6 +94,15 @@ def is_plugins_file_changed(game_data: GameData) -> bool:
     writable_plugins = game_data.writable_data.get(PLUGINS_FILE_NAME)
     original_plugins = game_data.data.get(PLUGINS_FILE_NAME)
     return writable_plugins != original_plugins
+
+
+def collect_changed_plugin_source_file_names(game_data: GameData) -> list[str]:
+    """找出本轮相对加载源发生变化的插件源码文件。"""
+    changed_files: list[str] = []
+    for file_name, writable_content in sorted(game_data.writable_plugin_source_files.items()):
+        if game_data.plugin_source_files.get(file_name) != writable_content:
+            changed_files.append(file_name)
+    return changed_files
 
 
 def build_game_layout_paths(game_data: GameData) -> tuple[Path, Path, Path, Path]:
@@ -142,6 +163,25 @@ def backup_original_plugins_file(
     _ = shutil.copy2(active_plugins_path, origin_plugins_path)
 
 
+def backup_original_plugin_source_files(
+    *,
+    game_data: GameData,
+    changed_file_names: list[str],
+) -> None:
+    """写回插件源码前保存被修改文件的原始内容。"""
+    origin_dir = game_data.layout.plugin_source_origin_dir
+    active_dir = game_data.layout.js_dir / "plugins"
+    origin_dir.mkdir(parents=True, exist_ok=True)
+    for file_name in changed_file_names:
+        active_path = active_dir / file_name
+        if not active_path.is_file():
+            raise FileNotFoundError(f"激活插件源码文件不存在: {active_path}")
+        origin_path = origin_dir / file_name
+        if origin_path.exists():
+            continue
+        _ = shutil.copy2(active_path, origin_path)
+
+
 def replace_changed_data_files(
     *,
     game_data: GameData,
@@ -154,6 +194,21 @@ def replace_changed_data_files(
         target_path = active_data_dir / file_name
         data = game_data.writable_data[file_name]
         replace_json_file(target_path=target_path, data=data, temp_dir=temp_dir)
+
+
+def replace_changed_plugin_source_files(
+    *,
+    game_data: GameData,
+    changed_file_names: list[str],
+) -> None:
+    """把变化后的插件源码文件逐个替换到激活版目录。"""
+    active_dir = game_data.layout.js_dir / "plugins"
+    for file_name in changed_file_names:
+        replace_text_file(
+            target_path=active_dir / file_name,
+            content=game_data.writable_plugin_source_files[file_name],
+            temp_dir=active_dir,
+        )
 
 
 def replace_json_file(*, target_path: Path, data: JsonValue, temp_dir: Path) -> None:
@@ -202,6 +257,7 @@ def cleanup_path(target_path: Path) -> None:
 
 __all__: list[str] = [
     "collect_changed_data_file_names",
+    "collect_changed_plugin_source_file_names",
     "ensure_full_data_origin_backup",
     "is_plugins_file_changed",
     "reset_writable_copies",

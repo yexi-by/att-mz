@@ -315,6 +315,30 @@ async def run_validate_plugin_rules_command(args: argparse.Namespace) -> int:
     return 1 if report.status == "error" else 0
 
 
+async def run_validate_plugin_source_rules_command(args: argparse.Namespace) -> int:
+    """执行 `validate-plugin-source-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.validate_plugin_source_rules(game_title=game_title, rules_text=rules_text)
+    write_report_outputs(report=report, args=args, title="插件源码规则校验报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_import_plugin_source_rules_command(args: argparse.Namespace) -> int:
+    """执行 `import-plugin-source-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.import_plugin_source_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+        confirm_empty=read_bool_arg(args, "confirm_empty"),
+    )
+    write_report_outputs(report=report, args=args, title="插件源码规则导入报告")
+    return 1 if report.status == "error" else 0
+
+
 async def run_validate_event_command_rules_command(args: argparse.Namespace) -> int:
     """执行 `validate-event-command-rules` 命令。"""
     game_title = await resolve_target_game_title(args)

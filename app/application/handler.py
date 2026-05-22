@@ -18,10 +18,7 @@ from app.application.font_replacement import (
 )
 from app.application.flow_gate import (
     assert_workflow_gate_passed,
-    count_event_command_rule_candidates_for_codes,
-    count_note_tag_rule_candidates,
-    count_plugin_rule_candidates,
-    ensure_empty_rule_import_allowed,
+    ensure_empty_rule_confirmed,
     event_command_rule_codes_for_setting,
     event_command_rule_scope_hash_for_command_codes,
     note_tag_rule_scope_hash_for_text_rules,
@@ -119,6 +116,7 @@ from app.rmmz.loader import load_game_data, read_game_title, resolve_game_direct
 from app.observability.logging import logger
 from app.rmmz.write_back import write_data_text
 from app.plugin_text.write_back import write_plugin_text
+from app.plugin_source_text.write_back import write_plugin_source_text
 from app.utils.config_loader_utils import load_setting
 from app.source_residual import SourceResidualRuleSet
 from app.text_scope import TextScopeService, collect_translation_data_paths
@@ -265,10 +263,9 @@ class TranslationHandler:
                 import_file=import_file,
             )
             if not rule_records:
-                ensure_empty_rule_import_allowed(
+                ensure_empty_rule_confirmed(
                     rule_label="插件规则",
                     confirm_empty=confirm_empty,
-                    candidate_count=count_plugin_rule_candidates(game_data),
                 )
             old_rules = {
                 rule.plugin_index: rule
@@ -408,26 +405,21 @@ class TranslationHandler:
             )
             empty_review_scope_hash: str | None = None
             if not rule_records:
-                if not confirm_empty:
-                    ensure_empty_rule_import_allowed(
-                        rule_label="事件指令规则",
-                        confirm_empty=confirm_empty,
-                        candidate_count=0,
-                    )
-                setting = self._load_setting(source_language=session.source_language)
-                effective_command_codes = (
-                    event_command_rule_codes_for_setting(game_data=game_data, setting=setting)
-                    if command_codes is None
-                    else resolve_event_command_codes(command_codes=command_codes, default_command_codes=None)
-                )
-                ensure_empty_rule_import_allowed(
+                ensure_empty_rule_confirmed(
                     rule_label="事件指令规则",
                     confirm_empty=confirm_empty,
-                    candidate_count=count_event_command_rule_candidates_for_codes(
-                        game_data=game_data,
-                        command_codes=effective_command_codes,
-                    ),
                 )
+                if command_codes is None:
+                    setting = self._load_setting(source_language=session.source_language)
+                    effective_command_codes = event_command_rule_codes_for_setting(
+                        game_data=game_data,
+                        setting=setting,
+                    )
+                else:
+                    effective_command_codes = resolve_event_command_codes(
+                        command_codes=command_codes,
+                        default_command_codes=None,
+                    )
                 empty_review_scope_hash = event_command_rule_scope_hash_for_command_codes(
                     game_data=game_data,
                     command_codes=effective_command_codes,
@@ -512,10 +504,9 @@ class TranslationHandler:
                 text_rules=text_rules,
             )
             if not rule_records:
-                ensure_empty_rule_import_allowed(
+                ensure_empty_rule_confirmed(
                     rule_label="Note 标签规则",
                     confirm_empty=confirm_empty,
-                    candidate_count=count_note_tag_rule_candidates(game_data=game_data, text_rules=text_rules),
                 )
             old_rules = {
                 rule.file_name: rule
@@ -859,10 +850,13 @@ class TranslationHandler:
 
             reset_writable_copies(game_data)
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
-            data_item_count = sum(
-                1 for item in translated_items if not item.location_path.startswith(f"{PLUGINS_FILE_NAME}/")
+            plugin_item_count = sum(
+                1
+                for item in translated_items
+                if item.location_path.startswith(f"{PLUGINS_FILE_NAME}/")
+                or item.location_path.startswith("js/plugins/")
             )
-            plugin_item_count = len(translated_items) - data_item_count
+            data_item_count = len(translated_items) - plugin_item_count
             if translated_items:
                 write_data_text(
                     game_data,
@@ -876,6 +870,7 @@ class TranslationHandler:
                 if data_item_count:
                     advance_progress(data_item_count)
                 write_plugin_text(game_data, translated_items)
+                write_plugin_source_text(game_data, translated_items, text_rules=text_rules)
                 if plugin_item_count:
                     advance_progress(plugin_item_count)
             terminology_written_count = 0
@@ -1018,6 +1013,7 @@ class TranslationHandler:
                     mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
                 )
                 write_plugin_text(game_data, translated_items)
+                write_plugin_source_text(game_data, translated_items, text_rules=text_rules)
 
             written_count = apply_terminology_translations(
                 game_data,

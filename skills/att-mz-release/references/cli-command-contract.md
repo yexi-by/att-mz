@@ -66,6 +66,9 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `import-terminology --game <游戏标题> --input <字段译名表> --glossary-input <正文术语表> --json` | 保存字段译名表和正文术语表 | `status` 为 `ok` | 修结构、空值或冲突后重跑 |
 | `validate-plugin-rules --game <游戏标题> --input <规则文件> --json` | 校验插件规则路径、字符串叶子命中和当前插件配置哈希 | `status` 为 `ok` | 修 `plugin-rules.json` 后重跑；如果提示插件哈希或当前配置不一致，重新准备工作区，不猜路径 |
 | `import-plugin-rules --game <游戏标题> --input <规则文件> --json` | 保存插件文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
+| `export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json` | 用户确认高风险后导出插件源码 AST 地图 | 输出文件存在，风险摘要和候选数量可解释 | 只处理 `js/plugins` 直接 `.js` 文件；异常时停止正文翻译 |
+| `validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 校验插件源码 selector 和当前源码哈希 | `status` 为 `ok` | 修 `plugin-source-rules.json` 后重跑；selector 失效时重新导出 AST 地图 |
+| `import-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 保存插件源码文本规则 | `status` 为 `ok`；高风险空规则需用户确认后传 `--confirm-empty` | 导入后重新扫描占位符候选，再进入正文翻译 |
 | `validate-event-command-rules --game <游戏标题> --input <规则文件> --json` | 校验事件指令编码、match 和路径 | 无 `errors` | 修 `event-command-rules.json` 后重跑 |
 | `import-event-command-rules --game <游戏标题> --input <规则文件> --json` | 保存事件指令文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；若候选用 `--code` 导出，空规则导入也传同一组 `--code CODE`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
 | `export-note-tag-candidates --game <游戏标题> --output <文件> --json` | 单独导出 Note 标签候选 | 输出文件存在，候选数量可解释 | 异常时检查游戏注册和文件结构 |
@@ -118,6 +121,6 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `write-terminology --game <游戏标题> --confirm-font-overwrite` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过 | 未确认字体覆盖时不使用 |
 | `restore-font --game <游戏标题> --json` | 按原件还原项目覆盖过的字体引用 | 摘要可解释 | 缺原始备份或替换字体信息时停止说明 |
 | `verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json` | 在真实游戏文件中反查反馈原文 | `status` 为 `ok`，分类可解释 | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理 |
-| `scan-plugin-source-text --game <游戏标题> --output <候选文件> --json` | 扫描插件源码 UI 文本候选 | 输出文件存在 | 候选只供人工审查，不混入插件参数规则 |
+| `scan-plugin-source-text --game <游戏标题> --output <风险报告文件> --json` | 扫描插件源码文本风险摘要 | 输出文件存在，且不包含 AST selector 或完整候选列表 | 高风险时暂停正文翻译，先询问用户是否启动 AST 支线 |
 
 

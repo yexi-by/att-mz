@@ -21,7 +21,6 @@ from .common import (
     _build_custom_placeholder_rule_draft,
     _collect_terminology_duplicate_translation_samples,
     _collect_plugin_json_string_leaf_candidate_details,
-    _collect_plugin_source_text_candidates,
     _event_command_rule_records_to_import_json,
     _is_path_inside,
     _merge_terminology_registry,
@@ -55,16 +54,22 @@ from .common import (
     write_field_terms_json,
     write_glossary_json,
 )
+from app.plugin_source_text import (
+    build_plugin_source_scan,
+    plugin_source_rule_records_to_import_json,
+)
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
+    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
     mv_virtual_namebox_rule_scope_hash,
     plugin_rule_scope_hash,
+    plugin_source_rule_scope_hash,
 )
 from app.application.flow_gate import (
     event_command_rule_scope_hash_for_setting,
@@ -87,26 +92,57 @@ class WorkspaceAgentMixin:
     """承载 AgentToolkitService 的 WorkspaceAgentMixin 命令族。"""
 
     async def scan_plugin_source_text(self: AgentServiceContext, *, game_title: str, output_path: Path) -> AgentReport:
-        """扫描插件源码中的硬编码文本候选，只输出候选不自动判断语义。"""
+        """扫描插件源码文本风险，只输出轻量风险报告。"""
         async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
             game_data = await self._load_game_data(session)
-        candidates = await _collect_plugin_source_text_candidates(game_data.layout.js_dir)
+            text_rules = TextRules.from_setting(setting.text_rules)
+        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        risk_report = scan.risk_report_json()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(output_path, "w", encoding="utf-8") as file:
-            _ = await file.write(f"{json.dumps(candidates, ensure_ascii=False, indent=2)}\n")
+        await _write_json_object(output_path, risk_report)
         warnings: list[AgentIssue] = []
-        if not candidates:
+        if not scan.candidates:
             warnings.append(issue("plugin_source_text_empty", "没有扫描到插件源码硬编码文本候选"))
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
             summary={
-                "candidate_count": len(candidates),
+                "candidate_count": len(scan.candidates),
                 "output": str(output_path),
+                **scan.risk.to_json_object(),
             },
             details={
-                "candidates": candidates[:50],
+                **risk_report,
+                "output": str(output_path),
             },
+        )
+
+    async def export_plugin_source_ast_map(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        output_path: Path,
+    ) -> AgentReport:
+        """导出插件源码 AST 地图和候选文本。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            game_data = await self._load_game_data(session)
+            text_rules = TextRules.from_setting(setting.text_rules)
+        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        await _write_json_object(output_path, scan.to_json_object())
+        details = scan.risk_report_json()
+        details["output"] = str(output_path)
+        return AgentReport.from_parts(
+            errors=[],
+            warnings=[],
+            summary={
+                "output": str(output_path),
+                "candidate_count": len(scan.candidates),
+                **scan.risk.to_json_object(),
+            },
+            details=details,
         )
 
     async def prepare_agent_workspace(
@@ -130,6 +166,7 @@ class WorkspaceAgentMixin:
             )
             note_tag_rules = await session.read_note_tag_text_rules()
             event_rules = await session.read_event_command_text_rules()
+            plugin_source_rules = await session.read_plugin_source_text_rules()
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             placeholder_records = await session.read_placeholder_rules()
             structured_placeholder_records = await session.read_structured_placeholder_rules()
@@ -145,6 +182,7 @@ class WorkspaceAgentMixin:
                 game_data=game_data,
                 text_rules=text_rules,
             )
+            plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         terminology_summary = await export_terminology_artifacts(
             game_data=game_data,
             output_dir=target_dir / "terminology",
@@ -171,6 +209,10 @@ class WorkspaceAgentMixin:
         await _write_json_value(plugin_json_string_leaf_candidates_path, plugin_json_string_leaf_candidates)
         plugin_rules_path = target_dir / "plugin-rules.json"
         await _write_json_value(plugin_rules_path, _plugin_rule_records_to_import_json(plugin_rules))
+        plugin_source_risk_path = target_dir / "plugin-source-risk-report.json"
+        await _write_json_object(plugin_source_risk_path, plugin_source_scan.risk_report_json())
+        plugin_source_rules_path = target_dir / "plugin-source-rules.json"
+        await _write_json_value(plugin_source_rules_path, plugin_source_rule_records_to_import_json(plugin_source_rules))
         note_tag_candidates_path = target_dir / "note-tag-candidates.json"
         note_tag_report = await export_note_tag_candidates_file(
             game_data=game_data,
@@ -247,6 +289,9 @@ class WorkspaceAgentMixin:
             "plugin_count": len(game_data.plugins_js),
             "plugin_json_string_leaf_candidate_count": len(plugin_json_string_leaf_candidates),
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
+            "plugin_source_candidate_count": len(plugin_source_scan.candidates),
+            "plugin_source_high_risk": plugin_source_scan.risk.high_risk,
+            "plugin_source_rule_count": sum(len(rule.selectors) for rule in plugin_source_rules),
             "stale_plugin_rule_count": stale_plugin_rule_count,
             "note_tag_candidate_count": note_tag_report.candidate_tag_count,
             "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
@@ -266,6 +311,8 @@ class WorkspaceAgentMixin:
             str(plugins_path),
             str(plugin_json_string_leaf_candidates_path),
             str(plugin_rules_path),
+            str(plugin_source_risk_path),
+            str(plugin_source_rules_path),
             str(note_tag_candidates_path),
             str(note_tag_rules_path),
             str(event_commands_path),
@@ -314,6 +361,7 @@ class WorkspaceAgentMixin:
         field_terms_path = workspace / "terminology" / "field-terms.json"
         glossary_path = workspace / "terminology" / "glossary.json"
         plugin_rules_path = workspace / "plugin-rules.json"
+        plugin_source_rules_path = workspace / "plugin-source-rules.json"
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
@@ -341,6 +389,10 @@ class WorkspaceAgentMixin:
                 game_data=game_data,
                 text_rules=text_rules,
             )
+            plugin_source_required = build_plugin_source_scan(
+                game_data=game_data,
+                text_rules=text_rules,
+            ).risk.high_risk
             empty_rule_issues = await _read_empty_rule_review_issues(
                 session=session,
                 game_data=game_data,
@@ -359,6 +411,7 @@ class WorkspaceAgentMixin:
                     game_data=game_data,
                     text_rules=text_rules,
                 ),
+                plugin_source_scope_hash=plugin_source_rule_scope_hash(game_data),
                 placeholder_scope_hash=normal_placeholder_scope_hash(
                     translation_data_map=translation_data_map,
                     text_rules=text_rules,
@@ -427,6 +480,28 @@ class WorkspaceAgentMixin:
                     errors.append(plugin_empty_issue)
         else:
             errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
+        if plugin_source_rules_path.exists():
+            async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
+                plugin_source_report = await self.validate_plugin_source_rules(
+                    game_title=game_title,
+                    rules_text=await file.read(),
+                )
+            errors.extend(plugin_source_report.errors)
+            plugin_source_warnings = plugin_source_report.warnings
+            if not plugin_source_required and _summary_int(plugin_source_report.summary, "selector_count") == 0:
+                plugin_source_warnings = [
+                    warning
+                    for warning in plugin_source_warnings
+                    if warning.code != "plugin_source_rules_empty"
+                ]
+            warnings.extend(plugin_source_warnings)
+            details["plugin_source_rules"] = plugin_source_report.details
+            if _summary_int(plugin_source_report.summary, "selector_count") == 0:
+                plugin_source_empty_issue = empty_rule_issues["plugin_source_rules"]
+                if plugin_source_required and plugin_source_empty_issue is not None:
+                    errors.append(plugin_source_empty_issue)
+        else:
+            errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
         if note_tag_rules_path.exists():
             async with aiofiles.open(note_tag_rules_path, "r", encoding="utf-8") as file:
                 note_tag_report = await self.validate_note_tag_rules(game_title=game_title, rules_text=await file.read())
@@ -623,6 +698,7 @@ async def _read_empty_rule_review_issues(
     game_data: GameData,
     event_command_scope_hash: str,
     note_tag_scope_hash: str,
+    plugin_source_scope_hash: str,
     placeholder_scope_hash: str,
     structured_placeholder_scope_hash_value: str,
 ) -> dict[str, AgentIssue | None]:
@@ -635,6 +711,14 @@ async def _read_empty_rule_review_issues(
             unconfirmed_code="plugin_rules_empty_unconfirmed",
             stale_code="plugin_rules_empty_confirmation_stale",
             label="插件规则",
+        ),
+        "plugin_source_rules": await _empty_rule_review_issue(
+            session=session,
+            rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
+            current_scope_hash=plugin_source_scope_hash,
+            unconfirmed_code="plugin_source_rules_empty_unconfirmed",
+            stale_code="plugin_source_rules_empty_confirmation_stale",
+            label="插件源码规则",
         ),
         "event_command_rules": await _empty_rule_review_issue(
             session=session,
@@ -697,7 +781,7 @@ async def _empty_rule_review_issue(
     """判断空规则文件是否有仍然有效的显式确认。"""
     state = await session.read_rule_review_state(rule_domain=rule_domain)
     if state is None or not state.reviewed_empty:
-        return issue(unconfirmed_code, f"{label}为空，必须导入时显式传 --confirm-empty 且当前扫描候选确实为空")
+        return issue(unconfirmed_code, f"{label}为空，必须先用对应导入命令传 --confirm-empty 保存当前范围的空结果确认")
     if state.scope_hash != current_scope_hash:
         return issue(stale_code, f"{label}曾确认为空，但当前游戏内容已经变化，请重新导出并检查规则")
     return None

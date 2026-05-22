@@ -44,6 +44,8 @@ def write_data_text(
         file_name = item.location_path.split("/")[0]
         if file_name == PLUGINS_FILE_NAME:
             continue
+        if item.location_path.startswith("js/plugins/"):
+            continue
         if is_note_tag_location_path(item.location_path):
             write_note_tag_item(game_data=game_data, item=item, text_rules=text_rules)
             continue

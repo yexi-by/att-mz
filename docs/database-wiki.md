@@ -1,6 +1,6 @@
 # 数据库 Wiki
 
-本文档说明 A.T.T MZ 当前 SQLite 数据库结构。数据库只保存项目运行状态、规则和已保存译文记录；游戏原始数据仍以 RPG Maker MV/MZ 自身的 `data/*.json`、`js/plugins.js`、`fonts/gamefont.css` 等文件为准。
+本文档说明 A.T.T MZ 当前 SQLite 数据库结构。数据库只保存项目运行状态、规则和已保存译文记录；游戏原始数据仍以 RPG Maker MV/MZ 自身的 `data/*.json`、`js/plugins.js`、`js/plugins/*.js`、`fonts/gamefont.css` 等文件为准。
 
 ## 存放方式
 
@@ -19,6 +19,7 @@
 | `language_settings` | 保存当前游戏的源语言和目标语言 | `add-game` |
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
 | `plugin_text_rules` | 保存插件配置中可翻译字符串的 JSONPath 规则 | `import-plugin-rules` |
+| `plugin_source_text_rules` | 保存插件源码中可翻译字符串的 AST selector 规则 | `import-plugin-source-rules` |
 | `note_tag_text_rules` | 保存 data 文件 Note 标签中可翻译标签名 | `import-note-tag-rules` |
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
@@ -30,7 +31,7 @@
 | `placeholder_rules` | 保存当前游戏专用的自定义控制符保护规则 | `import-placeholder-rules` |
 | `structured_placeholder_rules` | 保存当前游戏专用结构化占位符规则主体 | `import-structured-placeholder-rules` |
 | `structured_placeholder_rule_groups` | 保存结构化占位符规则中的保护分组模板 | `import-structured-placeholder-rules` |
-| `rule_review_states` | 保存空插件规则、空事件指令规则、空 Note 规则、空 MV 虚拟名字框规则和空占位符规则的显式确认状态 | `import-* --confirm-empty` |
+| `rule_review_states` | 保存空插件规则、空插件源码规则、空事件指令规则、空 Note 规则、空 MV 虚拟名字框规则和空占位符规则的显式确认状态 | `import-* --confirm-empty` |
 | `source_residual_rules` | 保存允许保留源语言片段的例外规则 | `import-source-residual-rules` |
 | `font_replacement_records` | 保存最近一次字体覆盖产生的可还原字体引用记录 | `write-back --confirm-font-overwrite`、`write-terminology --confirm-font-overwrite` |
 | `translation_runs` | 保存正文翻译运行状态和统计快照 | `translate` |
@@ -126,6 +127,22 @@
 
 - `import-plugin-rules` 先按插件下标定位，再校验插件名称、计算插件哈希并检查路径命中，最后整体替换此表内容。
 - 主翻译流程只按数据库中已导入的规则提取插件文本。
+
+### `plugin_source_text_rules`
+
+保存 `js/plugins` 直接插件源码文件中经过校验的源码文本 selector 规则。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `file_name` | `TEXT` | 主键 | 插件源码文件名，只允许直接 `.js` 文件名 |
+| `file_hash` | `TEXT` | 非空 | 插件源码文件哈希，用于发现规则和当前源码不匹配 |
+| `selector` | `TEXT` | 主键 | 指向可翻译源码字符串节点的 AST selector |
+
+维护规则：
+
+- `import-plugin-source-rules` 校验文件名、启用状态、文件哈希和 selector 命中后整体替换此表内容。
+- 主翻译流程只按数据库中已导入的源码规则提取 `js/plugins` 直接插件文件文本。
+- 高风险扫描结果没有对应源码规则时，正文翻译入口会停止并要求用户确认后处理。
 
 ### `note_tag_text_rules`
 

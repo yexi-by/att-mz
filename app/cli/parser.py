@@ -193,11 +193,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_plugin_source_parser = subparsers.add_parser(
         "scan-plugin-source-text",
-        help="扫描插件源码硬编码文本候选，只输出候选不判断语义",
+        help="扫描插件源码文本风险，只输出风险报告",
     )
     add_optional_target_arguments(scan_plugin_source_parser)
-    _ = scan_plugin_source_parser.add_argument("--output", required=True, help="插件源码候选 JSON 输出文件")
+    _ = scan_plugin_source_parser.add_argument("--output", required=True, help="插件源码风险报告 JSON 输出文件")
     _ = scan_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    export_plugin_source_ast_parser = subparsers.add_parser(
+        "export-plugin-source-ast-map",
+        help="导出插件源码 AST 地图和候选文本",
+    )
+    add_optional_target_arguments(export_plugin_source_ast_parser)
+    _ = export_plugin_source_ast_parser.add_argument("--output", required=True, help="插件源码 AST 地图 JSON 输出文件")
+    _ = export_plugin_source_ast_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    validate_plugin_source_parser = subparsers.add_parser(
+        "validate-plugin-source-rules",
+        help="校验插件源码文本规则 JSON",
+    )
+    add_optional_target_arguments(validate_plugin_source_parser)
+    _ = validate_plugin_source_parser.add_argument("--input", required=True, help="插件源码规则 JSON 文件")
+    _ = validate_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    import_plugin_source_parser = subparsers.add_parser(
+        "import-plugin-source-rules",
+        help="把插件源码文本规则写入当前游戏数据库",
+    )
+    add_optional_target_arguments(import_plugin_source_parser)
+    _ = import_plugin_source_parser.add_argument("--input", required=True, help="插件源码规则 JSON 文件")
+    _ = import_plugin_source_parser.add_argument("--confirm-empty", action="store_true", help="确认当前游戏不需要插件源码规则，允许导入空规则")
+    _ = import_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_pending_parser = subparsers.add_parser(
         "export-pending-translations",

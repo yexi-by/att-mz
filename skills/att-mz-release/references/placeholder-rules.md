@@ -12,10 +12,11 @@
 - 已导入插件参数规则命中的文本。
 - 已导入事件指令规则命中的文本。
 - 已导入 Note 标签规则命中的文本。
+- 已导入插件源码规则命中的文本。
 
 它不能让未被插件规则、事件指令规则或 Note 标签规则选中的字符串进入翻译，也不能替代理解游戏私有协议语法、拆分字符串叶子或判断自然语言是否玩家可见。
 
-三类外部规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`。
+三类外部规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`。插件源码规则改变后同样重新执行这些命令。
 
 ## 编写原则
 

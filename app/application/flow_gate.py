@@ -20,6 +20,7 @@ from app.event_command_text import resolve_event_command_codes
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import TargetGameSession
 from app.plugin_text import collect_plugin_json_string_leaf_candidates, extract_plugin_name
+from app.plugin_source_text import build_plugin_source_scan, filter_fresh_plugin_source_text_rules
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.control_codes import StructuredPlaceholderRule
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
@@ -31,6 +32,7 @@ from app.rule_review import (
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
+    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
     event_command_rule_scope_hash_for_codes,
@@ -38,6 +40,7 @@ from app.rule_review import (
     note_tag_rule_scope_hash_for_candidates,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
+    plugin_source_rule_scope_hash,
     structured_placeholder_rule_scope_hash,
 )
 from app.terminology import collect_terminology_bundle_errors
@@ -71,6 +74,7 @@ async def collect_workflow_gate_errors(
             translated_items=translated_items,
         )
     errors: list[WorkflowGateIssue] = []
+    errors.extend(await _plugin_source_rule_gate_errors(session=session, game_data=game_data, text_rules=text_rules))
     errors.extend(await _terminology_gate_errors(session))
     errors.extend(
         await _external_rule_gate_errors(
@@ -146,11 +150,20 @@ def ensure_empty_rule_import_allowed(
     confirm_empty: bool,
     candidate_count: int,
 ) -> None:
-    """校验空规则导入是否经过显式确认且当前候选确实为空。"""
-    if not confirm_empty:
-        raise RuntimeError(f"{rule_label}为空，必须先确认当前游戏确实没有对应候选，再传 --confirm-empty")
+    """校验空规则导入是否经过显式确认，且机器候选已经全部处理。"""
+    ensure_empty_rule_confirmed(rule_label=rule_label, confirm_empty=confirm_empty)
     if candidate_count > 0:
         raise RuntimeError(f"{rule_label}为空，但当前扫描仍有 {candidate_count} 个候选，不能保存为空规则")
+
+
+def ensure_empty_rule_confirmed(
+    *,
+    rule_label: str,
+    confirm_empty: bool,
+) -> None:
+    """校验人工审查为空的规则导入是否经过显式确认。"""
+    if not confirm_empty:
+        raise RuntimeError(f"{rule_label}为空，必须先确认当前游戏确实没有对应规则，再传 --confirm-empty")
 
 
 def count_plugin_rule_candidates(game_data: GameData) -> int:
@@ -385,6 +398,47 @@ async def _external_rule_gate_errors(
     return errors
 
 
+async def _plugin_source_rule_gate_errors(
+    *,
+    session: TargetGameSession,
+    game_data: GameData,
+    text_rules: TextRules,
+) -> list[WorkflowGateIssue]:
+    """高风险插件源码文本必须先确认并导入源码规则。"""
+    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    records = await session.read_plugin_source_text_rules()
+    fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
+        game_data=game_data,
+        rule_records=records,
+        text_rules=text_rules,
+        scan=scan,
+    )
+    if stale_records:
+        return [
+            WorkflowGateIssue(
+                code="stale_plugin_source_rules",
+                message=f"存在 {len(stale_records)} 个过期插件源码规则，请重新导入插件源码规则",
+            )
+        ]
+    if not scan.risk.high_risk:
+        return []
+    if fresh_records:
+        return []
+    state = await session.read_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN)
+    current_scope_hash = plugin_source_rule_scope_hash(game_data)
+    if state is not None and state.reviewed_empty and state.scope_hash == current_scope_hash:
+        return []
+    return [
+        WorkflowGateIssue(
+            code="plugin_source_text_high_risk",
+            message=(
+                "发现大量插件源码文本候选，可能有玩家可见正文存放在 js/plugins 源码文件中；"
+                "正文翻译已暂停，请先确认并完成插件源码 AST 分析支线，导入插件源码规则后再继续"
+            ),
+        )
+    ]
+
+
 async def _placeholder_gate_errors(
     *,
     session: TargetGameSession,
@@ -594,6 +648,7 @@ __all__: list[str] = [
     "count_note_tag_rule_candidates",
     "count_plugin_rule_candidates",
     "count_uncovered_structured_placeholder_candidates",
+    "ensure_empty_rule_confirmed",
     "ensure_empty_rule_import_allowed",
     "format_workflow_gate_error",
     "note_tag_rule_scope_hash_for_text_rules",

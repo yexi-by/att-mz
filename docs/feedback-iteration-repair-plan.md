@@ -196,12 +196,12 @@ uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --
 - 插件源码硬编码文本。
 - 图片或视频资源文字。
 
-### P2：插件源码硬编码文本扫描
+### P2：插件源码硬编码文本风险扫描
 
 当前插件源码扫描命令：
 
 ```powershell
-uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/<输出文件> --json
+uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-risk-report.json --json
 ```
 
 扫描目标：
@@ -209,6 +209,7 @@ uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题>
 - `drawText("<文本>")`
 - `drawTextEx("<文本>")`
 - `TextManager` 之外的硬编码菜单文案。
+- 默认输出风险报告；完整 AST 地图和候选文本只在用户确认后导出。
 - 帮助窗口、确认窗口、存档窗口等常见 UI 文本。
 
 输出只作为候选，不自动修改源码。修复方式应明确：
@@ -308,5 +309,5 @@ uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题>
 - 占位符规则只能保护协议词本体；规则吞掉显示文本时必须失败。
 - 源语言残留例外同时支持位置规则和结构性规则；结构性规则只能遮蔽显示分组之外的协议词。
 - 质量检查后必须通过真实文件反查结束反馈闭环，不能改回人工搜索。
-- 插件源码硬编码文本只进入源码候选扫描和游戏侧专用处理流程，不能混入插件参数规则。
+- 插件源码硬编码文本只进入源码风险扫描、用户确认后的 AST 支线和游戏侧专用处理流程，不能混入插件参数规则。
 - 当前规则命中但不可写时必须给出清晰错误，不能静默跳过。

@@ -6,6 +6,7 @@
 mod controls;
 mod details;
 mod font_replacement;
+mod javascript_ast;
 mod models;
 mod note_sources;
 mod placeholders;
@@ -28,6 +29,10 @@ pub fn collect_note_tag_sources_impl(payload_json: &str) -> Result<String, Strin
 
 pub fn scan_font_replacements_impl(payload_json: &str) -> Result<String, String> {
     font_replacement::scan_font_replacements_impl(payload_json)
+}
+
+pub fn parse_javascript_string_spans_impl(payload_json: &str) -> Result<String, String> {
+    javascript_ast::parse_javascript_string_spans_impl(payload_json)
 }
 
 pub fn read_configured_thread_count() -> Result<Option<usize>, String> {

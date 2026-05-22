@@ -5,12 +5,14 @@ import json
 from typing import Literal
 
 from app.plugin_text import build_plugins_file_hash
+from app.plugin_source_text import build_plugin_source_file_hash
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonArray, JsonValue
 
 type RuleReviewDomain = Literal[
     "plugin_text",
+    "plugin_source_text",
     "event_command_text",
     "note_tag_text",
     "placeholder_rules",
@@ -19,6 +21,7 @@ type RuleReviewDomain = Literal[
 ]
 
 PLUGIN_TEXT_RULE_DOMAIN: RuleReviewDomain = "plugin_text"
+PLUGIN_SOURCE_TEXT_RULE_DOMAIN: RuleReviewDomain = "plugin_source_text"
 EVENT_COMMAND_TEXT_RULE_DOMAIN: RuleReviewDomain = "event_command_text"
 NOTE_TAG_TEXT_RULE_DOMAIN: RuleReviewDomain = "note_tag_text"
 PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "placeholder_rules"
@@ -29,6 +32,35 @@ MV_VIRTUAL_NAMEBOX_RULE_DOMAIN: RuleReviewDomain = "mv_virtual_namebox"
 def plugin_rule_scope_hash(game_data: GameData) -> str:
     """计算插件规则空结果审查依赖的当前插件配置哈希。"""
     return build_plugins_file_hash(game_data.plugins_js)
+
+
+def plugin_source_rule_scope_hash(game_data: GameData) -> str:
+    """计算插件源码规则空结果审查依赖的当前启用插件源码哈希。"""
+    payload: JsonArray = []
+    enabled_file_names = {
+        f"{plugin.get('name')}.js"
+        for plugin in game_data.plugins_js
+        if plugin.get("status") is True and isinstance(plugin.get("name"), str)
+    }
+    for file_name, source in sorted(game_data.plugin_source_files.items()):
+        if file_name not in enabled_file_names:
+            continue
+        payload.append(
+            {
+                "file": file_name,
+                "hash": build_plugin_source_file_hash(source),
+            }
+        )
+    for file_name, error_text in sorted(game_data.plugin_source_read_errors.items()):
+        if file_name not in enabled_file_names:
+            continue
+        payload.append(
+            {
+                "file": file_name,
+                "read_error": error_text,
+            }
+        )
+    return _stable_json_hash(payload)
 
 
 def event_command_rule_scope_hash(game_data: GameData) -> str:
@@ -116,6 +148,8 @@ def parse_rule_review_domain(value: str) -> RuleReviewDomain:
     """校验并收窄数据库中的外部规则审查领域。"""
     if value == PLUGIN_TEXT_RULE_DOMAIN:
         return PLUGIN_TEXT_RULE_DOMAIN
+    if value == PLUGIN_SOURCE_TEXT_RULE_DOMAIN:
+        return PLUGIN_SOURCE_TEXT_RULE_DOMAIN
     if value == EVENT_COMMAND_TEXT_RULE_DOMAIN:
         return EVENT_COMMAND_TEXT_RULE_DOMAIN
     if value == NOTE_TAG_TEXT_RULE_DOMAIN:
@@ -134,6 +168,7 @@ __all__: list[str] = [
     "NOTE_TAG_TEXT_RULE_DOMAIN",
     "PLACEHOLDER_RULE_DOMAIN",
     "PLUGIN_TEXT_RULE_DOMAIN",
+    "PLUGIN_SOURCE_TEXT_RULE_DOMAIN",
     "MV_VIRTUAL_NAMEBOX_RULE_DOMAIN",
     "RuleReviewDomain",
     "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
@@ -144,6 +179,7 @@ __all__: list[str] = [
     "parse_rule_review_domain",
     "placeholder_rule_scope_hash",
     "plugin_rule_scope_hash",
+    "plugin_source_rule_scope_hash",
     "mv_virtual_namebox_rule_scope_hash",
     "structured_placeholder_rule_scope_hash",
 ]

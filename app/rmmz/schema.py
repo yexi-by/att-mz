@@ -349,6 +349,14 @@ class PluginTextRuleRecord(BaseModel):
     path_templates: list[str] = Field(default_factory=list)
 
 
+class PluginSourceTextRuleRecord(BaseModel):
+    """单个插件源码文件的 AST 文本规则快照。"""
+
+    file_name: str
+    file_hash: str
+    selectors: list[str] = Field(default_factory=list)
+
+
 class NoteTagTextRuleRecord(BaseModel):
     """单个 data 文件或文件模式的 Note 标签文本规则快照。"""
 
@@ -377,6 +385,7 @@ JS_DIRECTORY_NAME = "js"
 SYSTEM_FILE_NAME = "System.json"
 PLUGINS_FILE_NAME = "plugins.js"
 PLUGINS_ORIGIN_FILE_NAME = "plugins_origin.js"
+PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME = "plugins_source_origin"
 COMMON_EVENTS_FILE_NAME = "CommonEvents.json"
 TROOPS_FILE_NAME = "Troops.json"
 MAP_INFOS_FILE_NAME = "MapInfos.json"
@@ -415,6 +424,7 @@ class GameLayout:
     js_dir: Path
     plugins_path: Path
     plugins_origin_path: Path
+    plugin_source_origin_dir: Path
     package_path: Path
     engine_kind: EngineKind
     engine_version: str
@@ -454,6 +464,9 @@ class GameData:
     base_data: dict[str, list[BaseItem | None]]
     plugins_js: list[dict[str, JsonValue]]
     writable_plugins_js: list[dict[str, JsonValue]]
+    plugin_source_files: dict[str, str]
+    plugin_source_read_errors: dict[str, str]
+    writable_plugin_source_files: dict[str, str]
 
     def __post_init__(self) -> None:
         """确保标准核心文件已经加载。"""
@@ -484,10 +497,12 @@ __all__: list[str] = [
     "MvVirtualNameboxSpeakerPolicy",
     "NoteTagTextRuleRecord",
     "PluginTextRuleRecord",
+    "PluginSourceTextRuleRecord",
     "PlaceholderRuleRecord",
     "PLUGINS_FILE_NAME",
     "PLUGINS_JS_PATTERN",
     "PLUGINS_ORIGIN_FILE_NAME",
+    "PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME",
     "SYSTEM_FILE_NAME",
     "TROOPS_FILE_NAME",
     "LlmFailureCategory",

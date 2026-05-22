@@ -6,6 +6,7 @@ from app.event_command_text import EventCommandTextExtraction
 from app.note_tag_text import NoteTagTextExtraction
 from app.persistence import TargetGameSession
 from app.plugin_text import PluginTextExtraction
+from app.plugin_source_text import PluginSourceTextExtraction, filter_fresh_plugin_source_text_rules
 from app.rmmz import DataTextExtraction
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
@@ -13,6 +14,7 @@ from app.rmmz.schema import (
     MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
     PLUGINS_FILE_NAME,
+    PluginSourceTextRuleRecord,
     PluginTextRuleRecord,
     TranslationData,
     TranslationItem,
@@ -43,6 +45,11 @@ class TextScopeService:
             game_data=game_data,
         )
         event_rules = await session.read_event_command_text_rules()
+        plugin_source_rules, _stale_plugin_source_rules = filter_fresh_plugin_source_text_rules(
+            game_data=game_data,
+            rule_records=await session.read_plugin_source_text_rules(),
+            text_rules=text_rules,
+        )
         note_tag_rules = await session.read_note_tag_text_rules()
         mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
         if translated_items is None:
@@ -54,6 +61,7 @@ class TextScopeService:
             text_rules=text_rules,
             plugin_rules=plugin_rules,
             event_rules=event_rules,
+            plugin_source_rules=plugin_source_rules,
             note_tag_rules=note_tag_rules,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
@@ -124,6 +132,7 @@ def build_translation_data_map(
     text_rules: TextRules,
     plugin_rules: list[PluginTextRuleRecord],
     event_rules: list[EventCommandTextRuleRecord],
+    plugin_source_rules: list[PluginSourceTextRuleRecord],
     note_tag_rules: list[NoteTagTextRuleRecord],
     mv_virtual_namebox_rules: list[MvVirtualNameboxRuleRecord] | None = None,
 ) -> dict[str, TranslationData]:
@@ -140,6 +149,10 @@ def build_translation_data_map(
     merge_translation_data_map(
         translation_data_map,
         PluginTextExtraction(game_data, plugin_rules, text_rules).extract_all_text(),
+    )
+    merge_translation_data_map(
+        translation_data_map,
+        PluginSourceTextExtraction(game_data, plugin_source_rules, text_rules).extract_all_text(),
     )
     merge_translation_data_map(
         translation_data_map,
@@ -227,6 +240,8 @@ def _source_type_from_location_path(location_path: str) -> TextSourceType:
     """根据定位路径判断文本来源类型。"""
     if location_path.startswith(f"{PLUGINS_FILE_NAME}/"):
         return "plugin_parameter"
+    if location_path.startswith("js/plugins/"):
+        return "plugin_source"
     if "/note/" in location_path:
         return "note_tag"
     if "/parameters/" in location_path:
@@ -238,6 +253,8 @@ def _rule_source_label(source_type: TextSourceType) -> str:
     """返回当前来源对应的规则来源说明。"""
     if source_type == "plugin_parameter":
         return "插件参数规则"
+    if source_type == "plugin_source":
+        return "插件源码规则"
     if source_type == "event_command":
         return "事件指令规则"
     if source_type == "note_tag":

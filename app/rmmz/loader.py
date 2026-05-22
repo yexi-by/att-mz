@@ -31,6 +31,7 @@ from app.rmmz.schema import (
     PLUGINS_FILE_NAME,
     PLUGINS_JS_PATTERN,
     PLUGINS_ORIGIN_FILE_NAME,
+    PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME,
     SYSTEM_FILE_NAME,
     TROOPS_FILE_NAME,
 )
@@ -120,6 +121,10 @@ async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) ->
     plugins_content = await _read_text_file(source_plugins_path)
     data[PLUGINS_FILE_NAME] = plugins_content
     plugins_js = _parse_plugins_js_text(plugins_content)
+    plugin_source_files, plugin_source_read_errors = await _read_plugin_source_files(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+    )
 
     if system is None or common_events is None or troops is None:
         raise ValueError("游戏缺少 System.json、CommonEvents.json 或 Troops.json，禁止启动")
@@ -137,6 +142,9 @@ async def _load_game_data(game_path: str | Path, *, use_origin_backups: bool) ->
         base_data=base_data,
         plugins_js=plugins_js,
         writable_plugins_js=copy.deepcopy(plugins_js),
+        plugin_source_files=plugin_source_files,
+        plugin_source_read_errors=plugin_source_read_errors,
+        writable_plugin_source_files=dict(plugin_source_files),
     )
 
 
@@ -240,6 +248,7 @@ def build_game_layout(*, game_root: Path, content_root: Path, is_www_layout: boo
         js_dir=js_dir,
         plugins_path=js_dir / PLUGINS_FILE_NAME,
         plugins_origin_path=js_dir / PLUGINS_ORIGIN_FILE_NAME,
+        plugin_source_origin_dir=js_dir / PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME,
         package_path=package_path,
         engine_kind=engine_kind,
         engine_version=engine_version,
@@ -390,6 +399,52 @@ async def _read_text_file(file_path: Path) -> str:
     """使用 UTF-8 异步读取文本文件。"""
     async with aiofiles.open(file_path, "r", encoding="utf-8") as file:
         return await file.read()
+
+
+async def _read_plugin_source_files(
+    *,
+    layout: GameLayout,
+    use_origin_backups: bool,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """读取 `js/plugins` 直接源码文件，读取失败只记录错误不阻断普通流程。"""
+    active_files, active_errors = await _read_direct_plugin_source_files(layout.js_dir / "plugins")
+    if not use_origin_backups or not layout.plugin_source_origin_dir.is_dir():
+        return active_files, active_errors
+    origin_files, origin_errors = await _read_direct_plugin_source_files(layout.plugin_source_origin_dir)
+    merged_errors = dict(active_errors)
+    for file_name in origin_files:
+        _ = merged_errors.pop(file_name, None)
+    merged_errors.update(origin_errors)
+    return {**active_files, **origin_files}, merged_errors
+
+
+async def _read_direct_plugin_source_files(source_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """读取一个目录下的直接插件源码文件，按文件拆分成功内容和读取错误。"""
+    if not source_dir.is_dir():
+        return {}, {}
+    file_paths = sorted(
+        (file_path for file_path in source_dir.glob("*.js") if file_path.is_file()),
+        key=lambda file_path: file_path.name,
+    )
+    results = await asyncio.gather(*(_read_plugin_source_file(file_path) for file_path in file_paths))
+    files: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    for file_name, content, error_text in results:
+        if error_text is None:
+            files[file_name] = content
+        else:
+            errors[file_name] = error_text
+    return files, errors
+
+
+async def _read_plugin_source_file(file_path: Path) -> tuple[str, str, str | None]:
+    """读取单个插件源码文件；非 UTF-8 文件不进入 AST 流程。"""
+    async with aiofiles.open(file_path, "rb") as file:
+        content_bytes = await file.read()
+    try:
+        return file_path.name, content_bytes.decode("utf-8"), None
+    except UnicodeDecodeError as error:
+        return file_path.name, "", f"插件源码文件不是 UTF-8 文本: {error}"
 
 
 def _is_standard_rmmz_filename(file_name: str) -> bool:

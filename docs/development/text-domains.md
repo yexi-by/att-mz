@@ -2,12 +2,12 @@
 
 ## 职责
 
-文本领域模块负责把 RPG Maker MV/MZ 文件中的可翻译文本提取成统一业务模型，并把已保存译文安全写回游戏文件。`app.rmmz` 处理引擎标准数据、控制符、文本规则、文本布局、写入路径和写入协议。`app.text_scope` 统一回答当前哪些文本可处理、哪些已保存译文、哪些能写进游戏文件。`app.plugin_text`、`app.event_command_text` 和 `app.note_tag_text` 分别处理插件参数、事件指令参数和 Note 标签文本。`app.source_residual` 负责源文残留例外规则。
+文本领域模块负责把 RPG Maker MV/MZ 文件中的可翻译文本提取成统一业务模型，并把已保存译文安全写回游戏文件。`app.rmmz` 处理引擎标准数据、控制符、文本规则、文本布局、写入路径和写入协议。`app.text_scope` 统一回答当前哪些文本可处理、哪些已保存译文、哪些能写进游戏文件。`app.plugin_text`、`app.event_command_text`、`app.note_tag_text` 和 `app.plugin_source_text` 分别处理插件参数、事件指令参数、Note 标签文本和插件源码文本。`app.source_residual` 负责源文残留例外规则。
 
 ## 输入
 
-- RPG Maker `data/*.json`、`js/plugins.js` 和相关插件源码。
-- 已导入的插件规则、事件指令规则、Note 标签规则、自定义控制符规则和源文残留例外规则。
+- RPG Maker `data/*.json`、`js/plugins.js` 和 `js/plugins/*.js` 直接插件源码文件。
+- 已导入的插件规则、事件指令规则、Note 标签规则、插件源码规则、自定义控制符规则和源文残留例外规则。
 - 文本规则配置，例如行宽、标点包裹、源语言识别和自定义占位符。
 
 ## 输出
@@ -19,7 +19,7 @@
 ## 失败策略
 
 - RPG Maker 文件结构不符合预期时直接报错，避免生成损坏写入结果。
-- 插件、事件指令和 Note 标签规则必须命中字符串叶子节点，导入失败时不写入数据库。
+- 插件、事件指令、Note 标签和插件源码规则必须命中当前游戏文件中的可提取文本，导入失败时不写入数据库。
 - 源文残留例外只允许明确保留的源语言片段，不允许掩盖整句漏翻。
 - 写入前会整理译文、检查控制符、修复包裹标点并处理过长行；无法定位或不可写时返回错误报告。
 
@@ -40,6 +40,7 @@
 - `app.plugin_text.*`
 - `app.event_command_text.*`
 - `app.note_tag_text.*`
+- `app.plugin_source_text.*`
 - `app.source_residual.*`
 
 ## 测试覆盖
@@ -47,4 +48,5 @@
 - `tests/test_rmmz_loader_extraction_writeback.py` 覆盖标准数据提取和写入。
 - `tests/test_plugin_text.py` 覆盖插件规则和插件文本写入。
 - `tests/test_event_command_text.py` 覆盖事件指令规则。
+- `tests/test_plugin_source_text.py` 覆盖插件源码风险扫描、规则提取和写入。
 - `tests/test_text_protocol.py`、`tests/test_text_rules.py` 和 `tests/test_translation_line_alignment.py` 覆盖文本协议、控制符、行宽和结构校验。

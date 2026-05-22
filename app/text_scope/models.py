@@ -8,7 +8,7 @@ from typing import Literal
 from app.rmmz.schema import ItemType, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject
 
-type TextSourceType = Literal["standard_data", "plugin_parameter", "event_command", "note_tag"]
+type TextSourceType = Literal["standard_data", "plugin_parameter", "plugin_source", "event_command", "note_tag"]
 
 
 @dataclass(frozen=True, slots=True)

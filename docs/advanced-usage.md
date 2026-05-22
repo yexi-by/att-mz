@@ -75,7 +75,7 @@ uv run python main.py --agent-mode list --json
 
 ## Agent 工作区
 
-工作区用于让外部 Agent 在不读源码、不碰数据库的前提下分析术语、插件规则、事件指令规则、Note 标签规则和占位符规则。
+工作区用于让外部 Agent 在不读源码、不碰数据库的前提下分析术语、插件规则、事件指令规则、Note 标签规则、插件源码风险和占位符规则。
 
 ```powershell
 uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json
@@ -159,9 +159,19 @@ uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> -
 
 规则导入只保存通过校验的条目。插件、事件指令和 Note 标签规则都不得绕过对应的 `validate-...` 命令。
 
-空规则不会默认保存。只有当前扫描候选确实为空时，才允许在导入命令中追加 `--confirm-empty` 保存“已确认没有规则”的状态；如果候选仍存在，导入会报错。
+空规则不会默认保存。插件、事件指令和 Note 标签候选文件里可能包含资源、脚本、协议串或内部标识；人工审查确认没有玩家可见文本时，用对应空结构并在导入命令追加 `--confirm-empty` 保存“已确认没有规则”的状态。事件指令候选如果用 `--code` 导出，空规则导入也传同一组 `--code`，让后续检查按同一范围判断确认是否过期。
 
 如果规则变化导致一部分已保存译文不再属于当前规则范围，导入命令会先把这些译文备份到 `outputs/rule-import-backups/<游戏标题>/...json`，再清理项目数据库里的已保存译文记录。JSON 报告会返回 `deleted_translations_backed_up` 告警，并在 `summary.deleted_translation_backup_path` 给出备份文件路径。若确认规则导错，先重新导入正确规则，再用 `import-manual-translations --game <游戏标题> --input <备份文件> --json` 恢复这些译文。
+
+插件源码文本属于少见支线。工作区会生成 `plugin-source-risk-report.json` 和 `plugin-source-rules.json`，风险报告只包含风险摘要和候选数量，不包含 AST selector 或完整候选列表。扫描范围固定为 `<游戏目录>/js/plugins/*.js` 的直接文件；不会扫描 `js` 根目录、其他目录或子目录。低风险时保持空规则即可继续准备占位符和正文翻译。高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认；用户肯定后再导出 AST 地图、整理源码规则并导入：
+
+```powershell
+uv run python main.py --agent-mode export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json
+uv run python main.py --agent-mode validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json
+uv run python main.py --agent-mode import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json
+```
+
+用户确认高风险项目不需要源码文本规则时，`plugin-source-rules.json` 使用合法空数组 `[]`，并在导入命令追加 `--confirm-empty`。没有用户确认时，不继续制作自定义占位符规则，也不启动正文翻译。
 
 ## 游戏控制符规则
 
@@ -289,6 +299,8 @@ uv run python main.py --agent-mode write-back --game <游戏标题> --json
 
 首次写进游戏文件前，工具会在游戏目录内生成完整原始 `data` 备份 `data_origin`。后续读取源文时使用该备份，当前激活 `data` 目录仍必须保持 RPG Maker 标准文件完整。
 
+如果本次写入包含插件源码文本，工具会先在游戏 `js` 目录下创建 `plugins_source_origin`，只备份将要修改的 `js/plugins` 直接插件文件。源码文本写入使用已导入规则中的 selector 定位；文件哈希、原文或 selector 不匹配时会停止写入并报告原因。
+
 如需让配置字体覆盖游戏字体引用：
 
 ```powershell
@@ -321,13 +333,13 @@ uv run python main.py --agent-mode run-all --game <游戏标题> --skip-write-ba
 uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --input <工作区>/feedback-texts.json --json
 ```
 
-若怀疑原文来自插件源码硬编码文本，扫描候选：
+若怀疑原文来自插件源码硬编码文本，先扫描风险：
 
 ```powershell
-uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-candidates.json --json
+uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-risk-report.json --json
 ```
 
-插件源码候选只说明“可能出现过这段文本”，不自动判断玩家是否可见，也不会修改插件源码。
+插件源码风险报告只说明当前是否需要启动支线。需要让这些文本进入正文翻译时，按插件源码支线导出 AST 地图、导入规则，再执行质量检查和写进游戏文件。
 
 ## 开发检查
 

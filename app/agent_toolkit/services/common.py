@@ -282,6 +282,10 @@ class AgentServiceContext(Protocol):
         """校验插件文本规则。"""
         ...
 
+    async def validate_plugin_source_rules(self, *, game_title: str, rules_text: str) -> AgentReport:
+        """校验插件源码文本规则。"""
+        ...
+
     async def validate_event_command_rules(self, *, game_title: str, rules_text: str) -> AgentReport:
         """校验事件指令文本规则。"""
         ...

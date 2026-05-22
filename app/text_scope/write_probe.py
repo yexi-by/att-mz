@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.native_quality import collect_native_write_protocol_details
+from app.plugin_source_text.write_back import write_plugin_source_text
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import JsonArray
 
@@ -29,7 +30,14 @@ def collect_write_back_probe_reasons(
             game_data=game_data,
             probe_items=probe_items,
         )
-    return _write_protocol_reasons_by_path(details)
+    reasons = _write_protocol_reasons_by_path(details)
+    reasons.update(
+        _collect_plugin_source_write_back_probe_reasons(
+            game_data=game_data,
+            probe_items=probe_items,
+        )
+    )
+    return reasons
 
 
 def _collect_individual_write_back_probe_reasons(
@@ -63,6 +71,35 @@ def _collect_individual_write_back_probe_reasons(
         raise WriteBackProbeError(
             f"写入协议探针整体失败，出现 {len(unique_messages)} 类错误: {first_message}"
         )
+    return reasons
+
+
+def _collect_plugin_source_write_back_probe_reasons(
+    *,
+    game_data: GameData,
+    probe_items: list[TranslationItem],
+) -> dict[str, str]:
+    """逐条预演插件源码 AST 写回，返回不可写原因。"""
+    plugin_source_items = [
+        item
+        for item in probe_items
+        if item.location_path.startswith("js/plugins/")
+    ]
+    if not plugin_source_items:
+        return {}
+    reasons: dict[str, str] = {}
+    original_writable_files = dict(game_data.writable_plugin_source_files)
+    try:
+        for item in plugin_source_items:
+            before_item_files = dict(game_data.writable_plugin_source_files)
+            try:
+                write_plugin_source_text(game_data, [item])
+            except Exception as error:
+                reasons[item.location_path] = f"插件源码写回预演失败: {error}"
+            finally:
+                game_data.writable_plugin_source_files = before_item_files
+    finally:
+        game_data.writable_plugin_source_files = original_writable_files
     return reasons
 
 

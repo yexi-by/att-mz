@@ -13,7 +13,12 @@ from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import JsonObject
 from app.runtime_paths import resolve_app_path
 
-type RuleImportBackupDomain = Literal["plugin-rules", "event-command-rules", "note-tag-rules"]
+type RuleImportBackupDomain = Literal[
+    "plugin-rules",
+    "event-command-rules",
+    "note-tag-rules",
+    "plugin-source-rules",
+]
 
 
 @dataclass(frozen=True, slots=True)

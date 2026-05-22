@@ -10,6 +10,7 @@ from app.rmmz.schema import (
     MvVirtualNameboxSpeakerPolicy,
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
+    PluginSourceTextRuleRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
     StructuredPlaceholderRuleRecord,
@@ -25,6 +26,7 @@ from .sql import (
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_PATHS,
     DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES,
     DELETE_ALL_NOTE_TAG_TEXT_RULES,
+    DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES,
     DELETE_ALL_PLACEHOLDER_RULES,
     DELETE_ALL_PLUGIN_TEXT_RULES,
     DELETE_ALL_SOURCE_RESIDUAL_RULES,
@@ -36,6 +38,7 @@ from .sql import (
     INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
     INSERT_MV_VIRTUAL_NAMEBOX_RULE,
     INSERT_NOTE_TAG_TEXT_RULE,
+    INSERT_PLUGIN_SOURCE_TEXT_RULE,
     INSERT_PLACEHOLDER_RULE,
     INSERT_PLUGIN_TEXT_RULE,
     INSERT_SOURCE_RESIDUAL_RULE,
@@ -46,6 +49,7 @@ from .sql import (
     SELECT_EVENT_COMMAND_TEXT_RULE_PATHS,
     SELECT_MV_VIRTUAL_NAMEBOX_RULES,
     SELECT_NOTE_TAG_TEXT_RULES,
+    SELECT_PLUGIN_SOURCE_TEXT_RULES,
     SELECT_PLACEHOLDER_RULES,
     SELECT_PLUGIN_TEXT_RULES,
     SELECT_RULE_REVIEW_STATE,
@@ -94,6 +98,43 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         rule_record.plugin_name,
                         rule_record.plugin_hash,
                         path_template,
+                    ),
+                )
+        await self.connection.commit()
+
+    async def read_plugin_source_text_rules(self) -> list[PluginSourceTextRuleRecord]:
+        """读取当前游戏保存的插件源码文本规则。"""
+        async with self.connection.execute(SELECT_PLUGIN_SOURCE_TEXT_RULES) as cursor:
+            rows = await cursor.fetchall()
+
+        grouped_records: dict[str, PluginSourceTextRuleRecord] = {}
+        for row in rows:
+            file_name = row_str(row, "file_name", self.db_path)
+            record = grouped_records.get(file_name)
+            if record is None:
+                record = PluginSourceTextRuleRecord(
+                    file_name=file_name,
+                    file_hash=row_str(row, "file_hash", self.db_path),
+                    selectors=[],
+                )
+                grouped_records[file_name] = record
+            record.selectors.append(row_str(row, "selector", self.db_path))
+        return list(grouped_records.values())
+
+    async def replace_plugin_source_text_rules(
+        self,
+        rule_records: list[PluginSourceTextRuleRecord],
+    ) -> None:
+        """用一次外部导入结果替换当前游戏的插件源码文本规则。"""
+        _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES)
+        for rule_record in rule_records:
+            for selector in rule_record.selectors:
+                _ = await self.connection.execute(
+                    INSERT_PLUGIN_SOURCE_TEXT_RULE,
+                    (
+                        rule_record.file_name,
+                        rule_record.file_hash,
+                        selector,
                     ),
                 )
         await self.connection.commit()

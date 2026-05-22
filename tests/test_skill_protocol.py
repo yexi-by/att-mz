@@ -20,6 +20,7 @@ REQUIRED_REFERENCE_NAMES = {
     "terminology-workflow.md",
     "external-rules-workflow.md",
     "plugin-rules-agent-task.md",
+    "plugin-source-text-agent-task.md",
     "event-command-rules-agent-task.md",
     "note-tag-rules-agent-task.md",
     "placeholder-rules.md",
@@ -77,6 +78,7 @@ def test_main_skill_matrix_uses_cohesive_work_units() -> None:
         "| 术语概念 |",
         "| 术语工程 |",
         "| 外部文本规则 |",
+        "| 插件源码文本 |",
         "| 占位符收束 |",
         "| 正文翻译 |",
         "| 手动修复 |",
@@ -187,6 +189,8 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`export-plugins-json --game <游戏标题> --output <plugins.json>`",
         "`export-event-commands-json --game <游戏标题> --output <候选文件>`",
         "`validate-plugin-rules --game <游戏标题> --input <规则文件> --json`",
+        "`validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json`",
+        "`export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json`",
         "`import-event-command-rules --game <游戏标题> --input <规则文件> --json`",
         "`validate-note-tag-rules --game <游戏标题> --input <规则文件> --json`",
         "`export-terminology --game <游戏标题> --output-dir <术语工作目录>`",
@@ -258,6 +262,8 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
         "terminology/glossary.json",
         "正文术语表不是字段译名表副本",
         "plugin-rules.json",
+        "plugin-source-risk-report.json",
+        "plugin-source-rules.json",
         "event-command-rules.json",
         "note-tag-rules.json",
         "pending-translations.json",
@@ -309,6 +315,7 @@ def test_external_rule_references_define_second_round_contracts() -> None:
     workflow_text = read(DEV_REFERENCES / "external-rules-workflow.md")
     for phrase in [
         "插件规则、事件指令规则和 Note 标签规则可以并行处理",
+        "插件源码文本只在高风险且用户确认后处理",
         "三类外部规则全部导入后，才能重新生成和收束占位符规则",
         "plugin-rules-agent-task.md",
         "event-command-rules-agent-task.md",
@@ -332,6 +339,70 @@ def test_external_rule_references_define_second_round_contracts() -> None:
         "不要直接改游戏 `data/*.json` 的 `note` 字段",
     ]:
         assert phrase in note_task_text
+
+
+def test_agent_analysis_requires_cross_validation_evidence() -> None:
+    """主动分析任务必须产出交叉验证依据，主代理不能直接导入候选。"""
+    for skill_path, references in ((DEV_SKILL, DEV_REFERENCES), (RELEASE_SKILL, RELEASE_REFERENCES)):
+        skill_text = read(skill_path)
+        for phrase in [
+            "完成报告必须包含交叉验证摘要",
+            "主代理导入任何候选前必须做交叉验证",
+            "不用候选答案直接导入",
+        ]:
+            assert phrase in skill_text
+
+        terminology_text = read(references / "terminology-workflow.md")
+        for phrase in [
+            "至少用源文件条目和一个上下文来源互相核对",
+            "交叉验证候选译名",
+        ]:
+            assert phrase in terminology_text
+
+        workflow_text = read(references / "external-rules-workflow.md")
+        for phrase in [
+            "子代理完成报告必须包含交叉验证摘要",
+            "主代理抽样核对每类规则的选中项、重点排除项和空结果",
+            "必要时只读对应 `js/plugins/<插件名>.js` 直接源码文件",
+            "用同一编码下的参数形态、重复出现次数、相邻参数、对象键名和值分布互相核对",
+            "用标签名、`sample_values`、data 文件分布、同标签多样本和已回填草稿互相核对",
+        ]:
+            assert phrase in workflow_text
+
+        plugin_task_text = read(references / "plugin-rules-agent-task.md")
+        event_task_text = read(references / "event-command-rules-agent-task.md")
+        note_task_text = read(references / "note-tag-rules-agent-task.md")
+        for phrase in [
+            "允许只读 `<游戏目录>/js/plugins/<插件名>.js` 直接文件中的插件头注释和参数说明",
+            "至少用字段名、相邻字段、参数值形态或内部字符串叶子候选中的两个证据互相核对",
+            "源码注释只作为判断依据，不写进规则文件",
+        ]:
+            assert phrase in plugin_task_text
+        for phrase in [
+            "至少用同一编码下的参数形态、重复出现次数、相邻参数、对象键名或值分布中的两个证据互相核对",
+            "交叉验证摘要：选中项依据、重点排除项依据、空结果依据、仍需主代理确认的指令形态",
+        ]:
+            assert phrase in event_task_text
+        for phrase in [
+            "至少用标签名、`sample_values`、data 文件分布、同标签多样本或已回填草稿中的两个证据互相核对",
+            "交叉验证摘要：选中标签依据、重点排除标签依据、空结果依据、仍需主代理确认的标签",
+        ]:
+            assert phrase in note_task_text
+
+
+def test_plugin_source_reference_allows_read_only_source_cross_check() -> None:
+    """插件源码支线允许只读源码做语义交叉验证，但不允许越界写入。"""
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "plugin-source-text-agent-task.md")
+        for phrase in [
+            "AST 地图用于候选筛选和写回定位，插件源码只读用于语义交叉验证",
+            "允许只读对应的 `<游戏目录>/js/plugins/<插件源码文件名>.js` 直接文件",
+            "不扫描 `js` 根目录，不递归子目录，不读取 `data` 目录",
+            "不读取 A.T.T MZ 项目源码或数据库",
+            "不修改 JS 源码，不写回游戏文件，不直接改数据库",
+            "源码注释、插件头、相邻 key、对象/数组结构和调用函数只能用于判断语义，不能写进规则文件",
+        ]:
+            assert phrase in text
 
 
 def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> None:
@@ -471,6 +542,7 @@ def test_subtask_package_mode_document_defines_portable_contract() -> None:
         "用途",
         "输入",
         "处理逻辑",
+        "交叉验证",
         "输出格式",
         "禁止事项",
         "空结果",
@@ -483,6 +555,7 @@ def test_subtask_package_mode_document_defines_portable_contract() -> None:
         "context/",
         "任务包文件夹必须能被压缩后远程分发",
         "任务包只能覆盖五个术语候选分组、插件规则、事件指令规则和 Note 标签规则",
+        "对规则类答案抽查选中项、重点排除项和空结果依据",
     ]:
         assert phrase in text
 

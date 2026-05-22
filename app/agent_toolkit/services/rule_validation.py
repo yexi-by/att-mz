@@ -34,9 +34,14 @@ from .common import (
 )
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.flow_gate import (
-    count_note_tag_rule_candidates,
-    ensure_empty_rule_import_allowed,
+    ensure_empty_rule_confirmed,
     note_tag_rule_scope_hash_for_text_rules,
+)
+from app.plugin_source_text import (
+    PluginSourceTextExtraction,
+    build_plugin_source_rule_records_from_import,
+    parse_plugin_source_rule_import_text,
+    plugin_source_rule_records_to_import_json,
 )
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_candidates_payload,
@@ -45,12 +50,37 @@ from app.rmmz.mv_namebox import (
     parse_mv_virtual_namebox_rule_import_text,
     validate_mv_virtual_namebox_rules_against_game,
 )
-from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord, TranslationItem
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
+    plugin_source_rule_scope_hash,
     mv_virtual_namebox_rule_scope_hash,
 )
+from app.text_scope.write_probe import collect_write_back_probe_reasons
+
+
+def _collect_plugin_source_unwritable_items(
+    *,
+    game_data: GameData,
+    extracted_items: list[TranslationItem],
+) -> JsonArray:
+    """把插件源码写回预演原因转换为校验报告明细。"""
+    if not extracted_items:
+        return []
+    reasons = collect_write_back_probe_reasons(
+        game_data=game_data,
+        active_items=extracted_items,
+    )
+    return [
+        {
+            "location_path": location_path,
+            "reason": reason,
+        }
+        for location_path, reason in sorted(reasons.items())
+        if location_path.startswith("js/plugins/")
+    ]
 
 
 class RuleValidationAgentMixin:
@@ -397,10 +427,9 @@ class RuleValidationAgentMixin:
                     text_rules=text_rules,
                 )
                 if not records:
-                    ensure_empty_rule_import_allowed(
+                    ensure_empty_rule_confirmed(
                         rule_label="Note 标签规则",
                         confirm_empty=confirm_empty,
-                        candidate_count=count_note_tag_rule_candidates(game_data=game_data, text_rules=text_rules),
                     )
                 old_records = await session.read_note_tag_text_rules()
                 old_note_paths = collect_translation_data_paths(
@@ -657,6 +686,202 @@ class RuleValidationAgentMixin:
                 "unwritable_count": len(unwritable_items),
             },
             details=details,
+        )
+
+    async def validate_plugin_source_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
+        """校验插件源码文本规则 JSON 文本并报告命中情况。"""
+        errors: list[AgentIssue] = []
+        warnings: list[AgentIssue] = []
+        details: JsonObject = {"rules": []}
+        try:
+            import_file = parse_plugin_source_rule_import_text(rules_text)
+            async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
+                structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+                game_data = await self._load_game_data(session)
+                translated_paths: set[str] = await session.read_translation_location_paths()
+            records = build_plugin_source_rule_records_from_import(
+                game_data=game_data,
+                import_file=import_file,
+                text_rules=text_rules,
+            )
+            extracted_map = PluginSourceTextExtraction(
+                game_data,
+                rule_records=records,
+                text_rules=text_rules,
+            ).extract_all_text()
+            extracted_items = [
+                item
+                for translation_data in extracted_map.values()
+                for item in translation_data.translation_items
+            ]
+            unwritable_items = _collect_plugin_source_unwritable_items(
+                game_data=game_data,
+                extracted_items=extracted_items,
+            )
+            if unwritable_items:
+                errors.append(
+                    issue(
+                        "plugin_source_write_back_unwritable",
+                        f"插件源码规则存在 {len(unwritable_items)} 个不可写命中项",
+                    )
+                )
+            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
+            details["rules"] = [
+                {
+                    "file": record.file_name,
+                    "file_hash": record.file_hash,
+                    "selector_count": len(record.selectors),
+                    "selectors": list(record.selectors),
+                    **_build_rule_metric_detail(
+                        record_items=record_items,
+                        translated_paths=translated_paths,
+                        unwritable_items_by_path=unwritable_items_by_path,
+                    ),
+                }
+                for record in records
+                for record_items in [[
+                    item
+                    for item in extracted_items
+                    if item.location_path.startswith(f"js/plugins/{record.file_name}/")
+                ]]
+            ]
+            if not records:
+                warnings.append(issue("plugin_source_rules_empty", "插件源码规则为空"))
+            if records and not extracted_items:
+                warnings.append(issue("plugin_source_rules_no_hits", "插件源码规则没有提取到任何可翻译文本"))
+        except Exception as error:
+            errors.append(issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}"))
+            records = []
+            extracted_items = []
+            translated_paths = set()
+            unwritable_items = []
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=warnings,
+            summary={
+                "file_count": len(records),
+                "selector_count": sum(len(record.selectors) for record in records),
+                "hit_count": len(extracted_items),
+                "extractable_count": len(extracted_items),
+                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
+                "writable_count": len(extracted_items) - len(unwritable_items),
+                "unwritable_count": len(unwritable_items),
+            },
+            details=details,
+        )
+
+    async def import_plugin_source_rules(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        rules_text: str,
+        confirm_empty: bool = False,
+    ) -> AgentReport:
+        """校验并导入当前游戏的插件源码文本规则。"""
+        try:
+            import_file = parse_plugin_source_rule_import_text(rules_text)
+            async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
+                structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+                game_data = await self._load_game_data(session)
+                records = build_plugin_source_rule_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                    text_rules=text_rules,
+                )
+                if not records:
+                    ensure_empty_rule_confirmed(
+                        rule_label="插件源码规则",
+                        confirm_empty=confirm_empty,
+                    )
+                old_records = await session.read_plugin_source_text_rules()
+                old_paths = collect_translation_data_paths(
+                    PluginSourceTextExtraction(
+                        game_data,
+                        rule_records=old_records,
+                        text_rules=text_rules,
+                    ).extract_all_text()
+                )
+                new_paths = collect_translation_data_paths(
+                    PluginSourceTextExtraction(
+                        game_data,
+                        rule_records=records,
+                        text_rules=text_rules,
+                    ).extract_all_text()
+                )
+                stale_paths = sorted(old_paths - new_paths)
+                deleted_translation_items = 0
+                deleted_translation_backup_path: str | None = None
+                if stale_paths:
+                    stale_items = await session.read_translated_items_by_paths(stale_paths)
+                    backup = await write_rule_import_translation_backup(
+                        game_title=game_title,
+                        domain="plugin-source-rules",
+                        items=stale_items,
+                    )
+                    if backup is not None:
+                        deleted_translation_backup_path = backup.backup_path
+                    deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
+                await session.replace_plugin_source_text_rules(records)
+                if records:
+                    await session.delete_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN)
+                else:
+                    await session.replace_rule_review_state(
+                        rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
+                        scope_hash=plugin_source_rule_scope_hash(game_data),
+                        reviewed_empty=True,
+                    )
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={
+                    "file_count": 0,
+                    "selector_count": 0,
+                    "deleted_translation_items": 0,
+                    "deleted_translation_backup_path": "",
+                },
+                details={},
+            )
+        warnings = [] if records else [issue("plugin_source_rules_empty", "已导入空插件源码规则")]
+        if deleted_translation_items > 0 and deleted_translation_backup_path is not None:
+            warnings.append(
+                issue(
+                    "deleted_translations_backed_up",
+                    f"本次导入插件源码规则已清理 {deleted_translation_items} 条不再属于当前规则范围的已保存译文；已先备份到 {deleted_translation_backup_path}",
+                )
+            )
+        return AgentReport.from_parts(
+            errors=[],
+            warnings=warnings,
+            summary={
+                "file_count": len(records),
+                "selector_count": sum(len(record.selectors) for record in records),
+                "deleted_translation_items": deleted_translation_items,
+                "deleted_translation_backup_path": deleted_translation_backup_path or "",
+            },
+            details={
+                "rules": plugin_source_rule_records_to_import_json(records),
+            },
         )
 
     async def validate_event_command_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:

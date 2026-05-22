@@ -74,7 +74,17 @@ async def run_scan_plugin_source_text_command(args: argparse.Namespace) -> int:
     output_path = read_required_path_arg(args, "output")
     service = AgentToolkitService()
     report = await service.scan_plugin_source_text(game_title=game_title, output_path=output_path)
-    write_report_outputs(report=report, args=args, title="插件源码候选扫描报告", write_output_file=False)
+    write_report_outputs(report=report, args=args, title="插件源码风险扫描报告", write_output_file=False)
+    return 1 if report.status == "error" else 0
+
+
+async def run_export_plugin_source_ast_map_command(args: argparse.Namespace) -> int:
+    """执行 `export-plugin-source-ast-map` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    output_path = read_required_path_arg(args, "output")
+    service = AgentToolkitService()
+    report = await service.export_plugin_source_ast_map(game_title=game_title, output_path=output_path)
+    write_report_outputs(report=report, args=args, title="插件源码 AST 地图导出报告", write_output_file=False)
     return 1 if report.status == "error" else 0
 
 
