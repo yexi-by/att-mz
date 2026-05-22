@@ -27,6 +27,9 @@ from app.text_scope import TextScopeService
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
 
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
 
 def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:
     """把插件数组写回测试用 plugins.js。"""
@@ -633,7 +636,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        setting = load_setting(source_language=session.source_language)
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         game_data = await load_game_data(session.game_path)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
@@ -697,7 +700,7 @@ async def test_plugin_source_stale_rule_hash_blocks_workflow(
         encoding="utf-8",
     )
     async with await registry.open_game("テストゲーム") as session:
-        setting = load_setting(source_language=session.source_language)
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         changed_game_data = await load_game_data(session.game_path)
         session.set_game_data(changed_game_data)
         errors = await collect_workflow_gate_errors(
@@ -731,7 +734,10 @@ async def test_prepare_workspace_writes_plugin_source_risk_summary_without_ast_m
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     workspace = tmp_path / "workspace"
 
-    _ = await AgentToolkitService(game_registry=registry).prepare_agent_workspace(
+    _ = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).prepare_agent_workspace(
         game_title="テストゲーム",
         output_dir=workspace,
         command_codes=None,
@@ -772,7 +778,10 @@ async def test_export_plugin_source_ast_map_report_keeps_full_map_only_in_output
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     output_path = tmp_path / "plugin-source-ast-map.json"
 
-    report = await AgentToolkitService(game_registry=registry).export_plugin_source_ast_map(
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).export_plugin_source_ast_map(
         game_title="テストゲーム",
         output_path=output_path,
     )
@@ -824,7 +833,10 @@ async def test_text_scope_marks_invalid_plugin_source_js_unwritable(
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    validation_report = await AgentToolkitService(game_registry=registry).validate_plugin_source_rules(
+    validation_report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).validate_plugin_source_rules(
         game_title="テストゲーム",
         rules_text=rule_text,
     )
@@ -893,7 +905,10 @@ async def test_quality_report_errors_when_high_risk_plugin_source_review_is_inco
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(records)
-    report = await AgentToolkitService(game_registry=registry).quality_report(game_title="テストゲーム")
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).quality_report(game_title="テストゲーム")
 
     assert "plugin_source_review_incomplete" in {error.code for error in report.errors}
     assert report.summary["plugin_source_unreviewed_count"] == 300
@@ -925,7 +940,10 @@ async def test_validate_plugin_source_rules_errors_when_review_is_incomplete(
     first_candidate = build_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates[0]
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    report = await AgentToolkitService(game_registry=registry).validate_plugin_source_rules(
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).validate_plugin_source_rules(
         game_title="テストゲーム",
         rules_text=json.dumps(
             [
@@ -966,7 +984,10 @@ async def test_import_plugin_source_rules_rejects_high_risk_empty_review(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
 
-    report = await AgentToolkitService(game_registry=registry).import_plugin_source_rules(
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).import_plugin_source_rules(
         game_title="テストゲーム",
         rules_text="[]",
         confirm_empty=True,
@@ -1015,7 +1036,10 @@ async def test_quality_report_reuses_plugin_source_scan_for_workflow_gate(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
 
-    _ = await AgentToolkitService(game_registry=registry).quality_report(game_title="テストゲーム")
+    _ = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).quality_report(game_title="テストゲーム")
 
     assert scan_count == 1
 
