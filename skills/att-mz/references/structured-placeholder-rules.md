@@ -36,7 +36,7 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 
 - `name`：大写规则名，只用于生成稳定报告和定位。
 - `pattern`：完整匹配一段混合协议文本的正则，必须包含命名分组。
-- `translatable_group`：继续给模型翻译的命名分组。
+- `translatable_group`：继续给模型翻译的命名分组；其中可以包含 RPG Maker 内置控制符，程序会把这些控制符保护成 `[RMMZ_...]`。
 - `protected_groups`：必须原样保留的命名分组和占位符模板。
 - 占位符模板必须生成形如 `[CUSTOM_NAME_1]` 的方括号占位符，推荐保留 `{index}`。
 
@@ -62,7 +62,7 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 - 任意保护分组命中空文本。
 - 普通正则占位符规则与结构化规则保护范围重叠。
 - 两条结构化规则抢同一段保护文本。
-- 可翻译分组被任意保护规则覆盖。
+- 可翻译分组被普通正则占位符规则或结构化保护分组覆盖；RPG Maker 内置控制符可以出现在可翻译分组内，并继续按内置规则保护。
 - 模板不能生成合法 `[CUSTOM_...]` 占位符。
 
 ## 模型前后形态
@@ -73,7 +73,13 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 [CUSTOM_PROTOCOL_LABEL_OPEN_1]SourceName[CUSTOM_PROTOCOL_LABEL_CLOSE_1]
 ```
 
-模型必须原样保留两个占位符，只翻译中间文本。检查通过后，程序恢复外壳：
+如果中间文本包含 RPG Maker 内置控制符，模型输入会同时包含 `[CUSTOM_...]` 外壳占位符和 `[RMMZ_...]` 内置控制符占位符：
+
+```text
+[CUSTOM_PROTOCOL_LABEL_OPEN_1][RMMZ_TEXT_COLOR_17]SourceName[CUSTOM_PROTOCOL_LABEL_CLOSE_1]
+```
+
+模型必须原样保留这些占位符，只翻译中间文本。检查通过后，程序恢复外壳：
 
 ```text
 <Protocol Label: 译名>

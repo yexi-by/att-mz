@@ -275,6 +275,8 @@ class TextRules:
             for span in [*base_spans, *structured_spans]:
                 span_range = _ProtectedRange(start=span.start_index, end=span.end_index)
                 if _ranges_overlap(translatable_range, span_range):
+                    if span.source == "standard":
+                        continue
                     raise ValueError(
                         f"结构化占位符可翻译文本分组被保护规则覆盖: {span.original}"
                     )

@@ -434,6 +434,8 @@ def test_structured_placeholder_reference_defines_contract() -> None:
         "protected_groups",
         "paired_shell_rules",
         "合法空结构",
+        "其中可以包含 RPG Maker 内置控制符",
+        "同时包含 `[CUSTOM_...]` 外壳占位符和 `[RMMZ_...]` 内置控制符占位符",
         "validate-structured-placeholder-rules",
         "scan-structured-placeholder-candidates",
         "import-structured-placeholder-rules",

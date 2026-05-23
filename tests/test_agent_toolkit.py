@@ -3912,6 +3912,76 @@ async def test_quality_report_accepts_structured_placeholder_shell_and_rejects_c
     assert rejected_report.summary["placeholder_risk_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_structured_placeholder_rule_with_standard_control_passes_validation_and_quality(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """临时游戏副本中结构化壳内的内置控制符应被项目检查放行。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands.insert(
+        2,
+        {
+            "code": 401,
+            "parameters": [r"D_TEXT \c[17]決定ボタンを連打しろ！ 48"],
+        },
+    )
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "D_TEXT_LABEL",
+                    "pattern": r"(?P<open>^D_TEXT\s+)(?P<text>.*?)(?P<close>\s+48$)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_D_TEXT_OPEN_{index}]",
+                        "close": "[CUSTOM_D_TEXT_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    validate_report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=[],
+    )
+    import_report = await service.import_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/2",
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=[r"D_TEXT \c[17]決定ボタンを連打しろ！ 48"],
+                    source_line_paths=["CommonEvents.json/1/2"],
+                    translation_lines=[r"D_TEXT \c[17]狂按决定键！ 48"],
+                )
+            ]
+        )
+    quality_report = await service.quality_report(game_title="テストゲーム")
+
+    assert validate_report.errors == []
+    assert import_report.errors == []
+    assert quality_report.summary["placeholder_risk_count"] == 0
+    assert quality_report.summary["source_residual_count"] == 0
+
+
 def test_native_quality_reports_structured_placeholder_conflicts() -> None:
     """Rust 质检核心必须和 Python 文本规则一样拒绝结构化保护范围冲突。"""
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="en")

@@ -609,6 +609,41 @@ def test_structured_placeholder_rule_rejects_translatable_group_overlap() -> Non
         item.build_placeholders(rules)
 
 
+def test_structured_placeholder_rule_allows_standard_control_in_translatable_group() -> None:
+    """结构化规则的可翻译正文里可以包含内置 RPG Maker 控制符。"""
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="D_TEXT_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open>^D_TEXT\s+)(?P<text>.*?)(?P<close>\s+48$)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_D_TEXT_OPEN_{index}]",
+            "close": "[CUSTOM_D_TEXT_CLOSE_{index}]",
+        },
+    )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(structured_rule,),
+    )
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=[r"D_TEXT \c[17]決定ボタンを連打しろ！ 48"],
+    )
+
+    item.build_placeholders(rules)
+
+    assert item.original_lines_with_placeholders == [
+        "[CUSTOM_D_TEXT_OPEN_1][RMMZ_TEXT_COLOR_17]決定ボタンを連打しろ！[CUSTOM_D_TEXT_CLOSE_1]"
+    ]
+    item.translation_lines_with_placeholders = [
+        "[CUSTOM_D_TEXT_OPEN_1][RMMZ_TEXT_COLOR_17]狂按决定键！[CUSTOM_D_TEXT_CLOSE_1]"
+    ]
+    item.verify_placeholders(rules)
+    item.restore_placeholders()
+    assert item.translation_lines == [r"D_TEXT \c[17]狂按决定键！ 48"]
+
+
 def test_unprotected_control_sequences_must_stay_exact() -> None:
     """未被规则覆盖的畸形控制符也必须在译文中原样保留。"""
     rules = get_default_text_rules()

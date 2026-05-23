@@ -467,6 +467,9 @@ fn validate_structured_placeholder_conflicts(
                 end: span.end,
             };
             if ranges_overlap_ranges(translatable_range, &span_range) {
+                if matches!(span.source, SpanSource::Standard) {
+                    continue;
+                }
                 return Err(format!(
                     "结构化占位符可翻译文本分组被保护规则覆盖: {}",
                     span.original
