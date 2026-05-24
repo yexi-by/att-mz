@@ -19,7 +19,7 @@
 - `plugins.json`：插件原始 JSON。
 - `plugin-json-string-leaf-candidates.json`：插件参数 JSON 字符串内部的字符串叶子候选，只辅助判断路径层级。
 - `plugin-rules.json`：插件规则草稿。合法空结构是 `[]`。
-- `plugin-source-risk-report.json`：插件源码风险报告和候选数量摘要，只扫描 `js/plugins` 直接 `.js` 文件；不包含 AST selector、源码偏移、完整候选列表或源码内容。
+- `plugin-source-risk-report.json`：插件源码风险报告、`source_view` 和候选数量摘要，只扫描 `js/plugins` 直接 `.js` 文件；不包含 AST selector、源码偏移、完整候选列表或源码内容。
 - `plugin-source-rules.json`：插件源码文本规则草稿。合法空结构是 `[]`。
 - `event-commands.json`：事件指令参数导出。
 - `event-command-rules.json`：事件指令规则草稿。合法空结构是 `{}`。

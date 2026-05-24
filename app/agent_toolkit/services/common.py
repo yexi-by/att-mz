@@ -77,7 +77,8 @@ from app.rmmz.schema import (
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object, ensure_json_string_list
-from app.rmmz.loader import load_active_game_data
+from app.rmmz.game_file_view import GameFileView
+from app.rmmz.loader import load_active_runtime_game_data, load_game_data_for_view
 from app.rmmz.write_back import write_data_text
 from app.runtime_paths import resolve_app_path
 from app.rmmz.text_layout import (
@@ -141,22 +142,32 @@ class AgentServiceContext(Protocol):
     llm_check: LlmCheckFunc
     setting_path: str | Path | None
 
-    async def _load_game_data(
+    async def _load_game_data_for_view(
         self,
         session: TargetGameSession,
         *,
+        source_view: GameFileView,
         include_plugin_source_files: bool = True,
     ) -> GameData:
-        """加载游戏数据并绑定当前数据库会话。"""
+        """按显式视图加载游戏数据。"""
         ...
 
-    async def _load_active_game_data(
+    async def _load_translation_source_game_data(
         self,
         session: TargetGameSession,
         *,
         include_plugin_source_files: bool = True,
     ) -> GameData:
-        """加载当前激活游戏文件。"""
+        """加载翻译源视图。"""
+        ...
+
+    async def _load_active_runtime_game_data(
+        self,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = True,
+    ) -> GameData:
+        """加载当前运行视图。"""
         ...
 
     async def _extract_active_translation_data_map(
@@ -1976,7 +1987,9 @@ __all__: list[str] = [
     'ensure_json_array',
     'ensure_json_object',
     'ensure_json_string_list',
-    'load_active_game_data',
+    'GameFileView',
+    'load_active_runtime_game_data',
+    'load_game_data_for_view',
     'write_data_text',
     'resolve_app_path',
     'normalize_translated_wrapping_punctuation',

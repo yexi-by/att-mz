@@ -96,7 +96,7 @@ class RuleValidationAgentMixin:
     ) -> AgentReport:
         """导出 MV 虚拟名字框候选，供主代理填写外部规则。"""
         async with await self.game_registry.open_game(game_title) as session:
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
         if game_data.layout.engine_kind != "mv":
             return AgentReport.from_parts(
                 errors=[issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用")],
@@ -136,7 +136,7 @@ class RuleValidationAgentMixin:
         try:
             records = parse_mv_virtual_namebox_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 if game_data.layout.engine_kind == "mv":
                     existing_records = await session.read_mv_virtual_namebox_rules()
             if game_data.layout.engine_kind != "mv":
@@ -212,7 +212,7 @@ class RuleValidationAgentMixin:
             if not records and not confirm_empty:
                 raise RuntimeError("MV 虚拟名字框规则为空，必须确认当前游戏不需要虚拟名字框后传 --confirm-empty")
             async with await self.game_registry.open_game(game_title) as session:
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 if game_data.layout.engine_kind != "mv":
                     raise RuntimeError("MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用")
                 rule_errors, match_details = validate_mv_virtual_namebox_rules_against_game(
@@ -273,7 +273,7 @@ class RuleValidationAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
         report = await export_note_tag_candidates_file(
             game_data=game_data,
             output_path=output_path,
@@ -313,7 +313,7 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_note_tag_rule_records_from_import(
                 game_data=game_data,
@@ -422,7 +422,7 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 records = build_note_tag_rule_records_from_import(
                     game_data=game_data,
                     import_file=import_file,
@@ -620,7 +620,7 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules_text=None,
                 )
                 structured_rules = await self._resolve_structured_rules(session=session)
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_plugin_rule_records_from_import(game_data=game_data, import_file=import_file)
             text_rules = TextRules.from_setting(
@@ -710,7 +710,7 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
             records = build_plugin_source_rule_records_from_import(
@@ -830,7 +830,7 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
                 records = build_plugin_source_rule_records_from_import(
                     game_data=game_data,
@@ -969,7 +969,7 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules_text=None,
                 )
                 structured_rules = await self._resolve_structured_rules(session=session)
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
             text_rules = TextRules.from_setting(

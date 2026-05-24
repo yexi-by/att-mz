@@ -16,6 +16,7 @@ from app.application.font_replacement import (
     read_plugins_js_file,
     restore_font_references_from_origin_backups,
 )
+from app.config import SettingOverrides
 from app.config.schemas import TextRulesSetting
 from app.note_tag_text import NoteTagTextExtraction, build_note_tag_rule_records_from_import
 from app.note_tag_text.exporter import collect_note_tag_candidates
@@ -678,6 +679,298 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             )
     finally:
         await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_write_back_rejects_active_runtime_read_error_before_writing_data(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行插件源码读取失败时，写回必须在修改 data 前停止。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BrokenEncoding", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "BrokenEncoding.js").write_bytes(b"\xff\xfe\xff")
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (origin_source_dir / "BrokenEncoding.js").write_text(
+        "const Messages = { title: 'origin only' };\n",
+        encoding="utf-8",
+    )
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    original_events = _read_test_json(common_events_path)
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data = await load_game_data(minimal_game_dir)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[EventCommandParameterFilter(index=0, value="TestPlugin")],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        setting = load_setting(source_language=session.source_language)
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+            structured_placeholder_rules=(),
+        )
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=(),
+            ),
+            reviewed_empty=True,
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=["但是——"]
+                    if item.location_path == "CommonEvents.json/3/0"
+                    else [
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="插件源码读取失败"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+    assert _read_test_json(common_events_path) == original_events
+
+
+@pytest.mark.asyncio
+async def test_direct_write_back_rejects_active_runtime_read_error_before_font_side_effects(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行源码审计失败时，写回不得提前复制字体或改写 CSS。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    fonts_dir = minimal_game_dir / "fonts"
+    fonts_dir.mkdir()
+    old_font = "OldFont.woff"
+    _ = (fonts_dir / old_font).write_bytes(b"old font")
+    gamefont_css_path = fonts_dir / "gamefont.css"
+    original_css = (
+        "@font-face { font-family: GameFont; src: url('OldFont.woff'); }\n"
+    )
+    _ = gamefont_css_path.write_text(original_css, encoding="utf-8")
+    replacement_font = tmp_path / "NotoSansSC-Regular.ttf"
+    _ = replacement_font.write_bytes(b"new font")
+
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BrokenEncoding", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "BrokenEncoding.js").write_bytes(b"\xff\xfe\xff")
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (origin_source_dir / "BrokenEncoding.js").write_text(
+        "const Messages = { title: 'origin only' };\n",
+        encoding="utf-8",
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data = await load_game_data(minimal_game_dir)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[EventCommandParameterFilter(index=0, value="TestPlugin")],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        setting = load_setting(source_language=session.source_language)
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+            structured_placeholder_rules=(),
+        )
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=(),
+            ),
+            reviewed_empty=True,
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="插件源码读取失败"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+                setting_overrides=SettingOverrides(
+                    write_back_replacement_font_path=str(replacement_font),
+                ),
+                confirm_font_overwrite=True,
+            )
+    finally:
+        await handler.close()
+
+    assert not (fonts_dir / replacement_font.name).exists()
+    assert not (fonts_dir / "gamefont_origin.css").exists()
+    assert gamefont_css_path.read_text(encoding="utf-8") == original_css
 
 
 @pytest.mark.asyncio

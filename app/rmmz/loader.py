@@ -17,6 +17,7 @@ import demjson3
 from pydantic import TypeAdapter
 
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
+from app.rmmz.game_file_view import GameFileView
 from app.rmmz.schema import (
     COMMON_EVENTS_FILE_NAME,
     DATA_DIRECTORY_NAME,
@@ -53,18 +54,54 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 
 async def load_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
     """从 RPG Maker 游戏根目录加载翻译源数据，完整原始备份存在时优先读取备份。"""
+    return await load_game_data_for_view(
+        game_path,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+        include_plugin_source_files=include_plugin_source_files,
+    )
+
+
+async def load_game_data_for_view(
+    game_path: str | Path,
+    *,
+    source_view: GameFileView,
+    include_plugin_source_files: bool = True,
+) -> GameData:
+    """按指定文件视图加载游戏数据。"""
     return await _load_game_data(
         game_path,
-        use_origin_backups=True,
+        use_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=include_plugin_source_files,
     )
 
 
 async def load_active_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
     """从 RPG Maker 游戏根目录加载当前激活文件，不读取完整原始备份。"""
+    return await load_game_data_for_view(
+        game_path,
+        source_view=GameFileView.ACTIVE_RUNTIME,
+        include_plugin_source_files=include_plugin_source_files,
+    )
+
+
+async def load_active_runtime_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
+    """从 RPG Maker 游戏根目录加载当前运行视图文件。"""
+    return await load_game_data_for_view(
+        game_path,
+        source_view=GameFileView.ACTIVE_RUNTIME,
+        include_plugin_source_files=include_plugin_source_files,
+    )
+
+
+async def load_translation_source_game_data(
+    game_path: str | Path,
+    *,
+    include_plugin_source_files: bool = True,
+) -> GameData:
+    """从 RPG Maker 游戏根目录加载翻译源视图文件。"""
     return await _load_game_data(
         game_path,
-        use_origin_backups=False,
+        use_origin_backups=True,
         include_plugin_source_files=include_plugin_source_files,
     )
 
@@ -392,11 +429,11 @@ class GameDataManager:
     """全局游戏数据管理器。"""
 
     def __init__(self) -> None:
-        """初始化空的游戏数据缓存。"""
+        """初始化空的游戏数据内存记录。"""
         self.items: dict[str, GameData] = {}
 
     async def load_game_data(self, game_path: str | Path) -> None:
-        """读取指定游戏目录，并以游戏标题为键写入缓存。"""
+        """读取指定游戏目录，并以游戏标题为键写入内存记录。"""
         resolved_game_path = resolve_game_directory(game_path)
         game_title = read_game_title(resolved_game_path)
         layout = resolve_game_layout(resolved_game_path)
@@ -511,8 +548,11 @@ def _parse_plugins_js_text(plugins_content: str) -> list[dict[str, JsonValue]]:
 
 __all__: list[str] = [
     "GameDataManager",
+    "load_active_runtime_game_data",
     "load_active_game_data",
     "load_game_data",
+    "load_game_data_for_view",
+    "load_translation_source_game_data",
     "read_game_title",
     "read_game_title_from_package",
     "read_game_title_from_system",

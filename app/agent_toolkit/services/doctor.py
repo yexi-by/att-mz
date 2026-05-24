@@ -144,7 +144,7 @@ class DoctorAgentMixin:
                     structured_placeholder_rules=structured_rules,
                 )
                 plugin_source_rules = await session.read_plugin_source_text_rules()
-                game_data = await self._load_game_data(
+                game_data = await self._load_translation_source_game_data(
                     session,
                     include_plugin_source_files=bool(plugin_source_rules),
                 )

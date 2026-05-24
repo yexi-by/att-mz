@@ -6,7 +6,7 @@
 
 - 默认先读取 `plugin-source-risk-report.json`。低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务。
 - 高风险时必须先问用户是否处理插件源码文本；用户没有肯定回复时，停止正文翻译。
-- 用户确认启动本任务后，运行 `export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json`。
+- 用户确认启动本任务后，运行 `export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json`。本命令默认使用 `--view translation-source`，用于规则抽取和后续写回定位。
 
 ## 输入
 
@@ -16,7 +16,7 @@
 
 AST 地图用于候选筛选和写回定位，插件源码只读用于语义交叉验证。用户确认启动本支线后，允许读取 `<游戏目录>/js/plugins/*.js` 直接文件，结合源码注释、插件头、相邻对象字段、函数名、数组语义和调用位置判断 selector 是否属于玩家可见文本。
 
-AST 地图顶层包含 `risk`、`enabled_plugin_files`、`candidate_count` 和 `files`；候选只在 `files[].candidates` 内按文件分组提供，顶层不重复提供全量候选数组。
+AST 地图顶层包含 `source_view`、`risk`、`enabled_plugin_files`、`candidate_count` 和 `files`；候选只在 `files[].candidates` 内按文件分组提供，顶层不重复提供全量候选数组。
 
 AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector。`confidence` 只表示人工审查排序优先级，不表示工具已经判断该文本玩家可见，也不能作为删除候选的理由。每个候选的 `ast_context` 是 AST 事实上下文，常见字段包括 `node_kind`、`property_key`、`property_path`、`call_name`、`call_argument_index`、`return_function_name` 和 `assignment_name`。
 
@@ -57,6 +57,7 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 - `validate-plugin-source-rules` 会报告翻译 selector 数、排除 selector 数和未审查 selector 数；未审查数量不为 0 时，补全 `plugin-source-rules.json` 后重新校验。
 - `plugin-source-rules.json` 完成后运行 `validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json`。
 - validate 通过后运行 `import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json`。
+- 写进游戏文件前后由 `quality-report` 和 `audit-active-runtime` 审计 `--view active-runtime` 当前运行文件；不要把当前运行审计结果当作规则 selector 来源。
 
 ## 停止条件
 

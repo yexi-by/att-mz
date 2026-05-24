@@ -12,14 +12,16 @@ from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import TextRulesSetting
 from app.persistence import GameRegistry
 from app.plugin_source_text import (
+    PluginSourceStringLiteral,
     PluginSourceTextExtraction,
     build_plugin_source_rule_records_from_import,
     build_plugin_source_scan,
+    iter_plugin_source_string_literals,
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
 from app.plugin_source_text.write_back import write_plugin_source_text
-from app.rmmz import load_game_data
+from app.rmmz import load_active_game_data, load_game_data
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.write_back import write_data_text
@@ -62,7 +64,7 @@ async def test_plugin_source_scan_only_counts_enabled_direct_plugin_files(minima
     )
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     enabled_lines = [
         f"Window_Base.prototype.drawText('有効テキスト{i}', 0, 0, 320);"
         for i in range(301)
@@ -87,7 +89,7 @@ async def test_plugin_source_scan_only_counts_enabled_direct_plugin_files(minima
     assert scan.risk.high_risk
     assert scan.risk.strong_context_text_count == 301
     assert scan.risk.ignored_file_count == 1
-    assert scan.risk.scanned_file_count == 2
+    assert scan.risk.scanned_file_count == 4
     assert all(candidate.file_name != "nested/EnabledSource.js" for candidate in scan.candidates)
 
 
@@ -106,7 +108,7 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
     )
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     source_path = plugin_source_dir / "HardcodedText.js"
     _ = source_path.write_text(
         "\n".join(
@@ -145,13 +147,128 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
 
     items[0].translation_lines = ["插件直写"]
     reset_writable_copies(game_data)
-    write_plugin_source_text(game_data, items, text_rules=text_rules)
+    _ = write_plugin_source_text(game_data, items, text_rules=text_rules)
     write_game_files(game_data)
 
     assert "title: '插件直写'" in source_path.read_text(encoding="utf-8")
     backup_path = minimal_game_dir / "js" / "plugins_source_origin" / "HardcodedText.js"
     assert backup_path.exists()
     assert "title: 'プラグイン直書き'" in backup_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_write_back_returns_runtime_map_after_length_changes(
+    minimal_game_dir: Path,
+) -> None:
+    """插件源码写回映射必须记录替换后的当前运行 selector。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    source_path = plugin_source_dir / "HardcodedText.js"
+    _ = source_path.write_text(
+        "\n".join(
+            [
+                "const Messages = {",
+                "  first: '一番目',",
+                "  second: '二番目',",
+                "};",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    first_candidate = next(candidate for candidate in scan.candidates if candidate.text == "一番目")
+    second_candidate = next(candidate for candidate in scan.candidates if candidate.text == "二番目")
+    records = [
+        PluginSourceTextRuleRecord(
+            file_name="HardcodedText.js",
+            file_hash=scan.files[0].file_hash,
+            selectors=[first_candidate.selector, second_candidate.selector],
+        )
+    ]
+    items = PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()[
+        "js/plugins/HardcodedText.js"
+    ].translation_items
+    for item in items:
+        if item.original_lines == ["一番目"]:
+            item.translation_lines = ["很长的第一个译文"]
+        else:
+            item.translation_lines = ["短"]
+
+    reset_writable_copies(game_data)
+    write_maps = write_plugin_source_text(game_data, items, text_rules=text_rules)
+    final_source = game_data.writable_plugin_source_files["HardcodedText.js"]
+    runtime_literals = {
+        literal.selector: literal
+        for literal in iter_plugin_source_string_literals(
+            file_name="HardcodedText.js",
+            source=final_source,
+            active=True,
+        )
+    }
+
+    assert len(write_maps) == 2
+    assert {record.location_path for record in write_maps} == {item.location_path for item in items}
+    assert all(record.runtime_selector in runtime_literals for record in write_maps)
+    second_map = next(record for record in write_maps if record.source_selector == second_candidate.selector)
+    assert second_map.runtime_selector != second_candidate.selector
+    assert runtime_literals[second_map.runtime_selector].text == "短"
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_write_back_rejects_unverified_runtime_map(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """最终当前运行 selector 不能精确验证时，插件源码写回必须失败。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HardcodedText.js").write_text(
+        "const Messages = { title: 'プラグイン直書き' };\n",
+        encoding="utf-8",
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "HardcodedText.js")
+    records = [
+        PluginSourceTextRuleRecord(
+            file_name="HardcodedText.js",
+            file_hash=scan.files[0].file_hash,
+            selectors=[candidate.selector],
+        )
+    ]
+    item = PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()[
+        "js/plugins/HardcodedText.js"
+    ].translation_items[0]
+    item.translation_lines = ["插件直写"]
+
+    def empty_runtime_literals(
+        *,
+        file_name: str,
+        source: str,
+        active: bool,
+    ) -> tuple[PluginSourceStringLiteral, ...]:
+        """模拟最终 AST 中找不到任何字符串。"""
+        _ = (file_name, source, active)
+        return ()
+
+    monkeypatch.setattr(
+        "app.plugin_source_text.write_back.iter_plugin_source_string_literals",
+        empty_runtime_literals,
+    )
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError, match="写回映射无法验证"):
+        _ = write_plugin_source_text(game_data, [item], text_rules=text_rules)
 
 
 @pytest.mark.asyncio
@@ -164,7 +281,7 @@ async def test_plugin_source_ast_map_exports_short_source_text_with_ast_context(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "\n".join(
             [
@@ -215,7 +332,7 @@ async def test_plugin_source_extraction_scans_each_file_once(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('抽出テキスト{i}', 0, 0, 320);"
@@ -264,7 +381,7 @@ async def test_plugin_source_write_back_scans_each_file_once(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('回写テキスト{i}', 0, 0, 320);"
@@ -315,9 +432,9 @@ async def test_plugin_source_write_back_scans_each_file_once(
     )
 
     reset_writable_copies(game_data)
-    write_plugin_source_text(game_data, items, text_rules=text_rules)
+    _ = write_plugin_source_text(game_data, items, text_rules=text_rules)
 
-    assert selector_scan_count == 1
+    assert selector_scan_count == 2
     assert syntax_check_count == 2
 
 
@@ -344,7 +461,7 @@ async def test_non_utf8_plugin_source_does_not_break_default_game_loading(minima
     plugins.append({"name": "ShiftJisSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "ShiftJisSource.js").write_bytes(
         "Window_Base.prototype.drawText('シフトJIS本文', 0, 0, 320);".encode("cp932")
     )
@@ -391,7 +508,7 @@ async def test_plugin_source_rules_support_excluded_selectors(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "\n".join(
             [
@@ -446,7 +563,7 @@ async def test_plugin_source_rules_allow_file_with_only_excluded_selectors(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "const Messages = { icon: 'img/日本語.png' };\n",
         encoding="utf-8",
@@ -485,7 +602,7 @@ async def test_plugin_source_rules_reject_selector_included_and_excluded(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "const Messages = { title: '翻訳する本文' };\n",
         encoding="utf-8",
@@ -523,7 +640,7 @@ async def test_plugin_source_write_back_requires_native_ast(
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "const Messages = { title: 'プラグイン直書き' };\n",
         encoding="utf-8",
@@ -557,7 +674,7 @@ async def test_plugin_source_write_back_requires_native_ast(
     )
 
     with pytest.raises(ValueError, match="原生 AST"):
-        write_plugin_source_text(game_data, [item], text_rules=text_rules)
+        _ = write_plugin_source_text(game_data, [item], text_rules=text_rules)
 
 
 @pytest.mark.asyncio
@@ -573,7 +690,7 @@ async def test_plugin_source_partial_backup_keeps_unmodified_files_visible(minim
     )
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "SourceA.js").write_text(
         "const Messages = { title: '一つ目の本文' };\n",
         encoding="utf-8",
@@ -598,13 +715,124 @@ async def test_plugin_source_partial_backup_keeps_unmodified_files_visible(minim
     item.translation_lines = ["第一个正文"]
 
     reset_writable_copies(game_data)
-    write_plugin_source_text(game_data, [item], text_rules=text_rules)
+    _ = write_plugin_source_text(game_data, [item], text_rules=text_rules)
     write_game_files(game_data)
     reloaded = await load_game_data(minimal_game_dir)
 
-    assert set(reloaded.plugin_source_files) == {"SourceA.js", "SourceB.js"}
+    assert {"SourceA.js", "SourceB.js"}.issubset(reloaded.plugin_source_files)
     assert "一つ目の本文" in reloaded.plugin_source_files["SourceA.js"]
     assert "二つ目の本文" in reloaded.plugin_source_files["SourceB.js"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_loader_splits_translation_source_and_active_runtime(
+    minimal_game_dir: Path,
+) -> None:
+    """翻译源视图读取 origin，当前运行视图读取真实激活源码。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "SourceA", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (plugin_source_dir / "SourceA.js").write_text(
+        "const Messages = { title: '当前运行文本' };\n",
+        encoding="utf-8",
+    )
+    _ = (origin_source_dir / "SourceA.js").write_text(
+        "const Messages = { title: '原始翻译源' };\n",
+        encoding="utf-8",
+    )
+
+    translation_source = await load_game_data(minimal_game_dir)
+    active_runtime = await load_active_game_data(minimal_game_dir)
+
+    assert "原始翻译源" in translation_source.plugin_source_files["SourceA.js"]
+    assert "当前运行文本" in active_runtime.plugin_source_files["SourceA.js"]
+
+
+@pytest.mark.asyncio
+async def test_export_plugin_source_ast_map_view_selects_translation_source_or_active_runtime(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """AST 地图命令必须显式按视图导出 origin 或当前运行源码。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "SourceA", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (plugin_source_dir / "SourceA.js").write_text(
+        "const Messages = { title: '現在実行中' };\n",
+        encoding="utf-8",
+    )
+    _ = (origin_source_dir / "SourceA.js").write_text(
+        "const Messages = { title: '原始ソース' };\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    translation_source_path = tmp_path / "translation-source.json"
+    active_runtime_path = tmp_path / "active-runtime.json"
+
+    translation_source_report = await service.export_plugin_source_ast_map(
+        game_title="テストゲーム",
+        output_path=translation_source_path,
+        source_view="translation-source",
+    )
+    active_runtime_report = await service.export_plugin_source_ast_map(
+        game_title="テストゲーム",
+        output_path=active_runtime_path,
+        source_view="active-runtime",
+    )
+    translation_source_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(translation_source_path.read_text(encoding="utf-8")))),
+        "translation-source AST",
+    )
+    active_runtime_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(active_runtime_path.read_text(encoding="utf-8")))),
+        "active-runtime AST",
+    )
+
+    assert translation_source_report.summary["source_view"] == "translation-source"
+    assert active_runtime_report.summary["source_view"] == "active-runtime"
+    assert translation_source_payload["source_view"] == "translation-source"
+    assert active_runtime_payload["source_view"] == "active-runtime"
+    assert "原始ソース" in json.dumps(translation_source_payload, ensure_ascii=False)
+    assert "現在実行中" in json.dumps(active_runtime_payload, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_scan_decodes_doubled_control_literal_without_real_line_break(
+    minimal_game_dir: Path,
+) -> None:
+    """源码里的双反斜杠控制符不能被误解成真实换行加裸控制片段。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "ControlSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "ControlSource.js").write_text(
+        "const Messages = { title: '頑張って\\\\nn[0]くん' };\n",
+        encoding="utf-8",
+    )
+
+    game_data = await load_game_data(minimal_game_dir)
+    scan = build_plugin_source_scan(
+        game_data=game_data,
+        text_rules=TextRules.from_setting(TextRulesSetting()),
+    )
+    candidate = next(item for item in scan.candidates if item.file_name == "ControlSource.js")
+
+    assert "\n" not in candidate.text
+    assert r"\nn[0]" in candidate.text
 
 
 @pytest.mark.asyncio
@@ -625,7 +853,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
     )
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HighRiskSource.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"
@@ -665,7 +893,7 @@ async def test_plugin_source_stale_rule_hash_blocks_workflow(
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     source_path = plugin_source_dir / "HighRiskSource.js"
     _ = source_path.write_text(
         "\n".join(
@@ -725,7 +953,7 @@ async def test_prepare_workspace_writes_plugin_source_risk_summary_without_ast_m
     plugins.append({"name": "RiskSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "RiskSource.js").write_text(
         "Window_Base.prototype.drawText('风险候选', 0, 0, 320);\n",
         encoding="utf-8",
@@ -769,7 +997,7 @@ async def test_export_plugin_source_ast_map_report_keeps_full_map_only_in_output
     plugins.append({"name": "RiskSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "RiskSource.js").write_text(
         "const Messages = { title: '风险候选' };\n",
         encoding="utf-8",
@@ -813,7 +1041,7 @@ async def test_text_scope_marks_invalid_plugin_source_js_unwritable(
     plugins.append({"name": "BrokenSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "BrokenSource.js").write_text(
         "const Messages = { title: '壊れた本文',\n",
         encoding="utf-8",
@@ -874,7 +1102,7 @@ async def test_quality_report_errors_when_high_risk_plugin_source_review_is_inco
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HighRiskSource.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"
@@ -925,7 +1153,7 @@ async def test_validate_plugin_source_rules_errors_when_review_is_incomplete(
     plugins.append({"name": "TwoCandidates", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "TwoCandidates.js").write_text(
         "\n".join(
             [
@@ -973,7 +1201,7 @@ async def test_import_plugin_source_rules_rejects_high_risk_empty_review(
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HighRiskSource.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"
@@ -1009,7 +1237,7 @@ async def test_quality_report_reuses_plugin_source_scan_for_workflow_gate(
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
     _rewrite_plugins_js(plugins_path, plugins)
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HighRiskSource.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"

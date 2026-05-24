@@ -91,13 +91,13 @@ def _collect_plugin_source_write_back_probe_reasons(
     original_writable_files = dict(game_data.writable_plugin_source_files)
     try:
         try:
-            write_plugin_source_text(game_data, plugin_source_items)
+            _ = write_plugin_source_text(game_data, plugin_source_items)
             return {}
         except Exception:
             game_data.writable_plugin_source_files = dict(original_writable_files)
         for item in plugin_source_items:
             try:
-                write_plugin_source_text(game_data, [item])
+                _ = write_plugin_source_text(game_data, [item])
             except Exception as error:
                 reasons[item.location_path] = f"插件源码写回预演失败: {error}"
             finally:

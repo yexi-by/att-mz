@@ -358,6 +358,23 @@ class PluginSourceTextRuleRecord(BaseModel):
     excluded_selectors: list[str] = Field(default_factory=list)
 
 
+class PluginSourceRuntimeWriteMapRecord(BaseModel):
+    """插件源码写回后从当前运行字符串反推翻译源条目的确定性映射。"""
+
+    location_path: str
+    source_file_name: str
+    source_selector: str
+    source_file_hash: str
+    source_text_hash: str
+    translation_lines_hash: str
+    runtime_file_name: str
+    runtime_selector: str
+    runtime_file_hash: str
+    runtime_text_hash: str
+    runtime_line: int = Field(ge=1)
+    created_at: str
+
+
 class NoteTagTextRuleRecord(BaseModel):
     """单个 data 文件或文件模式的 Note 标签文本规则快照。"""
 
@@ -498,6 +515,7 @@ __all__: list[str] = [
     "MvVirtualNameboxSpeakerPolicy",
     "NoteTagTextRuleRecord",
     "PluginTextRuleRecord",
+    "PluginSourceRuntimeWriteMapRecord",
     "PluginSourceTextRuleRecord",
     "PlaceholderRuleRecord",
     "PLUGINS_FILE_NAME",

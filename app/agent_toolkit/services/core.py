@@ -14,41 +14,57 @@ from .common import (
     TextScopeService,
     TranslationData,
     build_source_residual_rule_records_from_import,
-    load_active_game_data,
+    load_active_runtime_game_data,
+    load_game_data_for_view,
     load_custom_placeholder_rules_text,
     load_setting,
     parse_source_residual_rule_import_text,
     read_fresh_plugin_text_rules,
 )
+from app.rmmz.game_file_view import GameFileView
 
 
 class CoreAgentMixin:
     """承载 AgentToolkitService 的 CoreAgentMixin 命令族。"""
 
-    async def _load_game_data(
+    async def _load_game_data_for_view(
         self: AgentServiceContext,
         session: TargetGameSession,
         *,
+        source_view: GameFileView,
         include_plugin_source_files: bool = True,
     ) -> GameData:
-        """加载单游戏数据并绑定到会话。"""
-        from app.rmmz.loader import load_game_data
-
-        game_data = await load_game_data(
+        """按显式视图加载单游戏数据，并在翻译源视图绑定会话。"""
+        game_data = await load_game_data_for_view(
             session.game_path,
+            source_view=source_view,
             include_plugin_source_files=include_plugin_source_files,
         )
-        session.set_game_data(game_data)
+        if source_view == GameFileView.TRANSLATION_SOURCE:
+            session.set_game_data(game_data)
         return game_data
 
-    async def _load_active_game_data(
+    async def _load_translation_source_game_data(
         self: AgentServiceContext,
         session: TargetGameSession,
         *,
         include_plugin_source_files: bool = True,
     ) -> GameData:
-        """加载当前激活游戏文件，供真实文件反查使用。"""
-        return await load_active_game_data(
+        """加载翻译源视图，完整原始备份存在时优先读取备份。"""
+        return await self._load_game_data_for_view(
+            session,
+            source_view=GameFileView.TRANSLATION_SOURCE,
+            include_plugin_source_files=include_plugin_source_files,
+        )
+
+    async def _load_active_runtime_game_data(
+        self: AgentServiceContext,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = True,
+    ) -> GameData:
+        """加载当前运行视图，不读取任何 origin 备份。"""
+        return await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=include_plugin_source_files,
         )
@@ -89,7 +105,7 @@ class CoreAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
                 game_data=game_data,

@@ -42,14 +42,286 @@ from .common import (
 )
 from app.application.flow_gate import collect_workflow_gate_errors
 from app.plugin_source_text import (
+    ActiveRuntimePluginSourceAudit,
+    audit_active_runtime_plugin_source,
+    build_plugin_source_file_hash,
     build_plugin_source_scan,
     collect_plugin_source_review_coverage,
     filter_fresh_plugin_source_text_rules,
+    find_candidate_by_selector,
+    plugin_source_runtime_hash_lines,
+    plugin_source_runtime_hash_text,
 )
+from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, TranslationItem
+
+
+def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[AgentIssue]:
+    """把当前运行源码审计结果转换为质量报告错误。"""
+    counts = audit.issue_counts
+    errors: list[AgentIssue] = []
+    read_error_count = counts.get("active_runtime_read_error", 0)
+    syntax_error_count = counts.get("active_runtime_syntax_error", 0)
+    placeholder_count = counts.get("active_runtime_placeholder_risk", 0)
+    residual_count = counts.get("active_runtime_source_residual", 0)
+    if read_error_count:
+        errors.append(
+            issue(
+                "active_runtime_read_error",
+                f"当前游戏运行文件里有 {read_error_count} 个插件源码文件读取失败，不能确认是否存在漏翻、坏控制符或 JS 语法错误",
+            )
+        )
+    if syntax_error_count:
+        errors.append(
+            issue(
+                "active_runtime_syntax_error",
+                f"当前游戏运行文件里有 {syntax_error_count} 个插件源码文件 JS 语法检查失败，不能继续视为完成",
+            )
+        )
+    if placeholder_count:
+        errors.append(
+            issue(
+                "active_runtime_placeholder_risk",
+                f"当前游戏运行文件里发现 {placeholder_count} 处插件源码坏控制符，不能继续视为完成",
+            )
+        )
+    if residual_count:
+        errors.append(
+            issue(
+                "active_runtime_source_residual",
+                f"当前游戏运行文件里发现 {residual_count} 处插件源码源文残留，不能继续视为完成",
+            )
+        )
+    return errors
+
+
+def _build_active_runtime_diagnosis_items(
+    *,
+    audit: ActiveRuntimePluginSourceAudit,
+    runtime_maps: list[PluginSourceRuntimeWriteMapRecord],
+    translated_items: list[TranslationItem],
+    translation_source_game_data: GameData,
+    text_rules: TextRules,
+) -> JsonArray:
+    """用确定性写回映射把当前运行问题反推到翻译源条目。"""
+    plugin_source_files = translation_source_game_data.plugin_source_files
+    maps_by_runtime_key = {
+        (record.runtime_file_name, record.runtime_selector): record
+        for record in runtime_maps
+    }
+    translated_by_path = {
+        item.location_path: item
+        for item in translated_items
+    }
+    items: JsonArray = []
+    for issue_item in audit.issues:
+        diagnosis: JsonObject = {
+            "issue": issue_item.to_json_object(),
+        }
+        if issue_item.literal is None:
+            diagnosis.update(
+                {
+                    "diagnosis_status": "unmapped",
+                    "suggested_action": "当前运行插件源码读取失败、JS 语法检查失败或没有字符串 selector，无法反推到已保存译文记录；请先修复文件编码或从备份恢复当前运行文件",
+                    "mapping_reason": "read_error_syntax_error_or_no_literal_selector",
+                }
+            )
+            items.append(diagnosis)
+            continue
+        record = maps_by_runtime_key.get((issue_item.file_name, issue_item.literal.selector))
+        if record is None:
+            diagnosis.update(
+                {
+                    "diagnosis_status": "unmapped",
+                    "suggested_action": "没有找到精确写回映射，无法反推到已保存译文记录；请重新执行写回生成映射，或恢复/修复当前运行插件源码",
+                    "mapping_reason": "runtime_selector_not_mapped",
+                }
+            )
+            items.append(diagnosis)
+            continue
+        translated_item = translated_by_path.get(record.location_path)
+        cache_hash_matches = (
+            translated_item is not None
+            and plugin_source_runtime_hash_lines(translated_item.translation_lines) == record.translation_lines_hash
+        )
+        source_hash_matches, source_file_hash_matches = _plugin_source_map_source_matches(
+            record=record,
+            plugin_source_files=plugin_source_files,
+            text_rules=text_rules,
+        )
+        diagnosis_status = "mapped"
+        suggested_action = "请按文本在游戏里的内部位置（location_path）手修已保存译文记录，或补规则后重置对应译文，再重新写回并运行当前运行文件审计"
+        if not source_hash_matches:
+            diagnosis_status = "mapped_source_changed"
+            suggested_action = "翻译源源码已变化，请重新导出 AST 地图并重新导入插件源码规则，再处理对应已保存译文记录"
+        elif not cache_hash_matches:
+            diagnosis_status = "mapped_cache_changed"
+            suggested_action = "当前已保存译文记录已变化或不存在，请重新写回生成新的当前运行文件，或检查译文修复是否已完成"
+        diagnosis["diagnosis_status"] = diagnosis_status
+        diagnosis["location_path"] = record.location_path
+        diagnosis["source_file_name"] = record.source_file_name
+        diagnosis["source_selector"] = record.source_selector
+        diagnosis["runtime_file_name"] = record.runtime_file_name
+        diagnosis["runtime_selector"] = record.runtime_selector
+        diagnosis["runtime_line"] = record.runtime_line
+        diagnosis["cache_hash_matches"] = cache_hash_matches
+        diagnosis["source_hash_matches"] = source_hash_matches
+        diagnosis["source_file_hash_matches"] = source_file_hash_matches
+        diagnosis["current_translation_lines"] = (
+            _string_lines_to_json_array(translated_item.translation_lines)
+            if translated_item is not None
+            else []
+        )
+        diagnosis["suggested_action"] = suggested_action
+        diagnosis["mapping_reason"] = "runtime_selector_exact_match"
+        items.append(diagnosis)
+    return items
+
+
+def _plugin_source_map_source_matches(
+    *,
+    record: PluginSourceRuntimeWriteMapRecord,
+    plugin_source_files: dict[str, str],
+    text_rules: TextRules,
+) -> tuple[bool, bool]:
+    """校验写回映射指向的翻译源 selector 和原文是否仍然存在。"""
+    source = plugin_source_files.get(record.source_file_name)
+    if source is None:
+        return False, False
+    source_file_hash_matches = build_plugin_source_file_hash(source) == record.source_file_hash
+    candidate = find_candidate_by_selector(
+        source=source,
+        file_name=record.source_file_name,
+        selector=record.source_selector,
+        active=True,
+        text_rules=text_rules,
+    )
+    if candidate is None:
+        return False, source_file_hash_matches
+    return plugin_source_runtime_hash_text(candidate.text) == record.source_text_hash, source_file_hash_matches
+
+
+def _active_runtime_diagnosis_summary(
+    diagnosis_items: JsonArray,
+) -> JsonObject:
+    """统计当前运行反推诊断状态。"""
+    counts: Counter[str] = Counter()
+    for item in diagnosis_items:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("diagnosis_status")
+        if isinstance(status, str):
+            counts[status] += 1
+    return {
+        "diagnosis_issue_count": len(diagnosis_items),
+        "mapped_issue_count": counts.get("mapped", 0),
+        "mapped_cache_changed_count": counts.get("mapped_cache_changed", 0),
+        "mapped_source_changed_count": counts.get("mapped_source_changed", 0),
+        "unmapped_issue_count": counts.get("unmapped", 0),
+    }
 
 
 class QualityAgentMixin:
     """承载 AgentToolkitService 的 QualityAgentMixin 命令族。"""
+
+    async def audit_active_runtime(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+    ) -> AgentReport:
+        """审计当前游戏实际运行文件中的插件源码问题。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
+            active_runtime_game_data = await self._load_active_runtime_game_data(
+                session,
+                include_plugin_source_files=True,
+            )
+        active_runtime_audit = audit_active_runtime_plugin_source(
+            game_data=active_runtime_game_data,
+            text_rules=text_rules,
+        )
+        errors = _active_runtime_audit_errors(active_runtime_audit)
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=[],
+            summary={
+                "source_view": "active-runtime",
+                **active_runtime_audit.summary_json(),
+            },
+            details={
+                "source_view": "active-runtime",
+                "active_runtime_plugin_source_items": active_runtime_audit.issues_json(),
+            },
+        )
+
+    async def diagnose_active_runtime(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        output_path: Path | None = None,
+    ) -> AgentReport:
+        """生成当前运行插件源码问题到翻译源已保存译文记录的确定性反推报告。"""
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
+            active_runtime_game_data = await self._load_active_runtime_game_data(
+                session,
+                include_plugin_source_files=True,
+            )
+            translation_source_game_data = await self._load_translation_source_game_data(
+                session,
+                include_plugin_source_files=True,
+            )
+            runtime_maps = await session.read_plugin_source_runtime_write_maps()
+            translated_items = await session.read_translated_items()
+        active_runtime_audit = audit_active_runtime_plugin_source(
+            game_data=active_runtime_game_data,
+            text_rules=text_rules,
+        )
+        diagnosis_items = _build_active_runtime_diagnosis_items(
+            audit=active_runtime_audit,
+            runtime_maps=runtime_maps,
+            translated_items=translated_items,
+            translation_source_game_data=translation_source_game_data,
+            text_rules=text_rules,
+        )
+        report = AgentReport.from_parts(
+            errors=_active_runtime_audit_errors(active_runtime_audit),
+            warnings=[],
+            summary={
+                "source_view": "active-runtime",
+                "output": str(output_path) if output_path is not None else "",
+                **active_runtime_audit.summary_json(),
+                **_active_runtime_diagnosis_summary(diagnosis_items),
+            },
+            details={
+                "source_view": "active-runtime",
+                "active_runtime_diagnosis_items": diagnosis_items,
+            },
+        )
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(output_path, "w", encoding="utf-8") as file:
+                _ = await file.write(f"{report.to_json_text()}\n")
+        return report
 
     async def export_quality_fix_template(
         self: AgentServiceContext,
@@ -70,7 +342,7 @@ class QualityAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
             scope = await TextScopeService().build(
                 session=session,
@@ -254,7 +526,11 @@ class QualityAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
+            active_runtime_game_data = await self._load_active_runtime_game_data(
+                session,
+                include_plugin_source_files=True,
+            )
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
                 session=session,
                 game_data=game_data,
@@ -323,6 +599,11 @@ class QualityAgentMixin:
                 quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
 
+        active_runtime_audit = audit_active_runtime_plugin_source(
+            game_data=active_runtime_game_data,
+            text_rules=text_rules,
+        )
+        active_runtime_errors = _active_runtime_audit_errors(active_runtime_audit)
         run_quality_error_count = len(quality_error_items)
         quality_error_items = [
             item
@@ -348,12 +629,14 @@ class QualityAgentMixin:
             warnings.extend(coverage_report.warnings)
             errors.extend(source_residual_rule_errors)
             errors.extend(workflow_gate_agent_errors)
+            errors.extend(active_runtime_errors)
             set_progress(1, 1)
             set_status("覆盖审计未通过，质量报告已停止")
             return AgentReport.from_parts(
                 errors=errors,
                 warnings=warnings,
                 summary={
+                    **active_runtime_audit.summary_json(),
                     "extractable_count": len(active_paths),
                     "translated_count": len(translated_paths & active_paths),
                     "pending_count": len(pending_paths),
@@ -398,6 +681,7 @@ class QualityAgentMixin:
                     "overwide_line_items": [],
                     "write_back_protocol_items": [],
                     "plugin_source_unreviewed_candidates": plugin_source_unreviewed_details,
+                    "active_runtime_plugin_source_items": active_runtime_audit.issues_json(),
                     "coverage": coverage_report.details,
                 },
             )
@@ -459,6 +743,7 @@ class QualityAgentMixin:
         advance_progress(1)
         errors.extend(coverage_report.errors)
         errors.extend(workflow_gate_agent_errors)
+        errors.extend(active_runtime_errors)
         warnings.extend(coverage_report.warnings)
         if llm_failures and pending_paths:
             errors.append(issue("llm_failures", f"最新翻译运行存在 {len(llm_failures)} 条模型运行故障"))
@@ -489,6 +774,7 @@ class QualityAgentMixin:
             errors=errors,
             warnings=warnings,
             summary={
+                **active_runtime_audit.summary_json(),
                 "extractable_count": len(active_paths),
                 "translated_count": len(translated_paths & active_paths),
                 "pending_count": len(pending_paths),
@@ -533,6 +819,7 @@ class QualityAgentMixin:
                 "overwide_line_items": overwide_line_items,
                 "write_back_protocol_items": write_back_protocol_items,
                 "plugin_source_unreviewed_candidates": plugin_source_unreviewed_details,
+                "active_runtime_plugin_source_items": active_runtime_audit.issues_json(),
                 "coverage": coverage_report.details,
             },
         )
@@ -561,7 +848,7 @@ class QualityAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
                 game_data=game_data,
@@ -666,7 +953,7 @@ class QualityAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             translation_data_map = await self._extract_active_translation_data_map(
                 session=session,
                 game_data=game_data,

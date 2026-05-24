@@ -1,4 +1,4 @@
-"""翻译缓存与提示词组装测试。"""
+"""翻译去重记录与提示词组装测试。"""
 
 from app.rmmz.control_codes import REAL_LINE_BREAK_PLACEHOLDER
 from app.rmmz.schema import TranslationData, TranslationItem

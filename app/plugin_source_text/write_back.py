@@ -2,20 +2,49 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
+
 from app.native_javascript_ast import parse_native_javascript_string_spans
 from app.rmmz.placeholder_guard import ensure_no_internal_placeholder_tokens
-from app.rmmz.schema import GameData, TranslationItem
+from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, TranslationItem
 from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .extraction import parse_plugin_source_location_path
-from .scanner import build_plugin_source_candidate_index
+from .models import PluginSourceCandidate
+from .runtime_mapping import plugin_source_runtime_hash_lines, plugin_source_runtime_hash_text
+from .scanner import (
+    build_plugin_source_candidate_index,
+    build_plugin_source_file_hash,
+    candidate_selector_for_span,
+    iter_plugin_source_string_literals,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _PluginSourceReplacement:
+    """单条插件源码替换和映射所需的确定性上下文。"""
+
+    selector: str
+    item: TranslationItem
+    candidate: PluginSourceCandidate
+    written_text: str
+    source_file_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PluginSourceReplacementResult:
+    """单条插件源码替换后的最终源码坐标。"""
+
+    replacement: _PluginSourceReplacement
+    runtime_selector: str
 
 
 def write_plugin_source_text(
     game_data: GameData,
     items: list[TranslationItem],
     text_rules: TextRules | None = None,
-) -> None:
+) -> list[PluginSourceRuntimeWriteMapRecord]:
     """把插件源码译文写入可写源码副本。"""
     rules = text_rules if text_rules is not None else get_default_text_rules()
     items_by_file: dict[str, list[tuple[str, TranslationItem]]] = {}
@@ -33,7 +62,7 @@ def write_plugin_source_text(
             raise ValueError(f"插件源码短文本只能写入 1 行译文: {item.location_path}")
         items_by_file.setdefault(file_name, []).append((selector, item))
 
-    replacements_by_file: dict[str, list[tuple[int, int, str]]] = {}
+    replacements_by_file: dict[str, list[_PluginSourceReplacement]] = {}
     for file_name, file_items in items_by_file.items():
         source = game_data.writable_plugin_source_files.get(file_name)
         if source is None:
@@ -55,20 +84,123 @@ def write_plugin_source_text(
                 text=item.translation_lines[0].strip(),
                 quote=candidate.quote,
             )
+            source_file_hash = build_plugin_source_file_hash(source)
             replacements_by_file.setdefault(file_name, []).append(
-                (
-                    candidate.content_start_index,
-                    candidate.content_end_index,
-                    written_text,
+                _PluginSourceReplacement(
+                    selector=selector,
+                    item=item,
+                    candidate=candidate,
+                    written_text=written_text,
+                    source_file_hash=source_file_hash,
                 )
             )
 
+    runtime_map_records: list[PluginSourceRuntimeWriteMapRecord] = []
     for file_name, replacements in replacements_by_file.items():
         content = game_data.writable_plugin_source_files[file_name]
-        for start_index, end_index, written_text in sorted(replacements, key=lambda item: item[0], reverse=True):
-            content = f"{content[:start_index]}{written_text}{content[end_index:]}"
+        content, replacement_results = _apply_replacements_with_runtime_selectors(
+            source=content,
+            replacements=replacements,
+        )
         _ensure_javascript_ast_valid(source=content, file_name=file_name)
+        runtime_map_records.extend(
+            _build_runtime_map_records(
+                file_name=file_name,
+                source=content,
+                replacement_results=replacement_results,
+            )
+        )
         game_data.writable_plugin_source_files[file_name] = content
+    return runtime_map_records
+
+
+def _apply_replacements_with_runtime_selectors(
+    *,
+    source: str,
+    replacements: list[_PluginSourceReplacement],
+) -> tuple[str, list[_PluginSourceReplacementResult]]:
+    """应用替换并按最终字符串 span 计算当前运行 selector。"""
+    ordered_replacements = sorted(
+        replacements,
+        key=lambda replacement: replacement.candidate.content_start_index,
+    )
+    parts: list[str] = []
+    current_source_index = 0
+    current_runtime_index = 0
+    results: list[_PluginSourceReplacementResult] = []
+    for replacement in ordered_replacements:
+        candidate = replacement.candidate
+        unchanged = source[current_source_index:candidate.content_start_index]
+        parts.append(unchanged)
+        current_runtime_index += len(unchanged)
+        runtime_content_start_index = current_runtime_index
+        parts.append(replacement.written_text)
+        current_runtime_index += len(replacement.written_text)
+        runtime_content_end_index = current_runtime_index
+        current_source_index = candidate.content_end_index
+
+        literal_prefix_length = candidate.content_start_index - candidate.start_index
+        literal_suffix_length = candidate.end_index - candidate.content_end_index
+        runtime_start_index = runtime_content_start_index - literal_prefix_length
+        runtime_end_index = runtime_content_end_index + literal_suffix_length
+        runtime_selector = candidate_selector_for_span(
+            start_index=runtime_start_index,
+            end_index=runtime_end_index,
+            raw_text=replacement.written_text,
+        )
+        results.append(
+            _PluginSourceReplacementResult(
+                replacement=replacement,
+                runtime_selector=runtime_selector,
+            )
+        )
+    tail = source[current_source_index:]
+    parts.append(tail)
+    return "".join(parts), results
+
+
+def _build_runtime_map_records(
+    *,
+    file_name: str,
+    source: str,
+    replacement_results: list[_PluginSourceReplacementResult],
+) -> list[PluginSourceRuntimeWriteMapRecord]:
+    """从最终源码精确验证并构造当前运行写回映射。"""
+    runtime_file_hash = build_plugin_source_file_hash(source)
+    literals_by_selector = {
+        literal.selector: literal
+        for literal in iter_plugin_source_string_literals(
+            file_name=file_name,
+            source=source,
+            active=True,
+        )
+    }
+    created_at = datetime.now().isoformat(timespec="seconds")
+    records: list[PluginSourceRuntimeWriteMapRecord] = []
+    for result in replacement_results:
+        replacement = result.replacement
+        literal = literals_by_selector.get(result.runtime_selector)
+        if literal is None or literal.raw_text != replacement.written_text:
+            raise ValueError(f"插件源码写回映射无法验证最终 selector: {replacement.item.location_path}")
+        records.append(
+            PluginSourceRuntimeWriteMapRecord(
+                location_path=replacement.item.location_path,
+                source_file_name=file_name,
+                source_selector=replacement.selector,
+                source_file_hash=replacement.source_file_hash,
+                source_text_hash=plugin_source_runtime_hash_text(replacement.candidate.text),
+                translation_lines_hash=plugin_source_runtime_hash_lines(
+                    replacement.item.translation_lines
+                ),
+                runtime_file_name=file_name,
+                runtime_selector=literal.selector,
+                runtime_file_hash=runtime_file_hash,
+                runtime_text_hash=plugin_source_runtime_hash_text(literal.text),
+                runtime_line=literal.line,
+                created_at=created_at,
+            )
+        )
+    return records
 
 
 def _ensure_javascript_ast_valid(*, source: str, file_name: str) -> None:

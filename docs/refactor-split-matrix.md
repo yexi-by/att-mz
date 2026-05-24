@@ -12,7 +12,7 @@
 | 写入可行性探针 | `app.text_scope` 内部函数 | `app.text_scope.write_probe` | `tests/test_agent_toolkit.py` | 探针失败策略保持一致，测试 monkeypatch 定位到新子模块 |
 | 外部规则命中展开 | `app.text_scope` 内部函数 | `app.text_scope.rule_hits` | `tests/test_agent_toolkit.py` | 插件、事件指令、Note 标签命中展开规则保持一致 |
 | 正文翻译运行控制参数 | `app.application.handler` | `app.application.use_cases.translation_run`，`handler` 继续导出 | `tests/test_cli_json_output.py` | CLI 参数构造仍可从原入口导入 |
-| 正文翻译批次、去重、缓存展开 | `TranslationHandler` 静态方法 | `app.application.use_cases.translation_run` 纯函数 | `tests/test_translation_cache_context.py`、`tests/test_cli_json_output.py` | 翻译编排入口不变，纯逻辑脱离总编排类 |
+| 正文翻译批次、去重、结果展开 | `TranslationHandler` 静态方法 | `app.application.use_cases.translation_run` 纯函数 | `tests/test_translation_cache_context.py`、`tests/test_cli_json_output.py` | 翻译编排入口不变，纯逻辑脱离总编排类 |
 | 数据库路径解析 | `app.persistence.repository` | `app.persistence.paths`，`repository` 与 `persistence` 继续导出 | `tests/test_persistence.py`、`tests/test_runtime_paths.py` | 数据库目录、文件名校验和默认路径行为保持一致 |
 | 数据库记录模型 | `app.persistence.repository` | `app.persistence.records`，`repository` 与 `persistence` 继续导出 | `tests/test_persistence.py` | 记录字段和读取失败策略保持一致 |
 | data 文本写回入口 | `app.rmmz.write_back.py` | `app.rmmz.write_back.service`，包入口导出 `write_data_text` | `tests/test_rmmz_loader_extraction_writeback.py` | 调用路径保持 `app.rmmz.write_back import write_data_text` |

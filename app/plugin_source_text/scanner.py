@@ -136,6 +136,33 @@ class PluginSourceCandidateIndex:
     by_selector: dict[str, PluginSourceCandidate]
 
 
+@dataclass(frozen=True, slots=True)
+class PluginSourceStringLiteral:
+    """插件源码中的一个普通字符串字面量。"""
+
+    file_name: str
+    selector: str
+    text: str
+    raw_text: str
+    line: int
+    start_index: int
+    end_index: int
+    active: bool
+    context: str
+
+    def to_json_object(self) -> JsonObject:
+        """转换成审计报告 JSON 对象。"""
+        return {
+            "file": self.file_name,
+            "line": self.line,
+            "selector": self.selector,
+            "text": self.text,
+            "raw_text": self.raw_text,
+            "active": self.active,
+            "context": self.context,
+        }
+
+
 def build_plugin_source_candidate_index(
     *,
     file_name: str,
@@ -156,6 +183,43 @@ def build_plugin_source_candidate_index(
         candidates=candidates,
         by_selector={candidate.selector: candidate for candidate in candidates},
     )
+
+
+def iter_plugin_source_string_literals(
+    *,
+    file_name: str,
+    source: str,
+    active: bool,
+) -> tuple[PluginSourceStringLiteral, ...]:
+    """返回源码中的全部普通字符串字面量，不按源语言字符过滤。"""
+    spans = _collect_string_literal_spans(source)
+    newline_indexes = _collect_newline_indexes(source)
+    literals: list[PluginSourceStringLiteral] = []
+    for span in spans:
+        raw_text = source[span.content_start_index:span.content_end_index]
+        text = normalize_visible_text_for_extraction(_unescape_js_text(raw_text))
+        if not text:
+            continue
+        api = span.ast_context.call_name or _call_api_before(source, span.start_index)
+        key = span.ast_context.property_key or _property_key_before(source, span.start_index)
+        literals.append(
+            PluginSourceStringLiteral(
+                file_name=file_name,
+                selector=candidate_selector_for_span(
+                    start_index=span.start_index,
+                    end_index=span.end_index,
+                    raw_text=raw_text,
+                ),
+                text=text,
+                raw_text=raw_text,
+                line=_line_number_for_index(newline_indexes=newline_indexes, index=span.start_index),
+                start_index=span.start_index,
+                end_index=span.end_index,
+                active=active,
+                context=_candidate_context(api=api, key=key),
+            )
+        )
+    return tuple(literals)
 
 
 def _enabled_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
@@ -457,14 +521,93 @@ def _build_risk(file_scans: list[PluginSourceFileScan], *, read_error_file_count
 
 def _unescape_js_text(text: str) -> str:
     """解析候选展示与写回校验需要的常见 JS 字符串转义。"""
-    return (
-        text.replace(r"\n", "\n")
-        .replace(r"\r", "\r")
-        .replace(r"\t", "\t")
-        .replace(r"\'", "'")
-        .replace(r'\"', '"')
-        .replace(r"\\", "\\")
-    )
+    decoded_parts: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char != "\\":
+            decoded_parts.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(text):
+            decoded_parts.append("\\")
+            index += 1
+            continue
+        escaped = text[index + 1]
+        if escaped in {"'", '"', "\\", "/"}:
+            decoded_parts.append(escaped)
+            index += 2
+            continue
+        if escaped == "n":
+            decoded_parts.append("\n")
+            index += 2
+            continue
+        if escaped == "r":
+            decoded_parts.append("\r")
+            index += 2
+            continue
+        if escaped == "t":
+            decoded_parts.append("\t")
+            index += 2
+            continue
+        if escaped == "b":
+            decoded_parts.append("\b")
+            index += 2
+            continue
+        if escaped == "f":
+            decoded_parts.append("\f")
+            index += 2
+            continue
+        if escaped == "v":
+            decoded_parts.append("\v")
+            index += 2
+            continue
+        if escaped == "0":
+            decoded_parts.append("\0")
+            index += 2
+            continue
+        if escaped == "x" and _has_hex_digits(text, index + 2, 2):
+            decoded_parts.append(chr(int(text[index + 2:index + 4], 16)))
+            index += 4
+            continue
+        if escaped == "u":
+            unicode_result = _decode_unicode_escape(text, index + 2)
+            if unicode_result is not None:
+                decoded_char, next_index = unicode_result
+                decoded_parts.append(decoded_char)
+                index = next_index
+                continue
+        if escaped in {"\n", "\r"}:
+            index += 2
+            if escaped == "\r" and index < len(text) and text[index] == "\n":
+                index += 1
+            continue
+        decoded_parts.append(escaped)
+        index += 2
+    return "".join(decoded_parts)
+
+
+def _has_hex_digits(text: str, start_index: int, count: int) -> bool:
+    """判断指定范围是否全是十六进制字符。"""
+    end_index = start_index + count
+    if end_index > len(text):
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in text[start_index:end_index])
+
+
+def _decode_unicode_escape(text: str, start_index: int) -> tuple[str, int] | None:
+    """解析 JS `\\uXXXX` 或 `\\u{X...}` Unicode 转义。"""
+    if start_index < len(text) and text[start_index] == "{":
+        end_index = text.find("}", start_index + 1)
+        if end_index == -1:
+            return None
+        hex_text = text[start_index + 1:end_index]
+        if not hex_text or not all(char in "0123456789abcdefABCDEF" for char in hex_text):
+            return None
+        return chr(int(hex_text, 16)), end_index + 1
+    if not _has_hex_digits(text, start_index, 4):
+        return None
+    return chr(int(text[start_index:start_index + 4], 16)), start_index + 4
 
 
 def _plugin_source_text_structural_flags(text: str) -> list[str]:
@@ -482,9 +625,11 @@ def _plugin_source_text_structural_flags(text: str) -> list[str]:
 
 __all__ = [
     "PluginSourceCandidateIndex",
+    "PluginSourceStringLiteral",
     "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
     "build_plugin_source_scan",
     "candidate_selector_for_span",
     "find_candidate_by_selector",
+    "iter_plugin_source_string_literals",
 ]

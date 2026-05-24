@@ -199,6 +199,8 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`run-all --game <游戏标题> --skip-write-back`",
         "`translation-status --game <游戏标题> --json`",
         "`audit-coverage --game <游戏标题> --json`",
+        "`audit-active-runtime --game <游戏标题> --json`",
+        "`diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json`",
         "`quality-report --game <游戏标题> --json`",
         "`verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json`",
         "`write-back --game <游戏标题> --json`",
@@ -401,6 +403,8 @@ def test_plugin_source_reference_allows_read_only_source_cross_check() -> None:
             "不读取 A.T.T MZ 项目源码或数据库",
             "不修改 JS 源码，不写回游戏文件，不直接改数据库",
             "源码注释、插件头、相邻 key、对象/数组结构和调用函数只能用于判断语义，不能写进规则文件",
+            "默认使用 `--view translation-source`",
+            "审计 `--view active-runtime` 当前运行文件",
         ]:
             assert phrase in text
 
@@ -466,7 +470,7 @@ def test_failure_and_feedback_references_define_recovery_loops() -> None:
         "问题截图或原文片段",
         "verify-feedback-text",
         "scan-plugin-source-text",
-        "反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report",
+        "反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report -> audit-active-runtime",
         "只有用户明确选择完整重译时",
         "用户确认本轮试玩反馈已经处理完成",
         "cleanup-agent-workspace --workspace <工作区> --json",

@@ -13,6 +13,17 @@ def write_json(path: Path, value: JsonValue) -> None:
     _ = path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def write_plugin_source_stubs(js_dir: Path, plugin_names: list[str]) -> None:
+    """为已启用插件写入无可见文本的源码 stub。"""
+    plugin_source_dir = js_dir / "plugins"
+    plugin_source_dir.mkdir()
+    for plugin_name in plugin_names:
+        _ = (plugin_source_dir / f"{plugin_name}.js").write_text(
+            "(() => {})();\n",
+            encoding="utf-8",
+        )
+
+
 def write_complete_standard_data_files(data_dir: Path, *, map_ids: list[int]) -> None:
     """补齐测试游戏必须存在的 RPG Maker 标准 data 文件。"""
     supplemental_files: dict[str, JsonValue] = {
@@ -299,6 +310,7 @@ def minimal_game_dir(tmp_path: Path) -> Path:
     ]
     plugins_text = f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n"
     _ = (js_dir / "plugins.js").write_text(plugins_text, encoding="utf-8")
+    write_plugin_source_stubs(js_dir, ["TestPlugin", "ComplexPlugin"])
     return game_root
 
 
@@ -422,6 +434,7 @@ def minimal_mv_game_dir(tmp_path: Path) -> Path:
     ]
     plugins_text = f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n"
     _ = (js_dir / "plugins.js").write_text(plugins_text, encoding="utf-8")
+    write_plugin_source_stubs(js_dir, ["MvPlugin"])
     return game_root
 
 
@@ -579,4 +592,5 @@ def minimal_english_game_dir(tmp_path: Path) -> Path:
     ]
     plugins_text = f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n"
     _ = (js_dir / "plugins.js").write_text(plugins_text, encoding="utf-8")
+    write_plugin_source_stubs(js_dir, ["VisiblePlugin"])
     return game_root

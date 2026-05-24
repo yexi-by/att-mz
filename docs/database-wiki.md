@@ -20,6 +20,7 @@
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
 | `plugin_text_rules` | 保存插件配置中可翻译字符串的 JSONPath 规则 | `import-plugin-rules` |
 | `plugin_source_text_rules` | 保存插件源码中可翻译字符串的 AST selector 规则 | `import-plugin-source-rules` |
+| `plugin_source_runtime_write_map` | 保存插件源码写回后当前运行字符串到翻译源条目的确定性映射 | `write-back`、`write-terminology` |
 | `note_tag_text_rules` | 保存 data 文件 Note 标签中可翻译标签名 | `import-note-tag-rules` |
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
@@ -144,6 +145,31 @@
 - `import-plugin-source-rules` 校验文件名、启用状态、文件哈希、翻译 selector、排除 selector 和重复决策后整体替换此表内容。
 - 主翻译流程只按数据库中已导入的源码规则提取 `js/plugins` 直接插件文件文本。
 - 高风险扫描结果没有对应源码规则，或已启动支线但仍有候选未归入翻译或排除时，正文翻译入口会停止并要求用户处理。
+
+### `plugin_source_runtime_write_map`
+
+保存插件源码写回后，当前运行 JS 字符串到翻译源已保存译文记录的确定性映射。它只用于 `diagnose-active-runtime` 反推问题来源，不参与翻译源抽取。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `location_path` | `TEXT` | 主键 | 翻译源视图中的插件源码文本定位路径 |
+| `source_file_name` | `TEXT` | 非空 | 翻译源插件源码文件名 |
+| `source_selector` | `TEXT` | 非空 | 翻译源 AST selector |
+| `source_file_hash` | `TEXT` | 非空 | 写回时的翻译源文件哈希 |
+| `source_text_hash` | `TEXT` | 非空 | 写回时的翻译源可见文本哈希 |
+| `translation_lines_hash` | `TEXT` | 非空 | 写回时的中文译文行哈希 |
+| `runtime_file_name` | `TEXT` | 唯一键 | 当前运行插件源码文件名 |
+| `runtime_selector` | `TEXT` | 唯一键 | 写回后当前运行 AST selector |
+| `runtime_file_hash` | `TEXT` | 非空 | 写回后的当前运行文件哈希 |
+| `runtime_text_hash` | `TEXT` | 非空 | 写回后的当前运行可见文本哈希 |
+| `runtime_line` | `INTEGER` | 非空 | 写回后字符串所在行号 |
+| `created_at` | `TEXT` | 非空 | 映射生成时间 |
+
+维护规则：
+
+- 插件源码写回成功后按当前运行源码重新解析并保存映射。
+- 导入新的插件源码规则会清空旧映射，避免旧 selector 影响当前诊断。
+- 诊断只能按 `runtime_file_name + runtime_selector` 精确匹配映射；没有命中时报告无法反推，不做启发式猜测。
 
 ### `note_tag_text_rules`
 

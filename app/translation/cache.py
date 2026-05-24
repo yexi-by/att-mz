@@ -1,4 +1,4 @@
-"""正文翻译运行内去重缓存模块。"""
+"""正文翻译运行内去重记录模块。"""
 
 from app.rmmz.schema import ItemType, TranslationItem
 
@@ -7,7 +7,7 @@ type TranslationCacheKey = tuple[tuple[str, ...], ItemType, str | None]
 
 
 class TranslationCache:
-    """单轮正文翻译使用的请求级去重缓存。"""
+    """单轮正文翻译使用的请求级去重记录。"""
 
     def __init__(self) -> None:
         """初始化本轮翻译所需的内存容器。"""

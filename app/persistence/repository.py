@@ -17,6 +17,7 @@ from app.rmmz.loader import read_game_title, resolve_game_directory, resolve_gam
 from app.observability.logging import logger
 
 from .font_records import FontRecordSessionMixin
+from .plugin_source_runtime_records import PluginSourceRuntimeRecordSessionMixin
 from .rows import row_str
 from .paths import DB_DIRECTORY, build_db_path, ensure_db_directory, resolve_default_db_directory
 from .records import GameMetadata, GameRecord, LanguageSettings, RuleReviewStateRecord
@@ -37,6 +38,7 @@ from .sql import (
     CREATE_NOTE_TAG_TEXT_RULES_TABLE,
     CREATE_PLACEHOLDER_RULES_TABLE,
     CREATE_PLUGIN_TEXT_RULES_TABLE,
+    CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE,
     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
     CREATE_RULE_REVIEW_STATES_TABLE,
     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
@@ -296,6 +298,7 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE)
+    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE)
     _ = await connection.execute(CREATE_NOTE_TAG_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE)
@@ -556,6 +559,7 @@ class TargetGameSession(
     RuleRecordSessionMixin,
     TerminologyRecordSessionMixin,
     FontRecordSessionMixin,
+    PluginSourceRuntimeRecordSessionMixin,
     RunRecordSessionMixin,
 ):
     """单个目标游戏的数据库会话。"""

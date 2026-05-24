@@ -86,20 +86,32 @@ from app.rmmz.mv_namebox import (
     mv_virtual_namebox_candidates_payload,
     mv_virtual_namebox_rule_records_to_import_json,
 )
+from app.rmmz.game_file_view import GameFileView, parse_game_file_view
 from app.terminology import collect_terminology_bundle_errors
 
 
 class WorkspaceAgentMixin:
     """承载 AgentToolkitService 的 WorkspaceAgentMixin 命令族。"""
 
-    async def scan_plugin_source_text(self: AgentServiceContext, *, game_title: str, output_path: Path) -> AgentReport:
+    async def scan_plugin_source_text(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        output_path: Path,
+        source_view: GameFileView | str = GameFileView.TRANSLATION_SOURCE,
+    ) -> AgentReport:
         """扫描插件源码文本风险，只输出轻量风险报告。"""
+        resolved_view = parse_game_file_view(str(source_view))
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_game_data_for_view(
+                session,
+                source_view=resolved_view,
+            )
             text_rules = TextRules.from_setting(setting.text_rules)
         scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         risk_report = scan.risk_report_json()
+        risk_report["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
         await _write_json_object(output_path, risk_report)
         warnings: list[AgentIssue] = []
@@ -109,6 +121,7 @@ class WorkspaceAgentMixin:
             errors=[],
             warnings=warnings,
             summary={
+                "source_view": resolved_view.value,
                 "candidate_count": len(scan.candidates),
                 "output": str(output_path),
                 **scan.risk.to_json_object(),
@@ -124,21 +137,30 @@ class WorkspaceAgentMixin:
         *,
         game_title: str,
         output_path: Path,
+        source_view: GameFileView | str = GameFileView.TRANSLATION_SOURCE,
     ) -> AgentReport:
         """导出插件源码 AST 地图和候选文本。"""
+        resolved_view = parse_game_file_view(str(source_view))
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_game_data_for_view(
+                session,
+                source_view=resolved_view,
+            )
             text_rules = TextRules.from_setting(setting.text_rules)
         scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        payload = scan.to_json_object()
+        payload["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        await _write_json_object(output_path, scan.to_json_object())
+        await _write_json_object(output_path, payload)
         details = scan.risk_report_json()
+        details["source_view"] = resolved_view.value
         details["output"] = str(output_path)
         return AgentReport.from_parts(
             errors=[],
             warnings=[],
             summary={
+                "source_view": resolved_view.value,
                 "output": str(output_path),
                 "candidate_count": len(scan.candidates),
                 **scan.risk.to_json_object(),
@@ -158,7 +180,7 @@ class WorkspaceAgentMixin:
         target_dir.mkdir(parents=True, exist_ok=True)
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             terminology_registry = await session.read_terminology_registry()
             terminology_glossary = await session.read_terminology_glossary()
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
@@ -215,7 +237,9 @@ class WorkspaceAgentMixin:
         plugin_rules_path = target_dir / "plugin-rules.json"
         await _write_json_value(plugin_rules_path, _plugin_rule_records_to_import_json(plugin_rules))
         plugin_source_risk_path = target_dir / "plugin-source-risk-report.json"
-        await _write_json_object(plugin_source_risk_path, plugin_source_scan.risk_report_json())
+        plugin_source_risk_report = plugin_source_scan.risk_report_json()
+        plugin_source_risk_report["source_view"] = GameFileView.TRANSLATION_SOURCE.value
+        await _write_json_object(plugin_source_risk_path, plugin_source_risk_report)
         plugin_source_rules_path = target_dir / "plugin-source-rules.json"
         await _write_json_value(plugin_source_rules_path, plugin_source_rule_records_to_import_json(plugin_source_rules))
         note_tag_candidates_path = target_dir / "note-tag-candidates.json"
@@ -383,7 +407,7 @@ class WorkspaceAgentMixin:
             errors.append(event_command_codes_issue)
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             mv_virtual_namebox_rule_records = await session.read_mv_virtual_namebox_rules()
             custom_rules = await self._resolve_custom_rules(
                 session=session,

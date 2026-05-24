@@ -6,6 +6,7 @@ LANGUAGE_SETTINGS_TABLE_NAME = "language_settings"
 SCHEMA_VERSION_TABLE_NAME = "schema_version"
 PLUGIN_TEXT_RULES_TABLE_NAME = "plugin_text_rules"
 PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME = "plugin_source_text_rules"
+PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME = "plugin_source_runtime_write_map"
 NOTE_TAG_TEXT_RULES_TABLE_NAME = "note_tag_text_rules"
 EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE_NAME = "event_command_text_rule_groups"
 EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE_NAME = "event_command_text_rule_filters"
@@ -26,7 +27,7 @@ TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -35,6 +36,7 @@ EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     LANGUAGE_SETTINGS_TABLE_NAME,
     PLUGIN_TEXT_RULES_TABLE_NAME,
     PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME,
+    PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME,
     NOTE_TAG_TEXT_RULES_TABLE_NAME,
     EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE_NAME,
     EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE_NAME,
@@ -264,6 +266,26 @@ CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE = f"""
 ;
 """
 
+CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}] (
+        location_path          TEXT PRIMARY KEY,
+        source_file_name       TEXT NOT NULL,
+        source_selector        TEXT NOT NULL,
+        source_file_hash       TEXT NOT NULL,
+        source_text_hash       TEXT NOT NULL,
+        translation_lines_hash TEXT NOT NULL,
+        runtime_file_name      TEXT NOT NULL,
+        runtime_selector       TEXT NOT NULL,
+        runtime_file_hash      TEXT NOT NULL,
+        runtime_text_hash      TEXT NOT NULL,
+        runtime_line           INTEGER NOT NULL,
+        created_at             TEXT NOT NULL,
+        UNIQUE (runtime_file_name, runtime_selector)
+    )
+;
+"""
+
 CREATE_NOTE_TAG_TEXT_RULES_TABLE = f"""
 --sql
     CREATE TABLE IF NOT EXISTS [{NOTE_TAG_TEXT_RULES_TABLE_NAME}] (
@@ -372,6 +394,27 @@ INSERT_PLUGIN_SOURCE_TEXT_RULE = f"""
     INSERT OR REPLACE INTO [{PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME}]
     (file_name, file_hash, selector, selector_kind)
     VALUES (?, ?, ?, ?)
+;
+"""
+
+INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP = f"""
+--sql
+    INSERT OR REPLACE INTO [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}]
+    (
+        location_path,
+        source_file_name,
+        source_selector,
+        source_file_hash,
+        source_text_hash,
+        translation_lines_hash,
+        runtime_file_name,
+        runtime_selector,
+        runtime_file_hash,
+        runtime_text_hash,
+        runtime_line,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -621,6 +664,26 @@ SELECT_PLUGIN_SOURCE_TEXT_RULES = f"""
 ;
 """
 
+SELECT_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS = f"""
+--sql
+    SELECT
+        location_path,
+        source_file_name,
+        source_selector,
+        source_file_hash,
+        source_text_hash,
+        translation_lines_hash,
+        runtime_file_name,
+        runtime_selector,
+        runtime_file_hash,
+        runtime_text_hash,
+        runtime_line,
+        created_at
+    FROM [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}]
+    ORDER BY runtime_file_name, runtime_selector, location_path
+;
+"""
+
 SELECT_NOTE_TAG_TEXT_RULES = f"""
 --sql
     SELECT file_name, tag_name
@@ -797,6 +860,12 @@ DELETE_ALL_PLUGIN_TEXT_RULES = f"""
 DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES = f"""
 --sql
     DELETE FROM [{PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS = f"""
+--sql
+    DELETE FROM [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}]
 ;
 """
 

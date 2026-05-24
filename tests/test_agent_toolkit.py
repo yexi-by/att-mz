@@ -22,6 +22,11 @@ from app.llm import LLMHandler
 from app.native_quality import collect_native_quality_details
 from app.persistence import GameRegistry
 from app.plugin_text import build_plugin_hash
+from app.plugin_source_text import build_plugin_source_scan, iter_plugin_source_string_literals
+from app.plugin_source_text.runtime_mapping import (
+    plugin_source_runtime_hash_lines,
+    plugin_source_runtime_hash_text,
+)
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.rmmz.json_types import JsonArray, JsonObject, JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.loader import load_game_data
@@ -31,6 +36,7 @@ from app.rmmz.schema import (
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
+    PluginSourceRuntimeWriteMapRecord,
     SourceResidualRuleRecord,
     StructuredPlaceholderRuleRecord,
     TranslationErrorItem,
@@ -76,6 +82,27 @@ def load_json_array(path: Path) -> list[object]:
 def _contains_japanese_test_char(text: str) -> bool:
     """判断测试样本文本是否含有日文假名。"""
     return any("\u3040" <= char <= "\u30ff" for char in text)
+
+
+def _translated_test_line_preserving_controls(line: str, text_rules: TextRules) -> str:
+    """生成不含源语言残留且保留原控制符的测试译文。"""
+    spans = text_rules.iter_control_sequence_spans(line)
+    if not spans:
+        return "测试"
+    translated_parts: list[str] = []
+    last_end = 0
+    visible_text_inserted = False
+    for span in spans:
+        if span.start_index > last_end and not visible_text_inserted:
+            translated_parts.append("测试")
+            visible_text_inserted = True
+        translated_parts.append(span.original)
+        last_end = span.end_index
+    if last_end < len(line) and not visible_text_inserted:
+        translated_parts.append("测试")
+    if not visible_text_inserted:
+        translated_parts.append("测试")
+    return "".join(translated_parts)
 
 
 def _mv_virtual_namebox_rules_text() -> str:
@@ -1013,7 +1040,7 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
     command_list.insert(2, command)
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
         "\n".join(
             [
@@ -1137,6 +1164,434 @@ async def test_feedback_verification_reads_active_files_not_origin_backups(
     assert report.status == "ok"
     assert report.summary["occurrence_count"] == 0
     assert report.details["occurrences"] == []
+
+
+@pytest.mark.asyncio
+async def test_quality_report_audits_active_runtime_plugin_source_not_origin_backups(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量报告必须审计当前运行插件源码里的坏控制符，而不是只看 origin 翻译源。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BadSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (plugin_source_dir / "BadSource.js").write_text(
+        "const Messages = { param2: ['努力忍耐着的\\nn[0]君…真棒哦♥'] };\n",
+        encoding="utf-8",
+    )
+    _ = (origin_source_dir / "BadSource.js").write_text(
+        "const Messages = { param2: ['頑張ってガマンする\\\\nn[0]くん…素敵よ♥'] };\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        game_data = await load_game_data(session.game_path)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        translated_items = [
+            TranslationItem(
+                location_path=item.location_path,
+                item_type=item.item_type,
+                role=item.role,
+                original_lines=list(item.original_lines),
+                source_line_paths=list(item.source_line_paths),
+                translation_lines=[
+                    _translated_test_line_preserving_controls(line, text_rules)
+                    for line in item.original_lines
+                ],
+            )
+            for item in scope.active_items()
+            if item.location_path in scope.writable_paths
+        ]
+        await session.write_translation_items(translated_items)
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
+
+    assert quality_report.status == "error"
+    assert runtime_report.status == "error"
+    assert "active_runtime_placeholder_risk" in {error.code for error in quality_report.errors}
+    assert "active_runtime_placeholder_risk" in {error.code for error in runtime_report.errors}
+    assert quality_report.summary["active_runtime_placeholder_risk_count"] == 1
+    assert runtime_report.summary["active_runtime_placeholder_risk_count"] == 1
+    assert "n[0]君" in json.dumps(runtime_report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_rejects_plugin_source_read_errors(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行插件源码读取失败时必须报错，不能只写进摘要计数。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BrokenEncoding", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "BrokenEncoding.js").write_bytes(b"\xff\xfe\xff")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
+    quality_report = await service.quality_report(game_title="テストゲーム")
+
+    assert runtime_report.status == "error"
+    assert quality_report.status == "error"
+    assert "active_runtime_read_error" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_read_error" in {error.code for error in quality_report.errors}
+    runtime_read_error_count = runtime_report.summary["active_runtime_read_error_count"]
+    assert isinstance(runtime_read_error_count, int)
+    assert runtime_read_error_count >= 1
+    assert "BrokenEncoding.js" in json.dumps(runtime_report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_rejects_missing_enabled_plugin_source_file(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行插件配置启用了源码文件但文件不存在时必须报错。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "MissingSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
+    quality_report = await service.quality_report(game_title="テストゲーム")
+
+    assert runtime_report.status == "error"
+    assert quality_report.status == "error"
+    assert "active_runtime_read_error" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_read_error" in {error.code for error in quality_report.errors}
+    runtime_read_error_count = runtime_report.summary["active_runtime_read_error_count"]
+    quality_read_error_count = quality_report.summary["active_runtime_read_error_count"]
+    assert isinstance(runtime_read_error_count, int)
+    assert isinstance(quality_read_error_count, int)
+    assert runtime_read_error_count >= 1
+    assert quality_read_error_count >= 1
+    assert "MissingSource.js" in json.dumps(runtime_report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_rejects_missing_plugin_source_directory(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行插件源码目录缺失时，启用插件必须按缺失源码报错。"""
+    shutil.rmtree(minimal_game_dir / "js" / "plugins")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
+    quality_report = await service.quality_report(game_title="テストゲーム")
+
+    assert runtime_report.status == "error"
+    assert quality_report.status == "error"
+    assert "active_runtime_read_error" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_read_error" in {error.code for error in quality_report.errors}
+    assert "TestPlugin.js" in json.dumps(runtime_report.details, ensure_ascii=False)
+    assert "ComplexPlugin.js" in json.dumps(runtime_report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_rejects_plugin_source_syntax_errors(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行插件源码 JS 语法错误时必须报错，不能退回轻量扫描后放行。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BrokenSyntax", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "BrokenSyntax.js").write_text(
+        "const Messages = { title: '坏掉 };\n",
+        encoding="utf-8",
+    )
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (origin_source_dir / "BrokenSyntax.js").write_text(
+        "const Messages = { title: '原文' };\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
+    quality_report = await service.quality_report(game_title="テストゲーム")
+
+    assert runtime_report.status == "error"
+    assert quality_report.status == "error"
+    assert "active_runtime_syntax_error" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_syntax_error" in {error.code for error in quality_report.errors}
+    assert runtime_report.summary["active_runtime_syntax_error_count"] == 1
+    assert quality_report.summary["active_runtime_syntax_error_count"] == 1
+    assert "BrokenSyntax.js" in json.dumps(runtime_report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_cache(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行源码诊断必须用写回映射精确反推已保存译文记录。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BadSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    active_source = "const Messages = { line: '努力忍耐着的\\nn[0]君…真棒哦♥' };\n"
+    _ = (plugin_source_dir / "BadSource.js").write_text(active_source, encoding="utf-8")
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    origin_source = "const Messages = { line: '頑張ってガマンする\\\\nn[0]くん…素敵よ♥' };\n"
+    _ = (origin_source_dir / "BadSource.js").write_text(origin_source, encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        source_game_data = await load_game_data(session.game_path)
+        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
+        runtime_literal = iter_plugin_source_string_literals(
+            file_name="BadSource.js",
+            source=active_source,
+            active=True,
+        )[0]
+        location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
+        translation_item = TranslationItem(
+            location_path=location_path,
+            item_type="short_text",
+            original_lines=[source_candidate.text],
+            source_line_paths=[location_path],
+            translation_lines=["努力忍耐着的\nn[0]君…真棒哦♥"],
+        )
+        await session.write_translation_items([translation_item])
+        await session.upsert_plugin_source_runtime_write_maps(
+            [
+                PluginSourceRuntimeWriteMapRecord(
+                    location_path=location_path,
+                    source_file_name="BadSource.js",
+                    source_selector=source_candidate.selector,
+                    source_file_hash=source_scan.files[0].file_hash,
+                    source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
+                    translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
+                    runtime_file_name="BadSource.js",
+                    runtime_selector=runtime_literal.selector,
+                    runtime_file_hash=source_scan.files[0].file_hash,
+                    runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
+                    runtime_line=runtime_literal.line,
+                    created_at="2026-05-24T00:00:00",
+                )
+            ]
+        )
+
+    output_path = tmp_path / "diagnosis.json"
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.diagnose_active_runtime(game_title="テストゲーム", output_path=output_path)
+
+    assert report.status == "error"
+    assert output_path.exists()
+    assert report.summary["mapped_issue_count"] == 1
+    diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
+    diagnosis_item = next(
+        item
+        for item in diagnosis_items
+        if ensure_json_object(
+            ensure_json_object(item, "diagnosis_item")["issue"],
+            "diagnosis_item.issue",
+        )["file"] == "BadSource.js"
+    )
+    diagnosis = ensure_json_object(diagnosis_item, "diagnosis_item")
+    assert diagnosis["diagnosis_status"] == "mapped"
+    assert diagnosis["location_path"] == location_path
+    assert diagnosis["current_translation_lines"] == ["努力忍耐着的\nn[0]君…真棒哦♥"]
+    assert "无法反推" not in json.dumps(diagnosis, ensure_ascii=False)
+
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=location_path,
+                    item_type="short_text",
+                    original_lines=[source_candidate.text],
+                    source_line_paths=[location_path],
+                    translation_lines=["已经修复的译文记录"],
+                )
+            ]
+        )
+    cache_changed_report = await service.diagnose_active_runtime(
+        game_title="テストゲーム",
+        output_path=tmp_path / "diagnosis-cache-changed.json",
+    )
+    cache_changed_items = ensure_json_array(
+        cache_changed_report.details["active_runtime_diagnosis_items"],
+        "diagnosis",
+    )
+    cache_changed_item = next(
+        ensure_json_object(item, "diagnosis_item")
+        for item in cache_changed_items
+        if ensure_json_object(
+            ensure_json_object(item, "diagnosis_item")["issue"],
+            "diagnosis_item.issue",
+        )["file"] == "BadSource.js"
+    )
+    assert cache_changed_item["diagnosis_status"] == "mapped_cache_changed"
+    assert cache_changed_item["current_translation_lines"] == ["已经修复的译文记录"]
+
+    _ = (origin_source_dir / "BadSource.js").write_text(
+        "const Messages = { line: '源文件已变化' };\n",
+        encoding="utf-8",
+    )
+    source_changed_report = await service.diagnose_active_runtime(
+        game_title="テストゲーム",
+        output_path=tmp_path / "diagnosis-source-changed.json",
+    )
+    source_changed_items = ensure_json_array(
+        source_changed_report.details["active_runtime_diagnosis_items"],
+        "diagnosis",
+    )
+    source_changed_item = next(
+        ensure_json_object(item, "diagnosis_item")
+        for item in source_changed_items
+        if ensure_json_object(
+            ensure_json_object(item, "diagnosis_item")["issue"],
+            "diagnosis_item.issue",
+        )["file"] == "BadSource.js"
+    )
+    assert source_changed_item["diagnosis_status"] == "mapped_source_changed"
+    assert source_changed_item["source_hash_matches"] is False
+
+
+@pytest.mark.asyncio
+async def test_diagnose_active_runtime_never_guesses_without_runtime_map(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """没有写回映射时，诊断不能按文本或上下文猜测已保存译文记录。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BadSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    active_source = "const Messages = { line: '努力忍耐着的\\nn[0]君…真棒哦♥' };\n"
+    _ = (plugin_source_dir / "BadSource.js").write_text(active_source, encoding="utf-8")
+    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    origin_source_dir.mkdir()
+    _ = (origin_source_dir / "BadSource.js").write_text(
+        "const Messages = { line: '頑張ってガマンする\\\\nn[0]くん…素敵よ♥' };\n",
+        encoding="utf-8",
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        source_game_data = await load_game_data(session.game_path)
+        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
+        location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=location_path,
+                    item_type="short_text",
+                    original_lines=[source_candidate.text],
+                    source_line_paths=[location_path],
+                    translation_lines=["努力忍耐着的\nn[0]君…真棒哦♥"],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.diagnose_active_runtime(game_title="テストゲーム", output_path=tmp_path / "diagnosis.json")
+
+    assert report.status == "error"
+    unmapped_issue_count = report.summary["unmapped_issue_count"]
+    assert isinstance(unmapped_issue_count, int)
+    assert unmapped_issue_count >= 1
+    diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
+    diagnosis_item = next(
+        item
+        for item in diagnosis_items
+        if ensure_json_object(
+            ensure_json_object(item, "diagnosis_item")["issue"],
+            "diagnosis_item.issue",
+        )["file"] == "BadSource.js"
+    )
+    diagnosis = ensure_json_object(diagnosis_item, "diagnosis_item")
+    assert diagnosis["diagnosis_status"] == "unmapped"
+    assert "location_path" not in diagnosis
+    assert "无法反推" in str(diagnosis["suggested_action"])
 
 
 @pytest.mark.asyncio
@@ -2221,7 +2676,7 @@ async def test_validate_agent_workspace_rejects_high_risk_empty_plugin_source_re
         encoding="utf-8",
     )
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir()
+    plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HighRiskSource.js").write_text(
         "\n".join(
             f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"

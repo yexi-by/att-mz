@@ -67,7 +67,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `import-terminology --game <游戏标题> --input <字段译名表> --glossary-input <正文术语表> --json` | 保存字段译名表和正文术语表 | `status` 为 `ok` | 修结构、空值或冲突后重跑 |
 | `validate-plugin-rules --game <游戏标题> --input <规则文件> --json` | 校验插件规则路径、字符串叶子命中和当前插件配置哈希 | `status` 为 `ok` | 修 `plugin-rules.json` 后重跑；如果提示插件哈希或当前配置不一致，重新准备工作区，不猜路径 |
 | `import-plugin-rules --game <游戏标题> --input <规则文件> --json` | 保存插件文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
-| `export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json` | 用户确认高风险后导出插件源码 AST 地图 | 输出文件存在，风险摘要和候选数量可解释 | 只处理 `js/plugins` 直接 `.js` 文件；异常时停止正文翻译 |
+| `export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json` | 用户确认高风险后导出插件源码 AST 地图；默认 `--view translation-source` | 输出文件存在，风险摘要、候选数量和 `summary.source_view` 可解释 | 只处理 `js/plugins` 直接 `.js` 文件；需要审计当前运行文件时显式传 `--view active-runtime` |
 | `validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 校验插件源码 selector、排除 selector 和当前源码哈希 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 修 `plugin-source-rules.json` 后重跑；selector 失效时重新导出 AST 地图 |
 | `import-plugin-source-rules --game <游戏标题> --input <规则文件> --json` | 保存插件源码文本规则 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 导入后重新扫描占位符候选，再进入正文翻译 |
 | `validate-event-command-rules --game <游戏标题> --input <规则文件> --json` | 校验事件指令编码、match 和路径 | 无 `errors` | 修 `event-command-rules.json` 后重跑 |
@@ -101,7 +101,9 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `translation-status --game <游戏标题> --json` | 查看已保存、剩余和模型失败数量 | 数量能解释 | 数量下降时继续翻译，停滞时分析失败类型 |
 | `text-scope --game <游戏标题> --json` | 查看统一文本范围和规则来源 | `status` 为 `ok` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题> --json` | 对比规则命中、译文和可写范围 | `status` 为 `ok` | 补规则、补译文或精确重置 |
-| `quality-report --game <游戏标题> --json` | 判断是否可以写回并列出问题文本 | `status` 不是 `error` | 按明细修译文或规则；有 error 禁止写回 |
+| `audit-active-runtime --game <游戏标题> --json` | 直接审计当前游戏运行文件里的插件源码漏翻、坏控制符和 JS 语法错误 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime` | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录 |
+| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射把当前运行插件源码问题反推到翻译源已保存译文记录 | 输出文件存在，`summary` 中 mapped/unmapped 数量可解释 | 只接受确定性映射；`unmapped` 时重新写回生成映射、修复当前运行文件或重新导入插件源码规则 |
+| `quality-report --game <游戏标题> --json` | 判断是否可以写回并列出问题文本，包含当前运行文件审计 | `status` 不是 `error` | 按明细修译文或规则；有 error 禁止写回 |
 | `export-quality-fix-template --game <游戏标题> --output <文件> --json` | 导出检查没通过译文的修复表 | 输出文件存在，数量可解释 | 只改中文译文行后导入 |
 | `export-pending-translations --game <游戏标题> --output <文件> --json` | 导出还没成功保存译文的文本表 | 输出文件存在；可加 `--limit N` | 抽样显示仍适合模型时回到翻译 |
 | `import-manual-translations --game <游戏标题> --input <文件> --json` | 检查并保存手动填写译文 | `status` 为 `ok` | 修中文译文行后重跑 |
@@ -122,6 +124,6 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `write-terminology --game <游戏标题> --confirm-font-overwrite` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过 | 未确认字体覆盖时不使用 |
 | `restore-font --game <游戏标题> --json` | 按原件还原项目覆盖过的字体引用 | 摘要可解释 | 缺原始备份或替换字体信息时停止说明 |
 | `verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json` | 在真实游戏文件中反查反馈原文 | `status` 为 `ok`，分类可解释 | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理 |
-| `scan-plugin-source-text --game <游戏标题> --output <风险报告文件> --json` | 扫描插件源码文本风险摘要 | 输出文件存在，且不包含 AST selector 或完整候选列表 | 高风险时暂停正文翻译，先询问用户是否启动 AST 支线 |
+| `scan-plugin-source-text --game <游戏标题> --output <风险报告文件> --json` | 扫描插件源码文本风险摘要；默认 `--view translation-source` | 输出文件存在，且不包含 AST selector 或完整候选列表，`summary.source_view` 可解释 | 高风险时暂停正文翻译；需要看当前运行文件时显式传 `--view active-runtime` |
 
 

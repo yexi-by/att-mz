@@ -37,7 +37,9 @@ from app.cli.commands.rules import (
 )
 from app.cli.commands.terminology import run_export_terminology_command, run_import_terminology_command
 from app.cli.commands.translation import (
+    run_audit_active_runtime_command,
     run_audit_coverage_command,
+    run_diagnose_active_runtime_command,
     run_export_pending_translations_command,
     run_export_plugin_source_ast_map_command,
     run_export_quality_fix_template_command,
@@ -93,6 +95,8 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "quality-report": run_quality_report_command,
     "text-scope": run_text_scope_command,
     "audit-coverage": run_audit_coverage_command,
+    "audit-active-runtime": run_audit_active_runtime_command,
+    "diagnose-active-runtime": run_diagnose_active_runtime_command,
     "verify-feedback-text": run_verify_feedback_text_command,
     "scan-plugin-source-text": run_scan_plugin_source_text_command,
     "export-plugin-source-ast-map": run_export_plugin_source_ast_map_command,

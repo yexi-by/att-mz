@@ -182,6 +182,22 @@ def build_parser() -> argparse.ArgumentParser:
     _ = audit_coverage_parser.add_argument("--output", help="写出 JSON 报告文件")
     _ = audit_coverage_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
+    audit_active_runtime_parser = subparsers.add_parser(
+        "audit-active-runtime",
+        help="审计当前游戏运行文件中的漏翻、坏控制符和 JS 语法错误",
+    )
+    add_optional_target_arguments(audit_active_runtime_parser)
+    _ = audit_active_runtime_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = audit_active_runtime_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
+    diagnose_active_runtime_parser = subparsers.add_parser(
+        "diagnose-active-runtime",
+        help="把当前运行插件源码问题反推到翻译源已保存译文记录",
+    )
+    add_optional_target_arguments(diagnose_active_runtime_parser)
+    _ = diagnose_active_runtime_parser.add_argument("--output", required=True, help="当前运行文件诊断 JSON 输出文件")
+    _ = diagnose_active_runtime_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+
     verify_feedback_parser = subparsers.add_parser(
         "verify-feedback-text",
         help="写入游戏文件后按反馈原文清单反查真实文件残留",
@@ -197,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(scan_plugin_source_parser)
     _ = scan_plugin_source_parser.add_argument("--output", required=True, help="插件源码风险报告 JSON 输出文件")
+    _ = scan_plugin_source_parser.add_argument(
+        "--view",
+        choices=["translation-source", "active-runtime"],
+        default="translation-source",
+        help="插件源码读取视图：translation-source 用于规则抽取，active-runtime 用于当前运行文件审计",
+    )
     _ = scan_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_plugin_source_ast_parser = subparsers.add_parser(
@@ -205,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(export_plugin_source_ast_parser)
     _ = export_plugin_source_ast_parser.add_argument("--output", required=True, help="插件源码 AST 地图 JSON 输出文件")
+    _ = export_plugin_source_ast_parser.add_argument(
+        "--view",
+        choices=["translation-source", "active-runtime"],
+        default="translation-source",
+        help="插件源码读取视图：translation-source 用于规则抽取，active-runtime 用于当前运行文件审计",
+    )
     _ = export_plugin_source_ast_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_plugin_source_parser = subparsers.add_parser(

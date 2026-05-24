@@ -30,7 +30,7 @@ class CoverageAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
             scope = await TextScopeService().build(
                 session=session,
@@ -81,7 +81,7 @@ class CoverageAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
             scope = await TextScopeService().build(
                 session=session,

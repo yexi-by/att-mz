@@ -61,7 +61,7 @@ class PlaceholderRuleAgentMixin:
         """扫描目标游戏中疑似需要自定义保护的控制符。"""
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             custom_rules = await self._resolve_custom_rules(
                 session=session,
                 custom_placeholder_rules_text=custom_placeholder_rules_text,
@@ -124,7 +124,7 @@ class PlaceholderRuleAgentMixin:
                     )
                     structured_rules = await self._resolve_structured_rules(session=session)
                     if not sample_texts:
-                        game_data = await self._load_game_data(session)
+                        game_data = await self._load_translation_source_game_data(session)
                         setting = load_setting(self.setting_path, source_language=session.source_language)
                         preview_rules = TextRules.from_setting(
                             setting.text_rules,
@@ -372,7 +372,7 @@ class PlaceholderRuleAgentMixin:
                     structured_placeholder_rules=structured_rules,
                 )
                 if not sample_texts:
-                    game_data = await self._load_game_data(session)
+                    game_data = await self._load_translation_source_game_data(session)
                     translation_data_map = await self._extract_active_translation_data_map(
                         session=session,
                         game_data=game_data,
@@ -485,7 +485,7 @@ class PlaceholderRuleAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_game_data(session)
+                game_data = await self._load_translation_source_game_data(session)
                 translation_data_map = await self._extract_active_translation_data_map(
                     session=session,
                     game_data=game_data,
@@ -653,7 +653,7 @@ class PlaceholderRuleAgentMixin:
                 custom_placeholder_rules=(),
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_game_data(session)
+            game_data = await self._load_translation_source_game_data(session)
             external_rule_errors = await collect_external_text_rule_gate_errors(
                 session=session,
                 game_data=game_data,

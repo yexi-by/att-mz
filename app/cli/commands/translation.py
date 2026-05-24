@@ -58,6 +58,25 @@ async def run_audit_coverage_command(args: argparse.Namespace) -> int:
     return 1 if report.status == "error" else 0
 
 
+async def run_audit_active_runtime_command(args: argparse.Namespace) -> int:
+    """执行 `audit-active-runtime` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    service = AgentToolkitService()
+    report = await service.audit_active_runtime(game_title=game_title)
+    write_report_outputs(report=report, args=args, title="当前运行文件审计报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_diagnose_active_runtime_command(args: argparse.Namespace) -> int:
+    """执行 `diagnose-active-runtime` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    output_path = read_required_path_arg(args, "output")
+    service = AgentToolkitService()
+    report = await service.diagnose_active_runtime(game_title=game_title, output_path=output_path)
+    write_report_outputs(report=report, args=args, title="当前运行文件反推诊断报告", write_output_file=False)
+    return 1 if report.status == "error" else 0
+
+
 async def run_verify_feedback_text_command(args: argparse.Namespace) -> int:
     """执行 `verify-feedback-text` 命令。"""
     game_title = await resolve_target_game_title(args)
@@ -72,8 +91,13 @@ async def run_scan_plugin_source_text_command(args: argparse.Namespace) -> int:
     """执行 `scan-plugin-source-text` 命令。"""
     game_title = await resolve_target_game_title(args)
     output_path = read_required_path_arg(args, "output")
+    source_view = read_optional_str_arg(args, "view") or "translation-source"
     service = AgentToolkitService()
-    report = await service.scan_plugin_source_text(game_title=game_title, output_path=output_path)
+    report = await service.scan_plugin_source_text(
+        game_title=game_title,
+        output_path=output_path,
+        source_view=source_view,
+    )
     write_report_outputs(report=report, args=args, title="插件源码风险扫描报告", write_output_file=False)
     return 1 if report.status == "error" else 0
 
@@ -82,8 +106,13 @@ async def run_export_plugin_source_ast_map_command(args: argparse.Namespace) -> 
     """执行 `export-plugin-source-ast-map` 命令。"""
     game_title = await resolve_target_game_title(args)
     output_path = read_required_path_arg(args, "output")
+    source_view = read_optional_str_arg(args, "view") or "translation-source"
     service = AgentToolkitService()
-    report = await service.export_plugin_source_ast_map(game_title=game_title, output_path=output_path)
+    report = await service.export_plugin_source_ast_map(
+        game_title=game_title,
+        output_path=output_path,
+        source_view=source_view,
+    )
     write_report_outputs(report=report, args=args, title="插件源码 AST 地图导出报告", write_output_file=False)
     return 1 if report.status == "error" else 0
 
