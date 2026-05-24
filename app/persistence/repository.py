@@ -14,6 +14,13 @@ from app.rmmz.schema import (
     GameLayout,
 )
 from app.rmmz.loader import read_game_title, resolve_game_directory, resolve_game_layout
+from app.rmmz.source_snapshot import (
+    SourceSnapshotFileRecord,
+    collect_source_snapshot_records,
+    create_source_snapshot_for_clean_game,
+    remove_source_snapshot_artifacts,
+    validate_source_snapshot_manifest,
+)
 from app.observability.logging import logger
 
 from .font_records import FontRecordSessionMixin
@@ -23,6 +30,7 @@ from .paths import DB_DIRECTORY, build_db_path, ensure_db_directory, resolve_def
 from .records import GameMetadata, GameRecord, LanguageSettings, RuleReviewStateRecord
 from .rule_records import RuleRecordSessionMixin
 from .run_records import RunRecordSessionMixin
+from .source_snapshot_records import SourceSnapshotRecordSessionMixin
 from .session_utils import build_event_command_group_key, current_timestamp_text
 from .sql import (
     CHECK_CONNECTION_READABLE,
@@ -38,9 +46,10 @@ from .sql import (
     CREATE_NOTE_TAG_TEXT_RULES_TABLE,
     CREATE_PLACEHOLDER_RULES_TABLE,
     CREATE_PLUGIN_TEXT_RULES_TABLE,
-    CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE,
+    CREATE_PLUGIN_SOURCE_RUNTIME_PROVENANCE_TABLE,
     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
     CREATE_RULE_REVIEW_STATES_TABLE,
+    CREATE_SOURCE_SNAPSHOT_FILES_TABLE,
     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
     CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE,
     CREATE_STRUCTURED_PLACEHOLDER_RULES_TABLE,
@@ -52,12 +61,15 @@ from .sql import (
     CREATE_FIELD_TRANSLATION_TERMS_TABLE,
     CURRENT_SCHEMA_VERSION,
     EXPECTED_STATIC_TABLE_NAMES,
+    DELETE_ALL_SOURCE_SNAPSHOT_FILES,
+    INSERT_SOURCE_SNAPSHOT_FILE,
     LANGUAGE_SETTINGS_KEY,
     METADATA_KEY,
     SCHEMA_VERSION_KEY,
     SELECT_LANGUAGE_SETTINGS,
     SELECT_METADATA,
     SELECT_SCHEMA_VERSION,
+    SELECT_SOURCE_SNAPSHOT_FILES,
     SELECT_TABLE_NAMES,
     UPSERT_LANGUAGE_SETTINGS,
     UPSERT_METADATA,
@@ -298,7 +310,8 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE)
+    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_PROVENANCE_TABLE)
+    _ = await connection.execute(CREATE_SOURCE_SNAPSHOT_FILES_TABLE)
     _ = await connection.execute(CREATE_NOTE_TAG_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE)
@@ -419,6 +432,53 @@ async def read_language_settings(connection: aiosqlite.Connection, db_path: Path
     return LanguageSettings(source_language=source_language, target_language=DEFAULT_TARGET_LANGUAGE)
 
 
+async def read_source_snapshot_records(
+    connection: aiosqlite.Connection,
+    db_path: Path,
+) -> list[SourceSnapshotFileRecord]:
+    """读取数据库中的可信源快照 manifest。"""
+    try:
+        async with connection.execute(SELECT_SOURCE_SNAPSHOT_FILES) as cursor:
+            rows = await cursor.fetchall()
+    except aiosqlite.Error as error:
+        raise RuntimeError(f"可信源快照 manifest 不可读取，请重新注册游戏: {db_path}") from error
+    return [
+        SourceSnapshotFileRecord(
+            relative_path=row_str(row, "relative_path", db_path),
+            sha256=row_str(row, "sha256", db_path),
+            byte_size=row_int_value(row, "byte_size"),
+            updated_at=row_str(row, "updated_at", db_path),
+        )
+        for row in rows
+    ]
+
+
+async def find_registered_game_by_path(
+    *,
+    db_directory: Path,
+    game_path: Path,
+    content_root: Path,
+) -> tuple[Path, GameMetadata] | None:
+    """按已保存元数据查找绑定到同一游戏目录的数据库。"""
+    if not db_directory.is_dir():
+        return None
+    for db_path in sorted(db_directory.glob("*.db")):
+        connection = await open_connection(db_path)
+        try:
+            await check_connection_readable(connection=connection, db_path=db_path)
+            try:
+                metadata = await read_metadata(connection=connection, db_path=db_path)
+            except RuntimeError:
+                continue
+            if metadata.game_path != game_path and metadata.content_root != content_root:
+                continue
+            await ensure_schema_compatible(connection=connection, db_path=db_path)
+            return db_path, metadata
+        finally:
+            await connection.close()
+    return None
+
+
 class GameRegistry:
     """游戏注册表，负责发现、注册和打开目标游戏数据库。"""
 
@@ -462,15 +522,37 @@ class GameRegistry:
         _ = ensure_db_directory(self.db_directory)
         resolved_game_path = resolve_game_directory(game_path)
         layout = resolve_game_layout(resolved_game_path)
-        game_title = read_game_title(resolved_game_path)
-        db_path = build_db_path(game_title, self.db_directory)
+        registered_by_path = await find_registered_game_by_path(
+            db_directory=self.db_directory,
+            game_path=resolved_game_path,
+            content_root=layout.content_root,
+        )
+        if registered_by_path is None:
+            game_title = read_game_title(resolved_game_path)
+            db_path = build_db_path(game_title, self.db_directory)
+        else:
+            db_path, registered_metadata = registered_by_path
+            game_title = registered_metadata.game_title
         db_already_exists = db_path.exists()
+        source_snapshot_created = False
         connection = await open_connection(db_path)
         previous_game_path: Path | None = None
         try:
             if db_already_exists:
                 await check_connection_readable(connection=connection, db_path=db_path)
                 await ensure_schema_compatible(connection=connection, db_path=db_path)
+                snapshot_records = await read_source_snapshot_records(
+                    connection=connection,
+                    db_path=db_path,
+                )
+                if not snapshot_records:
+                    raise RuntimeError(
+                        f"数据库缺少可信源快照 manifest，不能复用当前运行文件补齐: {db_path}"
+                    )
+                validate_source_snapshot_manifest(
+                    layout=layout,
+                    records=snapshot_records,
+                )
                 previous_metadata = await read_metadata(
                     connection=connection,
                     db_path=db_path,
@@ -482,13 +564,36 @@ class GameRegistry:
                         f"数据库元数据标题与文件名目标不一致: {db_path}"
                     )
             if not db_already_exists:
+                create_source_snapshot_for_clean_game(layout)
+                source_snapshot_created = True
                 await create_static_tables(connection)
             await write_metadata(connection, game_title, resolved_game_path, layout)
             await write_language_settings(connection, source_language)
+            snapshot_records = collect_source_snapshot_records(
+                layout=layout,
+                updated_at=current_timestamp_text(),
+            )
+            _ = await connection.execute(DELETE_ALL_SOURCE_SNAPSHOT_FILES)
+            if snapshot_records:
+                _ = await connection.executemany(
+                    INSERT_SOURCE_SNAPSHOT_FILE,
+                    [
+                        (
+                            record.relative_path,
+                            record.sha256,
+                            record.byte_size,
+                            record.updated_at,
+                        )
+                        for record in snapshot_records
+                    ],
+                )
+            await connection.commit()
         except Exception:
             await connection.close()
             if not db_already_exists and db_path.exists():
                 db_path.unlink(missing_ok=True)
+            if source_snapshot_created:
+                remove_source_snapshot_artifacts(layout)
             raise
 
         await connection.close()
@@ -560,6 +665,7 @@ class TargetGameSession(
     TerminologyRecordSessionMixin,
     FontRecordSessionMixin,
     PluginSourceRuntimeRecordSessionMixin,
+    SourceSnapshotRecordSessionMixin,
     RunRecordSessionMixin,
 ):
     """单个目标游戏的数据库会话。"""

@@ -6,11 +6,10 @@
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import Self
 
-from app.application.file_writer import collect_changed_plugin_source_file_names, reset_writable_copies, write_game_files
+from app.application.file_writer import reset_writable_copies, write_game_files
 from app.application.font_replacement import (
     apply_font_replacement,
     build_empty_font_replacement_summary,
@@ -104,6 +103,7 @@ from app.rmmz.schema import (
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PLUGINS_FILE_NAME,
+    PluginSourceRuntimeProvenanceRecord,
     PluginTextRuleRecord,
     StructuredPlaceholderRuleRecord,
     TranslationItem,
@@ -113,7 +113,8 @@ from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderR
 from app.llm import LLMHandler, LLMRequestFailure
 from app.rmmz.text_rules import TextRules
 from app.translation import TextTranslation, TranslationBatch, TranslationCache
-from app.rmmz.loader import load_active_runtime_game_data, load_game_data, read_game_title, resolve_game_directory, resolve_game_layout
+from app.rmmz.game_file_view import GameFileView
+from app.rmmz.loader import load_active_runtime_game_data, load_game_data_for_view, read_game_title, resolve_game_directory, resolve_game_layout
 from app.observability.logging import logger
 from app.rmmz.write_back import write_data_text
 from app.plugin_source_text import ActiveRuntimePluginSourceAudit, audit_active_runtime_plugin_source
@@ -122,58 +123,41 @@ from app.plugin_source_text.write_back import write_plugin_source_text
 from app.utils.config_loader_utils import load_setting
 from app.source_residual import SourceResidualRuleSet
 from app.text_scope import TextScopeService, collect_translation_data_paths
-
-
-def _assert_writable_plugin_source_runtime_audit_passed(
-    *,
-    game_data: GameData,
-    active_runtime_game_data: GameData,
-    text_rules: TextRules,
-) -> None:
-    """确认本轮即将写入的插件源码不会留下漏翻、坏控制符或 JS 语法错误。"""
-    changed_plugin_source_file_names = collect_changed_plugin_source_file_names(game_data)
-    preview_game_data = replace(
-        active_runtime_game_data,
-        plugins_js=[plugin for plugin in game_data.writable_plugins_js],
-    )
-    preview_plugin_source_files: dict[str, str] | None = None
-    preview_plugin_source_read_errors: dict[str, str] | None = None
-    if changed_plugin_source_file_names:
-        preview_plugin_source_files = dict(active_runtime_game_data.plugin_source_files)
-        preview_plugin_source_read_errors = dict(active_runtime_game_data.plugin_source_read_errors)
-        for file_name in changed_plugin_source_file_names:
-            preview_plugin_source_files[file_name] = game_data.writable_plugin_source_files[file_name]
-            _ = preview_plugin_source_read_errors.pop(file_name, None)
-    audit = audit_active_runtime_plugin_source(
-        game_data=preview_game_data,
-        text_rules=text_rules,
-        plugin_source_files=preview_plugin_source_files,
-        plugin_source_read_errors=preview_plugin_source_read_errors,
-    )
-    _raise_for_active_runtime_audit(audit)
+from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 
 
 def _assert_active_plugin_source_runtime_audit_passed(
     *,
     game_data: GameData,
     text_rules: TextRules,
+    runtime_provenance_records: list[PluginSourceRuntimeProvenanceRecord],
 ) -> None:
     """确认写入后的当前运行插件源码没有漏翻、坏控制符或 JS 语法错误。"""
     audit = audit_active_runtime_plugin_source(
         game_data=game_data,
         text_rules=text_rules,
+        runtime_provenance_records=runtime_provenance_records,
     )
     _raise_for_active_runtime_audit(audit)
 
 
 def _raise_for_active_runtime_audit(audit: ActiveRuntimePluginSourceAudit) -> None:
     """按当前运行源码审计摘要抛出写回错误。"""
-    counts = audit.issue_counts
+    counts = audit.blocking_issue_counts
     read_error_count = counts.get("active_runtime_read_error", 0)
     syntax_error_count = counts.get("active_runtime_syntax_error", 0)
     bad_control_count = counts.get("active_runtime_placeholder_risk", 0)
     source_residual_count = counts.get("active_runtime_source_residual", 0)
-    if read_error_count == 0 and syntax_error_count == 0 and bad_control_count == 0 and source_residual_count == 0:
+    provenance_missing_count = counts.get("active_runtime_provenance_missing", 0)
+    provenance_stale_count = counts.get("active_runtime_provenance_stale", 0)
+    if (
+        read_error_count == 0
+        and syntax_error_count == 0
+        and bad_control_count == 0
+        and source_residual_count == 0
+        and provenance_missing_count == 0
+        and provenance_stale_count == 0
+    ):
         return
     messages: list[str] = []
     if read_error_count:
@@ -184,7 +168,11 @@ def _raise_for_active_runtime_audit(audit: ActiveRuntimePluginSourceAudit) -> No
         messages.append(f"插件源码坏控制符 {bad_control_count} 处")
     if source_residual_count:
         messages.append(f"插件源码源文残留 {source_residual_count} 处")
-    raise RuntimeError(f"当前游戏运行文件里仍有漏翻、坏控制符或 JS 语法错误，不能继续视为完成：{'；'.join(messages)}")
+    if provenance_missing_count:
+        messages.append(f"插件源码来源映射缺失 {provenance_missing_count} 处")
+    if provenance_stale_count:
+        messages.append(f"插件源码来源映射失效 {provenance_stale_count} 处")
+    raise RuntimeError(f"当前游戏运行文件检查没通过，不能继续写进游戏文件：{'；'.join(messages)}")
 
 
 class TranslationHandler:
@@ -288,7 +276,17 @@ class TranslationHandler:
 
     async def _load_session_game_data(self, session: TargetGameSession) -> GameData:
         """加载目标游戏数据并绑定到当前命令会话。"""
-        game_data = await load_game_data(session.game_path)
+        game_data = await load_game_data_for_view(
+            session.game_path,
+            source_view=GameFileView.TRANSLATION_SOURCE,
+        )
+        snapshot_records = await session.read_source_snapshot_records()
+        if not snapshot_records:
+            raise RuntimeError("当前游戏缺少可信源快照 manifest，请使用干净游戏目录重新执行 add-game")
+        validate_source_snapshot_manifest(
+            layout=game_data.layout,
+            records=snapshot_records,
+        )
         session.set_game_data(game_data)
         return session.require_game_data()
 
@@ -305,7 +303,6 @@ class TranslationHandler:
         resolved_game_path = resolve_game_directory(game_path)
         layout = resolve_game_layout(resolved_game_path)
         game_title = read_game_title(resolved_game_path)
-        _ = await load_game_data(resolved_game_path, include_plugin_source_files=False)
         record = await self.game_registry.register_game(
             resolved_game_path,
             source_language=source_language,
@@ -861,6 +858,7 @@ class TranslationHandler:
         callbacks: tuple[Callable[[int, int], None], Callable[[int], None]],
         setting_overrides: SettingOverrides | None = None,
         confirm_font_overwrite: bool = False,
+        force_full_restore: bool = False,
     ) -> WriteBackSummary:
         """把数据库中的有效译文回写到游戏目录。"""
         async with await self.game_registry.open_game(game_title) as session:
@@ -901,7 +899,7 @@ class TranslationHandler:
             terminology_registry = await session.read_terminology_registry()
             set_progress(0, len(translated_items))
 
-            if not translated_items and terminology_registry is None:
+            if not translated_items and terminology_registry is None and not force_full_restore:
                 logger.warning(f"[tag.warning]当前没有可回写译文，也没有已导入术语表[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
                 return WriteBackSummary(
                     data_item_count=0,
@@ -915,6 +913,7 @@ class TranslationHandler:
 
             reset_writable_copies(game_data)
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
+            plugin_source_rule_records = await session.read_plugin_source_text_rules()
             plugin_item_count = sum(
                 1
                 for item in translated_items
@@ -935,15 +934,21 @@ class TranslationHandler:
                 if data_item_count:
                     advance_progress(data_item_count)
                 write_plugin_text(game_data, translated_items)
-                plugin_source_runtime_maps = write_plugin_source_text(
+                plugin_source_runtime_provenance = write_plugin_source_text(
                     game_data,
                     translated_items,
+                    plugin_source_rule_records=plugin_source_rule_records,
                     text_rules=text_rules,
                 )
                 if plugin_item_count:
                     advance_progress(plugin_item_count)
             else:
-                plugin_source_runtime_maps = []
+                plugin_source_runtime_provenance = write_plugin_source_text(
+                    game_data,
+                    [],
+                    plugin_source_rule_records=plugin_source_rule_records,
+                    text_rules=text_rules,
+                )
             terminology_written_count = 0
             if terminology_registry is not None:
                 terminology_written_count = apply_terminology_translations(
@@ -951,12 +956,6 @@ class TranslationHandler:
                     terminology_registry,
                     mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
                 )
-            active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
-            _assert_writable_plugin_source_runtime_audit_passed(
-                game_data=game_data,
-                active_runtime_game_data=active_runtime_game_data,
-                text_rules=text_rules,
-            )
             font_summary = build_empty_font_replacement_summary()
             if confirm_font_overwrite:
                 font_summary = apply_font_replacement(
@@ -969,12 +968,17 @@ class TranslationHandler:
             elif setting.write_back.replacement_font_path is not None:
                 logger.info(f"[tag.skip]未确认覆盖字体，已跳过字体替换[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
 
-            write_game_files(game_data=game_data, game_root=session.game_path)
-            await session.upsert_plugin_source_runtime_write_maps(plugin_source_runtime_maps)
+            write_game_files(
+                game_data=game_data,
+                game_root=session.game_path,
+                force_full_restore=force_full_restore,
+            )
+            await session.replace_plugin_source_runtime_provenance(plugin_source_runtime_provenance)
             active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
             _assert_active_plugin_source_runtime_audit_passed(
                 game_data=active_runtime_game_data,
                 text_rules=text_rules,
+                runtime_provenance_records=plugin_source_runtime_provenance,
             )
             if font_summary.target_font_name is not None:
                 logger.info(f"[tag.phase]字体引用已同步[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 目标字体 [tag.path]{font_summary.target_font_name}[/tag.path] 原字体 [tag.count]{font_summary.source_font_count}[/tag.count] 个，替换引用 [tag.count]{font_summary.replaced_reference_count}[/tag.count] 处")
@@ -988,6 +992,22 @@ class TranslationHandler:
                 replaced_font_reference_count=font_summary.replaced_reference_count,
                 font_copied=font_summary.copied,
             )
+
+    async def rebuild_active_runtime(
+        self,
+        game_title: str,
+        callbacks: tuple[Callable[[int, int], None], Callable[[int], None]],
+        setting_overrides: SettingOverrides | None = None,
+        confirm_font_overwrite: bool = False,
+    ) -> WriteBackSummary:
+        """从可信源快照和当前数据库缓存重建游戏运行文件。"""
+        return await self.write_back(
+            game_title=game_title,
+            callbacks=callbacks,
+            setting_overrides=setting_overrides,
+            confirm_font_overwrite=confirm_font_overwrite,
+            force_full_restore=True,
+        )
 
     async def export_terminology(
         self,
@@ -1087,6 +1107,7 @@ class TranslationHandler:
 
             reset_writable_copies(game_data)
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
+            plugin_source_rule_records = await session.read_plugin_source_text_rules()
             if translated_items:
                 write_data_text(
                     game_data,
@@ -1096,13 +1117,19 @@ class TranslationHandler:
                     mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
                 )
                 write_plugin_text(game_data, translated_items)
-                plugin_source_runtime_maps = write_plugin_source_text(
+                plugin_source_runtime_provenance = write_plugin_source_text(
                     game_data,
                     translated_items,
+                    plugin_source_rule_records=plugin_source_rule_records,
                     text_rules=text_rules,
                 )
             else:
-                plugin_source_runtime_maps = []
+                plugin_source_runtime_provenance = write_plugin_source_text(
+                    game_data,
+                    [],
+                    plugin_source_rule_records=plugin_source_rule_records,
+                    text_rules=text_rules,
+                )
 
             written_count = apply_terminology_translations(
                 game_data,
@@ -1111,12 +1138,6 @@ class TranslationHandler:
             )
             set_progress(0, max(written_count, 1))
             advance_progress(written_count)
-            active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
-            _assert_writable_plugin_source_runtime_audit_passed(
-                game_data=game_data,
-                active_runtime_game_data=active_runtime_game_data,
-                text_rules=text_rules,
-            )
             font_summary = build_empty_font_replacement_summary()
             if confirm_font_overwrite:
                 font_summary = apply_font_replacement(
@@ -1129,11 +1150,12 @@ class TranslationHandler:
             elif setting.write_back.replacement_font_path is not None:
                 logger.info(f"[tag.skip]未确认覆盖字体，已跳过字体替换[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
             write_game_files(game_data=game_data, game_root=session.game_path)
-            await session.upsert_plugin_source_runtime_write_maps(plugin_source_runtime_maps)
+            await session.replace_plugin_source_runtime_provenance(plugin_source_runtime_provenance)
             active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
             _assert_active_plugin_source_runtime_audit_passed(
                 game_data=active_runtime_game_data,
                 text_rules=text_rules,
+                runtime_provenance_records=plugin_source_runtime_provenance,
             )
             if font_summary.target_font_name is not None:
                 logger.info(f"[tag.phase]字体引用已同步[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 目标字体 [tag.path]{font_summary.target_font_name}[/tag.path] 原字体 [tag.count]{font_summary.source_font_count}[/tag.count] 个，替换引用 [tag.count]{font_summary.replaced_reference_count}[/tag.count] 处")

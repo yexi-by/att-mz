@@ -10,6 +10,7 @@ import pytest
 from app.application.file_writer import reset_writable_copies
 from app.application.file_writer import write_game_files
 from app.application.handler import TranslationHandler
+from app.application.summaries import WriteBackSummary
 from app.application.flow_gate import note_tag_rule_scope_hash_for_text_rules, structured_placeholder_scope_hash
 from app.application.font_replacement import (
     apply_font_replacement,
@@ -24,7 +25,7 @@ from app.llm import LLMHandler
 from app.persistence import GameRegistry
 from app.plugin_text import build_plugin_hash
 from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, STRUCTURED_PLACEHOLDER_RULE_DOMAIN
-from app.rmmz import DataTextExtraction, load_game_data, read_game_title, resolve_game_layout
+from app.rmmz import DataTextExtraction, GameFileView, load_game_data, load_game_data_for_view, read_game_title, resolve_game_layout
 from app.rmmz.control_codes import CustomPlaceholderRule
 from app.rmmz.schema import (
     EventCommandParameterFilter,
@@ -37,6 +38,7 @@ from app.rmmz.schema import (
     TranslationErrorItem,
     TranslationItem,
 )
+from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.rmmz.write_back import write_data_text
 from app.terminology import TerminologyGlossary, TerminologyRegistry
@@ -687,7 +689,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """当前运行插件源码读取失败时，写回必须在修改 data 前停止。"""
+    """当前运行插件源码读取失败时，写回后验收失败并保留生成结果。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
@@ -714,10 +716,8 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
     )
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
     plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "BrokenEncoding.js").write_bytes(b"\xff\xfe\xff")
-    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
-    origin_source_dir.mkdir()
-    _ = (origin_source_dir / "BrokenEncoding.js").write_text(
+    broken_source_path = plugin_source_dir / "BrokenEncoding.js"
+    _ = broken_source_path.write_text(
         "const Messages = { title: 'origin only' };\n",
         encoding="utf-8",
     )
@@ -726,6 +726,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    _ = broken_source_path.write_bytes(b"\xff\xfe\xff")
     async with await registry.open_game("テストゲーム") as session:
         game_data = await load_game_data(minimal_game_dir)
         placeholder_record = PlaceholderRuleRecord(
@@ -817,7 +818,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
     finally:
         await handler.close()
 
-    assert _read_test_json(common_events_path) == original_events
+    assert _read_test_json(common_events_path) != original_events
 
 
 @pytest.mark.asyncio
@@ -826,7 +827,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """当前运行源码审计失败时，写回不得提前复制字体或改写 CSS。"""
+    """当前运行源码审计失败时，字体等生成结果保留给后续诊断。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
@@ -865,16 +866,15 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
     )
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
     plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "BrokenEncoding.js").write_bytes(b"\xff\xfe\xff")
-    origin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
-    origin_source_dir.mkdir()
-    _ = (origin_source_dir / "BrokenEncoding.js").write_text(
+    broken_source_path = plugin_source_dir / "BrokenEncoding.js"
+    _ = broken_source_path.write_text(
         "const Messages = { title: 'origin only' };\n",
         encoding="utf-8",
     )
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    _ = broken_source_path.write_bytes(b"\xff\xfe\xff")
     async with await registry.open_game("テストゲーム") as session:
         game_data = await load_game_data(minimal_game_dir)
         placeholder_record = PlaceholderRuleRecord(
@@ -968,9 +968,9 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
     finally:
         await handler.close()
 
-    assert not (fonts_dir / replacement_font.name).exists()
-    assert not (fonts_dir / "gamefont_origin.css").exists()
-    assert gamefont_css_path.read_text(encoding="utf-8") == original_css
+    assert (fonts_dir / replacement_font.name).exists()
+    assert (fonts_dir / "gamefont_origin.css").exists()
+    assert gamefont_css_path.read_text(encoding="utf-8") != original_css
 
 
 @pytest.mark.asyncio
@@ -1380,6 +1380,182 @@ def test_empty_metadata_title_falls_back_to_game_directory_name(minimal_mv_game_
     _rewrite_json(system_path, system_object)
 
     assert read_game_title(minimal_mv_game_dir) == minimal_mv_game_dir.name
+
+
+@pytest.mark.asyncio
+async def test_add_game_creates_complete_source_snapshot_manifest(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """注册游戏时创建完整可信源快照和数据库 manifest。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    assert (minimal_game_dir / "data_origin" / "System.json").is_file()
+    assert (minimal_game_dir / "js" / "plugins_origin.js").is_file()
+    assert (minimal_game_dir / "js" / "plugins_source_origin" / "TestPlugin.js").is_file()
+    async with await registry.open_game("テストゲーム") as session:
+        records = await session.read_source_snapshot_records()
+    relative_paths = {record.relative_path for record in records}
+    assert "data_origin/System.json" in relative_paths
+    assert "js/plugins_origin.js" in relative_paths
+    assert "js/plugins_source_origin/TestPlugin.js" in relative_paths
+
+
+@pytest.mark.asyncio
+async def test_source_snapshot_manifest_ignores_active_plugin_source_drift(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """可信源 manifest 只校验快照自身，不被当前运行插件源码新增文件影响。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    _ = (minimal_game_dir / "js" / "plugins" / "ExtraRuntimeOnly.js").write_text(
+        "const label = '追加実行ファイル';\n",
+        encoding="utf-8",
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        records = await session.read_source_snapshot_records()
+
+    validate_source_snapshot_manifest(
+        layout=resolve_game_layout(minimal_game_dir),
+        records=records,
+    )
+    game_data = await load_game_data_for_view(
+        minimal_game_dir,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+    )
+    assert "ExtraRuntimeOnly.js" not in game_data.plugin_source_files
+
+
+@pytest.mark.asyncio
+async def test_add_game_rejects_existing_source_snapshot_artifacts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """首次注册只接受没有可信源快照文件的干净游戏目录。"""
+    _ = shutil.copytree(minimal_game_dir / "data", minimal_game_dir / "data_origin")
+    registry = GameRegistry(tmp_path / "db")
+
+    with pytest.raises(FileExistsError, match="干净游戏目录"):
+        _ = await registry.register_game(minimal_game_dir, source_language="ja")
+
+
+@pytest.mark.asyncio
+async def test_translation_source_view_requires_source_snapshot(minimal_game_dir: Path) -> None:
+    """显式翻译源视图缺少可信源快照时必须 fail-fast。"""
+    with pytest.raises(FileNotFoundError, match="原始 data 备份"):
+        _ = await load_game_data_for_view(
+            minimal_game_dir,
+            source_view=GameFileView.TRANSLATION_SOURCE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_translation_source_view_ignores_damaged_active_data_when_snapshot_valid(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行 data 损坏时，显式翻译源视图仍只读取可信源快照。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    (minimal_game_dir / "data" / "System.json").unlink()
+
+    game_data = await load_game_data_for_view(
+        minimal_game_dir,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+    )
+
+    assert game_data.system.gameTitle == "テストゲーム"
+
+
+@pytest.mark.asyncio
+async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapshot(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """重建模式必须恢复未发生译文变化但已损坏的当前运行文件。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    system_origin = _read_test_json(minimal_game_dir / "data_origin" / "System.json")
+    animation_origin = _read_test_json(minimal_game_dir / "data_origin" / "Animations.json")
+    plugins_origin_text = (minimal_game_dir / "js" / "plugins_origin.js").read_text(encoding="utf-8")
+    plugin_source_origin_text = (
+        minimal_game_dir / "js" / "plugins_source_origin" / "TestPlugin.js"
+    ).read_text(encoding="utf-8")
+
+    _ = (minimal_game_dir / "data" / "System.json").write_text("{}", encoding="utf-8")
+    (minimal_game_dir / "data" / "Animations.json").unlink()
+    _ = (minimal_game_dir / "js" / "plugins.js").write_text("var $plugins = [];\n", encoding="utf-8")
+    _ = (minimal_game_dir / "js" / "plugins" / "TestPlugin.js").write_text(
+        "const broken = true;\n",
+        encoding="utf-8",
+    )
+
+    game_data = await load_game_data_for_view(
+        minimal_game_dir,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+    )
+    write_game_files(
+        game_data,
+        minimal_game_dir,
+        force_full_restore=True,
+    )
+
+    assert _read_test_json(minimal_game_dir / "data" / "System.json") == system_origin
+    assert _read_test_json(minimal_game_dir / "data" / "Animations.json") == animation_origin
+    assert (minimal_game_dir / "js" / "plugins.js").read_text(encoding="utf-8") == plugins_origin_text
+    assert (
+        (minimal_game_dir / "js" / "plugins" / "TestPlugin.js").read_text(encoding="utf-8")
+        == plugin_source_origin_text
+    )
+
+
+@pytest.mark.asyncio
+async def test_rebuild_active_runtime_requests_full_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重建入口必须调用全量恢复写回模式。"""
+    captured_force_flags: list[bool] = []
+
+    async def fake_write_back(
+        self: TranslationHandler,
+        game_title: str,
+        callbacks: tuple[object, object],
+        setting_overrides: SettingOverrides | None = None,
+        confirm_font_overwrite: bool = False,
+        force_full_restore: bool = False,
+    ) -> WriteBackSummary:
+        """记录重建入口传入的全量恢复开关。"""
+        _ = self
+        _ = game_title
+        _ = callbacks
+        _ = setting_overrides
+        _ = confirm_font_overwrite
+        captured_force_flags.append(force_full_restore)
+        return WriteBackSummary(
+            data_item_count=0,
+            plugin_item_count=0,
+            terminology_written_count=0,
+            target_font_name=None,
+            source_font_count=0,
+            replaced_font_reference_count=0,
+            font_copied=False,
+        )
+
+    monkeypatch.setattr(TranslationHandler, "write_back", fake_write_back)
+    handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
+    try:
+        _ = await handler.rebuild_active_runtime(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    assert captured_force_flags == [True]
 
 
 @pytest.mark.asyncio
@@ -2263,13 +2439,24 @@ async def test_loader_rejects_incomplete_data_origin(minimal_game_dir: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_loader_rejects_active_missing_file_even_when_origin_is_complete(minimal_game_dir: Path) -> None:
-    """激活 data 损坏时不能靠完整 data_origin 掩盖。"""
+async def test_loader_separates_translation_source_and_active_runtime_data(minimal_game_dir: Path) -> None:
+    """翻译源读取完整 data_origin，当前运行视图仍报告激活 data 损坏。"""
     _ = shutil.copytree(minimal_game_dir / "data", minimal_game_dir / "data_origin")
+    _ = shutil.copy2(minimal_game_dir / "js" / "plugins.js", minimal_game_dir / "js" / "plugins_origin.js")
     (minimal_game_dir / "data" / "Animations.json").unlink()
 
+    translation_source_data = await load_game_data_for_view(
+        minimal_game_dir,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+        include_plugin_source_files=False,
+    )
+
+    assert translation_source_data.system.gameTitle == "テストゲーム"
     with pytest.raises(FileNotFoundError) as exc_info:
-        _ = await load_game_data(minimal_game_dir)
+        _ = await load_game_data_for_view(
+            minimal_game_dir,
+            source_view=GameFileView.ACTIVE_RUNTIME,
+        )
 
     message = str(exc_info.value)
     assert "激活数据目录" in message

@@ -53,10 +53,11 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 
 
 async def load_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
-    """从 RPG Maker 游戏根目录加载翻译源数据，完整原始备份存在时优先读取备份。"""
-    return await load_game_data_for_view(
+    """加载游戏数据；业务服务层必须使用显式视图入口。"""
+    return await _load_game_data(
         game_path,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        use_origin_backups=True,
+        require_origin_backups=False,
         include_plugin_source_files=include_plugin_source_files,
     )
 
@@ -71,6 +72,7 @@ async def load_game_data_for_view(
     return await _load_game_data(
         game_path,
         use_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
+        require_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=include_plugin_source_files,
     )
 
@@ -102,6 +104,7 @@ async def load_translation_source_game_data(
     return await _load_game_data(
         game_path,
         use_origin_backups=True,
+        require_origin_backups=True,
         include_plugin_source_files=include_plugin_source_files,
     )
 
@@ -110,6 +113,7 @@ async def _load_game_data(
     game_path: str | Path,
     *,
     use_origin_backups: bool,
+    require_origin_backups: bool,
     include_plugin_source_files: bool,
 ) -> GameData:
     """按指定来源策略加载标准数据文件并构造 `GameData`。"""
@@ -117,8 +121,13 @@ async def _load_game_data(
     source_data_dir = resolve_data_source_dir(
         layout=layout,
         use_origin_backups=use_origin_backups,
+        require_origin_backups=require_origin_backups,
     )
-    source_plugins_path = layout.source_plugins_path if use_origin_backups else layout.plugins_path
+    source_plugins_path = resolve_plugins_source_file(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+        require_origin_backups=require_origin_backups,
+    )
 
     valid_files = sorted(
         (
@@ -175,6 +184,7 @@ async def _load_game_data(
         plugin_source_files, plugin_source_read_errors = await _read_plugin_source_files(
             layout=layout,
             use_origin_backups=use_origin_backups,
+            require_origin_backups=require_origin_backups,
         )
     else:
         plugin_source_files, plugin_source_read_errors = {}, {}
@@ -345,10 +355,14 @@ def detect_engine_kind_and_version(*, js_dir: Path, is_www_layout: bool) -> tupl
 def resolve_game_source_paths(game_root: Path) -> tuple[Path, Path, bool]:
     """根据是否存在原件备份解析本次应读取的源数据路径。"""
     layout = resolve_game_layout(game_root)
-    source_data_dir = resolve_data_source_dir(layout=layout, use_origin_backups=True)
+    source_data_dir = resolve_data_source_dir(
+        layout=layout,
+        use_origin_backups=True,
+        require_origin_backups=True,
+    )
     if not layout.source_plugins_path.exists():
-        raise FileNotFoundError(f"插件配置文件不存在: {layout.source_plugins_path}")
-    return source_data_dir, layout.source_plugins_path, layout.has_origin_backup
+        raise FileNotFoundError(f"插件配置文件不存在: {layout.plugins_origin_path}")
+    return source_data_dir, layout.plugins_origin_path, layout.has_origin_backup
 
 
 def resolve_data_source_file(*, active_file_path: Path, origin_data_dir: Path, use_origin_backup: bool = True) -> Path:
@@ -362,17 +376,43 @@ def resolve_data_source_file(*, active_file_path: Path, origin_data_dir: Path, u
     return active_file_path
 
 
-def resolve_data_source_dir(*, layout: GameLayout, use_origin_backups: bool) -> Path:
+def resolve_data_source_dir(
+    *,
+    layout: GameLayout,
+    use_origin_backups: bool,
+    require_origin_backups: bool = False,
+) -> Path:
     """解析本轮读取的 data 源目录，并校验激活目录和原始备份完整性。"""
-    validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
     if not use_origin_backups:
+        validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
         return layout.data_dir
     if layout.data_origin_dir.exists() and not layout.data_origin_dir.is_dir():
         raise NotADirectoryError(f"原始 data 备份不是目录: {layout.data_origin_dir}")
     if layout.data_origin_dir.is_dir():
         validate_data_directory_integrity(data_dir=layout.data_origin_dir, role="原始 data 备份")
         return layout.data_origin_dir
+    if require_origin_backups:
+        raise FileNotFoundError(f"缺少原始 data 备份，不能读取翻译源视图: {layout.data_origin_dir}")
+    validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
     return layout.data_dir
+
+
+def resolve_plugins_source_file(
+    *,
+    layout: GameLayout,
+    use_origin_backups: bool,
+    require_origin_backups: bool = False,
+) -> Path:
+    """按视图解析插件配置文件路径。"""
+    if not use_origin_backups:
+        if not layout.plugins_path.is_file():
+            raise FileNotFoundError(f"激活插件配置文件不存在: {layout.plugins_path}")
+        return layout.plugins_path
+    if not layout.plugins_origin_path.is_file() and require_origin_backups:
+        raise FileNotFoundError(f"缺少原始插件配置备份，不能读取翻译源视图: {layout.plugins_origin_path}")
+    if not layout.plugins_origin_path.is_file():
+        return layout.plugins_path
+    return layout.plugins_origin_path
 
 
 def validate_data_directory_integrity(*, data_dir: Path, role: str) -> None:
@@ -440,7 +480,10 @@ class GameDataManager:
         source_data_dir = resolve_data_source_dir(layout=layout, use_origin_backups=True)
         source_plugins_path = layout.source_plugins_path
         has_origin_backup = layout.has_origin_backup
-        game_data = await load_game_data(resolved_game_path)
+        game_data = await load_game_data_for_view(
+            resolved_game_path,
+            source_view=GameFileView.TRANSLATION_SOURCE,
+        )
 
         if has_origin_backup:
             logger.warning(f"[tag.warning]检测到该游戏已经执行过激活版回写，后续会优先读取完整原始 data 备份[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count] 数据来源 [tag.path]{source_data_dir}[/tag.path] 插件来源 [tag.path]{source_plugins_path}[/tag.path]")
@@ -458,17 +501,16 @@ async def _read_plugin_source_files(
     *,
     layout: GameLayout,
     use_origin_backups: bool,
+    require_origin_backups: bool,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """读取 `js/plugins` 直接源码文件，读取失败只记录错误不阻断普通流程。"""
-    active_files, active_errors = await _read_direct_plugin_source_files(layout.js_dir / "plugins")
-    if not use_origin_backups or not layout.plugin_source_origin_dir.is_dir():
-        return active_files, active_errors
-    origin_files, origin_errors = await _read_direct_plugin_source_files(layout.plugin_source_origin_dir)
-    merged_errors = dict(active_errors)
-    for file_name in origin_files:
-        _ = merged_errors.pop(file_name, None)
-    merged_errors.update(origin_errors)
-    return {**active_files, **origin_files}, merged_errors
+    if not use_origin_backups:
+        return await _read_direct_plugin_source_files(layout.js_dir / "plugins")
+    if not layout.plugin_source_origin_dir.is_dir():
+        if require_origin_backups:
+            raise NotADirectoryError(f"缺少原始插件源码备份目录，不能读取翻译源视图: {layout.plugin_source_origin_dir}")
+        return await _read_direct_plugin_source_files(layout.js_dir / "plugins")
+    return await _read_direct_plugin_source_files(layout.plugin_source_origin_dir)
 
 
 async def _read_direct_plugin_source_files(source_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
@@ -561,5 +603,6 @@ __all__: list[str] = [
     "resolve_game_directory",
     "resolve_game_layout",
     "resolve_game_source_paths",
+    "resolve_plugins_source_file",
     "validate_data_directory_integrity",
 ]

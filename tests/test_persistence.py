@@ -1,5 +1,6 @@
 """SQLite 持久化层测试。"""
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import cast
@@ -15,12 +16,14 @@ from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     LlmFailureRecord,
     PlaceholderRuleRecord,
+    PluginSourceRuntimeProvenanceRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
     StructuredPlaceholderRuleRecord,
     TranslationErrorItem,
     TranslationItem,
 )
+from app.rmmz.text_rules import JsonValue, ensure_json_object
 
 
 def read_sqlite_table_names(db_path: Path) -> set[str]:
@@ -178,6 +181,24 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         await session.replace_plugin_text_rules([rule])
         assert await session.read_plugin_text_rules() == [rule]
 
+        runtime_provenance = PluginSourceRuntimeProvenanceRecord(
+            source_file_name="Source.js",
+            source_selector="ast:string:1:10:aaaa",
+            source_file_hash="source-file-hash",
+            source_text_hash="source-text-hash",
+            review_kind="excluded",
+            location_path="",
+            translation_lines_hash="",
+            runtime_file_name="Source.js",
+            runtime_selector="ast:string:1:10:bbbb",
+            runtime_file_hash="runtime-file-hash",
+            runtime_text_hash="runtime-text-hash",
+            runtime_line=1,
+            created_at="2026-05-24T00:00:00",
+        )
+        await session.replace_plugin_source_runtime_provenance([runtime_provenance])
+        assert await session.read_plugin_source_runtime_provenance() == [runtime_provenance]
+
         event_rule = EventCommandTextRuleRecord(
             command_code=357,
             parameter_filters=[
@@ -330,6 +351,45 @@ async def test_register_game_updates_source_language_setting(
     assert japanese_record.source_language == "ja"
     async with await registry.open_game("English Fixture Game") as session:
         assert session.source_language == "ja"
+        assert session.target_language == "zh-Hans"
+
+
+@pytest.mark.asyncio
+async def test_register_game_reuses_registered_path_after_active_title_changes(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """重复注册已绑定目录时，当前运行标题变化不能创建新数据库。"""
+    package_path = minimal_game_dir / "package.json"
+    package_data = ensure_json_object(
+        cast(JsonValue, json.loads(package_path.read_text(encoding="utf-8"))),
+        "package.json",
+    )
+    window_data = ensure_json_object(package_data.get("window"), "package.json.window")
+    window_data["title"] = ""
+    _ = package_path.write_text(
+        json.dumps(package_data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    first_record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    system_path = minimal_game_dir / "data" / "System.json"
+    system_data = ensure_json_object(
+        cast(JsonValue, json.loads(system_path.read_text(encoding="utf-8"))),
+        "System.json",
+    )
+    system_data["gameTitle"] = "测试游戏"
+    _ = system_path.write_text(
+        json.dumps(system_data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    second_record = await registry.register_game(minimal_game_dir, source_language="en")
+
+    assert second_record.db_path == first_record.db_path
+    assert second_record.game_title == first_record.game_title
+    async with await registry.open_game(first_record.game_title) as session:
+        assert session.source_language == "en"
         assert session.target_language == "zh-Hans"
 
 

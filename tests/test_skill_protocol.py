@@ -470,7 +470,7 @@ def test_failure_and_feedback_references_define_recovery_loops() -> None:
         "问题截图或原文片段",
         "verify-feedback-text",
         "scan-plugin-source-text",
-        "反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report -> audit-active-runtime",
+        "反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report -> 用户确认是否再次写进游戏文件 -> write-back 或 rebuild-active-runtime -> audit-active-runtime",
         "只有用户明确选择完整重译时",
         "用户确认本轮试玩反馈已经处理完成",
         "cleanup-agent-workspace --workspace <工作区> --json",

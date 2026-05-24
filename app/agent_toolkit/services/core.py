@@ -22,6 +22,7 @@ from .common import (
     read_fresh_plugin_text_rules,
 )
 from app.rmmz.game_file_view import GameFileView
+from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 
 
 class CoreAgentMixin:
@@ -41,6 +42,13 @@ class CoreAgentMixin:
             include_plugin_source_files=include_plugin_source_files,
         )
         if source_view == GameFileView.TRANSLATION_SOURCE:
+            snapshot_records = await session.read_source_snapshot_records()
+            if not snapshot_records:
+                raise RuntimeError("当前游戏缺少可信源快照 manifest，请使用干净游戏目录重新执行 add-game")
+            validate_source_snapshot_manifest(
+                layout=game_data.layout,
+                records=snapshot_records,
+            )
             session.set_game_data(game_data)
         return game_data
 

@@ -63,14 +63,13 @@ def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> P
     candidates: list[PluginSourceCandidate] = []
     for file_name, source in sorted(game_data.plugin_source_files.items()):
         active = file_name in enabled_plugin_files
-        file_candidates = tuple(
-            _scan_source_candidates(
-                file_name=file_name,
-                source=source,
-                active=active,
-                text_rules=text_rules,
-            )
+        file_text_scan = scan_plugin_source_file_text(
+            file_name=file_name,
+            source=source,
+            active=active,
+            text_rules=text_rules,
         )
+        file_candidates = file_text_scan.candidate_index.candidates
         active_candidates = [candidate for candidate in file_candidates if candidate.active]
         strong_count = sum(1 for candidate in active_candidates if candidate.confidence == "strong")
         medium_count = sum(1 for candidate in active_candidates if candidate.confidence == "medium")
@@ -78,7 +77,7 @@ def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> P
         file_scans.append(
             PluginSourceFileScan(
                 file_name=file_name,
-                file_hash=build_plugin_source_file_hash(source),
+                file_hash=file_text_scan.file_hash,
                 active=active,
                 candidates=file_candidates,
                 strong_context_text_count=strong_count,
@@ -137,6 +136,16 @@ class PluginSourceCandidateIndex:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginSourceFileTextScan:
+    """单个插件源码文件的 AST 文本扫描结果。"""
+
+    file_name: str
+    file_hash: str
+    literals: tuple["PluginSourceStringLiteral", ...]
+    candidate_index: PluginSourceCandidateIndex
+
+
+@dataclass(frozen=True, slots=True)
 class PluginSourceStringLiteral:
     """插件源码中的一个普通字符串字面量。"""
 
@@ -171,13 +180,11 @@ def build_plugin_source_candidate_index(
     text_rules: TextRules,
 ) -> PluginSourceCandidateIndex:
     """扫描单个源码文件一次，并生成 selector 到候选的索引。"""
-    candidates = tuple(
-        _scan_source_candidates(
-            file_name=file_name,
-            source=source,
-            active=active,
-            text_rules=text_rules,
-        )
+    _literals, candidates = _scan_source_literals_and_candidates(
+        file_name=file_name,
+        source=source,
+        active=active,
+        text_rules=text_rules,
     )
     return PluginSourceCandidateIndex(
         candidates=candidates,
@@ -192,9 +199,97 @@ def iter_plugin_source_string_literals(
     active: bool,
 ) -> tuple[PluginSourceStringLiteral, ...]:
     """返回源码中的全部普通字符串字面量，不按源语言字符过滤。"""
+    literals, _candidates = _scan_source_literals_and_candidates(
+        file_name=file_name,
+        source=source,
+        active=active,
+        text_rules=None,
+    )
+    return literals
+
+
+def scan_plugin_source_file_text(
+    *,
+    file_name: str,
+    source: str,
+    active: bool,
+    text_rules: TextRules,
+) -> PluginSourceFileTextScan:
+    """扫描单个源码文件一次，并复用字面量、候选索引和文件 hash。"""
+    literals, candidates = _scan_source_literals_and_candidates(
+        file_name=file_name,
+        source=source,
+        active=active,
+        text_rules=text_rules,
+    )
+    return PluginSourceFileTextScan(
+        file_name=file_name,
+        file_hash=build_plugin_source_file_hash(source),
+        literals=literals,
+        candidate_index=PluginSourceCandidateIndex(
+            candidates=candidates,
+            by_selector={candidate.selector: candidate for candidate in candidates},
+        ),
+    )
+
+
+def scan_plugin_source_file_text_strict(
+    *,
+    file_name: str,
+    source: str,
+    active: bool,
+    text_rules: TextRules | None = None,
+) -> PluginSourceFileTextScan:
+    """只使用原生 AST 扫描单个源码文件，语法错误或原生解析不可用时直接失败。"""
+    spans = _collect_native_string_literal_spans_required(source)
+    literals, candidates = _build_literals_and_candidates_from_spans(
+        file_name=file_name,
+        source=source,
+        active=active,
+        text_rules=text_rules,
+        spans=spans,
+    )
+    return PluginSourceFileTextScan(
+        file_name=file_name,
+        file_hash=build_plugin_source_file_hash(source),
+        literals=literals,
+        candidate_index=PluginSourceCandidateIndex(
+            candidates=candidates,
+            by_selector={candidate.selector: candidate for candidate in candidates},
+        ),
+    )
+
+
+def _scan_source_literals_and_candidates(
+    *,
+    file_name: str,
+    source: str,
+    active: bool,
+    text_rules: TextRules | None,
+) -> tuple[tuple[PluginSourceStringLiteral, ...], tuple[PluginSourceCandidate, ...]]:
+    """用一次 AST 扫描同时生成源码字符串字面量和可翻译候选。"""
     spans = _collect_string_literal_spans(source)
+    return _build_literals_and_candidates_from_spans(
+        file_name=file_name,
+        source=source,
+        active=active,
+        text_rules=text_rules,
+        spans=spans,
+    )
+
+
+def _build_literals_and_candidates_from_spans(
+    *,
+    file_name: str,
+    source: str,
+    active: bool,
+    text_rules: TextRules | None,
+    spans: list["_StringLiteralSpan"],
+) -> tuple[tuple[PluginSourceStringLiteral, ...], tuple[PluginSourceCandidate, ...]]:
+    """把已解析的字符串 span 转换成字面量和候选索引。"""
     newline_indexes = _collect_newline_indexes(source)
     literals: list[PluginSourceStringLiteral] = []
+    candidates: list[PluginSourceCandidate] = []
     for span in spans:
         raw_text = source[span.content_start_index:span.content_end_index]
         text = normalize_visible_text_for_extraction(_unescape_js_text(raw_text))
@@ -202,24 +297,61 @@ def iter_plugin_source_string_literals(
             continue
         api = span.ast_context.call_name or _call_api_before(source, span.start_index)
         key = span.ast_context.property_key or _property_key_before(source, span.start_index)
+        selector = candidate_selector_for_span(
+            start_index=span.start_index,
+            end_index=span.end_index,
+            raw_text=raw_text,
+        )
+        line = _line_number_for_index(newline_indexes=newline_indexes, index=span.start_index)
         literals.append(
             PluginSourceStringLiteral(
                 file_name=file_name,
-                selector=candidate_selector_for_span(
-                    start_index=span.start_index,
-                    end_index=span.end_index,
-                    raw_text=raw_text,
-                ),
+                selector=selector,
                 text=text,
                 raw_text=raw_text,
-                line=_line_number_for_index(newline_indexes=newline_indexes, index=span.start_index),
+                line=line,
                 start_index=span.start_index,
                 end_index=span.end_index,
                 active=active,
                 context=_candidate_context(api=api, key=key),
             )
         )
-    return tuple(literals)
+        if text_rules is None:
+            continue
+        should_translate = text_rules.should_translate_source_text(text)
+        if not should_translate:
+            continue
+        structural_flags = tuple(_plugin_source_text_structural_flags(text))
+        confidence = _candidate_confidence(
+            text=text,
+            should_translate=should_translate,
+            api=api,
+            key=key,
+            ast_context=span.ast_context,
+            structural_flags=structural_flags,
+        )
+        candidates.append(
+            PluginSourceCandidate(
+                file_name=file_name,
+                selector=selector,
+                text=text,
+                raw_text=raw_text,
+                quote=span.quote,
+                line=line,
+                start_index=span.start_index,
+                end_index=span.end_index,
+                content_start_index=span.content_start_index,
+                content_end_index=span.content_end_index,
+                context=_candidate_context(api=api, key=key),
+                api=api,
+                key=key,
+                ast_context=span.ast_context.to_json_object(),
+                active=active,
+                confidence=confidence,
+                structural_flags=structural_flags,
+            )
+        )
+    return tuple(literals), tuple(candidates)
 
 
 def _enabled_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
@@ -234,64 +366,6 @@ def _enabled_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
             continue
         file_names.add(f"{plugin_name}.js")
     return frozenset(file_names)
-
-
-def _scan_source_candidates(
-    *,
-    file_name: str,
-    source: str,
-    active: bool,
-    text_rules: TextRules,
-) -> list[PluginSourceCandidate]:
-    """扫描单个 JS 源码中的字符串字面量候选。"""
-    spans = _collect_string_literal_spans(source)
-    newline_indexes = _collect_newline_indexes(source)
-    candidates: list[PluginSourceCandidate] = []
-    for span in spans:
-        raw_text = source[span.content_start_index:span.content_end_index]
-        text = normalize_visible_text_for_extraction(_unescape_js_text(raw_text))
-        if not text:
-            continue
-        structural_flags = tuple(_plugin_source_text_structural_flags(text))
-        should_translate = text_rules.should_translate_source_text(text)
-        if not should_translate:
-            continue
-        api = span.ast_context.call_name or _call_api_before(source, span.start_index)
-        key = span.ast_context.property_key or _property_key_before(source, span.start_index)
-        confidence = _candidate_confidence(
-            text=text,
-            should_translate=should_translate,
-            api=api,
-            key=key,
-            ast_context=span.ast_context,
-            structural_flags=structural_flags,
-        )
-        candidates.append(
-            PluginSourceCandidate(
-                file_name=file_name,
-                selector=candidate_selector_for_span(
-                    start_index=span.start_index,
-                    end_index=span.end_index,
-                    raw_text=raw_text,
-                ),
-                text=text,
-                raw_text=raw_text,
-                quote=span.quote,
-                line=_line_number_for_index(newline_indexes=newline_indexes, index=span.start_index),
-                start_index=span.start_index,
-                end_index=span.end_index,
-                content_start_index=span.content_start_index,
-                content_end_index=span.content_end_index,
-                context=_candidate_context(api=api, key=key),
-                api=api,
-                key=key,
-                ast_context=span.ast_context.to_json_object(),
-                active=active,
-                confidence=confidence,
-                structural_flags=structural_flags,
-            )
-        )
-    return candidates
 
 
 def _collect_newline_indexes(source: str) -> list[int]:
@@ -358,6 +432,25 @@ def _collect_native_string_literal_spans(source: str) -> list[_StringLiteralSpan
         return None
     if scan.has_error:
         return None
+    return [
+        _StringLiteralSpan(
+            kind=span.kind,
+            quote=span.quote,
+            start_index=span.start_index,
+            end_index=span.end_index,
+            content_start_index=span.content_start_index,
+            content_end_index=span.content_end_index,
+            ast_context=_native_ast_context_to_internal(span.ast_context),
+        )
+        for span in scan.spans
+    ]
+
+
+def _collect_native_string_literal_spans_required(source: str) -> list[_StringLiteralSpan]:
+    """调用原生 AST 解析器，禁止在严格流程中退回轻量扫描。"""
+    scan = parse_native_javascript_string_spans(source)
+    if scan.has_error:
+        raise RuntimeError("原生 AST 解析报告 JS 语法错误")
     return [
         _StringLiteralSpan(
             kind=span.kind,
@@ -625,6 +718,7 @@ def _plugin_source_text_structural_flags(text: str) -> list[str]:
 
 __all__ = [
     "PluginSourceCandidateIndex",
+    "PluginSourceFileTextScan",
     "PluginSourceStringLiteral",
     "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
@@ -632,4 +726,6 @@ __all__ = [
     "candidate_selector_for_span",
     "find_candidate_by_selector",
     "iter_plugin_source_string_literals",
+    "scan_plugin_source_file_text",
+    "scan_plugin_source_file_text_strict",
 ]

@@ -9,6 +9,7 @@ from .common import (
     Counter,
     JsonArray,
     JsonObject,
+    JsonValue,
     LlmFailureRecord,
     Path,
     QualityProgressCallbacks,
@@ -43,26 +44,29 @@ from .common import (
 from app.application.flow_gate import collect_workflow_gate_errors
 from app.plugin_source_text import (
     ActiveRuntimePluginSourceAudit,
+    PluginSourceFileTextScan,
     audit_active_runtime_plugin_source,
     build_plugin_source_file_hash,
     build_plugin_source_scan,
     collect_plugin_source_review_coverage,
     filter_fresh_plugin_source_text_rules,
-    find_candidate_by_selector,
     plugin_source_runtime_hash_lines,
     plugin_source_runtime_hash_text,
+    scan_plugin_source_file_text,
 )
-from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, TranslationItem
+from app.rmmz.schema import GameData, PluginSourceRuntimeProvenanceRecord, TranslationItem
 
 
 def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[AgentIssue]:
     """把当前运行源码审计结果转换为质量报告错误。"""
-    counts = audit.issue_counts
+    counts = audit.blocking_issue_counts
     errors: list[AgentIssue] = []
     read_error_count = counts.get("active_runtime_read_error", 0)
     syntax_error_count = counts.get("active_runtime_syntax_error", 0)
     placeholder_count = counts.get("active_runtime_placeholder_risk", 0)
     residual_count = counts.get("active_runtime_source_residual", 0)
+    provenance_missing_count = counts.get("active_runtime_provenance_missing", 0)
+    provenance_stale_count = counts.get("active_runtime_provenance_stale", 0)
     if read_error_count:
         errors.append(
             issue(
@@ -91,49 +95,92 @@ def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[
                 f"当前游戏运行文件里发现 {residual_count} 处插件源码源文残留，不能继续视为完成",
             )
         )
+    if provenance_missing_count:
+        errors.append(
+            issue(
+                "active_runtime_provenance_missing",
+                f"当前游戏运行文件里发现 {provenance_missing_count} 处插件源码来源映射缺失，请重新执行 rebuild-active-runtime",
+            )
+        )
+    if provenance_stale_count:
+        errors.append(
+            issue(
+                "active_runtime_provenance_stale",
+                f"当前游戏运行文件里发现 {provenance_stale_count} 个插件源码文件已变化，请重新执行 rebuild-active-runtime",
+            )
+        )
     return errors
 
 
 def _build_active_runtime_diagnosis_items(
     *,
     audit: ActiveRuntimePluginSourceAudit,
-    runtime_maps: list[PluginSourceRuntimeWriteMapRecord],
+    runtime_provenance_records: list[PluginSourceRuntimeProvenanceRecord],
     translated_items: list[TranslationItem],
     translation_source_game_data: GameData,
     text_rules: TextRules,
 ) -> JsonArray:
     """用确定性写回映射把当前运行问题反推到翻译源条目。"""
     plugin_source_files = translation_source_game_data.plugin_source_files
-    maps_by_runtime_key = {
+    provenance_by_runtime_key = {
         (record.runtime_file_name, record.runtime_selector): record
-        for record in runtime_maps
+        for record in runtime_provenance_records
     }
     translated_by_path = {
         item.location_path: item
         for item in translated_items
     }
+    source_scan_cache: dict[str, PluginSourceFileTextScan] = {}
     items: JsonArray = []
-    for issue_item in audit.issues:
+    for issue_item in audit.blocking_issues:
         diagnosis: JsonObject = {
             "issue": issue_item.to_json_object(),
         }
         if issue_item.literal is None:
+            if issue_item.code == "active_runtime_provenance_stale":
+                diagnosis.update(
+                    {
+                        "diagnosis_status": "runtime_file_changed",
+                        "suggested_action": "当前运行插件源码已变化，来源映射不能继续使用；请重新执行 rebuild-active-runtime 生成新的当前运行文件和来源映射",
+                        "mapping_reason": issue_item.mapping_reason or "runtime_file_changed",
+                    }
+                )
+            elif issue_item.code == "active_runtime_provenance_missing":
+                diagnosis.update(
+                    {
+                        "diagnosis_status": "runtime_provenance_missing",
+                        "suggested_action": "当前运行插件源码没有来源映射，无法判断该字符串是否应该翻译；请重新执行 rebuild-active-runtime",
+                        "mapping_reason": issue_item.mapping_reason or "runtime_provenance_missing",
+                    }
+                )
+            else:
+                diagnosis.update(
+                    {
+                        "diagnosis_status": "runtime_file_unreadable_or_invalid",
+                        "suggested_action": "当前运行插件源码读取失败或 JS 语法检查失败；请先修复文件编码、缺失文件或 JS 语法错误",
+                        "mapping_reason": "read_error_or_syntax_error",
+                    }
+                )
+            items.append(diagnosis)
+            continue
+        record = provenance_by_runtime_key.get((issue_item.file_name, issue_item.literal.selector))
+        if record is None:
             diagnosis.update(
                 {
-                    "diagnosis_status": "unmapped",
-                    "suggested_action": "当前运行插件源码读取失败、JS 语法检查失败或没有字符串 selector，无法反推到已保存译文记录；请先修复文件编码或从备份恢复当前运行文件",
-                    "mapping_reason": "read_error_syntax_error_or_no_literal_selector",
+                    "diagnosis_status": "runtime_provenance_missing",
+                    "suggested_action": "当前运行字符串缺少来源映射，无法判断该字符串是否应该翻译；请重新执行 rebuild-active-runtime",
+                    "mapping_reason": issue_item.mapping_reason or "runtime_provenance_missing",
                 }
             )
             items.append(diagnosis)
             continue
-        record = maps_by_runtime_key.get((issue_item.file_name, issue_item.literal.selector))
-        if record is None:
+        diagnosis_status = _diagnosis_status_for_review_kind(record.review_kind)
+        if diagnosis_status == "runtime_provenance_missing":
             diagnosis.update(
                 {
-                    "diagnosis_status": "unmapped",
-                    "suggested_action": "没有找到精确写回映射，无法反推到已保存译文记录；请重新执行写回生成映射，或恢复/修复当前运行插件源码",
-                    "mapping_reason": "runtime_selector_not_mapped",
+                    "diagnosis_status": diagnosis_status,
+                    "suggested_action": f"当前运行来源映射状态无效: {record.review_kind}",
+                    "mapping_reason": "invalid_review_kind",
                 }
             )
             items.append(diagnosis)
@@ -143,21 +190,20 @@ def _build_active_runtime_diagnosis_items(
             translated_item is not None
             and plugin_source_runtime_hash_lines(translated_item.translation_lines) == record.translation_lines_hash
         )
-        source_hash_matches, source_file_hash_matches = _plugin_source_map_source_matches(
+        source_hash_matches, source_file_hash_matches = _plugin_source_provenance_source_matches(
             record=record,
             plugin_source_files=plugin_source_files,
             text_rules=text_rules,
+            source_scan_cache=source_scan_cache,
         )
-        diagnosis_status = "mapped"
-        suggested_action = "请按文本在游戏里的内部位置（location_path）手修已保存译文记录，或补规则后重置对应译文，再重新写回并运行当前运行文件审计"
-        if not source_hash_matches:
-            diagnosis_status = "mapped_source_changed"
-            suggested_action = "翻译源源码已变化，请重新导出 AST 地图并重新导入插件源码规则，再处理对应已保存译文记录"
-        elif not cache_hash_matches:
-            diagnosis_status = "mapped_cache_changed"
-            suggested_action = "当前已保存译文记录已变化或不存在，请重新写回生成新的当前运行文件，或检查译文修复是否已完成"
+        suggested_action = _suggested_action_for_review_kind(
+            record=record,
+            cache_hash_matches=cache_hash_matches,
+            source_hash_matches=source_hash_matches,
+        )
         diagnosis["diagnosis_status"] = diagnosis_status
         diagnosis["location_path"] = record.location_path
+        diagnosis["review_kind"] = record.review_kind
         diagnosis["source_file_name"] = record.source_file_name
         diagnosis["source_selector"] = record.source_selector
         diagnosis["runtime_file_name"] = record.runtime_file_name
@@ -171,30 +217,69 @@ def _build_active_runtime_diagnosis_items(
             if translated_item is not None
             else []
         )
+        if record.review_kind == "unreviewed":
+            diagnosis["plugin_source_rule_candidate"] = {
+                "file_name": record.source_file_name,
+                "file_hash": record.source_file_hash,
+                "selectors": [record.source_selector],
+                "excluded_selectors": [],
+            }
         diagnosis["suggested_action"] = suggested_action
-        diagnosis["mapping_reason"] = "runtime_selector_exact_match"
+        diagnosis["mapping_reason"] = issue_item.mapping_reason or "runtime_provenance_exact_match"
         items.append(diagnosis)
     return items
 
 
-def _plugin_source_map_source_matches(
+def _diagnosis_status_for_review_kind(review_kind: str) -> str:
+    """把来源审查类型转换为当前运行诊断状态。"""
+    if review_kind == "translate":
+        return "mapped_translate"
+    if review_kind == "unreviewed":
+        return "mapped_unreviewed"
+    return "runtime_provenance_missing"
+
+
+def _suggested_action_for_review_kind(
     *,
-    record: PluginSourceRuntimeWriteMapRecord,
+    record: PluginSourceRuntimeProvenanceRecord,
+    cache_hash_matches: bool,
+    source_hash_matches: bool,
+) -> str:
+    """按来源审查类型生成诊断建议。"""
+    if record.review_kind == "translate":
+        if not source_hash_matches:
+            return "翻译源插件源码已变化；请重新导出插件源码规则、重新写回，再处理对应已保存译文记录"
+        if not cache_hash_matches:
+            return "当前已保存译文记录已变化或不存在；请重新写回生成新的当前运行文件，或检查对应译文是否仍需要修复"
+        return "请按文本在游戏里的内部位置（location_path）手修已保存译文记录，或重置对应译文后重新翻译，再重新写回"
+    if record.review_kind == "unreviewed":
+        return "该插件源码字符串含源语言但还没有审查规则；请判断它应翻译还是排除，并导入插件源码规则后重新执行 rebuild-active-runtime"
+    return "当前运行来源映射状态无效；请重新执行 rebuild-active-runtime"
+
+
+def _plugin_source_provenance_source_matches(
+    *,
+    record: PluginSourceRuntimeProvenanceRecord,
     plugin_source_files: dict[str, str],
     text_rules: TextRules,
+    source_scan_cache: dict[str, PluginSourceFileTextScan],
 ) -> tuple[bool, bool]:
     """校验写回映射指向的翻译源 selector 和原文是否仍然存在。"""
     source = plugin_source_files.get(record.source_file_name)
     if source is None:
         return False, False
-    source_file_hash_matches = build_plugin_source_file_hash(source) == record.source_file_hash
-    candidate = find_candidate_by_selector(
-        source=source,
-        file_name=record.source_file_name,
-        selector=record.source_selector,
-        active=True,
-        text_rules=text_rules,
-    )
+    current_source_file_hash = build_plugin_source_file_hash(source)
+    source_file_hash_matches = current_source_file_hash == record.source_file_hash
+    source_scan = source_scan_cache.get(record.source_file_name)
+    if source_scan is None or source_scan.file_hash != current_source_file_hash:
+        source_scan = scan_plugin_source_file_text(
+            source=source,
+            file_name=record.source_file_name,
+            active=True,
+            text_rules=text_rules,
+        )
+        source_scan_cache[record.source_file_name] = source_scan
+    candidate = source_scan.candidate_index.by_selector.get(record.source_selector)
     if candidate is None:
         return False, source_file_hash_matches
     return plugin_source_runtime_hash_text(candidate.text) == record.source_text_hash, source_file_hash_matches
@@ -213,11 +298,30 @@ def _active_runtime_diagnosis_summary(
             counts[status] += 1
     return {
         "diagnosis_issue_count": len(diagnosis_items),
-        "mapped_issue_count": counts.get("mapped", 0),
-        "mapped_cache_changed_count": counts.get("mapped_cache_changed", 0),
-        "mapped_source_changed_count": counts.get("mapped_source_changed", 0),
-        "unmapped_issue_count": counts.get("unmapped", 0),
+        "mapped_translate_count": counts.get("mapped_translate", 0),
+        "mapped_unreviewed_count": counts.get("mapped_unreviewed", 0),
+        "runtime_provenance_missing_count": counts.get("runtime_provenance_missing", 0),
+        "runtime_file_changed_count": counts.get("runtime_file_changed", 0),
+        "runtime_file_unreadable_or_invalid_count": counts.get("runtime_file_unreadable_or_invalid", 0),
     }
+
+
+def _build_active_runtime_reset_payload(diagnosis_items: JsonArray) -> JsonObject:
+    """从确定性诊断结果生成重置清单。"""
+    location_paths: list[JsonValue] = []
+    seen: set[str] = set()
+    for item in diagnosis_items:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("diagnosis_status")
+        location_path = item.get("location_path")
+        if status != "mapped_translate":
+            continue
+        if not isinstance(location_path, str) or not location_path or location_path in seen:
+            continue
+        seen.add(location_path)
+        location_paths.append(location_path)
+    return {"location_paths": location_paths}
 
 
 class QualityAgentMixin:
@@ -245,9 +349,11 @@ class QualityAgentMixin:
                 session,
                 include_plugin_source_files=True,
             )
+            runtime_provenance_records = await session.read_plugin_source_runtime_provenance()
         active_runtime_audit = audit_active_runtime_plugin_source(
             game_data=active_runtime_game_data,
             text_rules=text_rules,
+            runtime_provenance_records=runtime_provenance_records,
         )
         errors = _active_runtime_audit_errors(active_runtime_audit)
         return AgentReport.from_parts(
@@ -290,19 +396,21 @@ class QualityAgentMixin:
                 session,
                 include_plugin_source_files=True,
             )
-            runtime_maps = await session.read_plugin_source_runtime_write_maps()
+            runtime_provenance_records = await session.read_plugin_source_runtime_provenance()
             translated_items = await session.read_translated_items()
         active_runtime_audit = audit_active_runtime_plugin_source(
             game_data=active_runtime_game_data,
             text_rules=text_rules,
+            runtime_provenance_records=runtime_provenance_records,
         )
         diagnosis_items = _build_active_runtime_diagnosis_items(
             audit=active_runtime_audit,
-            runtime_maps=runtime_maps,
+            runtime_provenance_records=runtime_provenance_records,
             translated_items=translated_items,
             translation_source_game_data=translation_source_game_data,
             text_rules=text_rules,
         )
+        reset_payload = _build_active_runtime_reset_payload(diagnosis_items)
         report = AgentReport.from_parts(
             errors=_active_runtime_audit_errors(active_runtime_audit),
             warnings=[],
@@ -315,6 +423,8 @@ class QualityAgentMixin:
             details={
                 "source_view": "active-runtime",
                 "active_runtime_diagnosis_items": diagnosis_items,
+                "reset_translations_input": reset_payload,
+                "manual_translation_location_paths": reset_payload["location_paths"],
             },
         )
         if output_path is not None:
@@ -527,10 +637,6 @@ class QualityAgentMixin:
                 structured_placeholder_rules=structured_rules,
             )
             game_data = await self._load_translation_source_game_data(session)
-            active_runtime_game_data = await self._load_active_runtime_game_data(
-                session,
-                include_plugin_source_files=True,
-            )
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
                 session=session,
                 game_data=game_data,
@@ -599,11 +705,6 @@ class QualityAgentMixin:
                 quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
 
-        active_runtime_audit = audit_active_runtime_plugin_source(
-            game_data=active_runtime_game_data,
-            text_rules=text_rules,
-        )
-        active_runtime_errors = _active_runtime_audit_errors(active_runtime_audit)
         run_quality_error_count = len(quality_error_items)
         quality_error_items = [
             item
@@ -629,14 +730,12 @@ class QualityAgentMixin:
             warnings.extend(coverage_report.warnings)
             errors.extend(source_residual_rule_errors)
             errors.extend(workflow_gate_agent_errors)
-            errors.extend(active_runtime_errors)
             set_progress(1, 1)
             set_status("覆盖审计未通过，质量报告已停止")
             return AgentReport.from_parts(
                 errors=errors,
                 warnings=warnings,
                 summary={
-                    **active_runtime_audit.summary_json(),
                     "extractable_count": len(active_paths),
                     "translated_count": len(translated_paths & active_paths),
                     "pending_count": len(pending_paths),
@@ -681,7 +780,6 @@ class QualityAgentMixin:
                     "overwide_line_items": [],
                     "write_back_protocol_items": [],
                     "plugin_source_unreviewed_candidates": plugin_source_unreviewed_details,
-                    "active_runtime_plugin_source_items": active_runtime_audit.issues_json(),
                     "coverage": coverage_report.details,
                 },
             )
@@ -743,7 +841,6 @@ class QualityAgentMixin:
         advance_progress(1)
         errors.extend(coverage_report.errors)
         errors.extend(workflow_gate_agent_errors)
-        errors.extend(active_runtime_errors)
         warnings.extend(coverage_report.warnings)
         if llm_failures and pending_paths:
             errors.append(issue("llm_failures", f"最新翻译运行存在 {len(llm_failures)} 条模型运行故障"))
@@ -774,7 +871,6 @@ class QualityAgentMixin:
             errors=errors,
             warnings=warnings,
             summary={
-                **active_runtime_audit.summary_json(),
                 "extractable_count": len(active_paths),
                 "translated_count": len(translated_paths & active_paths),
                 "pending_count": len(pending_paths),
@@ -819,7 +915,6 @@ class QualityAgentMixin:
                 "overwide_line_items": overwide_line_items,
                 "write_back_protocol_items": write_back_protocol_items,
                 "plugin_source_unreviewed_candidates": plugin_source_unreviewed_details,
-                "active_runtime_plugin_source_items": active_runtime_audit.issues_json(),
                 "coverage": coverage_report.details,
             },
         )

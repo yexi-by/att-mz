@@ -36,18 +36,22 @@ from .runtime_mapping import (
 )
 from .scanner import (
     PluginSourceCandidateIndex,
+    PluginSourceFileTextScan,
     PluginSourceStringLiteral,
     build_plugin_source_candidate_index,
     build_plugin_source_file_hash,
     build_plugin_source_scan,
     find_candidate_by_selector,
     iter_plugin_source_string_literals,
+    scan_plugin_source_file_text,
+    scan_plugin_source_file_text_strict,
 )
 
 __all__ = [
     "PluginSourceCandidate",
     "PluginSourceCandidateIndex",
     "PluginSourceFileScan",
+    "PluginSourceFileTextScan",
     "PluginSourceRisk",
     "PluginSourceRuleImportEntry",
     "PluginSourceRuleImportFile",
@@ -74,4 +78,6 @@ __all__ = [
     "plugin_source_runtime_hash_lines",
     "plugin_source_runtime_hash_text",
     "plugin_source_rule_records_to_import_json",
+    "scan_plugin_source_file_text",
+    "scan_plugin_source_file_text_strict",
 ]

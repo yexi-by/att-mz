@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = doctor_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     _ = doctor_parser.add_argument("--no-check-llm", action="store_true", help="跳过模型连通性检查")
 
-    add_game_parser = subparsers.add_parser("add-game", help="注册新的 RPG Maker 游戏目录")
+    add_game_parser = subparsers.add_parser("add-game", help="注册干净原始 RPG Maker 游戏目录")
     _ = add_game_parser.add_argument("--path", required=True, help="RPG Maker 游戏根目录")
     _ = add_game_parser.add_argument(
         "--source-language",
@@ -361,6 +361,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="明确允许本次写回用配置字体覆盖游戏字体引用",
     )
     add_setting_override_arguments(write_back_parser)
+
+    rebuild_active_runtime_parser = subparsers.add_parser(
+        "rebuild-active-runtime",
+        help="从可信源快照和已保存译文重建当前游戏运行文件",
+    )
+    add_optional_target_arguments(rebuild_active_runtime_parser)
+    _ = rebuild_active_runtime_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮重建摘要 JSON")
+    _ = rebuild_active_runtime_parser.add_argument(
+        "--confirm-font-overwrite",
+        action="store_true",
+        help="明确允许本次重建用配置字体覆盖游戏字体引用",
+    )
+    add_setting_override_arguments(rebuild_active_runtime_parser)
 
     restore_font_parser = subparsers.add_parser(
         "restore-font",

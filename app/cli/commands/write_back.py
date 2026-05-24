@@ -40,6 +40,31 @@ async def run_write_back_command(args: argparse.Namespace) -> int:
     return 0
 
 
+async def run_rebuild_active_runtime_command(args: argparse.Namespace) -> int:
+    """执行 `rebuild-active-runtime` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    setting_overrides = build_setting_overrides(args)
+    async with HandlerSession() as handler:
+        await ensure_write_back_gate(
+            game_title=game_title,
+            setting_overrides=setting_overrides,
+            game_registry=handler.game_registry,
+            require_complete_translation=True,
+            args=args,
+        )
+        with build_progress_reporter("重建运行文件", args) as progress:
+            summary = await handler.rebuild_active_runtime(
+                game_title=game_title,
+                callbacks=progress.progress_callbacks(),
+                setting_overrides=setting_overrides,
+                confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
+            )
+    if read_bool_arg(args, "json_output"):
+        report = build_write_back_summary_report(summary)
+        print(report.to_json_text())
+    return 0
+
+
 async def run_restore_font_command(args: argparse.Namespace) -> int:
     """执行 `restore-font` 命令。"""
     game_title = await resolve_target_game_title(args)

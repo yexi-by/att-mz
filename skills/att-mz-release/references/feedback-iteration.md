@@ -44,7 +44,7 @@
 每轮反馈修复都走：
 
 ```text
-反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report -> audit-active-runtime -> 用户确认是否再次写进游戏文件 -> verify-feedback-text
+反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report -> 用户确认是否再次写进游戏文件 -> write-back 或 rebuild-active-runtime -> audit-active-runtime -> verify-feedback-text
 ```
 
 如果反馈影响范围很小，优先精确修复对应文本。如果反馈显示某类规则整体漏掉，先补规则再处理相关文本。只有用户明确选择完整重译时，才执行完整重译。

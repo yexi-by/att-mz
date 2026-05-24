@@ -17,10 +17,11 @@
 | `schema_version` | 保存当前数据库 schema 版本；版本或表结构不匹配会直接拒绝打开 | `add-game` |
 | `metadata` | 保存当前数据库绑定的游戏目录、真实内容目录、引擎类型和版本 | `add-game` |
 | `language_settings` | 保存当前游戏的源语言和目标语言 | `add-game` |
+| `source_snapshot_files` | 保存可信源快照 manifest 和文件哈希 | `add-game` |
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
 | `plugin_text_rules` | 保存插件配置中可翻译字符串的 JSONPath 规则 | `import-plugin-rules` |
 | `plugin_source_text_rules` | 保存插件源码中可翻译字符串的 AST selector 规则 | `import-plugin-source-rules` |
-| `plugin_source_runtime_write_map` | 保存插件源码写回后当前运行字符串到翻译源条目的确定性映射 | `write-back`、`write-terminology` |
+| `plugin_source_runtime_provenance` | 保存插件源码写回后当前运行字符串到翻译源审查状态的确定性来源映射 | `write-back`、`rebuild-active-runtime`、`write-terminology` |
 | `note_tag_text_rules` | 保存 data 文件 Note 标签中可翻译标签名 | `import-note-tag-rules` |
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
@@ -50,7 +51,8 @@
 
 ## CLI 与 Skill 对齐
 
-- `add-game` 负责解析游戏布局，并把 `metadata` 的游戏目录、真实内容目录、引擎类型和版本写入数据库，同时把当前游戏源语言写入 `language_settings`。
+- `add-game` 负责解析干净原始游戏目录，并把 `metadata` 的游戏目录、真实内容目录、引擎类型和版本写入数据库，同时把当前游戏源语言写入 `language_settings`。
+- `add-game` 首次注册会创建可信源快照，并把快照路径、大小、哈希和更新时间写入 `source_snapshot_files`；翻译源读取只信这组快照。
 - `list --json` 会展示 `game_title`、`game_path`、`content_root`、`engine_kind`、`engine_version`、`source_language`、`target_language` 和 `db_path`，用于快速确认已注册游戏是否绑定到正确内容目录和语言档案。
 - `prepare-agent-workspace --json` 会在摘要和详情里展示引擎类型、引擎版本、真实内容目录、实际数据目录和当前源语言；外部 Agent 应以这个工作区输出为准。
 - MV 游戏的 `prepare-agent-workspace --json` 会导出 `mv-virtual-namebox-candidates.json` 和 `mv-virtual-namebox-rules.json`；第零轮导入规则后需要重新准备工作区，让第一轮术语文件按已保存规则生成。
@@ -74,7 +76,7 @@
 
 维护规则：
 
-- `add-game` 会重新解析游戏布局并覆盖当前记录。
+- 已注册游戏重复执行 `add-game` 时会重新解析游戏布局，并校验数据库 manifest 指向的可信源快照仍完整一致。
 - 数据库文件名对应的游戏标题必须和 `metadata.game_title` 一致。
 - 数据库若缺少 `engine_kind`、`content_root` 或 `engine_version`，当前代码会拒绝打开。
 
@@ -93,6 +95,23 @@
 - `add-game --source-language ja|en` 会覆盖当前语言档案；源语言参数必须显式传入。
 - 项目不做自动语言检测，注册前必须确认当前游戏是日文还是英文。
 - 缺少语言档案时当前代码会拒绝打开数据库；需要保留既有数据库时，先用独立脚本补齐语言设置。
+
+### `source_snapshot_files`
+
+保存注册游戏时创建的可信源快照 manifest。翻译源视图读取前会校验这些文件仍存在，大小和 SHA-256 哈希仍与数据库记录一致。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `relative_path` | `TEXT` | 主键 | 相对真实内容目录的快照路径，例如 `data_origin/Map001.json` |
+| `sha256` | `TEXT` | 非空 | 快照文件的 SHA-256 哈希 |
+| `byte_size` | `INTEGER` | 非空 | 快照文件字节数 |
+| `updated_at` | `TEXT` | 非空 | manifest 写入时间 |
+
+维护规则：
+
+- `add-game` 首次注册创建快照 manifest；已注册游戏重复执行时只在 manifest 与磁盘快照一致后更新注册信息。
+- 快照覆盖标准 data 文件、`js/plugins_origin.js` 和 `js/plugins_source_origin` 中的直接插件源码文件。
+- 翻译源命令发现 manifest 缺失、快照文件缺失或哈希不一致时直接停止，不回退读取当前运行文件。
 
 ### `translation_items`
 
@@ -146,30 +165,32 @@
 - 主翻译流程只按数据库中已导入的源码规则提取 `js/plugins` 直接插件文件文本。
 - 高风险扫描结果没有对应源码规则，或已启动支线但仍有候选未归入翻译或排除时，正文翻译入口会停止并要求用户处理。
 
-### `plugin_source_runtime_write_map`
+### `plugin_source_runtime_provenance`
 
-保存插件源码写回后，当前运行 JS 字符串到翻译源已保存译文记录的确定性映射。它只用于 `diagnose-active-runtime` 反推问题来源，不参与翻译源抽取。
+保存插件源码写回后，当前运行 JS 字符串到翻译源审查状态的确定性来源映射。它用于 `audit-active-runtime` 判断问题等级，也用于 `diagnose-active-runtime` 反推问题来源，不参与翻译源抽取。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
-| `location_path` | `TEXT` | 主键 | 翻译源视图中的插件源码文本定位路径 |
 | `source_file_name` | `TEXT` | 非空 | 翻译源插件源码文件名 |
 | `source_selector` | `TEXT` | 非空 | 翻译源 AST selector |
 | `source_file_hash` | `TEXT` | 非空 | 写回时的翻译源文件哈希 |
 | `source_text_hash` | `TEXT` | 非空 | 写回时的翻译源可见文本哈希 |
-| `translation_lines_hash` | `TEXT` | 非空 | 写回时的中文译文行哈希 |
-| `runtime_file_name` | `TEXT` | 唯一键 | 当前运行插件源码文件名 |
-| `runtime_selector` | `TEXT` | 唯一键 | 写回后当前运行 AST selector |
+| `review_kind` | `TEXT` | 非空 | `translate` 表示应翻译，`excluded` 表示已审查但不翻译，`unreviewed` 表示源语言候选未审查，`non_source` 表示不是源语言候选 |
+| `location_path` | `TEXT` | 非空 | 翻译源视图中的插件源码文本定位路径；非翻译项为空 |
+| `translation_lines_hash` | `TEXT` | 非空 | 写回时的中文译文行哈希；非翻译项为空 |
+| `runtime_file_name` | `TEXT` | 联合主键 | 当前运行插件源码文件名 |
+| `runtime_selector` | `TEXT` | 联合主键 | 写回后当前运行 AST selector |
 | `runtime_file_hash` | `TEXT` | 非空 | 写回后的当前运行文件哈希 |
 | `runtime_text_hash` | `TEXT` | 非空 | 写回后的当前运行可见文本哈希 |
 | `runtime_line` | `INTEGER` | 非空 | 写回后字符串所在行号 |
-| `created_at` | `TEXT` | 非空 | 映射生成时间 |
+| `created_at` | `TEXT` | 非空 | 来源映射生成时间 |
 
 维护规则：
 
-- 插件源码写回成功后按当前运行源码重新解析并保存映射。
-- 导入新的插件源码规则会清空旧映射，避免旧 selector 影响当前诊断。
-- 诊断只能按 `runtime_file_name + runtime_selector` 精确匹配映射；没有命中时报告无法反推，不做启发式猜测。
+- 插件源码写回成功后按当前运行源码重新解析并保存全量来源映射。
+- 导入新的插件源码规则会清空来源映射，避免旧 selector 影响当前审计和诊断。
+- 当前运行审计只能按 `runtime_file_name + runtime_selector` 精确匹配来源映射；没有命中或文件哈希不匹配时报告来源映射缺失或失效，不做启发式猜测。
+- `translate` 和 `unreviewed` 发现源文残留时会阻塞写回验收；`excluded` 和 `non_source` 只进入忽略统计。
 
 ### `note_tag_text_rules`
 

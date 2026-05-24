@@ -35,8 +35,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `list --json` | 列出当前已注册游戏 | 游戏清单可读取 | 未注册时先执行 add-game |
 | `doctor --no-check-llm --json` | 检查项目静态环境，不请求模型服务 | `status` 不是 `error` | 修环境后重跑，不启动翻译 |
-| `add-game --path <游戏目录> --source-language ja --json` | 按日文源语言注册游戏 | `summary.game_title` 可用于后续 `--game` | 修路径、结构或源语言后重跑 |
-| `add-game --path <游戏目录> --source-language en --json` | 按英文源语言注册游戏 | `summary.game_title` 可用于后续 `--game` | 修路径、结构或源语言后重跑 |
+| `add-game --path <游戏目录> --source-language ja --json` | 按日文源语言注册干净原始游戏目录 | `summary.game_title` 可用于后续 `--game` | 目录已有可信源快照时换用干净原始游戏目录 |
+| `add-game --path <游戏目录> --source-language en --json` | 按英文源语言注册干净原始游戏目录 | `summary.game_title` 可用于后续 `--game` | 目录已有可信源快照时换用干净原始游戏目录 |
 | `doctor --game <游戏标题> --no-check-llm --json` | 检查游戏绑定和规则状态 | `status` 不是 `error` | 缺规则时只允许继续准备工作区，不启动翻译或写回 |
 
 注册游戏必须显式传 `--source-language ja` 或 `--source-language en`，不做语言自动检测。
@@ -102,8 +102,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `text-scope --game <游戏标题> --json` | 查看统一文本范围和规则来源 | `status` 为 `ok` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题> --json` | 对比规则命中、译文和可写范围 | `status` 为 `ok` | 补规则、补译文或精确重置 |
 | `audit-active-runtime --game <游戏标题> --json` | 直接审计当前游戏运行文件里的插件源码漏翻、坏控制符和 JS 语法错误 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime` | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录 |
-| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射把当前运行插件源码问题反推到翻译源已保存译文记录 | 输出文件存在，`summary` 中 mapped/unmapped 数量可解释 | 只接受确定性映射；`unmapped` 时重新写回生成映射、修复当前运行文件或重新导入插件源码规则 |
-| `quality-report --game <游戏标题> --json` | 判断是否可以写回并列出问题文本，包含当前运行文件审计 | `status` 不是 `error` | 按明细修译文或规则；有 error 禁止写回 |
+| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释 | 映射缺失或文件变化时重新执行 `rebuild-active-runtime`；已映射问题回到规则、重置或手动译文 |
+| `quality-report --game <游戏标题> --json` | 判断已保存译文记录、规则、控制符、源文残留、行宽和可生成性是否允许写回 | `status` 不是 `error` | 按明细修译文或规则；有 error 禁止写回 |
 | `export-quality-fix-template --game <游戏标题> --output <文件> --json` | 导出检查没通过译文的修复表 | 输出文件存在，数量可解释 | 只改中文译文行后导入 |
 | `export-pending-translations --game <游戏标题> --output <文件> --json` | 导出还没成功保存译文的文本表 | 输出文件存在；可加 `--limit N` | 抽样显示仍适合模型时回到翻译 |
 | `import-manual-translations --game <游戏标题> --input <文件> --json` | 检查并保存手动填写译文 | `status` 为 `ok` | 修中文译文行后重跑 |
@@ -120,6 +120,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `write-back --game <游戏标题> --json` | 把译文写进游戏文件 | 命令返回 0 且摘要可读 | 停止交付，按错误修质量或规则 |
 | `write-back --game <游戏标题> --confirm-font-overwrite --json` | 写回并覆盖字体引用 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
+| `rebuild-active-runtime --game <游戏标题> --json` | 从可信源快照和已保存译文重建当前运行文件 | 命令返回 0，随后 `audit-active-runtime` 无 error | 质量问题未清时先修缓存、规则或重置译文 |
+| `rebuild-active-runtime --game <游戏标题> --confirm-font-overwrite --json` | 重建运行文件并允许字体覆盖 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
 | `write-terminology --game <游戏标题>` | 在写回前流程检查通过后写入稳定名词，并保留已保存且可写的正文译文 | 命令返回 0，写入范围可解释 | 术语表、规则前置或质量风险未通过时停止 |
 | `write-terminology --game <游戏标题> --confirm-font-overwrite` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过 | 未确认字体覆盖时不使用 |
 | `restore-font --game <游戏标题> --json` | 按原件还原项目覆盖过的字体引用 | 摘要可解释 | 缺原始备份或替换字体信息时停止说明 |

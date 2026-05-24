@@ -59,6 +59,7 @@ from app.cli.commands.workspace import (
 )
 from app.cli.commands.write_back import (
     run_all_command,
+    run_rebuild_active_runtime_command,
     run_restore_font_command,
     run_write_back_command,
     run_write_terminology_command,
@@ -112,6 +113,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "translation-status": run_translation_status_command,
     "translate": run_translate_command,
     "write-back": run_write_back_command,
+    "rebuild-active-runtime": run_rebuild_active_runtime_command,
     "restore-font": run_restore_font_command,
     "export-terminology": run_export_terminology_command,
     "import-terminology": run_import_terminology_command,
