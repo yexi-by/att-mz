@@ -9,7 +9,8 @@ use super::models::{CompiledRules, ControlSpan, SpanSource};
 use super::placeholders::LITERAL_LINE_BREAK_PLACEHOLDER;
 use super::rules::{
     INDEXED_STANDARD_RE, LITERAL_DYNAMIC_HEX_RE, LITERAL_DYNAMIC_OCTAL_RE,
-    LITERAL_DYNAMIC_UNICODE_RE, RAW_CONTROL_RE, SYMBOL_STANDARD_RE, TERMS_PERCENT_RE,
+    LITERAL_DYNAMIC_UNICODE_RE, RAW_BARE_CONTROL_RE, RAW_BRACKETED_CONTROL_RE,
+    RAW_SYMBOL_CONTROL_RE, SYMBOL_STANDARD_RE, TERMS_PERCENT_RE,
 };
 
 pub(crate) fn replace_control_sequences<F>(
@@ -39,12 +40,13 @@ pub(crate) fn iter_control_sequence_spans(
     text: &str,
     rules: &CompiledRules,
 ) -> Result<Vec<ControlSpan>, String> {
-    let mut base_spans = Vec::new();
-    base_spans.extend(iter_indexed_standard_spans(text));
-    base_spans.extend(iter_no_param_standard_spans(text));
-    base_spans.extend(iter_symbol_standard_spans(text));
-    base_spans.extend(iter_terms_percent_spans(text));
-    base_spans.extend(iter_literal_escape_spans(text));
+    let mut standard_spans = Vec::new();
+    standard_spans.extend(iter_indexed_standard_spans(text));
+    standard_spans.extend(iter_no_param_standard_spans(text));
+    standard_spans.extend(iter_symbol_standard_spans(text));
+    standard_spans.extend(iter_terms_percent_spans(text));
+    standard_spans.extend(iter_literal_escape_spans(text));
+    let mut base_spans = filter_standard_prefix_conflicts(text, standard_spans);
     base_spans.extend(iter_custom_placeholder_spans(text, rules));
     let structured_result = iter_structured_placeholder_spans(text, rules)?;
     validate_structured_placeholder_conflicts(
@@ -61,12 +63,13 @@ pub(crate) fn iter_control_sequence_spans_lossy(
     text: &str,
     rules: &CompiledRules,
 ) -> Vec<ControlSpan> {
-    let mut spans = Vec::new();
-    spans.extend(iter_indexed_standard_spans(text));
-    spans.extend(iter_no_param_standard_spans(text));
-    spans.extend(iter_symbol_standard_spans(text));
-    spans.extend(iter_terms_percent_spans(text));
-    spans.extend(iter_literal_escape_spans(text));
+    let mut standard_spans = Vec::new();
+    standard_spans.extend(iter_indexed_standard_spans(text));
+    standard_spans.extend(iter_no_param_standard_spans(text));
+    standard_spans.extend(iter_symbol_standard_spans(text));
+    standard_spans.extend(iter_terms_percent_spans(text));
+    standard_spans.extend(iter_literal_escape_spans(text));
+    let mut spans = filter_standard_prefix_conflicts(text, standard_spans);
     spans.extend(iter_custom_placeholder_spans(text, rules));
     if let Ok(structured_result) = iter_structured_placeholder_spans(text, rules)
         && validate_structured_placeholder_conflicts(
@@ -248,6 +251,71 @@ pub(crate) fn iter_literal_escape_spans(text: &str) -> Vec<ControlSpan> {
     spans
 }
 
+fn iter_raw_control_sequence_candidates(text: &str) -> Vec<RawControlSequenceCandidate> {
+    let mut candidates = Vec::new();
+    for matched in RAW_BRACKETED_CONTROL_RE.find_iter(text) {
+        append_raw_candidate(
+            &mut candidates,
+            matched.start(),
+            matched.end(),
+            matched.as_str(),
+        );
+    }
+    for matched in RAW_SYMBOL_CONTROL_RE.find_iter(text) {
+        append_raw_candidate(
+            &mut candidates,
+            matched.start(),
+            matched.end(),
+            matched.as_str(),
+        );
+    }
+    for captures in RAW_BARE_CONTROL_RE.captures_iter(text) {
+        let Some(matched) = captures.get(0) else {
+            continue;
+        };
+        let Some(code_match) = captures.name("code") else {
+            continue;
+        };
+        if !is_bare_control_candidate(code_match.as_str()) {
+            continue;
+        }
+        append_raw_candidate(
+            &mut candidates,
+            matched.start(),
+            matched.end(),
+            matched.as_str(),
+        );
+    }
+    candidates.sort_by_key(|candidate| (candidate.start, candidate.end));
+    candidates
+}
+
+fn append_raw_candidate(
+    candidates: &mut Vec<RawControlSequenceCandidate>,
+    start: usize,
+    end: usize,
+    original: &str,
+) {
+    if candidates
+        .iter()
+        .any(|candidate| start < candidate.end && end > candidate.start)
+    {
+        return;
+    }
+    candidates.push(RawControlSequenceCandidate {
+        start,
+        end,
+        original: original.to_string(),
+    });
+}
+
+fn is_bare_control_candidate(code: &str) -> bool {
+    if code.chars().any(char::is_uppercase) {
+        return true;
+    }
+    code.chars().count() <= 3
+}
+
 pub(crate) fn iter_dynamic_literal_escape_spans(
     text: &str,
     escape_name: &str,
@@ -406,6 +474,26 @@ pub(crate) fn select_non_overlapping_spans(mut spans: Vec<ControlSpan>) -> Vec<C
     selected
 }
 
+fn filter_standard_prefix_conflicts(text: &str, spans: Vec<ControlSpan>) -> Vec<ControlSpan> {
+    let candidates = iter_raw_control_sequence_candidates(text);
+    spans
+        .into_iter()
+        .filter(|span| {
+            !matches!(span.source, SpanSource::Standard)
+                || !is_standard_prefix_of_longer_candidate(span, &candidates)
+        })
+        .collect()
+}
+
+fn is_standard_prefix_of_longer_candidate(
+    span: &ControlSpan,
+    candidates: &[RawControlSequenceCandidate],
+) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| candidate.start == span.start && candidate.end > span.end)
+}
+
 fn ranges_overlap(
     left_start: usize,
     left_end: usize,
@@ -498,17 +586,32 @@ pub(crate) fn collect_unprotected_control_sequences(
     let mut counts = HashMap::new();
     for line in lines {
         let protected_spans = iter_control_sequence_spans(line, rules)?;
-        for matched in RAW_CONTROL_RE.find_iter(line) {
-            let overlaps = protected_spans
-                .iter()
-                .any(|span| matched.start() < span.end && matched.end() > span.start);
-            if overlaps {
+        for candidate in iter_raw_control_sequence_candidates(line) {
+            if is_covered_by_control_span(&candidate, &protected_spans) {
                 continue;
             }
-            *counts.entry(matched.as_str().to_string()).or_insert(0) += 1;
+            *counts.entry(candidate.original).or_insert(0) += 1;
         }
     }
     Ok(counts)
+}
+
+fn is_covered_by_control_span(
+    candidate: &RawControlSequenceCandidate,
+    spans: &[ControlSpan],
+) -> bool {
+    for span in spans {
+        if matches!(span.source, SpanSource::Standard) {
+            if candidate.start >= span.start && candidate.end <= span.end {
+                return true;
+            }
+            continue;
+        }
+        if candidate.start < span.end && candidate.end > span.start {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn format_control_counts(counts: &HashMap<String, usize>) -> String {
@@ -536,4 +639,10 @@ pub(crate) fn encode_upper_hex(text: &str) -> String {
         .iter()
         .map(|byte| format!("{:02X}", byte))
         .collect::<String>()
+}
+
+struct RawControlSequenceCandidate {
+    start: usize,
+    end: usize,
+    original: String,
 }

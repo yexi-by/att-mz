@@ -36,11 +36,20 @@ pub(crate) static LITERAL_DYNAMIC_OCTAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\\[0-7]{1,3}").unwrap_or_else(|error| panic!("内置正则编译失败: {error}"))
 });
 
-pub(crate) static RAW_CONTROL_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static RAW_BRACKETED_CONTROL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"\\[A-Za-z]+\d*\[[A-Za-z0-9_./:-]{1,32}[^\]\w\s\[\]\\]|\\[A-Za-z]+\d*(?:\[[^\]\r\n]{0,64}\])?|\\[{}\\$.\|!><^]",
+        r"\\[A-Za-z]+\d*\[[A-Za-z0-9_./:-]{1,32}[^\]\w\s\[\]\\]|\\[A-Za-z]+\d*\[[^\]\r\n]{0,64}\]",
     )
     .unwrap_or_else(|error| panic!("内置正则编译失败: {error}"))
+});
+
+pub(crate) static RAW_BARE_CONTROL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(?P<code>[A-Za-z]+)\d*")
+        .unwrap_or_else(|error| panic!("内置正则编译失败: {error}"))
+});
+
+pub(crate) static RAW_SYMBOL_CONTROL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\[{}\\$.\|!><^]").unwrap_or_else(|error| panic!("内置正则编译失败: {error}"))
 });
 
 pub(crate) static PLACEHOLDER_RE: LazyLock<Regex> = LazyLock::new(|| {

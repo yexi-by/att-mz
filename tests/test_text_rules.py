@@ -116,6 +116,102 @@ def test_text_rules_replace_and_restore_standard_rmmz_control_sequences() -> Non
     assert item.translation_lines == ["你好" + "".join(segments)]
 
 
+def test_standard_controls_do_not_split_long_custom_candidates() -> None:
+    """标准控制符不能只吞掉疑似自定义控制符的短前缀。"""
+    rules = get_default_text_rules()
+    item = TranslationItem(
+        location_path="Map001.json/1/0/1",
+        item_type="long_text",
+        original_lines=[r"\nn[Name]こんにちは", r"\fiこんにちは", r"\G1こんにちは"],
+    )
+
+    item.build_placeholders(rules)
+
+    assert item.original_lines_with_placeholders == [
+        r"\nn[Name]こんにちは",
+        r"\fiこんにちは",
+        r"\G1こんにちは",
+    ]
+    uncovered = [
+        candidate.original
+        for line in item.original_lines
+        for candidate in rules.iter_unprotected_control_sequence_candidates(line)
+    ]
+    assert uncovered == [r"\nn[Name]", r"\fi", r"\G1"]
+
+
+def test_literal_escape_followed_by_text_is_not_long_candidate() -> None:
+    """字面量短转义后接普通英文正文时仍按标准转义保护。"""
+    rules = get_default_text_rules()
+    item = TranslationItem(
+        location_path="Map001.json/1/0/2",
+        item_type="short_text",
+        original_lines=[r"line\nnext value\ttext page\fnext"],
+    )
+
+    item.build_placeholders(rules)
+
+    assert item.original_lines_with_placeholders == [
+        "line"
+        + LITERAL_LINE_BREAK_PLACEHOLDER
+        + "next value"
+        + LITERAL_ESCAPE_PLACEHOLDERS["\\t"]
+        + "text page"
+        + LITERAL_ESCAPE_PLACEHOLDERS["\\f"]
+        + "next"
+    ]
+    assert rules.iter_unprotected_control_sequence_candidates(item.original_lines[0]) == []
+
+
+def test_custom_rule_can_fully_protect_long_candidate_prefix() -> None:
+    """自定义规则完整覆盖长候选时优先于标准短转义。"""
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(
+                r"\\nn\[[^\]\r\n]+\]",
+                "[CUSTOM_PLUGIN_NAME_{index}]",
+            ),
+            CustomPlaceholderRule.create(
+                r"\\fi",
+                "[CUSTOM_PLUGIN_FACE_IN_{index}]",
+            ),
+        ),
+    )
+    item = TranslationItem(
+        location_path="Map001.json/1/0/2",
+        item_type="long_text",
+        original_lines=[r"\nn[Name]こんにちは", r"\fiこんにちは"],
+    )
+
+    item.build_placeholders(rules)
+
+    assert item.original_lines_with_placeholders == [
+        "[CUSTOM_PLUGIN_NAME_1]こんにちは",
+        "[CUSTOM_PLUGIN_FACE_IN_2]こんにちは",
+    ]
+    assert [
+        candidate.original
+        for line in item.original_lines
+        for candidate in rules.iter_unprotected_control_sequence_candidates(line)
+    ] == []
+
+
+def test_custom_rule_covering_nested_candidate_counts_as_covered() -> None:
+    """自定义规则覆盖嵌套参数整体时，半截扫描候选也算已保护。"""
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(
+                r"\\nn\[\\v\[[0-9]+\]\]",
+                "[CUSTOM_PLUGIN_VARIABLE_NAME_{index}]",
+            ),
+        ),
+    )
+
+    assert rules.iter_unprotected_control_sequence_candidates(r"\nn[\v[527]]こんにちは") == []
+
+
 def test_text_rules_filter_resource_and_japanese_residual() -> None:
     """译文残留明显日文时应显式失败。"""
     rules = get_default_text_rules()

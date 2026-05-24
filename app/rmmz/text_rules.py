@@ -104,15 +104,18 @@ class TextRules:
 
     def iter_control_sequence_spans(self, text: str) -> list[ControlSequenceSpan]:
         """顺序扫描一行文本，识别标准控制符和自定义保护片段。"""
-        spans = iter_standard_control_spans(text)
+        standard_spans = _filter_standard_prefix_conflicts(
+            text=text,
+            spans=iter_standard_control_spans(text),
+        )
         custom_spans = self._iter_custom_placeholder_spans(text)
         structured_result = self._iter_structured_placeholder_spans(text)
         self._validate_structured_placeholder_conflicts(
-            base_spans=[*spans, *custom_spans],
+            base_spans=[*standard_spans, *custom_spans],
             structured_spans=structured_result.spans,
             translatable_ranges=structured_result.translatable_ranges,
         )
-        spans.extend(custom_spans)
+        spans = [*standard_spans, *custom_spans]
         spans.extend(structured_result.spans)
         return select_non_overlapping_spans(spans)
 
@@ -172,7 +175,7 @@ class TextRules:
         protected_spans = self.iter_control_sequence_spans(text)
         candidates: list[RawControlSequenceCandidate] = []
         for candidate in iter_raw_control_sequence_candidates(text):
-            if _overlaps_any_control_span(candidate, protected_spans):
+            if _is_covered_by_control_span(candidate, protected_spans):
                 continue
             candidates.append(candidate)
         return candidates
@@ -437,12 +440,45 @@ def get_default_text_rules() -> TextRules:
     return _DEFAULT_TEXT_RULES
 
 
-def _overlaps_any_control_span(
+def _filter_standard_prefix_conflicts(
+    *,
+    text: str,
+    spans: list[ControlSequenceSpan],
+) -> list[ControlSequenceSpan]:
+    """移除只覆盖更长疑似控制符前缀的标准片段。"""
+    candidates = iter_raw_control_sequence_candidates(text)
+    filtered_spans: list[ControlSequenceSpan] = []
+    for span in spans:
+        if span.source != "standard":
+            filtered_spans.append(span)
+            continue
+        if _is_standard_prefix_of_longer_candidate(span, candidates):
+            continue
+        filtered_spans.append(span)
+    return filtered_spans
+
+
+def _is_standard_prefix_of_longer_candidate(
+    span: ControlSequenceSpan,
+    candidates: list[RawControlSequenceCandidate],
+) -> bool:
+    """判断标准片段是否只是某个更长候选的前缀。"""
+    return any(
+        candidate.start_index == span.start_index and candidate.end_index > span.end_index
+        for candidate in candidates
+    )
+
+
+def _is_covered_by_control_span(
     candidate: RawControlSequenceCandidate,
     spans: list[ControlSequenceSpan],
 ) -> bool:
     """判断原始候选是否已经由占位符规则覆盖。"""
     for span in spans:
+        if span.source == "standard":
+            if candidate.start_index >= span.start_index and candidate.end_index <= span.end_index:
+                return True
+            continue
         if candidate.start_index < span.end_index and candidate.end_index > span.start_index:
             return True
     return False

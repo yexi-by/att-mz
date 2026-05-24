@@ -8,6 +8,10 @@ from typing import NoReturn, cast
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
+from app.agent_toolkit.placeholder_scan import (
+    count_uncovered_candidates,
+    scan_placeholder_candidates as scan_placeholder_candidate_spans,
+)
 from app.application.flow_gate import (
     collect_workflow_gate_errors,
     event_command_rule_scope_hash_for_command_codes,
@@ -18,6 +22,7 @@ from app.application.flow_gate import (
 )
 from app.application.handler import TranslationHandler
 from app.config import SettingOverrides
+from app.config.schemas import TextRulesSetting
 from app.llm import LLMHandler
 from app.native_quality import collect_native_quality_details
 from app.persistence import GameRegistry
@@ -41,6 +46,7 @@ from app.rmmz.schema import (
     SourceResidualRuleRecord,
     StructuredPlaceholderRuleRecord,
     TranslationErrorItem,
+    TranslationData,
     TranslationItem,
 )
 from app.rmmz.text_rules import TextRules
@@ -1832,6 +1838,77 @@ async def test_scan_placeholder_candidates_marks_custom_rule_coverage(
     raw_json = covered_report.to_json_text()
     assert r"\F[GuideA]" in raw_json
     assert "テスト一行目です" not in raw_json
+
+
+def test_placeholder_candidate_scan_requires_full_span_coverage() -> None:
+    """覆盖扫描不能把标准短前缀当成长候选已覆盖。"""
+    translation_data_map = {
+        "Map001.json": TranslationData(
+            display_name=None,
+            translation_items=[
+                TranslationItem(
+                    location_path="Map001.json/1/0",
+                    item_type="long_text",
+                    original_lines=[r"\nn[Name]こんにちは"],
+                )
+            ],
+        )
+    }
+
+    uncovered_candidates = scan_placeholder_candidate_spans(
+        translation_data_map,
+        TextRules.from_setting(TextRulesSetting()),
+    )
+    covered_candidates = scan_placeholder_candidate_spans(
+        translation_data_map,
+        TextRules.from_setting(
+            TextRulesSetting(),
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    r"\\nn\[[^\]\r\n]+\]",
+                    "[CUSTOM_PLUGIN_NAME_{index}]",
+                ),
+            ),
+        ),
+    )
+
+    assert count_uncovered_candidates(uncovered_candidates) == 1
+    assert uncovered_candidates[0].marker == r"\nn[Name]"
+    assert uncovered_candidates[0].standard_covered is False
+    assert count_uncovered_candidates(covered_candidates) == 0
+    assert covered_candidates[0].marker == r"\nn[Name]"
+    assert covered_candidates[0].custom_covered is True
+
+
+def test_placeholder_candidate_scan_accepts_custom_span_wrapping_candidate() -> None:
+    """自定义规则包住内部标准形态候选时，扫描门禁应认定已覆盖。"""
+    translation_data_map = {
+        "Items.json": TranslationData(
+            display_name=None,
+            translation_items=[
+                TranslationItem(
+                    location_path="Items.json/293/note/SG説明",
+                    item_type="short_text",
+                    original_lines=[r"\\v[104] / 5"],
+                )
+            ],
+        )
+    }
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(
+                r"\\\\v\[[0-9]+\]",
+                "[CUSTOM_ESCAPED_VARIABLE_{index}]",
+            ),
+        ),
+    )
+
+    candidates = scan_placeholder_candidate_spans(translation_data_map, text_rules)
+
+    assert count_uncovered_candidates(candidates) == 0
+    assert candidates[0].marker == r"\\v[104]"
+    assert candidates[0].custom_covered is True
 
 
 @pytest.mark.asyncio
@@ -4590,6 +4667,30 @@ def test_native_quality_accepts_structured_placeholder_lookahead_pattern() -> No
 
     assert details.placeholder_risk_items == []
     assert details.source_residual_items == []
+
+
+def test_native_quality_rejects_changed_long_control_candidate_hidden_by_standard_prefix() -> None:
+    """Rust 质检不能让标准短控制符静默吞掉更长自定义候选。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="CommonEvents.json/1/0",
+                item_type="long_text",
+                role=None,
+                original_lines=[r"\nn[Name]OK"],
+                source_line_paths=["CommonEvents.json/1/0"],
+                translation_lines=[r"\nn[Other]OK"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert len(details.placeholder_risk_items) == 1
+    assert r"\nn[Name]" in json.dumps(details.placeholder_risk_items, ensure_ascii=False)
+    assert r"\nn[Other]" in json.dumps(details.placeholder_risk_items, ensure_ascii=False)
 
 
 def test_native_quality_accepts_repeated_structured_shell_markers() -> None:

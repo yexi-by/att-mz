@@ -257,10 +257,15 @@ ALL_PLACEHOLDER_PATTERN: re.Pattern[str] = re.compile(
     f"(?:{STANDARD_PLACEHOLDER_PATTERN.pattern})|(?:{CUSTOM_PLACEHOLDER_PATTERN.pattern})",
     re.IGNORECASE,
 )
-RAW_CONTROL_SEQUENCE_CANDIDATE_PATTERN: re.Pattern[str] = re.compile(
+RAW_BRACKETED_CONTROL_CANDIDATE_PATTERN: re.Pattern[str] = re.compile(
     r"\\[A-Za-z]+\d*\[[A-Za-z0-9_./:-]{1,32}[^\]\w\s\[\]\\]"
-    + r"|\\[A-Za-z]+\d*(?:\[[^\]\r\n]{0,64}\])?"
-    + r"|\\[{}\\$.\|!><^]"
+    + r"|\\[A-Za-z]+\d*\[[^\]\r\n]{0,64}\]"
+)
+RAW_BARE_CONTROL_CANDIDATE_PATTERN: re.Pattern[str] = re.compile(
+    r"\\(?P<code>[A-Za-z]+)\d*"
+)
+RAW_SYMBOL_CONTROL_CANDIDATE_PATTERN: re.Pattern[str] = re.compile(
+    r"\\[{}\\$.\|!><^]"
 )
 
 
@@ -278,15 +283,56 @@ def iter_standard_control_spans(text: str) -> list[ControlSequenceSpan]:
 def iter_raw_control_sequence_candidates(text: str) -> list[RawControlSequenceCandidate]:
     """扫描所有形似 RPG Maker 控制符的原始反斜杠片段。"""
     candidates: list[RawControlSequenceCandidate] = []
-    for match in RAW_CONTROL_SEQUENCE_CANDIDATE_PATTERN.finditer(text):
-        candidates.append(
-            RawControlSequenceCandidate(
+    for pattern in (
+        RAW_BRACKETED_CONTROL_CANDIDATE_PATTERN,
+        RAW_SYMBOL_CONTROL_CANDIDATE_PATTERN,
+    ):
+        for match in pattern.finditer(text):
+            _append_raw_candidate(
+                candidates=candidates,
                 start_index=match.start(),
                 end_index=match.end(),
                 original=match.group(0),
             )
+    for match in RAW_BARE_CONTROL_CANDIDATE_PATTERN.finditer(text):
+        original = match.group(0)
+        code = match.group("code")
+        if not _is_bare_control_candidate(code):
+            continue
+        _append_raw_candidate(
+            candidates=candidates,
+            start_index=match.start(),
+            end_index=match.end(),
+            original=original,
         )
-    return candidates
+    return sorted(candidates, key=lambda candidate: (candidate.start_index, candidate.end_index))
+
+
+def _append_raw_candidate(
+    *,
+    candidates: list[RawControlSequenceCandidate],
+    start_index: int,
+    end_index: int,
+    original: str,
+) -> None:
+    """记录不与既有候选重叠的原始控制符候选。"""
+    for candidate in candidates:
+        if start_index < candidate.end_index and end_index > candidate.start_index:
+            return
+    candidates.append(
+        RawControlSequenceCandidate(
+            start_index=start_index,
+            end_index=end_index,
+            original=original,
+        )
+    )
+
+
+def _is_bare_control_candidate(code: str) -> bool:
+    """判断无参数字母片段是否像控制符，而不是普通转义后的正文。"""
+    if any(char.isupper() for char in code):
+        return True
+    return len(code) <= 3
 
 
 def select_non_overlapping_spans(
