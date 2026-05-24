@@ -1665,6 +1665,29 @@ async def test_write_data_text_restores_converted_outer_quote_before_indent(mini
 
 
 @pytest.mark.asyncio
+async def test_write_data_text_restores_mismatched_source_quote_slots(minimal_game_dir: Path) -> None:
+    """写回阶段按源文真实引号槽位修复错配引号。"""
+    game_data = await load_game_data(minimal_game_dir)
+    extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
+    item = next(
+        candidate
+        for candidate in extracted["CommonEvents.json"].translation_items
+        if candidate.location_path == "CommonEvents.json/1/0"
+    )
+    item.original_lines = ["これが『秒殺テク」……！"]
+    item.translation_lines = ["这就是‘秒杀技术’……！"]
+
+    reset_writable_copies(game_data)
+    write_data_text(game_data, [item], text_rules=get_default_text_rules())
+
+    common_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+
+    assert ensure_json_array(ensure_json_object(commands[1], "command1")["parameters"], "command1.parameters")[0] == "这就是『秒杀技术」……！"
+
+
+@pytest.mark.asyncio
 async def test_scroll_text_commands_are_grouped_by_adjacent_405(minimal_game_dir: Path) -> None:
     """连续 405 滚动文本作为一个翻译单元提取，并支持额外译文行写回。"""
     common_events_path = minimal_game_dir / "data" / "CommonEvents.json"

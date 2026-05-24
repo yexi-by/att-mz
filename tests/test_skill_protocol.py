@@ -622,6 +622,7 @@ def test_text_translation_prompt_keeps_protocol_minimal() -> None:
     for phrase in [
         "`[[术语表]]`",
         "`short_text`：按一个完整字段翻译，`translation_lines` 必须只包含 1 个字符串",
+        "原文中作为包裹符号出现的 `「...」`、`『...』` 尽量在译文中保留同样符号",
         "形如 `[RMMZ_...]` 或 `[CUSTOM_...]` 的片段是必须原样保留的文本标记。",
     ]:
         assert phrase in text
@@ -636,3 +637,11 @@ def test_text_translation_prompt_keeps_protocol_minimal() -> None:
         "占位符",
     ]:
         assert phrase not in text
+
+
+def test_quote_punctuation_cleanup_contract_is_synced_between_skills() -> None:
+    """开发版和发行版 Skill 同步说明引号整理边界。"""
+    expected = "正文译文保存和写进游戏文件前会自动按源文槽位整理 `「」「『』` 包裹符号；这属于标点整理能力，不作为 `quality-report` 问题项。"
+
+    assert expected in read(DEV_REFERENCES / "cli-command-contract.md")
+    assert expected in read(RELEASE_REFERENCES / "cli-command-contract.md")

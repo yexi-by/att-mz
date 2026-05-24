@@ -892,6 +892,88 @@ def test_inner_book_title_quote_converted_to_straight_quotes_is_restored() -> No
     assert lines == ["莉可开了个叫『莉可银行』的地方。"]
 
 
+@pytest.mark.parametrize(
+    ("original_lines", "translation_lines", "expected_lines"),
+    [
+        (["「リア」"], ["“莉亚”"], ["「莉亚」"]),
+        (["「リア」"], ["‘莉亚’"], ["「莉亚」"]),
+        (["「リア」"], ['"莉亚"'], ["「莉亚」"]),
+        (["「リア」"], ["'莉亚'"], ["「莉亚」"]),
+        (["「リア」"], ["“莉亚」"], ["「莉亚」"]),
+        (["「リア」"], ["「莉亚”"], ["「莉亚」"]),
+        (["「リア」"], ['"莉亚」'], ["「莉亚」"]),
+        (["「リア」"], ['「莉亚"'], ["「莉亚」"]),
+        (["「リア」"], ["（莉亚）"], ["「莉亚」"]),
+        (["「リア」"], ["(莉亚)"], ["「莉亚」"]),
+        (["「リア」"], ["《莉亚》"], ["「莉亚」"]),
+        (["「リア」"], ["〈莉亚〉"], ["「莉亚」"]),
+        (["『リコ銀行』"], ["“莉可银行”"], ["『莉可银行』"]),
+        (["『リコ銀行』"], ["‘莉可银行’"], ["『莉可银行』"]),
+        (["『リコ銀行』"], ['"莉可银行"'], ["『莉可银行』"]),
+        (["『リコ銀行』"], ["'莉可银行'"], ["『莉可银行』"]),
+        (["『リコ銀行』"], ["《莉可银行》"], ["『莉可银行』"]),
+        (["『リコ銀行』"], ["「莉可银行」"], ["『莉可银行』"]),
+        (["これが『秒殺テク」……！"], ["这就是‘秒杀技术’……！"], ["这就是『秒杀技术」……！"]),
+        (["患者は「声が見える」「主が近い」と報告。"], ["患者说“能看到声音”“主就在身边”。"], ["患者说「能看到声音」「主就在身边」。"]),
+        (["「リア」と刺繍がある"], ["所谓“记录”，上面绣着“莉亚”。"], ["所谓「记录」，上面绣着“莉亚”。"]),
+        (["「声」「主」"], ["“声音”“主人”“额外强调”"], ["「声音」「主人」“额外强调”"]),
+        (["「声」「主」"], ["“声音”“主人”还有未闭合的“额外"], ["「声音」「主人」还有未闭合的“额外"]),
+    ],
+)
+def test_wrapping_punctuation_slot_repair_handles_quote_variants(
+    original_lines: list[str],
+    translation_lines: list[str],
+    expected_lines: list[str],
+) -> None:
+    """按源文引号槽位修回常见替代引号，额外或未配对译文引号保持原样。"""
+    text_rules = _build_text_rules(width_limit=80)
+
+    lines = align_long_text_lines(
+        text="\n".join(translation_lines),
+        target_lines=len(original_lines),
+        location_path="CommonEvents.json/1/0",
+        text_rules=text_rules,
+        original_lines=original_lines,
+    )
+
+    assert lines == expected_lines
+
+
+def test_wrapping_punctuation_slot_repair_keeps_multiline_indent() -> None:
+    """跨行引号被模型改写时修回源文槽位，并继续补视觉缩进。"""
+    text_rules = _build_text_rules(width_limit=40)
+
+    lines = align_long_text_lines(
+        text="“啊啊，是啊。\n累得要命。”",
+        target_lines=2,
+        location_path="CommonEvents.json/1/0",
+        text_rules=text_rules,
+        original_lines=["「ああ、そうだよ。", "疲れてる」"],
+    )
+
+    assert lines == ["「啊啊，是啊。", "　累得要命。」"]
+
+
+def test_wrapping_punctuation_slot_repair_ignores_custom_control_boundaries() -> None:
+    """控制符邻接的异常引号边界不被错误改写。"""
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(long_text_line_width_limit=80),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(r"\\F\d*\[[^\]\r\n]+\]", "[CUSTOM_FACE_PORTRAIT_{index}]"),
+        ),
+    )
+
+    lines = align_long_text_lines(
+        text=r"\F3[66」「唔——嗯……？」",
+        target_lines=1,
+        location_path="CommonEvents.json/1/0",
+        text_rules=text_rules,
+        original_lines=[r"\F3[66」「ふーん……？」"],
+    )
+
+    assert lines == [r"\F3[66」「唔——嗯……？」"]
+
+
 @pytest.mark.asyncio
 async def test_short_text_inner_book_title_quote_converted_to_curly_quote_is_restored() -> None:
     """单值多行文本中的内部日文书名号被模型改写时修回源文符号。"""
@@ -944,8 +1026,8 @@ async def test_short_text_inner_book_title_quote_converted_to_curly_quote_is_res
     ]
 
 
-def test_inner_corner_quote_fix_skips_ambiguous_extra_translation_quotes() -> None:
-    """译文引号数量无法和源文一一对应时保持原样，避免误改新增引号。"""
+def test_inner_corner_quote_fix_preserves_extra_translation_quotes() -> None:
+    """源文槽位用译文首个引号对修复，额外译文引号保持原样。"""
     text_rules = _build_text_rules(width_limit=40)
 
     lines = align_long_text_lines(
@@ -956,11 +1038,11 @@ def test_inner_corner_quote_fix_skips_ambiguous_extra_translation_quotes() -> No
         original_lines=["「リア」と刺繍がある"],
     )
 
-    assert lines == ["所谓“记录”，上面绣着“莉亚”。"]
+    assert lines == ["所谓「记录」，上面绣着“莉亚”。"]
 
 
-def test_inner_corner_quote_fix_skips_unpaired_translation_quote() -> None:
-    """译文存在未配对引号时不自动修复，避免制造重复引号。"""
+def test_inner_corner_quote_fix_ignores_unpaired_translation_quote() -> None:
+    """未配对译文引号保持原样，但不阻断已配对引号修复。"""
     text_rules = _build_text_rules(width_limit=40)
 
     lines = align_long_text_lines(
@@ -971,7 +1053,7 @@ def test_inner_corner_quote_fix_skips_unpaired_translation_quote() -> None:
         original_lines=["「だから……お願い。", "ふうふのいとなみ」、しよ？"],
     )
 
-    assert lines == ["“所以……求你了。做夫妻之事吧？”」"]
+    assert lines == ["「所以……求你了。做夫妻之事吧？」」"]
 
 
 def test_wrapping_punctuation_split_tail_gets_visual_indent() -> None:

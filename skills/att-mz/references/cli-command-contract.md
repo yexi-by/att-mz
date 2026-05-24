@@ -26,6 +26,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 ```
 
 - 控制符、括号和引号边界不能只看终端显示；遇到乱码、非 ASCII 引号、全角括号或 `\` 控制片段异常时，必须核验 Unicode code point 或原始字节，再决定规则和译文。
+- 正文译文保存和写进游戏文件前会自动按源文槽位整理 `「」「『』` 包裹符号；这属于标点整理能力，不作为 `quality-report` 问题项。
 - `--json` 命令的 stdout 只读取最终 JSON；stderr 进度行不能当作命令结果 JSON。
 
 ## 环境与注册
