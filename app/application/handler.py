@@ -129,11 +129,13 @@ def _assert_active_plugin_source_runtime_audit_passed(
     *,
     game_data: GameData,
     text_rules: TextRules,
+    audit_text_issues: bool,
 ) -> None:
-    """确认写入后的当前运行插件源码没有漏翻、坏控制符或 JS 语法错误。"""
+    """确认写入后的当前运行插件源码满足指定验收级别。"""
     audit = audit_active_runtime_plugin_source(
         game_data=game_data,
         text_rules=text_rules,
+        audit_text_issues=audit_text_issues,
     )
     _raise_for_active_runtime_audit(audit)
 
@@ -964,6 +966,7 @@ class TranslationHandler:
             _assert_active_plugin_source_runtime_audit_passed(
                 game_data=active_runtime_game_data,
                 text_rules=text_rules,
+                audit_text_issues=False,
             )
             if font_summary.target_font_name is not None:
                 logger.info(f"[tag.phase]字体引用已同步[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 目标字体 [tag.path]{font_summary.target_font_name}[/tag.path] 原字体 [tag.count]{font_summary.source_font_count}[/tag.count] 个，替换引用 [tag.count]{font_summary.replaced_reference_count}[/tag.count] 处")
@@ -1137,6 +1140,7 @@ class TranslationHandler:
             _assert_active_plugin_source_runtime_audit_passed(
                 game_data=active_runtime_game_data,
                 text_rules=text_rules,
+                audit_text_issues=False,
             )
             if font_summary.target_font_name is not None:
                 logger.info(f"[tag.phase]字体引用已同步[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 目标字体 [tag.path]{font_summary.target_font_name}[/tag.path] 原字体 [tag.count]{font_summary.source_font_count}[/tag.count] 个，替换引用 [tag.count]{font_summary.replaced_reference_count}[/tag.count] 处")

@@ -210,6 +210,7 @@ class WorkspaceAgentMixin:
                 scan=plugin_source_scan,
                 rule_records=plugin_source_rules,
             )
+            plugin_source_extension_active = plugin_source_scan.risk.high_risk or bool(plugin_source_rules)
         terminology_summary = await export_terminology_artifacts(
             game_data=game_data,
             output_dir=target_dir / "terminology",
@@ -240,8 +241,13 @@ class WorkspaceAgentMixin:
         plugin_source_risk_report = plugin_source_scan.risk_report_json()
         plugin_source_risk_report["source_view"] = GameFileView.TRANSLATION_SOURCE.value
         await _write_json_object(plugin_source_risk_path, plugin_source_risk_report)
-        plugin_source_rules_path = target_dir / "plugin-source-rules.json"
-        await _write_json_value(plugin_source_rules_path, plugin_source_rule_records_to_import_json(plugin_source_rules))
+        plugin_source_rules_path: Path | None = None
+        if plugin_source_extension_active:
+            plugin_source_rules_path = target_dir / "plugin-source-rules.json"
+            await _write_json_value(
+                plugin_source_rules_path,
+                plugin_source_rule_records_to_import_json(plugin_source_rules),
+            )
         note_tag_candidates_path = target_dir / "note-tag-candidates.json"
         note_tag_report = await export_note_tag_candidates_file(
             game_data=game_data,
@@ -320,13 +326,6 @@ class WorkspaceAgentMixin:
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
             "plugin_source_candidate_count": len(plugin_source_scan.candidates),
             "plugin_source_high_risk": plugin_source_scan.risk.high_risk,
-            "plugin_source_rule_count": sum(len(rule.selectors) for rule in plugin_source_rules),
-            "plugin_source_excluded_selector_count": sum(
-                len(rule.excluded_selectors)
-                for rule in plugin_source_rules
-            ),
-            "plugin_source_reviewed_selector_count": plugin_source_review.reviewed_selector_count,
-            "plugin_source_unreviewed_count": len(plugin_source_review.unreviewed_candidates),
             "stale_plugin_rule_count": stale_plugin_rule_count,
             "note_tag_candidate_count": note_tag_report.candidate_tag_count,
             "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
@@ -338,6 +337,18 @@ class WorkspaceAgentMixin:
             "mv_virtual_namebox_candidate_count": mv_virtual_namebox_candidate_count,
             "mv_virtual_namebox_rule_count": len(mv_virtual_namebox_rules),
         }
+        if plugin_source_extension_active:
+            generated_summary.update(
+                {
+                    "plugin_source_rule_count": sum(len(rule.selectors) for rule in plugin_source_rules),
+                    "plugin_source_excluded_selector_count": sum(
+                        len(rule.excluded_selectors)
+                        for rule in plugin_source_rules
+                    ),
+                    "plugin_source_reviewed_selector_count": plugin_source_review.reviewed_selector_count,
+                    "plugin_source_unreviewed_count": len(plugin_source_review.unreviewed_candidates),
+                }
+            )
         manifest_files: JsonArray = [
             str(terminology_summary.field_terms_path),
             str(terminology_summary.glossary_path),
@@ -347,7 +358,6 @@ class WorkspaceAgentMixin:
             str(plugin_json_string_leaf_candidates_path),
             str(plugin_rules_path),
             str(plugin_source_risk_path),
-            str(plugin_source_rules_path),
             str(note_tag_candidates_path),
             str(note_tag_rules_path),
             str(event_commands_path),
@@ -356,6 +366,8 @@ class WorkspaceAgentMixin:
             str(placeholder_rules_path),
             str(structured_placeholder_rules_path),
         ]
+        if plugin_source_rules_path is not None:
+            manifest_files.append(str(plugin_source_rules_path))
         if mv_virtual_namebox_candidates_path is not None:
             manifest_files.append(str(mv_virtual_namebox_candidates_path))
         if mv_virtual_namebox_rules_path is not None:
@@ -562,7 +574,8 @@ class WorkspaceAgentMixin:
                         )
                     )
         else:
-            errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
+            if plugin_source_required or plugin_source_started:
+                errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
         if note_tag_rules_path.exists():
             async with aiofiles.open(note_tag_rules_path, "r", encoding="utf-8") as file:
                 note_tag_report = await self.validate_note_tag_rules(game_title=game_title, rules_text=await file.read())

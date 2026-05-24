@@ -45,6 +45,8 @@ from app.application.flow_gate import collect_workflow_gate_errors
 from app.plugin_source_text import (
     ActiveRuntimePluginSourceAudit,
     PluginSourceFileTextScan,
+    PluginSourceReviewCoverage,
+    PluginSourceScan,
     audit_active_runtime_plugin_source,
     build_plugin_source_file_hash,
     build_plugin_source_scan,
@@ -94,6 +96,26 @@ def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[
             )
         )
     return errors
+
+
+def _plugin_source_quality_summary(review: PluginSourceReviewCoverage | None) -> JsonObject:
+    """返回插件源码支线已经启动时的质量摘要字段。"""
+    if review is None:
+        return {}
+    return {
+        "plugin_source_active_candidate_count": review.active_candidate_count,
+        "plugin_source_translate_selector_count": review.translate_selector_count,
+        "plugin_source_excluded_selector_count": review.excluded_selector_count,
+        "plugin_source_reviewed_selector_count": review.reviewed_selector_count,
+        "plugin_source_unreviewed_count": len(review.unreviewed_candidates),
+    }
+
+
+def _plugin_source_quality_details(unreviewed_details: JsonArray | None) -> JsonObject:
+    """返回插件源码支线已经启动时的质量明细字段。"""
+    if unreviewed_details is None:
+        return {}
+    return {"plugin_source_unreviewed_candidates": unreviewed_details}
 
 
 def _build_active_runtime_diagnosis_items(
@@ -574,20 +596,24 @@ class QualityAgentMixin:
             source_residual_rules = await session.read_source_residual_rules()
             terminology_registry = await session.read_terminology_registry()
             plugin_source_records = await session.read_plugin_source_text_rules()
-            plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-            fresh_plugin_source_records, _stale_plugin_source_records = filter_fresh_plugin_source_text_rules(
-                game_data=game_data,
-                rule_records=plugin_source_records,
-                text_rules=text_rules,
-                scan=plugin_source_scan,
-            )
-            plugin_source_review = collect_plugin_source_review_coverage(
-                scan=plugin_source_scan,
-                rule_records=fresh_plugin_source_records,
-            )
-            plugin_source_unreviewed_details: JsonArray = []
-            for candidate in plugin_source_review.unreviewed_candidates[:100]:
-                plugin_source_unreviewed_details.append(candidate.to_json_object())
+            plugin_source_scan: PluginSourceScan | None = None
+            plugin_source_review: PluginSourceReviewCoverage | None = None
+            plugin_source_unreviewed_details: JsonArray | None = None
+            if plugin_source_records:
+                plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+                fresh_plugin_source_records, _stale_plugin_source_records = filter_fresh_plugin_source_text_rules(
+                    game_data=game_data,
+                    rule_records=plugin_source_records,
+                    text_rules=text_rules,
+                    scan=plugin_source_scan,
+                )
+                plugin_source_review = collect_plugin_source_review_coverage(
+                    scan=plugin_source_scan,
+                    rule_records=fresh_plugin_source_records,
+                )
+                plugin_source_unreviewed_details = []
+                for candidate in plugin_source_review.unreviewed_candidates[:100]:
+                    plugin_source_unreviewed_details.append(candidate.to_json_object())
             latest_run = await session.read_latest_translation_run()
             translated_items = await session.read_translated_items()
             scope = await TextScopeService().build(
@@ -652,6 +678,8 @@ class QualityAgentMixin:
             issue(error.code, error.message)
             for error in workflow_gate_errors
         ]
+        plugin_source_summary = _plugin_source_quality_summary(plugin_source_review)
+        plugin_source_details = _plugin_source_quality_details(plugin_source_unreviewed_details)
         coverage_blocking_errors = _coverage_hard_stop_errors(coverage_report)
         if coverage_blocking_errors or source_residual_rule_errors:
             errors.extend(coverage_report.errors)
@@ -673,11 +701,7 @@ class QualityAgentMixin:
                     "stale_plugin_rule_count": stale_plugin_rule_count,
                     "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
                     "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
-                    "plugin_source_active_candidate_count": plugin_source_review.active_candidate_count,
-                    "plugin_source_translate_selector_count": plugin_source_review.translate_selector_count,
-                    "plugin_source_excluded_selector_count": plugin_source_review.excluded_selector_count,
-                    "plugin_source_reviewed_selector_count": plugin_source_review.reviewed_selector_count,
-                    "plugin_source_unreviewed_count": len(plugin_source_review.unreviewed_candidates),
+                    **plugin_source_summary,
                     "source_language": session.source_language,
                     "target_language": session.target_language,
                     "source_residual_rule_count": len(source_residual_rules),
@@ -707,7 +731,7 @@ class QualityAgentMixin:
                     "placeholder_risk_items": [],
                     "overwide_line_items": [],
                     "write_back_protocol_items": [],
-                    "plugin_source_unreviewed_candidates": plugin_source_unreviewed_details,
+                    **plugin_source_details,
                     "coverage": coverage_report.details,
                 },
             )
@@ -808,11 +832,7 @@ class QualityAgentMixin:
                 "stale_plugin_rule_count": stale_plugin_rule_count,
                 "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
                 "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
-                "plugin_source_active_candidate_count": plugin_source_review.active_candidate_count,
-                "plugin_source_translate_selector_count": plugin_source_review.translate_selector_count,
-                "plugin_source_excluded_selector_count": plugin_source_review.excluded_selector_count,
-                "plugin_source_reviewed_selector_count": plugin_source_review.reviewed_selector_count,
-                "plugin_source_unreviewed_count": len(plugin_source_review.unreviewed_candidates),
+                **plugin_source_summary,
                 "source_language": session.source_language,
                 "target_language": session.target_language,
                 "source_residual_rule_count": len(source_residual_rules),
@@ -842,7 +862,7 @@ class QualityAgentMixin:
                 "placeholder_risk_items": placeholder_risk_items,
                 "overwide_line_items": overwide_line_items,
                 "write_back_protocol_items": write_back_protocol_items,
-                "plugin_source_unreviewed_candidates": plugin_source_unreviewed_details,
+                **plugin_source_details,
                 "coverage": coverage_report.details,
             },
         )

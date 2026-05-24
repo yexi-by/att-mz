@@ -60,6 +60,7 @@ class ActiveRuntimePluginSourceAudit:
     """当前运行插件源码审计结果。"""
 
     issues: tuple[ActiveRuntimePluginSourceIssue, ...]
+    text_issue_audit_enabled: bool
     scanned_file_count: int
     active_file_count: int
     literal_count: int
@@ -79,6 +80,7 @@ class ActiveRuntimePluginSourceAudit:
             "active_runtime_active_file_count": self.active_file_count,
             "active_runtime_literal_count": self.literal_count,
             "active_runtime_active_literal_count": self.active_literal_count,
+            "active_runtime_text_issue_audit_enabled": self.text_issue_audit_enabled,
             "active_runtime_read_error_file_count": self.read_error_file_count,
             "active_runtime_issue_count": len(self.issues),
             "active_runtime_read_error_count": counts.get("active_runtime_read_error", 0),
@@ -98,6 +100,7 @@ def audit_active_runtime_plugin_source(
     text_rules: TextRules,
     plugin_source_files: dict[str, str] | None = None,
     plugin_source_read_errors: dict[str, str] | None = None,
+    audit_text_issues: bool = True,
 ) -> ActiveRuntimePluginSourceAudit:
     """审计当前运行插件源码中的源文残留和坏控制符。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
@@ -164,10 +167,13 @@ def audit_active_runtime_plugin_source(
         if not active:
             continue
         active_literal_count += len(literals)
+        if not audit_text_issues:
+            continue
         for literal in literals:
             issues.extend(_audit_literal(literal=literal, text_rules=text_rules))
     return ActiveRuntimePluginSourceAudit(
         issues=tuple(issues),
+        text_issue_audit_enabled=audit_text_issues,
         scanned_file_count=len(set(source_files) | set(read_errors) | active_missing_file_names),
         active_file_count=active_file_count,
         literal_count=literal_count,

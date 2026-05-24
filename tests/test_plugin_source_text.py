@@ -666,6 +666,35 @@ async def test_active_runtime_audit_reports_excluded_residual_and_plugin_control
 
 
 @pytest.mark.asyncio
+async def test_active_runtime_audit_can_limit_to_read_and_syntax_checks(
+    minimal_game_dir: Path,
+) -> None:
+    """普通写回后验收未开启插件源码支线时，只检查启用源码文件可读和语法。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HardcodedText.js").write_text(
+        "const Messages = { category: 'カテゴリ', protocol: '\\\\TRP' };\n",
+        encoding="utf-8",
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+        audit_text_issues=False,
+    )
+
+    assert audit.summary_json()["active_runtime_text_issue_audit_enabled"] is False
+    assert audit.issue_counts["active_runtime_source_residual"] == 0
+    assert audit.issue_counts["active_runtime_placeholder_risk"] == 0
+
+
+@pytest.mark.asyncio
 async def test_active_runtime_audit_errors_for_unreviewed_source_candidate(
     minimal_game_dir: Path,
 ) -> None:
@@ -1104,13 +1133,18 @@ async def test_prepare_workspace_writes_plugin_source_risk_summary_without_ast_m
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     workspace = tmp_path / "workspace"
 
-    _ = await AgentToolkitService(
+    service = AgentToolkitService(
         game_registry=registry,
         setting_path=EXAMPLE_SETTING_PATH,
-    ).prepare_agent_workspace(
+    )
+    _ = await service.prepare_agent_workspace(
         game_title="テストゲーム",
         output_dir=workspace,
         command_codes=None,
+    )
+    validation_report = await service.validate_agent_workspace(
+        game_title="テストゲーム",
+        workspace=workspace,
     )
     payload = ensure_json_object(
         coerce_json_value(
@@ -1126,6 +1160,36 @@ async def test_prepare_workspace_writes_plugin_source_risk_summary_without_ast_m
     assert "candidate_count" in payload
     assert "files" not in payload
     assert "candidates" not in payload
+    assert not (workspace / "plugin-source-rules.json").exists()
+    assert "plugin_source_rules_missing" not in {error.code for error in validation_report.errors}
+
+
+@pytest.mark.asyncio
+async def test_quality_report_hides_plugin_source_review_fields_until_branch_started(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """低风险且未启动支线时，质量报告不暴露插件源码审查状态。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "RiskSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "RiskSource.js").write_text(
+        "Window_Base.prototype.drawText('风险候选', 0, 0, 320);\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).quality_report(game_title="テストゲーム")
+
+    assert "plugin_source_unreviewed_count" not in report.summary
+    assert "plugin_source_unreviewed_candidates" not in report.details
 
 
 @pytest.mark.asyncio
@@ -1373,7 +1437,7 @@ async def test_quality_report_reuses_plugin_source_scan_for_workflow_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """质量报告中的插件源码审查统计和流程门禁必须复用同一次扫描。"""
+    """未启动插件源码支线时，质量报告只为流程风险检查扫描一次。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})

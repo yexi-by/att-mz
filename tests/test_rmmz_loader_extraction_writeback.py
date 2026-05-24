@@ -24,6 +24,11 @@ from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
 from app.plugin_text import build_plugin_hash
+from app.plugin_source_text import (
+    build_plugin_source_rule_records_from_import,
+    build_plugin_source_scan,
+    parse_plugin_source_rule_import_text,
+)
 from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, STRUCTURED_PLACEHOLDER_RULE_DOMAIN
 from app.rmmz import DataTextExtraction, GameFileView, load_game_data, load_game_data_for_view, read_game_title, resolve_game_layout
 from app.rmmz.control_codes import CustomPlaceholderRule
@@ -818,6 +823,162 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
     finally:
         await handler.close()
 
+    assert _read_test_json(common_events_path) != original_events
+
+
+@pytest.mark.asyncio
+async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_during_post_audit(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写后自动验收不把已排除的插件源码内部字符串当正文漏翻。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HardcodedText.js").write_text(
+        "const Messages = { category: 'カテゴリ', protocol: '\\\\TRP' };\n",
+        encoding="utf-8",
+    )
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    original_events = _read_test_json(common_events_path)
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data = await load_game_data(minimal_game_dir)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[EventCommandParameterFilter(index=0, value="TestPlugin")],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        setting = load_setting(source_language=session.source_language)
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+            structured_placeholder_rules=(),
+        )
+        candidate = next(
+            candidate
+            for candidate in build_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates
+            if candidate.file_name == "HardcodedText.js" and candidate.text == "カテゴリ"
+        )
+        plugin_source_records = build_plugin_source_rule_records_from_import(
+            game_data=game_data,
+            import_file=parse_plugin_source_rule_import_text(
+                json.dumps(
+                    [
+                        {
+                            "file": "HardcodedText.js",
+                            "selectors": [],
+                            "excluded_selectors": [candidate.selector],
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            ),
+            text_rules=text_rules,
+        )
+        await session.replace_plugin_source_text_rules(plugin_source_records)
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=(),
+            ),
+            reviewed_empty=True,
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.data_item_count > 0
     assert _read_test_json(common_events_path) != original_events
 
 

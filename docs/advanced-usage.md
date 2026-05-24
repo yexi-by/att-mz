@@ -163,7 +163,7 @@ uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> -
 
 如果规则变化导致一部分已保存译文不再属于当前规则范围，导入命令会先把这些译文备份到 `outputs/rule-import-backups/<游戏标题>/...json`，再清理项目数据库里的已保存译文记录。JSON 报告会返回 `deleted_translations_backed_up` 告警，并在 `summary.deleted_translation_backup_path` 给出备份文件路径。若确认规则导错，先重新导入正确规则，再用 `import-manual-translations --game <游戏标题> --input <备份文件> --json` 恢复这些译文。
 
-插件源码文本属于少见支线。工作区会生成 `plugin-source-risk-report.json` 和 `plugin-source-rules.json`，风险报告只包含风险摘要和候选数量，不包含 AST selector 或完整候选列表。扫描范围固定为 `<游戏目录>/js/plugins/*.js` 的直接文件；不会扫描 `js` 根目录、其他目录或子目录。插件源码命令默认使用 `--view translation-source`，读取用于规则抽取和写回定位的翻译源；需要检查玩家当前实际运行文件时，使用 `audit-active-runtime` 或显式 `--view active-runtime`。当前运行文件只做产物验收，不作为翻译源。低风险且没有启动支线时保持空规则即可继续准备占位符和正文翻译。高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认；用户肯定后再导出 AST 地图、整理源码规则并导入：
+插件源码文本属于少见支线。工作区默认只生成 `plugin-source-risk-report.json`，风险报告只包含风险摘要和候选数量，不包含 AST selector 或完整候选列表；只有插件源码高风险或支线已有规则时，才生成 `plugin-source-rules.json`。扫描范围固定为 `<游戏目录>/js/plugins/*.js` 的直接文件；不会扫描 `js` 根目录、其他目录或子目录。插件源码命令默认使用 `--view translation-source`，读取用于规则抽取和写回定位的翻译源；需要检查玩家当前实际运行文件时，使用 `audit-active-runtime` 或显式 `--view active-runtime`。当前运行文件只做产物验收，不作为翻译源。低风险且没有启动支线时不用填写空规则，可继续准备占位符和正文翻译。高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认；用户肯定后再导出 AST 地图、整理源码规则并导入：
 
 ```powershell
 uv run python main.py --agent-mode export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json
