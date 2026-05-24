@@ -46,7 +46,7 @@ from .sql import (
     CREATE_NOTE_TAG_TEXT_RULES_TABLE,
     CREATE_PLACEHOLDER_RULES_TABLE,
     CREATE_PLUGIN_TEXT_RULES_TABLE,
-    CREATE_PLUGIN_SOURCE_RUNTIME_PROVENANCE_TABLE,
+    CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE,
     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
     CREATE_RULE_REVIEW_STATES_TABLE,
     CREATE_SOURCE_SNAPSHOT_FILES_TABLE,
@@ -310,7 +310,7 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_PROVENANCE_TABLE)
+    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE)
     _ = await connection.execute(CREATE_SOURCE_SNAPSHOT_FILES_TABLE)
     _ = await connection.execute(CREATE_NOTE_TAG_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE)

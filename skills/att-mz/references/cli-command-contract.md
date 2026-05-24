@@ -102,7 +102,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `text-scope --game <游戏标题> --json` | 查看统一文本范围和规则来源 | `status` 为 `ok` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题> --json` | 对比规则命中、译文和可写范围 | `status` 为 `ok` | 补规则、补译文或精确重置 |
 | `audit-active-runtime --game <游戏标题> --json` | 直接审计当前游戏运行文件里的插件源码漏翻、坏控制符和 JS 语法错误 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime` | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录 |
-| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释 | 映射缺失或文件变化时重新执行 `rebuild-active-runtime`；已映射问题回到规则、重置或手动译文 |
+| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释 | 映射缺失时报告无法反推；已映射问题回到规则、重置或手动译文 |
 | `quality-report --game <游戏标题> --json` | 判断已保存译文记录、规则、控制符、源文残留、行宽和可生成性是否允许写回 | `status` 不是 `error` | 按明细修译文或规则；有 error 禁止写回 |
 | `export-quality-fix-template --game <游戏标题> --output <文件> --json` | 导出检查没通过译文的修复表 | 输出文件存在，数量可解释 | 只改中文译文行后导入 |
 | `export-pending-translations --game <游戏标题> --output <文件> --json` | 导出还没成功保存译文的文本表 | 输出文件存在；可加 `--limit N` | 抽样显示仍适合模型时回到翻译 |

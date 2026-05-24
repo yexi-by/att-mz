@@ -26,7 +26,7 @@ from .sql import (
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_PATHS,
     DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES,
     DELETE_ALL_NOTE_TAG_TEXT_RULES,
-    DELETE_ALL_PLUGIN_SOURCE_RUNTIME_PROVENANCE,
+    DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS,
     DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES,
     DELETE_ALL_PLACEHOLDER_RULES,
     DELETE_ALL_PLUGIN_TEXT_RULES,
@@ -136,7 +136,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
     ) -> None:
         """用一次外部导入结果替换当前游戏的插件源码文本规则。"""
         _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES)
-        _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_PROVENANCE)
+        _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS)
         for rule_record in rule_records:
             for selector in rule_record.selectors:
                 _ = await self.connection.execute(

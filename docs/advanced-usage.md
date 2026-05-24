@@ -300,7 +300,7 @@ uv run python main.py --agent-mode write-back --game <游戏标题> --json
 
 首次注册游戏时，工具只接受干净原始游戏目录，并在游戏目录内生成可信源快照：完整原始 `data` 备份 `data_origin`、插件配置备份 `js/plugins_origin.js` 和直接插件源码备份 `js/plugins_source_origin`。后续翻译源读取只使用这组快照；缺失、损坏或与数据库 manifest 不一致时，命令会停止并要求用干净游戏目录重新注册。
 
-写进游戏文件时，工具只从可信源快照、已导入规则、术语和已保存译文记录生成 staging 文件，不把当前运行文件当作翻译源。文件哈希、原文、selector 或已保存译文质量不匹配时会停止写入并报告原因。插件源码写入成功后会保存当前运行字符串到翻译源审查状态的确定性来源映射；当前运行审计按这组来源映射区分应翻译文本、已排除文本、未审查候选和非源语言字符串。
+写进游戏文件时，工具只从可信源快照、已导入规则、术语和已保存译文记录生成 staging 文件，不把当前运行文件当作翻译源。文件哈希、原文、selector 或已保存译文质量不匹配时会停止写入并报告原因。插件源码写入成功后会为已写入译文保存可选诊断映射；当前运行审计直接检查玩家实际运行的 JS 文件是否存在漏翻、坏控制符或 JS 语法错误。
 
 如果当前运行文件已经损坏，需要丢弃当前生成物状态并从可信源快照和已保存译文记录重建，使用：
 
@@ -314,7 +314,7 @@ uv run python main.py --agent-mode rebuild-active-runtime --game <游戏标题> 
 uv run python main.py --agent-mode diagnose-active-runtime --game <游戏标题> --output <工作区>/active-runtime-diagnosis.json --json
 ```
 
-诊断只解释会阻止写入验收的问题，并使用来源映射精确匹配当前运行 `runtime_selector`，不会按文本相似度、行号、上下文或 AST 顺序猜测。`mapped_translate` 表示已反推到已保存译文记录；`mapped_unreviewed` 表示插件源码候选还没有审查规则，会输出可导入规则候选；`runtime_provenance_missing` 表示当前运行字符串没有来源映射；`runtime_file_changed` 表示当前运行插件源码和来源映射记录的文件哈希不一致。修复路径是补规则、重置或手修已保存译文记录后重新写入，再运行 `audit-active-runtime` 验收。JS 语法错误和文件读取失败没有字符串 selector，需要先恢复或修复当前运行文件。
+诊断只解释会阻止写入验收的问题，并使用写回映射精确匹配当前运行 `runtime_selector`，不会按文本相似度、行号、上下文或 AST 顺序猜测。`mapped_translate` 表示已反推到已保存译文记录；`runtime_mapping_missing` 表示当前运行字符串没有可用写回映射，诊断无法反推到已保存译文。修复路径是补规则、重置或手修已保存译文记录后重新写入，再运行 `audit-active-runtime` 验收。JS 语法错误和文件读取失败没有字符串 selector，需要先恢复或修复当前运行文件。
 
 如需让配置字体覆盖游戏字体引用：
 

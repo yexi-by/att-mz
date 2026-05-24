@@ -36,7 +36,8 @@ from app.rmmz.schema import (
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
-    PluginSourceRuntimeProvenanceRecord,
+    PluginSourceRuntimeWriteMapRecord,
+    PluginSourceTextRuleRecord,
     SourceResidualRuleRecord,
     StructuredPlaceholderRuleRecord,
     TranslationErrorItem,
@@ -1226,10 +1227,9 @@ async def test_quality_report_audits_active_runtime_plugin_source_not_origin_bac
     assert quality_report.status == "error"
     assert runtime_report.status == "error"
     assert "active_runtime_placeholder_risk" not in {error.code for error in quality_report.errors}
-    assert "active_runtime_provenance_missing" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_placeholder_risk" in {error.code for error in runtime_report.errors}
     assert "active_runtime_placeholder_risk_count" not in quality_report.summary
-    assert runtime_report.summary["active_runtime_placeholder_risk_count"] == 0
-    assert runtime_report.summary["active_runtime_provenance_missing_count"] == 1
+    assert runtime_report.summary["active_runtime_placeholder_risk_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -1423,15 +1423,14 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
             translation_lines=["努力忍耐着的\nn[0]君…真棒哦♥"],
         )
         await session.write_translation_items([translation_item])
-        await session.replace_plugin_source_runtime_provenance(
+        await session.replace_plugin_source_runtime_write_maps(
             [
-                PluginSourceRuntimeProvenanceRecord(
+                PluginSourceRuntimeWriteMapRecord(
+                    location_path=location_path,
                     source_file_name="BadSource.js",
                     source_selector=source_candidate.selector,
                     source_file_hash=source_file_scan.file_hash,
                     source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
-                    review_kind="translate",
-                    location_path=location_path,
                     translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
                     runtime_file_name="BadSource.js",
                     runtime_selector=runtime_literal.selector,
@@ -1560,7 +1559,7 @@ async def test_diagnose_active_runtime_never_guesses_without_runtime_map(
     report = await service.diagnose_active_runtime(game_title="テストゲーム", output_path=tmp_path / "diagnosis.json")
 
     assert report.status == "error"
-    missing_issue_count = report.summary["runtime_provenance_missing_count"]
+    missing_issue_count = report.summary["runtime_mapping_missing_count"]
     assert isinstance(missing_issue_count, int)
     assert missing_issue_count >= 1
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
@@ -1573,17 +1572,17 @@ async def test_diagnose_active_runtime_never_guesses_without_runtime_map(
         )["file"] == "BadSource.js"
     )
     diagnosis = ensure_json_object(diagnosis_item, "diagnosis_item")
-    assert diagnosis["diagnosis_status"] == "runtime_provenance_missing"
+    assert diagnosis["diagnosis_status"] == "runtime_mapping_missing"
     assert "location_path" not in diagnosis
-    assert "rebuild-active-runtime" in str(diagnosis["suggested_action"])
+    assert "无法反推" in str(diagnosis["suggested_action"])
 
 
 @pytest.mark.asyncio
-async def test_diagnose_active_runtime_reports_unreviewed_rule_candidate(
+async def test_diagnose_active_runtime_reports_unmapped_source_residual(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """未审查插件源码候选应输出可导入规则候选，而不是伪装成已保存译文问题。"""
+    """未写入过译文的当前运行源码残留只报告无法反推，不猜规则候选。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -1602,58 +1601,25 @@ async def test_diagnose_active_runtime_reports_unreviewed_rule_candidate(
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    async with await registry.open_game("テストゲーム") as session:
-        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
-        text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
-        active_game_data = await load_active_runtime_game_data(session.game_path)
-        runtime_source = active_game_data.plugin_source_files["BadSource.js"]
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
-        source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
-        source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
-        runtime_literal = iter_plugin_source_string_literals(
-            file_name="BadSource.js",
-            source=runtime_source,
-            active=True,
-        )[0]
-        await session.replace_plugin_source_runtime_provenance(
-            [
-                PluginSourceRuntimeProvenanceRecord(
-                    source_file_name="BadSource.js",
-                    source_selector=source_candidate.selector,
-                    source_file_hash=source_file_scan.file_hash,
-                    source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
-                    review_kind="unreviewed",
-                    location_path="",
-                    translation_lines_hash="",
-                    runtime_file_name="BadSource.js",
-                    runtime_selector=runtime_literal.selector,
-                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
-                    runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
-                    runtime_line=runtime_literal.line,
-                    created_at="2026-05-24T00:00:00",
-                )
-            ]
-        )
-
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム")
 
     assert report.status == "error"
-    assert report.summary["mapped_unreviewed_count"] == 1
+    missing_count = report.summary["runtime_mapping_missing_count"]
+    assert isinstance(missing_count, int)
+    assert missing_count >= 1
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
     diagnosis = ensure_json_object(diagnosis_items[0], "diagnosis_item")
-    rule_candidate = ensure_json_object(diagnosis["plugin_source_rule_candidate"], "rule_candidate")
-    assert diagnosis["diagnosis_status"] == "mapped_unreviewed"
-    assert rule_candidate["selectors"] == [source_candidate.selector]
+    assert diagnosis["diagnosis_status"] == "runtime_mapping_missing"
+    assert "plugin_source_rule_candidate" not in diagnosis
 
 
 @pytest.mark.asyncio
-async def test_diagnose_active_runtime_omits_excluded_ignored_items(
+async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """已排除的当前运行残留只进入忽略统计，诊断问题列表保持为空。"""
+    """插件源码规则排除 selector 不会让当前运行源文残留从诊断里消失。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -1676,32 +1642,16 @@ async def test_diagnose_active_runtime_omits_excluded_ignored_items(
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        active_game_data = await load_active_runtime_game_data(session.game_path)
-        runtime_source = active_game_data.plugin_source_files["BadSource.js"]
         source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
-        runtime_literal = iter_plugin_source_string_literals(
-            file_name="BadSource.js",
-            source=runtime_source,
-            active=True,
-        )[0]
-        await session.replace_plugin_source_runtime_provenance(
+        await session.replace_plugin_source_text_rules(
             [
-                PluginSourceRuntimeProvenanceRecord(
-                    source_file_name="BadSource.js",
-                    source_selector=source_candidate.selector,
-                    source_file_hash=source_file_scan.file_hash,
-                    source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
-                    review_kind="excluded",
-                    location_path="",
-                    translation_lines_hash="",
-                    runtime_file_name="BadSource.js",
-                    runtime_selector=runtime_literal.selector,
-                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
-                    runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
-                    runtime_line=runtime_literal.line,
-                    created_at="2026-05-24T00:00:00",
+                PluginSourceTextRuleRecord(
+                    file_name="BadSource.js",
+                    file_hash=source_file_scan.file_hash,
+                    selectors=[],
+                    excluded_selectors=[source_candidate.selector],
                 )
             ]
         )
@@ -1709,11 +1659,11 @@ async def test_diagnose_active_runtime_omits_excluded_ignored_items(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム")
 
-    assert report.status == "ok"
-    assert report.summary["active_runtime_ignored_excluded_count"] == 1
-    assert "mapped_excluded_count" not in report.summary
-    assert "mapped_non_source_count" not in report.summary
-    assert report.details["active_runtime_diagnosis_items"] == []
+    assert report.status == "error"
+    assert report.summary["active_runtime_source_residual_count"] == 1
+    assert report.summary["runtime_mapping_missing_count"] == 1
+    diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
+    assert len(diagnosis_items) == 1
 
 
 @pytest.mark.asyncio

@@ -902,7 +902,7 @@ class RuleValidationAgentMixin:
                         deleted_translation_backup_path = backup.backup_path
                     deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
                 await session.replace_plugin_source_text_rules(records)
-                await session.clear_plugin_source_runtime_provenance()
+                await session.clear_plugin_source_runtime_write_maps()
                 if records:
                     await session.delete_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN)
                 else:

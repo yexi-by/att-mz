@@ -21,7 +21,7 @@
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
 | `plugin_text_rules` | 保存插件配置中可翻译字符串的 JSONPath 规则 | `import-plugin-rules` |
 | `plugin_source_text_rules` | 保存插件源码中可翻译字符串的 AST selector 规则 | `import-plugin-source-rules` |
-| `plugin_source_runtime_provenance` | 保存插件源码写回后当前运行字符串到翻译源审查状态的确定性来源映射 | `write-back`、`rebuild-active-runtime`、`write-terminology` |
+| `plugin_source_runtime_write_map` | 保存插件源码写回后已翻译字符串到当前运行 selector 的可选诊断映射 | `write-back`、`rebuild-active-runtime`、`write-terminology` |
 | `note_tag_text_rules` | 保存 data 文件 Note 标签中可翻译标签名 | `import-note-tag-rules` |
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
@@ -165,32 +165,31 @@
 - 主翻译流程只按数据库中已导入的源码规则提取 `js/plugins` 直接插件文件文本。
 - 高风险扫描结果没有对应源码规则，或已启动支线但仍有候选未归入翻译或排除时，正文翻译入口会停止并要求用户处理。
 
-### `plugin_source_runtime_provenance`
+### `plugin_source_runtime_write_map`
 
-保存插件源码写回后，当前运行 JS 字符串到翻译源审查状态的确定性来源映射。它用于 `audit-active-runtime` 判断问题等级，也用于 `diagnose-active-runtime` 反推问题来源，不参与翻译源抽取。
+保存插件源码写回后，已翻译插件源码文本到当前运行 JS 字符串的可选诊断映射。它只用于 `diagnose-active-runtime` 精确反推已保存译文记录，不参与翻译源抽取、质量检查或当前运行审计判定。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
+| `location_path` | `TEXT` | 主键 | 翻译源视图中的插件源码文本定位路径 |
 | `source_file_name` | `TEXT` | 非空 | 翻译源插件源码文件名 |
 | `source_selector` | `TEXT` | 非空 | 翻译源 AST selector |
 | `source_file_hash` | `TEXT` | 非空 | 写回时的翻译源文件哈希 |
 | `source_text_hash` | `TEXT` | 非空 | 写回时的翻译源可见文本哈希 |
-| `review_kind` | `TEXT` | 非空 | `translate` 表示应翻译，`excluded` 表示已审查但不翻译，`unreviewed` 表示源语言候选未审查，`non_source` 表示不是源语言候选 |
-| `location_path` | `TEXT` | 非空 | 翻译源视图中的插件源码文本定位路径；非翻译项为空 |
-| `translation_lines_hash` | `TEXT` | 非空 | 写回时的中文译文行哈希；非翻译项为空 |
-| `runtime_file_name` | `TEXT` | 联合主键 | 当前运行插件源码文件名 |
-| `runtime_selector` | `TEXT` | 联合主键 | 写回后当前运行 AST selector |
+| `translation_lines_hash` | `TEXT` | 非空 | 写回时的中文译文行哈希 |
+| `runtime_file_name` | `TEXT` | 唯一索引 | 当前运行插件源码文件名 |
+| `runtime_selector` | `TEXT` | 唯一索引 | 写回后当前运行 AST selector |
 | `runtime_file_hash` | `TEXT` | 非空 | 写回后的当前运行文件哈希 |
 | `runtime_text_hash` | `TEXT` | 非空 | 写回后的当前运行可见文本哈希 |
 | `runtime_line` | `INTEGER` | 非空 | 写回后字符串所在行号 |
-| `created_at` | `TEXT` | 非空 | 来源映射生成时间 |
+| `created_at` | `TEXT` | 非空 | 映射生成时间 |
 
 维护规则：
 
-- 插件源码写回成功后按当前运行源码重新解析并保存全量来源映射。
-- 导入新的插件源码规则会清空来源映射，避免旧 selector 影响当前审计和诊断。
-- 当前运行审计只能按 `runtime_file_name + runtime_selector` 精确匹配来源映射；没有命中或文件哈希不匹配时报告来源映射缺失或失效，不做启发式猜测。
-- `translate` 和 `unreviewed` 发现源文残留时会阻塞写回验收；`excluded` 和 `non_source` 只进入忽略统计。
+- 插件源码写回成功后，为实际写入的译文记录保存当前运行 selector 映射。
+- 导入新的插件源码规则会清空映射，避免旧 selector 影响诊断输出。
+- 当前运行审计直接扫描玩家实际运行文件，报告读取失败、JS 语法错误、坏控制符和源文残留。
+- 当前运行诊断只能按 `runtime_file_name + runtime_selector` 精确匹配映射；没有命中时报告无法反推，不做文本相似度、行号、上下文或 AST 顺序猜测。
 
 ### `note_tag_text_rules`
 

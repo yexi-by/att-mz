@@ -151,7 +151,6 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
     _ = write_plugin_source_text(
         game_data,
         items,
-        plugin_source_rule_records=records,
         text_rules=text_rules,
     )
     write_game_files(game_data)
@@ -163,10 +162,10 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_write_back_returns_runtime_provenance_after_length_changes(
+async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_changes(
     minimal_game_dir: Path,
 ) -> None:
-    """插件源码写回来源映射必须覆盖翻译、排除和非源语言字符串。"""
+    """插件源码写回只为已写入译文返回可选诊断映射。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -212,10 +211,9 @@ async def test_plugin_source_write_back_returns_runtime_provenance_after_length_
             item.translation_lines = ["短"]
 
     reset_writable_copies(game_data)
-    provenance_records = write_plugin_source_text(
+    runtime_write_maps = write_plugin_source_text(
         game_data,
         items,
-        plugin_source_rule_records=records,
         text_rules=text_rules,
     )
     final_source = game_data.writable_plugin_source_files["HardcodedText.js"]
@@ -228,27 +226,26 @@ async def test_plugin_source_write_back_returns_runtime_provenance_after_length_
         )
     }
 
-    assert len(provenance_records) == 4
-    assert all(record.runtime_selector in runtime_literals for record in provenance_records)
-    translated_records = [record for record in provenance_records if record.review_kind == "translate"]
-    assert {record.location_path for record in translated_records} == {item.location_path for item in items}
-    excluded_record = next(record for record in provenance_records if record.source_selector == category_candidate.selector)
-    non_source_record = next(record for record in provenance_records if runtime_literals[record.runtime_selector].text == "\\TRP")
-    assert excluded_record.review_kind == "excluded"
-    assert excluded_record.location_path == ""
-    assert non_source_record.review_kind == "non_source"
-    assert non_source_record.location_path == ""
-    second_record = next(record for record in provenance_records if record.source_selector == second_candidate.selector)
+    assert len(runtime_write_maps) == 2
+    assert all(record.runtime_selector in runtime_literals for record in runtime_write_maps)
+    assert {record.location_path for record in runtime_write_maps} == {item.location_path for item in items}
+    assert {record.source_selector for record in runtime_write_maps} == {
+        first_candidate.selector,
+        second_candidate.selector,
+    }
+    assert category_candidate.selector not in {record.source_selector for record in runtime_write_maps}
+    assert "\\TRP" not in {runtime_literals[record.runtime_selector].text for record in runtime_write_maps}
+    second_record = next(record for record in runtime_write_maps if record.source_selector == second_candidate.selector)
     assert second_record.runtime_selector != second_candidate.selector
     assert runtime_literals[second_record.runtime_selector].text == "短"
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_write_back_rejects_unverified_runtime_map(
+async def test_plugin_source_write_back_treats_runtime_map_as_optional(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """最终当前运行 selector 不能精确验证时，插件源码写回必须失败。"""
+    """诊断映射无法生成时，插件源码写回结果本身仍然有效。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -306,13 +303,14 @@ async def test_plugin_source_write_back_rejects_unverified_runtime_map(
         empty_runtime_scan,
     )
     reset_writable_copies(game_data)
-    with pytest.raises(ValueError, match="写回映射无法验证"):
-        _ = write_plugin_source_text(
-            game_data,
-            [item],
-            plugin_source_rule_records=records,
-            text_rules=text_rules,
-        )
+    runtime_write_maps = write_plugin_source_text(
+        game_data,
+        [item],
+        text_rules=text_rules,
+    )
+
+    assert runtime_write_maps == []
+    assert "title: '插件直写'" in game_data.writable_plugin_source_files["HardcodedText.js"]
 
 
 @pytest.mark.asyncio
@@ -416,11 +414,11 @@ async def test_plugin_source_extraction_scans_each_file_once(
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_write_back_scans_all_direct_files_for_full_provenance(
+async def test_plugin_source_write_back_scans_changed_file_for_runtime_write_maps(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件源码写回生成完整来源映射时复用单文件扫描结果。"""
+    """插件源码写回只扫描实际写入文件的翻译源和当前运行内容。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -468,11 +466,10 @@ async def test_plugin_source_write_back_scans_all_direct_files_for_full_provenan
     _ = write_plugin_source_text(
         game_data,
         items,
-        plugin_source_rule_records=[record],
         text_rules=text_rules,
     )
 
-    assert selector_scan_count == 4
+    assert selector_scan_count == 2
 
 
 @pytest.mark.asyncio
@@ -630,10 +627,10 @@ async def test_plugin_source_rules_allow_file_with_only_excluded_selectors(
 
 
 @pytest.mark.asyncio
-async def test_active_runtime_audit_ignores_excluded_residual_and_non_source_controls(
+async def test_active_runtime_audit_reports_excluded_residual_and_plugin_controls(
     minimal_game_dir: Path,
 ) -> None:
-    """已排除源文残留和非源语言插件控制符不能阻塞当前运行验收。"""
+    """当前运行验收只看真实运行文件问题，不按规则排除状态降级。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -646,39 +643,26 @@ async def test_active_runtime_audit_ignores_excluded_residual_and_non_source_con
     )
     text_rules = TextRules.from_setting(TextRulesSetting())
     game_data = await load_game_data(minimal_game_dir)
-    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "HardcodedText.js")
-    category_candidate = scan.candidates[0]
-    records = [
-        PluginSourceTextRuleRecord(
-            file_name="HardcodedText.js",
-            file_hash=file_scan.file_hash,
-            excluded_selectors=[category_candidate.selector],
-        )
-    ]
 
     reset_writable_copies(game_data)
-    provenance_records = write_plugin_source_text(
-        game_data,
-        [],
-        plugin_source_rule_records=records,
-        text_rules=text_rules,
-    )
+    _ = write_plugin_source_text(game_data, [], text_rules=text_rules)
     audit = audit_active_runtime_plugin_source(
         game_data=game_data,
         text_rules=text_rules,
         plugin_source_files=game_data.writable_plugin_source_files,
-        runtime_provenance_records=provenance_records,
     )
 
     summary = audit.summary_json()
-    ignored_excluded_count = summary["active_runtime_ignored_excluded_count"]
-    ignored_non_source_count = summary["active_runtime_ignored_non_source_count"]
-    assert isinstance(ignored_excluded_count, int)
-    assert isinstance(ignored_non_source_count, int)
-    assert audit.blocking_issues == ()
-    assert ignored_excluded_count >= 1
-    assert ignored_non_source_count >= 1
+    source_residual_count = summary["active_runtime_source_residual_count"]
+    placeholder_risk_count = summary["active_runtime_placeholder_risk_count"]
+    assert isinstance(source_residual_count, int)
+    assert isinstance(placeholder_risk_count, int)
+    assert source_residual_count >= 1
+    assert placeholder_risk_count >= 1
+    assert {issue.code for issue in audit.issues} >= {
+        "active_runtime_source_residual",
+        "active_runtime_placeholder_risk",
+    }
 
 
 @pytest.mark.asyncio
@@ -700,23 +684,22 @@ async def test_active_runtime_audit_errors_for_unreviewed_source_candidate(
     game_data = await load_game_data(minimal_game_dir)
 
     reset_writable_copies(game_data)
-    provenance_records = write_plugin_source_text(game_data, [], text_rules=text_rules)
+    _ = write_plugin_source_text(game_data, [], text_rules=text_rules)
     audit = audit_active_runtime_plugin_source(
         game_data=game_data,
         text_rules=text_rules,
         plugin_source_files=game_data.writable_plugin_source_files,
-        runtime_provenance_records=provenance_records,
     )
 
-    assert audit.blocking_issue_counts["active_runtime_source_residual"] == 1
-    assert audit.blocking_issues[0].review_kind == "unreviewed"
+    assert audit.issue_counts["active_runtime_source_residual"] == 1
+    assert audit.issues[0].code == "active_runtime_source_residual"
 
 
 @pytest.mark.asyncio
-async def test_active_runtime_audit_reports_changed_runtime_file_hash(
+async def test_active_runtime_audit_reports_current_runtime_control_risk(
     minimal_game_dir: Path,
 ) -> None:
-    """当前运行插件源码变化时，过期来源映射必须阻塞验收。"""
+    """当前运行源码变化后，验收直接报告真实控制符风险。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -731,18 +714,17 @@ async def test_active_runtime_audit_reports_changed_runtime_file_hash(
     game_data = await load_game_data(minimal_game_dir)
 
     reset_writable_copies(game_data)
-    provenance_records = write_plugin_source_text(game_data, [], text_rules=text_rules)
+    _ = write_plugin_source_text(game_data, [], text_rules=text_rules)
     game_data.writable_plugin_source_files["HardcodedText.js"] = "const Messages = { protocol: '\\\\ii[1]' };\n"
     audit = audit_active_runtime_plugin_source(
         game_data=game_data,
         text_rules=text_rules,
         plugin_source_files=game_data.writable_plugin_source_files,
-        runtime_provenance_records=provenance_records,
     )
 
-    assert audit.blocking_issue_counts["active_runtime_provenance_stale"] == 1
-    stale_issue = next(issue for issue in audit.blocking_issues if issue.code == "active_runtime_provenance_stale")
-    assert stale_issue.mapping_reason == "runtime_file_changed"
+    assert audit.issue_counts["active_runtime_placeholder_risk"] == 1
+    issue = next(issue for issue in audit.issues if issue.code == "active_runtime_placeholder_risk")
+    assert issue.fragment == "\\ii[1]"
 
 
 @pytest.mark.asyncio
@@ -830,7 +812,6 @@ async def test_plugin_source_write_back_requires_native_ast(
         _ = write_plugin_source_text(
             game_data,
             [item],
-            plugin_source_rule_records=records,
             text_rules=text_rules,
         )
 
@@ -876,7 +857,6 @@ async def test_plugin_source_partial_backup_keeps_unmodified_files_visible(minim
     _ = write_plugin_source_text(
         game_data,
         [item],
-        plugin_source_rule_records=records,
         text_rules=text_rules,
     )
     write_game_files(game_data)

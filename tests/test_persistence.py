@@ -16,7 +16,7 @@ from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     LlmFailureRecord,
     PlaceholderRuleRecord,
-    PluginSourceRuntimeProvenanceRecord,
+    PluginSourceRuntimeWriteMapRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
     StructuredPlaceholderRuleRecord,
@@ -181,14 +181,13 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         await session.replace_plugin_text_rules([rule])
         assert await session.read_plugin_text_rules() == [rule]
 
-        runtime_provenance = PluginSourceRuntimeProvenanceRecord(
+        runtime_write_map = PluginSourceRuntimeWriteMapRecord(
+            location_path="js/plugins/Source.js/ast:string:1:10:aaaa",
             source_file_name="Source.js",
             source_selector="ast:string:1:10:aaaa",
             source_file_hash="source-file-hash",
             source_text_hash="source-text-hash",
-            review_kind="excluded",
-            location_path="",
-            translation_lines_hash="",
+            translation_lines_hash="translation-lines-hash",
             runtime_file_name="Source.js",
             runtime_selector="ast:string:1:10:bbbb",
             runtime_file_hash="runtime-file-hash",
@@ -196,8 +195,8 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             runtime_line=1,
             created_at="2026-05-24T00:00:00",
         )
-        await session.replace_plugin_source_runtime_provenance([runtime_provenance])
-        assert await session.read_plugin_source_runtime_provenance() == [runtime_provenance]
+        await session.replace_plugin_source_runtime_write_maps([runtime_write_map])
+        assert await session.read_plugin_source_runtime_write_maps() == [runtime_write_map]
 
         event_rule = EventCommandTextRuleRecord(
             command_code=357,

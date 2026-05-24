@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from app.plugin_text import extract_plugin_name
-from app.rmmz.schema import GameData, PluginSourceRuntimeProvenanceRecord
+from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
 
 from .scanner import (
@@ -31,11 +31,8 @@ class ActiveRuntimePluginSourceIssue:
     code: str
     message: str
     file_name: str
-    blocking: bool = True
     fragment: str = ""
     literal: PluginSourceStringLiteral | None = None
-    review_kind: str = ""
-    mapping_reason: str = ""
     read_error: str = ""
     syntax_error: str = ""
 
@@ -50,12 +47,7 @@ class ActiveRuntimePluginSourceIssue:
             payload = self.literal.to_json_object()
         payload["code"] = self.code
         payload["message"] = self.message
-        payload["blocking"] = self.blocking
         payload["fragment"] = self.fragment
-        if self.review_kind:
-            payload["review_kind"] = self.review_kind
-        if self.mapping_reason:
-            payload["mapping_reason"] = self.mapping_reason
         if self.read_error:
             payload["read_error"] = self.read_error
         if self.syntax_error:
@@ -79,46 +71,25 @@ class ActiveRuntimePluginSourceAudit:
         """按问题编码统计数量。"""
         return Counter(issue.code for issue in self.issues)
 
-    @property
-    def blocking_issues(self) -> tuple[ActiveRuntimePluginSourceIssue, ...]:
-        """返回会阻塞写回验收的问题。"""
-        return tuple(issue for issue in self.issues if issue.blocking)
-
-    @property
-    def blocking_issue_counts(self) -> Counter[str]:
-        """按问题编码统计阻塞问题数量。"""
-        return Counter(issue.code for issue in self.blocking_issues)
-
     def summary_json(self) -> JsonObject:
         """转换成质量报告摘要字段。"""
         counts = self.issue_counts
-        blocking_counts = self.blocking_issue_counts
-        ignored_issues = [issue for issue in self.issues if not issue.blocking]
-        ignored_review_counts = Counter(issue.review_kind for issue in ignored_issues)
         return {
             "active_runtime_scanned_file_count": self.scanned_file_count,
             "active_runtime_active_file_count": self.active_file_count,
             "active_runtime_literal_count": self.literal_count,
             "active_runtime_active_literal_count": self.active_literal_count,
             "active_runtime_read_error_file_count": self.read_error_file_count,
-            "active_runtime_issue_count": len(self.blocking_issues),
-            "active_runtime_observed_issue_count": len(self.issues),
-            "active_runtime_ignored_issue_count": len(ignored_issues),
-            "active_runtime_ignored_excluded_count": ignored_review_counts.get("excluded", 0),
-            "active_runtime_ignored_non_source_count": ignored_review_counts.get("non_source", 0),
-            "active_runtime_read_error_count": blocking_counts.get("active_runtime_read_error", 0),
-            "active_runtime_syntax_error_count": blocking_counts.get("active_runtime_syntax_error", 0),
-            "active_runtime_source_residual_count": blocking_counts.get("active_runtime_source_residual", 0),
-            "active_runtime_placeholder_risk_count": blocking_counts.get("active_runtime_placeholder_risk", 0),
-            "active_runtime_provenance_missing_count": blocking_counts.get("active_runtime_provenance_missing", 0),
-            "active_runtime_provenance_stale_count": blocking_counts.get("active_runtime_provenance_stale", 0),
-            "active_runtime_observed_source_residual_count": counts.get("active_runtime_source_residual", 0),
-            "active_runtime_observed_placeholder_risk_count": counts.get("active_runtime_placeholder_risk", 0),
+            "active_runtime_issue_count": len(self.issues),
+            "active_runtime_read_error_count": counts.get("active_runtime_read_error", 0),
+            "active_runtime_syntax_error_count": counts.get("active_runtime_syntax_error", 0),
+            "active_runtime_source_residual_count": counts.get("active_runtime_source_residual", 0),
+            "active_runtime_placeholder_risk_count": counts.get("active_runtime_placeholder_risk", 0),
         }
 
     def issues_json(self, *, limit: int = 100) -> JsonArray:
-        """返回前 N 条阻塞审计问题。"""
-        return [issue.to_json_object() for issue in self.blocking_issues[:limit]]
+        """返回前 N 条审计问题。"""
+        return [issue.to_json_object() for issue in self.issues[:limit]]
 
 
 def audit_active_runtime_plugin_source(
@@ -127,7 +98,6 @@ def audit_active_runtime_plugin_source(
     text_rules: TextRules,
     plugin_source_files: dict[str, str] | None = None,
     plugin_source_read_errors: dict[str, str] | None = None,
-    runtime_provenance_records: list[PluginSourceRuntimeProvenanceRecord] | None = None,
 ) -> ActiveRuntimePluginSourceAudit:
     """审计当前运行插件源码中的源文残留和坏控制符。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
@@ -137,8 +107,6 @@ def audit_active_runtime_plugin_source(
         if plugin_source_read_errors is not None
         else game_data.plugin_source_read_errors
     )
-    provenance_by_runtime_key = _runtime_provenance_by_key(runtime_provenance_records or [])
-    provenance_by_file = _runtime_provenance_by_file(runtime_provenance_records or [])
     issues: list[ActiveRuntimePluginSourceIssue] = []
     literal_count = 0
     active_literal_count = 0
@@ -186,46 +154,18 @@ def audit_active_runtime_plugin_source(
                 )
                 continue
             literals = file_scan.literals
-            runtime_file_hash = file_scan.file_hash
         else:
             literals = iter_plugin_source_string_literals(
                 file_name=file_name,
                 source=source,
                 active=False,
             )
-            runtime_file_hash = ""
         literal_count += len(literals)
         if not active:
             continue
         active_literal_count += len(literals)
-        provenance_issue = _runtime_provenance_file_issue(
-            file_name=file_name,
-            runtime_file_hash=runtime_file_hash,
-            has_literals=bool(literals),
-            provenance_by_file=provenance_by_file,
-        )
-        if provenance_issue is not None:
-            issues.append(provenance_issue)
-            continue
         for literal in literals:
-            provenance = provenance_by_runtime_key.get((literal.file_name, literal.selector))
-            if provenance is None:
-                issues.append(
-                    ActiveRuntimePluginSourceIssue(
-                        code="active_runtime_provenance_missing",
-                        message="当前运行插件源码缺少来源映射，无法判断该字符串是否应该翻译；请重新执行 rebuild-active-runtime 生成映射",
-                        file_name=literal.file_name,
-                        literal=literal,
-                        mapping_reason="runtime_provenance_missing",
-                    )
-                )
-                continue
-            issues.extend(
-                _classify_literal_issues(
-                    issues=_audit_literal(literal=literal, text_rules=text_rules),
-                    provenance=provenance,
-                )
-            )
+            issues.extend(_audit_literal(literal=literal, text_rules=text_rules))
     return ActiveRuntimePluginSourceAudit(
         issues=tuple(issues),
         scanned_file_count=len(set(source_files) | set(read_errors) | active_missing_file_names),
@@ -290,112 +230,6 @@ def _audit_literal(
             )
         )
     return _deduplicate_issues(issues)
-
-
-def _runtime_provenance_by_key(
-    records: list[PluginSourceRuntimeProvenanceRecord],
-) -> dict[tuple[str, str], PluginSourceRuntimeProvenanceRecord]:
-    """按当前运行文件和 selector 索引来源映射。"""
-    return {
-        (record.runtime_file_name, record.runtime_selector): record
-        for record in records
-    }
-
-
-def _runtime_provenance_by_file(
-    records: list[PluginSourceRuntimeProvenanceRecord],
-) -> dict[str, list[PluginSourceRuntimeProvenanceRecord]]:
-    """按当前运行文件索引来源映射。"""
-    by_file: dict[str, list[PluginSourceRuntimeProvenanceRecord]] = {}
-    for record in records:
-        by_file.setdefault(record.runtime_file_name, []).append(record)
-    return by_file
-
-
-def _runtime_provenance_file_issue(
-    *,
-    file_name: str,
-    runtime_file_hash: str,
-    has_literals: bool,
-    provenance_by_file: dict[str, list[PluginSourceRuntimeProvenanceRecord]],
-) -> ActiveRuntimePluginSourceIssue | None:
-    """检查当前运行插件源码文件是否存在缺失或过期的来源映射。"""
-    file_records = provenance_by_file.get(file_name, [])
-    if not file_records:
-        if not has_literals:
-            return None
-        return ActiveRuntimePluginSourceIssue(
-            code="active_runtime_provenance_missing",
-            message="当前运行插件源码没有来源映射，无法判断残留文本是否应翻译；请重新执行 rebuild-active-runtime 生成映射",
-            file_name=file_name,
-            mapping_reason="runtime_provenance_missing",
-        )
-    expected_hashes = {record.runtime_file_hash for record in file_records}
-    if expected_hashes != {runtime_file_hash}:
-        return ActiveRuntimePluginSourceIssue(
-            code="active_runtime_provenance_stale",
-            message="当前运行插件源码已变化，来源映射失效；请重新执行 rebuild-active-runtime 生成映射",
-            file_name=file_name,
-            mapping_reason="runtime_file_changed",
-        )
-    return None
-
-
-def _classify_literal_issues(
-    *,
-    issues: list[ActiveRuntimePluginSourceIssue],
-    provenance: PluginSourceRuntimeProvenanceRecord,
-) -> list[ActiveRuntimePluginSourceIssue]:
-    """按来源审查状态决定单个字符串问题是否阻塞验收。"""
-    if provenance.review_kind in {"translate", "unreviewed"}:
-        return [
-            _issue_with_runtime_mapping(
-                issue=issue,
-                provenance=provenance,
-                blocking=True,
-            )
-            for issue in issues
-        ]
-    if provenance.review_kind in {"excluded", "non_source"}:
-        return [
-            _issue_with_runtime_mapping(
-                issue=issue,
-                provenance=provenance,
-                blocking=False,
-            )
-            for issue in issues
-        ]
-    return [
-        ActiveRuntimePluginSourceIssue(
-            code="active_runtime_provenance_missing",
-            message=f"当前运行插件源码来源映射状态无效: {provenance.review_kind}",
-            file_name=issue.file_name,
-            literal=issue.literal,
-            mapping_reason="invalid_review_kind",
-        )
-        for issue in issues
-    ]
-
-
-def _issue_with_runtime_mapping(
-    *,
-    issue: ActiveRuntimePluginSourceIssue,
-    provenance: PluginSourceRuntimeProvenanceRecord,
-    blocking: bool,
-) -> ActiveRuntimePluginSourceIssue:
-    """把来源映射状态补入单条审计问题。"""
-    return ActiveRuntimePluginSourceIssue(
-        code=issue.code,
-        message=issue.message,
-        file_name=issue.file_name,
-        blocking=blocking,
-        fragment=issue.fragment,
-        literal=issue.literal,
-        review_kind=provenance.review_kind,
-        mapping_reason="runtime_provenance_exact_match",
-        read_error=issue.read_error,
-        syntax_error=issue.syntax_error,
-    )
 
 
 def _collect_bad_control_fragments(literal: PluginSourceStringLiteral) -> list[str]:
