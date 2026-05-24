@@ -24,7 +24,7 @@
 
 ## 协作模块
 
-- 开发版 Skill 位于 `skills/att-mz/SKILL.md`，用于源码环境。
+- 开发版 Skill 位于 `skills/att-mz/SKILL.md`，用于源码环境中的翻译流程。
 - 发行版 Skill 位于 `skills/att-mz-release/SKILL.md`，发布时改写为发行包内的 `skills/att-mz/SKILL.md`。
 - 提示词位于 `prompts/`，正文翻译 prompt 不应暴露数据库字段、内部路径或程序定位细节。
 - 测试目录按业务域覆盖 CLI、配置、Agent 工具箱、文本规则、翻译、术语、持久化和发布协议。

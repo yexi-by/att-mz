@@ -1,17 +1,10 @@
 """自定义占位符候选扫描服务。"""
-
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from app.rmmz.control_codes import ControlSequenceSpan
+from app.rmmz.control_codes import ControlSequenceSpan, iter_raw_control_sequence_candidates
 from app.rmmz.schema import TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonValue, TextRules
-
-CONTROL_CANDIDATE_PATTERN: re.Pattern[str] = re.compile(
-    r"\\(?:[A-Za-z]+\d*(?:\[[^\]\r\n]*\])?|[{}\\$.\|!><^])"
-)
-
 
 @dataclass(slots=True)
 class PlaceholderCandidate:
@@ -32,14 +25,14 @@ def scan_placeholder_candidates(
     candidates: dict[str, PlaceholderCandidate] = {}
     for source_name, text in _iter_scan_texts(translation_data_map):
         covered_spans = text_rules.iter_control_sequence_spans(text)
-        for match in CONTROL_CANDIDATE_PATTERN.finditer(text):
-            covered_span = _find_prefix_covering_span(
-                start_index=match.start(),
-                end_index=match.end(),
+        for raw_candidate in iter_raw_control_sequence_candidates(text):
+            covered_span = _find_covering_span(
+                start_index=raw_candidate.start_index,
+                end_index=raw_candidate.end_index,
                 covered_spans=covered_spans,
             )
             if covered_span is None:
-                marker = match.group(0)
+                marker = raw_candidate.original
                 standard_covered = False
                 custom_covered = False
             else:
@@ -102,19 +95,22 @@ def _iter_item_scan_texts(item: TranslationItem) -> Iterable[tuple[str, str]]:
         yield f"{item.location_path}#{line_index}", text
 
 
-def _find_prefix_covering_span(
+def _find_covering_span(
     *,
     start_index: int,
     end_index: int,
     covered_spans: list[ControlSequenceSpan],
 ) -> ControlSequenceSpan | None:
-    """判断候选开头是否已被实际占位符规则保护。"""
+    """判断候选是否已被实际占位符规则覆盖。"""
     for span in covered_spans:
-        if span.start_index != start_index:
-            continue
-        if span.end_index > end_index:
-            continue
-        return span
+        if span.source == "standard":
+            if span.start_index > start_index:
+                continue
+            if span.end_index < end_index:
+                continue
+            return span
+        if start_index < span.end_index and end_index > span.start_index:
+            return span
     return None
 
 

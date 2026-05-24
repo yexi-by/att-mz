@@ -182,6 +182,30 @@ mod tests {
     }
 
     #[test]
+    fn quality_scan_rejects_changed_long_control_candidate_hidden_by_standard_prefix() {
+        let payload = json!({
+            "items": [
+                {
+                    "location_path": "Map001.json/1/0/0",
+                    "item_type": "long_text",
+                    "role": null,
+                    "original_lines": [r"\nn[Name]OK"],
+                    "translation_lines": [r"\nn[Other]OK"]
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+            "source_residual_rules": []
+        });
+        let output = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let reason = value["placeholder_risk_items"][0]["reason"]
+            .as_str()
+            .expect("占位符风险明细应包含原因");
+        assert!(reason.contains(r"\nn[Name]"));
+        assert!(reason.contains(r"\nn[Other]"));
+    }
+
+    #[test]
     fn protocol_scan_skips_empty_entry() {
         let payload = json!({
             "entries": [
