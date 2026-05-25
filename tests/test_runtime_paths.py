@@ -9,7 +9,6 @@ import pytest
 
 from app import runtime_paths
 from app.application.font_replacement import resolve_replacement_font_path
-from app.config.custom_placeholder_rules import resolve_custom_placeholder_rules_path
 from app.observability import resolve_log_file_path
 from app.persistence import GameRegistry, build_db_path, resolve_default_db_directory
 from app.utils.config_loader_utils import resolve_setting_path
@@ -65,7 +64,7 @@ def test_app_home_uses_non_python_executable_argv(
 
 
 def test_default_project_paths_use_app_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """配置、数据库、日志和规则文件默认都落在应用运行目录下。"""
+    """配置、数据库和日志默认都落在应用运行目录下。"""
     monkeypatch.setenv(runtime_paths.APP_HOME_ENV_NAME, str(tmp_path))
 
     assert resolve_setting_path() == (tmp_path / "setting.toml").resolve()
@@ -73,7 +72,6 @@ def test_default_project_paths_use_app_home(monkeypatch: pytest.MonkeyPatch, tmp
     assert GameRegistry().db_directory == (tmp_path / "data" / "db").resolve()
     assert build_db_path("测试游戏") == (tmp_path / "data" / "db" / "测试游戏.db").resolve()
     assert resolve_log_file_path() == (tmp_path / "logs" / "app.log").resolve()
-    assert resolve_custom_placeholder_rules_path() == (tmp_path / "custom_placeholder_rules.json").resolve()
 
 
 def test_relative_replacement_font_uses_app_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

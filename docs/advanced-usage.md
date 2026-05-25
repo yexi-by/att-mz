@@ -118,17 +118,15 @@ uv run python main.py --agent-mode import-terminology --game <游戏标题> --in
 在规则前置、术语表、可信源快照和已保存译文质量检查通过后，把稳定名词写进游戏文件：
 
 ```powershell
-uv run python main.py --agent-mode write-terminology --game <游戏标题>
+uv run python main.py --agent-mode write-terminology --game <游戏标题> --json
 ```
 
 `write-terminology` 是术语专用写入，允许正文仍有还没成功保存译文的文本；它只会写入稳定术语和已保存且可写的正文译文。三类外部规则、普通占位符规则、结构化占位符规则、术语表、可信源快照、写入目标或已保存译文质量未通过时，命令会停止。
 
-命令当前不支持 `--json`，执行时以终端日志和文件日志确认结果。
-
 若本次写入需要覆盖字体引用，必须显式确认：
 
 ```powershell
-uv run python main.py --agent-mode write-terminology --game <游戏标题> --confirm-font-overwrite
+uv run python main.py --agent-mode write-terminology --game <游戏标题> --confirm-font-overwrite --json
 ```
 
 ## 外部文本规则
@@ -335,13 +333,13 @@ uv run python main.py --agent-mode restore-font --game <游戏标题> --json
 `run-all` 会按固定顺序执行正文翻译和写入；最终写入阶段使用同一套写文件前检查。使用前仍应先完成规则、术语和占位符准备：
 
 ```powershell
-uv run python main.py --agent-mode run-all --game <游戏标题>
+uv run python main.py --agent-mode run-all --game <游戏标题> --json
 ```
 
 只运行翻译、不写入：
 
 ```powershell
-uv run python main.py --agent-mode run-all --game <游戏标题> --skip-write-back
+uv run python main.py --agent-mode run-all --game <游戏标题> --skip-write-back --json
 ```
 
 ## 试玩反馈

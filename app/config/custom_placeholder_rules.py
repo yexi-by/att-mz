@@ -8,38 +8,16 @@ from typing import cast
 
 from app.rmmz.control_codes import CustomPlaceholderRule
 from app.rmmz.json_types import coerce_json_value, ensure_json_object
-from app.runtime_paths import resolve_app_path
-
-
-CUSTOM_PLACEHOLDER_RULES_FILE_NAME = "custom_placeholder_rules.json"
-
-
-def resolve_custom_placeholder_rules_path(base_dir: Path | None = None) -> Path:
-    """解析自定义占位符规则文件路径。"""
-    if base_dir is None:
-        return resolve_app_path(CUSTOM_PLACEHOLDER_RULES_FILE_NAME)
-    return base_dir.resolve() / CUSTOM_PLACEHOLDER_RULES_FILE_NAME
-
-
-def load_custom_placeholder_rules(
-    base_dir: Path | None = None,
-) -> tuple[CustomPlaceholderRule, ...]:
-    """读取项目根目录下的自定义正则占位符规则。"""
-    rules_path = resolve_custom_placeholder_rules_path(base_dir)
-    return load_custom_placeholder_rules_file(rules_path=rules_path, required=False)
 
 
 def load_custom_placeholder_rules_file(
     *,
     rules_path: Path,
-    required: bool = True,
 ) -> tuple[CustomPlaceholderRule, ...]:
     """从指定 JSON 文件读取自定义正则占位符规则。"""
     rules_path = rules_path.resolve()
     if not rules_path.exists():
-        if required:
-            raise FileNotFoundError(f"自定义占位符规则文件不存在: {rules_path}")
-        return ()
+        raise FileNotFoundError(f"自定义占位符规则文件不存在: {rules_path}")
 
     raw_value = cast(object, json.loads(rules_path.read_text(encoding="utf-8-sig")))
     return parse_custom_placeholder_rules(raw_value=raw_value, source_label=str(rules_path))
@@ -81,10 +59,7 @@ def parse_custom_placeholder_rules(
 
 
 __all__: list[str] = [
-    "CUSTOM_PLACEHOLDER_RULES_FILE_NAME",
-    "load_custom_placeholder_rules",
     "load_custom_placeholder_rules_file",
     "load_custom_placeholder_rules_text",
     "parse_custom_placeholder_rules",
-    "resolve_custom_placeholder_rules_path",
 ]

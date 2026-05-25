@@ -9,7 +9,12 @@ import argparse
 
 from app.cli.arguments import read_bool_arg, read_optional_str_arg
 from app.cli.progress import build_progress_reporter
-from app.cli.reports import build_font_restore_summary_report, build_write_back_summary_report
+from app.cli.reports import (
+    build_font_restore_summary_report,
+    build_run_all_summary_report,
+    build_terminology_write_summary_report,
+    build_write_back_summary_report,
+)
 from app.cli.runtime import (
     HandlerSession,
     build_setting_overrides,
@@ -19,6 +24,7 @@ from app.cli.runtime import (
     translate_text_for_handler,
     write_back_for_handler,
 )
+from app.application.summaries import WriteBackSummary
 from app.observability import logger
 
 
@@ -78,12 +84,15 @@ async def run_write_terminology_command(args: argparse.Namespace) -> int:
     setting_overrides = build_setting_overrides(args)
     async with HandlerSession() as handler:
         with build_progress_reporter("术语写回", args) as progress:
-            _ = await handler.write_terminology(
+            summary = await handler.write_terminology(
                 game_title=game_title,
                 callbacks=progress.status_callbacks(),
                 setting_overrides=setting_overrides,
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
+    if read_bool_arg(args, "json_output"):
+        report = build_terminology_write_summary_report(summary)
+        print(report.to_json_text())
     return 0
 
 
@@ -106,15 +115,21 @@ async def run_all_command(args: argparse.Namespace) -> int:
         )
         ensure_text_translation_success(text_summary)
 
+        write_back_summary: WriteBackSummary | None = None
         if skip_write_back:
             logger.warning(f"[tag.warning]已按参数跳过回写[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
-            return 0
-
-        _ = await write_back_for_handler(
-            handler=handler,
-            game_title=game_title,
-            setting_overrides=setting_overrides,
-            args=args,
-        )
+        else:
+            write_back_summary = await write_back_for_handler(
+                handler=handler,
+                game_title=game_title,
+                setting_overrides=setting_overrides,
+                args=args,
+            )
         logger.success(f"[tag.success]run-all 完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count]")
+    if read_bool_arg(args, "json_output"):
+        report = build_run_all_summary_report(
+            text_summary=text_summary,
+            write_back_summary=write_back_summary,
+        )
+        print(report.to_json_text())
     return 0

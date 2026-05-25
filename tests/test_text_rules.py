@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import app.config as config
 from app.config.custom_placeholder_rules import (
-    load_custom_placeholder_rules,
     load_custom_placeholder_rules_file,
     load_custom_placeholder_rules_text,
 )
@@ -841,15 +841,15 @@ def test_real_line_break_placeholder_rejects_missing_marker() -> None:
         item.verify_placeholders(rules)
 
 
-def test_custom_placeholder_rules_load_from_json_file(tmp_path: Path) -> None:
-    """自定义占位符规则 JSON 使用正则字符串作为键、占位符模板作为值。"""
+def test_custom_placeholder_rules_load_from_explicit_json_file(tmp_path: Path) -> None:
+    """显式自定义占位符规则 JSON 使用正则字符串作为键、占位符模板作为值。"""
     rules_path = tmp_path / "custom_placeholder_rules.json"
     _ = rules_path.write_text(
         json.dumps({r"@name\[[^\]]+\]": "[CUSTOM_NAME_{index}]"}),
         encoding="utf-8",
     )
 
-    custom_rules = load_custom_placeholder_rules(tmp_path)
+    custom_rules = load_custom_placeholder_rules_file(rules_path=rules_path)
     rules = TextRules.from_setting(
         TextRulesSetting(),
         custom_placeholder_rules=custom_rules,
@@ -862,6 +862,12 @@ def test_custom_placeholder_rules_load_from_json_file(tmp_path: Path) -> None:
 
     item.build_placeholders(rules)
     assert item.original_lines_with_placeholders == ["[CUSTOM_NAME_1]"]
+
+
+def test_custom_placeholder_rules_do_not_expose_app_home_loader() -> None:
+    """配置公共门面不暴露应用运行目录隐式规则入口。"""
+    assert not hasattr(config, "load_custom_placeholder_rules")
+    assert not hasattr(config, "resolve_custom_placeholder_rules_path")
 
 
 def test_custom_placeholder_rules_load_from_cli_json_string() -> None:

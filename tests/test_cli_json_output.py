@@ -21,7 +21,6 @@ from app.cli import registered_command_names
 from app.cli import write_report_outputs
 from app.cli.errors import CliArgumentError
 from app.cli.reports import build_sampled_stdout_report, build_write_back_summary_report
-from app.cli_main import format_argument_error_message
 from app.cli.commands.rules import (
     build_deleted_translation_backup_details,
     build_deleted_translation_warnings,
@@ -30,7 +29,7 @@ from app.cli.commands.registry import run_list_command
 from app.cli.commands.write_back import run_all_command
 from app.cli.runtime import build_setting_overrides
 from app.application.errors import WorkflowGateError
-from app.application.summaries import TextTranslationSummary, WriteBackSummary
+from app.application.summaries import TerminologyWriteSummary, TextTranslationSummary, WriteBackSummary
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 
 
@@ -472,11 +471,199 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
     assert summary["plugin_source_runtime_map_count"] == 12
 
 
-def test_placeholder_coverage_misuse_reports_json_suggestion(
+def test_write_terminology_json_summary_reports_handler_fields(
+    monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """常见 coverage 误用命令在 JSON 模式下给出可解析的候选命令建议。"""
-    exit_code = main(["scan-placeholder-coverage", "--json"])
+    """`write-terminology --json` 必须输出术语专用写入摘要。"""
+
+    class FakeHandler:
+        """返回固定术语写入摘要。"""
+
+        async def write_terminology(self, **kwargs: object) -> TerminologyWriteSummary:
+            """模拟 handler 术语写入成功。"""
+            assert kwargs["game_title"] == "demo"
+            return TerminologyWriteSummary(
+                written_count=3,
+                preserved_translation_count=5,
+            )
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+
+    exit_code = main(["write-terminology", "--game", "demo", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+
+    assert exit_code == 0
+    assert summary["written_count"] == 3
+    assert summary["preserved_translation_count"] == 5
+
+
+def test_run_all_json_summary_reports_translation_and_write_back(
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """`run-all --json` 必须输出翻译和写文件两个阶段的摘要。"""
+
+    class FakeHandler:
+        """返回固定写回摘要。"""
+
+        async def write_back(self, **kwargs: object) -> WriteBackSummary:
+            """模拟 handler 写回成功。"""
+            assert kwargs["game_title"] == "demo"
+            return WriteBackSummary(
+                data_item_count=5,
+                plugin_item_count=4,
+                terminology_written_count=3,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=8,
+                skipped_file_count=9,
+            )
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+        """模拟正文翻译阶段成功。"""
+        _ = kwargs
+        return TextTranslationSummary(
+            total_extracted_items=10,
+            pending_count=1,
+            deduplicated_count=9,
+            batch_count=2,
+            success_count=8,
+            error_count=0,
+            llm_failure_count=0,
+            run_id="run-1",
+        )
+
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+
+    exit_code = main(["run-all", "--game", "demo", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+    details = ensure_json_object(payload["details"], "CLI JSON details")
+    write_back_details = ensure_json_object(details["write_back"], "CLI JSON details.write_back")
+
+    assert exit_code == 0
+    assert summary["run_id"] == "run-1"
+    assert summary["success_count"] == 8
+    assert summary["write_back_performed"] is True
+    assert summary["write_back_planned_file_count"] == 8
+    assert write_back_details["skipped_file_count"] == 9
+
+
+def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """`run-all --skip-write-back --json` 必须说明写文件阶段已跳过。"""
+
+    class FakeHandler:
+        """不应执行写回。"""
+
+        async def write_back(self, **kwargs: object) -> WriteBackSummary:
+            """写回被调用说明 skip 参数失效。"""
+            _ = kwargs
+            raise AssertionError("skip-write-back 不应调用写回")
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+        """模拟正文翻译阶段成功。"""
+        _ = kwargs
+        return TextTranslationSummary(
+            total_extracted_items=4,
+            pending_count=0,
+            deduplicated_count=4,
+            batch_count=1,
+            success_count=4,
+            error_count=0,
+            run_id="run-skip",
+        )
+
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+
+    exit_code = main(["run-all", "--game", "demo", "--skip-write-back", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+    details = ensure_json_object(payload["details"], "CLI JSON details")
+
+    assert exit_code == 0
+    assert summary["run_id"] == "run-skip"
+    assert summary["write_back_performed"] is False
+    assert summary["write_back_skipped"] is True
+    assert details["write_back"] is None
+
+
+def test_unknown_command_reports_json_argument_error(
+    capsys: CaptureFixture[str],
+) -> None:
+    """未知命令在 JSON 模式下只报告参数错误。"""
+    exit_code = main(["unknown-command", "--json"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -488,17 +675,8 @@ def test_placeholder_coverage_misuse_reports_json_suggestion(
     assert exit_code == 2
     assert first_error["code"] == "argument_error"
     assert isinstance(message, str)
-    assert "scan-placeholder-candidates" in message
-
-
-def test_structured_placeholder_coverage_misuse_reports_terminal_suggestion() -> None:
-    """常见结构化 coverage 误用命令在终端错误文案中给出候选命令建议。"""
-    message = format_argument_error_message(
-        ("scan-structured-placeholder-coverage",),
-        "invalid choice: 'scan-structured-placeholder-coverage'",
-    )
-
-    assert "scan-structured-placeholder-candidates" in message
+    assert "unknown-command" in message
+    assert "可能想用" not in message
 
 
 def test_placeholder_rule_commands_accept_input_files() -> None:
@@ -862,6 +1040,17 @@ def test_translate_command_accepts_json_summary_flag() -> None:
     assert getattr(args, "json_output") is True
 
 
+def test_pipeline_and_terminology_write_commands_accept_json_summary_flag() -> None:
+    """run-all 和 write-terminology 支持机器可读摘要。"""
+    parser = build_parser()
+
+    run_all_args = parser.parse_args(["run-all", "--game", "demo", "--json"])
+    terminology_args = parser.parse_args(["write-terminology", "--game", "demo", "--json"])
+
+    assert getattr(run_all_args, "json_output") is True
+    assert getattr(terminology_args, "json_output") is True
+
+
 def test_translate_command_accepts_source_residual_override_names() -> None:
     """源文残留 CLI 覆盖参数会进入配置覆盖对象。"""
     parser = build_parser()
@@ -884,6 +1073,55 @@ def test_translate_command_accepts_source_residual_override_names() -> None:
     assert overrides.source_residual_allowed_chars == ["ー"]
     assert overrides.source_residual_allowed_tail_chars == ["よ"]
     assert overrides.source_residual_segment_pattern == "[ぁ-ん]+"
+
+
+def test_write_file_commands_reject_translation_override_names() -> None:
+    """写文件命令不暴露正文翻译专用配置参数。"""
+    parser = build_parser()
+    rejected_argvs = [
+        ["write-back", "--game", "demo", "--translation-worker-count", "4"],
+        ["rebuild-active-runtime", "--game", "demo", "--llm-model", "gpt-test"],
+        ["write-terminology", "--game", "demo", "--system-prompt", "prompt"],
+    ]
+
+    for argv in rejected_argvs:
+        with pytest.raises(CliArgumentError):
+            _ = parser.parse_args(argv)
+
+
+def test_write_back_command_accepts_write_related_overrides() -> None:
+    """write-back 只接受会参与写文件检查的配置覆盖参数。"""
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "write-back",
+            "--game",
+            "demo",
+            "--replacement-font-path",
+            "fonts/NotoSansSC-Regular.ttf",
+            "--long-text-line-width-limit",
+            "32",
+        ]
+    )
+    overrides = build_setting_overrides(args)
+
+    assert overrides.write_back_replacement_font_path == "fonts/NotoSansSC-Regular.ttf"
+    assert overrides.long_text_line_width_limit == 32
+    assert overrides.text_translation_worker_count is None
+
+
+def test_restore_font_command_rejects_unrelated_overrides() -> None:
+    """restore-font 只暴露字体还原需要的配置覆盖参数。"""
+    parser = build_parser()
+    rejected_argvs = [
+        ["restore-font", "--game", "demo", "--translation-worker-count", "4"],
+        ["restore-font", "--game", "demo", "--long-text-line-width-limit", "32"],
+    ]
+
+    for argv in rejected_argvs:
+        with pytest.raises(CliArgumentError):
+            _ = parser.parse_args(argv)
 
 
 def test_translate_command_accepts_source_lines_output_flags() -> None:

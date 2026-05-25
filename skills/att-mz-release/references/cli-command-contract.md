@@ -103,8 +103,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `translate --game <游戏标题> --max-batches 1 --json` | 小批量试跑正文翻译 | 命令正常结束，质量报告无新增规则性事故 | 看状态和质量报告，不盲目全量 |
 | `translate --game <游戏标题> --json` | 继续翻译还没成功保存译文的文本 | 剩余量下降且质量风险可解释 | 连续多轮不下降时转修规则、换模型或手动处理 |
-| `run-all --game <游戏标题> --skip-write-back` | 按固定顺序翻译正文但不写进游戏文件 | 翻译状态可解释，质量检查可继续 | 规则或质量错误未清前不写回 |
-| `run-all --game <游戏标题> --confirm-font-overwrite` | 翻译后执行最终写回并允许字体覆盖 | 用户已单独确认字体覆盖，命令正常结束 | 未确认字体覆盖时不使用 |
+| `run-all --game <游戏标题> --skip-write-back --json` | 按固定顺序翻译正文但不写进游戏文件 | `status` 为 `ok`，摘要说明写文件阶段已跳过 | 规则或质量错误未清前不写回 |
+| `run-all --game <游戏标题> --confirm-font-overwrite --json` | 翻译后执行最终写回并允许字体覆盖 | 用户已单独确认字体覆盖，摘要包含翻译和写文件结果 | 未确认字体覆盖时不使用 |
 | `translation-status --game <游戏标题> --json` | 快速查看最近运行、已保存译文和模型失败数量 | 数量能解释；需重新扫描当前文本范围时加 `--refresh-scope` | 数量下降时继续翻译，停滞时分析失败类型 |
 | `text-scope --game <游戏标题> --json` | 查看统一文本范围和规则来源 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题> --json` | 对比规则命中、译文和当前文本范围 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 补规则、补译文或精确重置 |
@@ -131,8 +131,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `write-back --game <游戏标题> --confirm-font-overwrite --json` | 写回并覆盖字体引用 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
 | `rebuild-active-runtime --game <游戏标题> --json` | 从可信源快照和已保存译文重建当前运行文件 | 写文件前检查无 error，命令返回 0，随后 `audit-active-runtime` 无 error | 质量问题未清时先修规则、手动译文或精确重置 |
 | `rebuild-active-runtime --game <游戏标题> --confirm-font-overwrite --json` | 重建运行文件并允许字体覆盖 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
-| `write-terminology --game <游戏标题>` | 术语专用写入，并保留已保存且可写的正文译文 | 术语专用检查通过，命令返回 0，写入范围可解释 | 术语表、规则前置、可信源快照或已保存译文质量未通过时停止 |
-| `write-terminology --game <游戏标题> --confirm-font-overwrite` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过 | 未确认字体覆盖时不使用 |
+| `write-terminology --game <游戏标题> --json` | 术语专用写入，并保留已保存且可写的正文译文 | `status` 为 `ok`，摘要包含术语写入和保留正文译文数量 | 术语表、规则前置、可信源快照或已保存译文质量未通过时停止 |
+| `write-terminology --game <游戏标题> --confirm-font-overwrite --json` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过，摘要可解释 | 未确认字体覆盖时不使用 |
 | `restore-font --game <游戏标题> --json` | 按原件还原项目覆盖过的字体引用 | 摘要可解释 | 缺原始备份或替换字体信息时停止说明 |
 | `verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json` | 在真实游戏文件中反查反馈原文 | `status` 为 `ok`，分类可解释 | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理 |
 | `scan-plugin-source-text --game <游戏标题> --output <风险报告文件> --json` | 扫描插件源码文本风险摘要；默认 `--view translation-source` | 输出文件存在，且不包含 AST selector 或完整候选列表，`summary.source_view` 可解释 | 高风险时暂停正文翻译；需要看当前运行文件时显式传 `--view active-runtime` |
