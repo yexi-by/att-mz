@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-`docs/development/rust-migration-review-final-report.md` 中记录的 28 个 finding 已按优先级分轮处理，当前闭环状态以 `docs/development/rust-migration-review-closure-matrix.md` 为准。
+`rust-migration-review-final-report.md` 中记录的 28 个 finding 已按优先级分轮处理，当前闭环状态以 `rust-migration-review-closure-matrix.md` 为准。
 
 本记录只保留当前有效的修复摘要和验证结果，不保留已撤回的 workflow 证据治理流水账。
 

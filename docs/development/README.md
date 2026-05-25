@@ -2,6 +2,8 @@
 
 本目录说明 A.T.T MZ 当前源码模块如何协作，供修功能、审查接口、定位测试和发布前验收使用。源码运行与命令教学见 [进阶教学与源码编译](../advanced-usage.md)，发行包用户入口见 [快速开始](../../README.md)，项目文案、规则、交付红线见 [项目局部规范](../../AGENTS.md)。
 
+模块说明文档放在本目录根层级；阶段性 review、性能问题分析、修复进度和闭环矩阵统一放在 [Review 记录](review-records/README.md)，避免和模块介绍混在一起。
+
 ## 阅读路线
 
 1. 先读 [运行入口与 CLI](runtime-and-cli.md)，理解命令如何解析、输出报告和装配配置。
@@ -25,6 +27,12 @@
 | [持久化层](persistence.md) | `app.persistence` | 多游戏数据库、会话和记录读写如何组织 |
 | [原生核心](native-core.md) | `rust/`、`app.native_quality` | PyO3 入口和 Rust 质量检查如何提供加速能力 |
 | [发布与测试](release-and-tests.md) | `.github`、`scripts`、`skills`、`prompts`、`tests` | 发行包如何构建、Skill 如何区分、测试如何验收 |
+
+## Review 记录
+
+| 文档 | 内容 |
+| --- | --- |
+| [Review 记录索引](review-records/README.md) | Rust 迁移 review、性能分析、修复进度和闭环矩阵 |
 
 ## 开发边界
 

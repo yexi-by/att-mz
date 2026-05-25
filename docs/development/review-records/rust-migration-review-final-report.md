@@ -12,7 +12,7 @@
 - 当前分支状态：迁移内容主要位于未提交工作区差异。
 - 静态范围：CLI、应用编排、Rust native core、PyO3 适配、写回/重建、文本协议、质量检查、测试和文档。
 - 动态范围：`D:\h-game\测试样本` 下 MV/MZ 候选样本，只操作副本和临时 `ATT_MZ_HOME`。
-- 性能补充来源：`docs/development/large-game-performance-defect-report.md`。本报告对其中与本次 review 重复的结论做合并，对未重复结论单列补充。
+- 性能补充来源：`large-game-performance-defect-report.md`。本报告对其中与本次 review 重复的结论做合并，对未重复结论单列补充。
 
 ## 合入判断
 
