@@ -23,7 +23,7 @@
 | [文本领域模块](text-domains.md) | `app.rmmz`、`app.text_scope`、`app.plugin_text`、`app.event_command_text`、`app.note_tag_text`、`app.source_residual` | RPG Maker 文本如何提取、检查、定位和写入 |
 | [翻译、LLM 与术语](translation-llm-terminology.md) | `app.translation`、`app.llm`、`app.llm_request_body_extra`、`app.language`、`app.language_profiles`、`app.terminology` | 模型请求、批次、质量校验、语言档案和术语如何协作 |
 | [持久化层](persistence.md) | `app.persistence` | 多游戏数据库、会话和记录读写如何组织 |
-| [原生核心](native-core.md) | `rust_app`、`app.native_quality` | PyO3 入口和 Rust 质量检查如何提供加速能力 |
+| [原生核心](native-core.md) | `rust/`、`app.native_quality` | PyO3 入口和 Rust 质量检查如何提供加速能力 |
 | [发布与测试](release-and-tests.md) | `.github`、`scripts`、`skills`、`prompts`、`tests` | 发行包如何构建、Skill 如何区分、测试如何验收 |
 
 ## 开发边界

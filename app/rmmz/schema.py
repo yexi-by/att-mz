@@ -375,6 +375,28 @@ class PluginSourceRuntimeWriteMapRecord(BaseModel):
     created_at: str
 
 
+class PluginSourceRuntimeStringLiteralCacheRecord(BaseModel):
+    """当前运行插件源码 AST 字符串字面量缓存。"""
+
+    selector: str
+    text: str
+    raw_text: str
+    line: int = Field(ge=1)
+    start_index: int = Field(ge=0)
+    end_index: int = Field(ge=0)
+    context: str
+
+
+class PluginSourceRuntimeScanCacheRecord(BaseModel):
+    """当前运行插件源码按文件 hash 保存的 AST 扫描缓存。"""
+
+    file_name: str
+    file_hash: str
+    syntax_error: str = ""
+    literals: list[PluginSourceRuntimeStringLiteralCacheRecord] = Field(default_factory=list)
+    created_at: str
+
+
 class NoteTagTextRuleRecord(BaseModel):
     """单个 data 文件或文件模式的 Note 标签文本规则快照。"""
 
@@ -515,6 +537,8 @@ __all__: list[str] = [
     "MvVirtualNameboxSpeakerPolicy",
     "NoteTagTextRuleRecord",
     "PluginTextRuleRecord",
+    "PluginSourceRuntimeScanCacheRecord",
+    "PluginSourceRuntimeStringLiteralCacheRecord",
     "PluginSourceRuntimeWriteMapRecord",
     "PluginSourceTextRuleRecord",
     "PlaceholderRuleRecord",

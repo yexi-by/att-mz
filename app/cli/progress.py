@@ -16,7 +16,7 @@ from typing import Self
 
 from rich.progress import Progress, TaskID
 
-from app.cli.arguments import read_bool_arg
+from app.cli.arguments import read_bool_arg, read_optional_bool_arg
 from app.observability import get_progress, logger
 
 
@@ -216,7 +216,7 @@ def _format_eta(*, elapsed_seconds: float, current: int, total: int) -> str:
 
 def build_progress_reporter(description: str, args: argparse.Namespace) -> CliProgressReporter | AgentProgressReporter:
     """根据运行模式创建进度回调适配器。"""
-    if read_bool_arg(args, "agent_mode") or read_bool_arg(args, "json_output"):
+    if read_bool_arg(args, "agent_mode") or read_optional_bool_arg(args, "json_output") is True:
         return AgentProgressReporter(description)
     return CliProgressReporter(description)
 

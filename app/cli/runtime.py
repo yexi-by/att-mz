@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 from types import TracebackType
 
-from app.agent_toolkit import AgentIssue, AgentReport, AgentToolkitService
 from app.application.handler import (
     TextTranslationSummary,
     TranslationHandler,
@@ -34,38 +33,6 @@ from app.cli.progress import build_progress_reporter
 from app.config import SettingOverrides
 from app.observability import logger
 from app.persistence import GameRegistry
-
-
-PARTIAL_WRITE_BACK_BLOCKING_ERROR_CODES: frozenset[str] = frozenset(
-    {
-        "placeholder_risk",
-        "source_residual",
-        "text_structure",
-        "overwide_line",
-        "write_back_protocol",
-        "coverage_unwritable",
-        "rule_hits_unwritable",
-        "stale_plugin_rules",
-        "stale_plugin_source_rules",
-        "stale_saved_translations",
-        "stale_source_residual_rules",
-        "terminology_bundle",
-        "terminology_missing",
-        "terminology_empty_translation",
-        "plugin_text_missing",
-        "plugin_text_stale_empty_confirmation",
-        "event_command_text_missing",
-        "event_command_text_stale_empty_confirmation",
-        "note_tag_text_missing",
-        "note_tag_text_stale_empty_confirmation",
-        "placeholder_rules_missing",
-        "placeholder_rules_stale_empty_confirmation",
-        "structured_placeholder_rules_missing",
-        "structured_placeholder_rules_stale_empty_confirmation",
-        "placeholder_uncovered",
-        "structured_placeholder_uncovered",
-    }
-)
 
 
 class HandlerSession:
@@ -120,67 +87,13 @@ async def write_back_for_handler(
     args: argparse.Namespace,
 ) -> WriteBackSummary:
     """使用已创建的编排器回写译文。"""
-    await ensure_write_back_gate(
-        game_title=game_title,
-        setting_overrides=setting_overrides,
-        game_registry=handler.game_registry,
-        require_complete_translation=True,
-        args=args,
-    )
     with build_progress_reporter("回写数据", args) as progress:
         return await handler.write_back(
             game_title=game_title,
-            callbacks=progress.progress_callbacks(),
+            callbacks=progress.status_callbacks(),
             setting_overrides=setting_overrides,
             confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
         )
-
-
-async def ensure_write_back_gate(
-    *,
-    game_title: str,
-    setting_overrides: SettingOverrides,
-    game_registry: GameRegistry,
-    require_complete_translation: bool,
-    args: argparse.Namespace | None = None,
-) -> None:
-    """写回前执行质量检查，避免把部分失败结果写入游戏。"""
-    service = AgentToolkitService(game_registry=game_registry)
-    if args is None:
-        report = await service.quality_report(
-            game_title=game_title,
-            setting_overrides=setting_overrides,
-        )
-    else:
-        with build_progress_reporter("写入前检查", args) as progress:
-            report = await service.quality_report(
-                game_title=game_title,
-                setting_overrides=setting_overrides,
-                callbacks=progress.status_callbacks(),
-            )
-    blocking_errors = collect_write_back_gate_errors(
-        report=report,
-        require_complete_translation=require_complete_translation,
-    )
-    if not blocking_errors:
-        return
-    messages = "；".join(error.message for error in blocking_errors)
-    raise CliBusinessError(f"写进游戏文件前检查没通过：{messages}")
-
-
-def collect_write_back_gate_errors(
-    *,
-    report: AgentReport,
-    require_complete_translation: bool,
-) -> list[AgentIssue]:
-    """按当前写入模式筛选必须拦截的质量问题。"""
-    if require_complete_translation:
-        return report.errors
-    return [
-        error
-        for error in report.errors
-        if error.code in PARTIAL_WRITE_BACK_BLOCKING_ERROR_CODES
-    ]
 
 
 def ensure_text_translation_success(summary: TextTranslationSummary) -> None:
@@ -316,10 +229,8 @@ __all__ = [
     "HandlerSession",
     "build_setting_overrides",
     "build_translation_run_limits",
-    "collect_write_back_gate_errors",
     "ensure_text_translation_not_blocked",
     "ensure_text_translation_success",
-    "ensure_write_back_gate",
     "resolve_optional_target_game_title",
     "resolve_target_game_title",
     "translate_text_for_handler",

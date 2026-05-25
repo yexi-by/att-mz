@@ -4,6 +4,7 @@ from argparse import Namespace
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from types import TracebackType
 from typing import cast
 
 from main import main
@@ -11,25 +12,25 @@ import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
 from app.agent_toolkit import AgentReport
-from app.agent_toolkit.reports import issue
 from app.cli import build_parser
 from app.cli import build_progress_reporter
 from app.cli import build_translate_summary_report
-from app.cli import collect_write_back_gate_errors
 from app.cli import ensure_text_translation_not_blocked
 from app.cli import parser_command_names
 from app.cli import registered_command_names
 from app.cli import write_report_outputs
 from app.cli.errors import CliArgumentError
-from app.cli.reports import build_sampled_stdout_report
+from app.cli.reports import build_sampled_stdout_report, build_write_back_summary_report
 from app.cli_main import format_argument_error_message
 from app.cli.commands.rules import (
     build_deleted_translation_backup_details,
     build_deleted_translation_warnings,
 )
 from app.cli.commands.registry import run_list_command
+from app.cli.commands.write_back import run_all_command
 from app.cli.runtime import build_setting_overrides
-from app.application.summaries import TextTranslationSummary
+from app.application.errors import WorkflowGateError
+from app.application.summaries import TextTranslationSummary, WriteBackSummary
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 
 
@@ -66,6 +67,67 @@ def test_add_game_requires_explicit_source_language() -> None:
     args = parser.parse_args(["add-game", "--path", "demo", "--source-language", "ja", "--json"])
 
     assert namespace_optional_str(args, "source_language") == "ja"
+
+
+def test_add_game_existing_source_snapshot_reports_business_error(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """注册目录已有可信源快照时，JSON CLI 必须输出业务错误而不是未知异常。"""
+
+    class FakeHandler:
+        """模拟注册阶段发现目标目录已存在可信源快照。"""
+
+        async def add_game(self, game_path: Path, *, source_language: str) -> str:
+            """抛出快照冲突错误。"""
+            _ = game_path
+            _ = source_language
+            raise FileExistsError("目标目录已存在可信源快照，请使用干净游戏目录")
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话，避免触碰本机注册表。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    monkeypatch.setattr("app.cli.commands.registry.HandlerSession", FakeHandlerSession)
+
+    exit_code = main(
+        [
+            "add-game",
+            "--path",
+            str(tmp_path),
+            "--source-language",
+            "ja",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
+    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
+
+    assert exit_code == 1
+    assert payload["status"] == "error"
+    assert first_error["code"] == "business_error"
+    message = first_error["message"]
+    assert isinstance(message, str)
+    assert "可信源快照" in message
 
 
 @pytest.mark.asyncio
@@ -182,6 +244,232 @@ def test_json_import_command_reports_business_error_as_parseable_json(
     assert payload["status"] == "error"
     assert first_error["code"] == "placeholder_rules_invalid"
     assert "CLI 运行开始" not in captured.out
+
+
+def test_json_command_reports_application_gate_error_as_business_error(
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """应用层硬闸失败在 JSON CLI 中必须是业务错误，不得归类为未知异常。"""
+
+    async def fake_dispatch_command(args: object) -> int:
+        """模拟翻译前置检查失败。"""
+        _ = args
+        raise WorkflowGateError("检查没通过，不能继续：插件规则为空")
+
+    monkeypatch.setattr("app.cli_main.dispatch_command", fake_dispatch_command)
+
+    exit_code = main(["translate", "--game", "demo", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
+    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
+
+    assert exit_code == 1
+    assert first_error["code"] == "business_error"
+    message = first_error["message"]
+    assert isinstance(message, str)
+    assert "插件规则为空" in message
+
+
+@pytest.mark.asyncio
+async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch) -> None:
+    """`run-all` 的写文件阶段必须进入 handler 写回路径，不得绕过质量失败。"""
+    parser = build_parser()
+    args = parser.parse_args(["run-all", "--game", "demo"])
+    calls: list[str] = []
+
+    class FakeHandler:
+        """模拟业务 handler，把写回硬闸放在 handler 内部触发。"""
+
+        async def write_back(self, **kwargs: object) -> object:
+            """模拟真实写回入口的质量失败。"""
+            calls.append("write_back")
+            assert kwargs["game_title"] == "demo"
+            raise WorkflowGateError("检查没通过，不能继续写进游戏文件：quality gate 有 error")
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话，避免触碰本机注册表和数据库。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler 对象。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    async def fake_resolve_target_game_title(args: Namespace) -> str:
+        """返回固定游戏标题。"""
+        _ = args
+        return "demo"
+
+    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+        """模拟正文翻译阶段成功。"""
+        calls.append("translate")
+        _ = kwargs
+        return TextTranslationSummary(
+            total_extracted_items=1,
+            pending_count=0,
+            deduplicated_count=1,
+            batch_count=1,
+            success_count=1,
+            error_count=0,
+        )
+
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.resolve_target_game_title", fake_resolve_target_game_title)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+
+    with pytest.raises(WorkflowGateError, match="quality gate"):
+        _ = await run_all_command(args)
+
+    assert calls == ["translate", "write_back"]
+
+
+def test_write_back_json_summary_reports_handler_timing_fields(
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """`write-back --json` 必须输出 handler 返回的写回阶段耗时字段。"""
+
+    class FakeHandler:
+        """返回固定写回摘要。"""
+
+        async def write_back(self, **kwargs: object) -> WriteBackSummary:
+            """模拟 handler 写回成功。"""
+            assert kwargs["game_title"] == "demo"
+            return WriteBackSummary(
+                data_item_count=3,
+                plugin_item_count=2,
+                terminology_written_count=1,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=4,
+                skipped_file_count=5,
+                plugin_source_ast_source_scan_file_count=6,
+                plugin_source_ast_runtime_scan_file_count=7,
+                plugin_source_runtime_map_count=8,
+                pre_write_check_ms=7,
+                rust_plan_ms=11,
+                file_replacement_ms=13,
+                post_write_audit_ms=17,
+            )
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+
+    exit_code = main(["write-back", "--game", "demo", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+
+    assert exit_code == 0
+    assert summary["pre_write_check_ms"] == 7
+    assert summary["rust_plan_ms"] == 11
+    assert summary["file_replacement_ms"] == 13
+    assert summary["post_write_audit_ms"] == 17
+    assert summary["plugin_source_ast_source_scan_file_count"] == 6
+    assert summary["plugin_source_ast_runtime_scan_file_count"] == 7
+    assert summary["plugin_source_runtime_map_count"] == 8
+
+
+def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """`rebuild-active-runtime --json` 必须输出 handler 返回的写回阶段耗时字段。"""
+
+    class FakeHandler:
+        """返回固定重建摘要。"""
+
+        async def rebuild_active_runtime(self, **kwargs: object) -> WriteBackSummary:
+            """模拟 handler 重建成功。"""
+            assert kwargs["game_title"] == "demo"
+            return WriteBackSummary(
+                data_item_count=5,
+                plugin_item_count=4,
+                terminology_written_count=3,
+                target_font_name="GameFont.ttf",
+                source_font_count=2,
+                replaced_font_reference_count=1,
+                font_copied=True,
+                planned_file_count=8,
+                skipped_file_count=9,
+                plugin_source_ast_source_scan_file_count=10,
+                plugin_source_ast_runtime_scan_file_count=11,
+                plugin_source_runtime_map_count=12,
+                pre_write_check_ms=17,
+                rust_plan_ms=19,
+                file_replacement_ms=23,
+                post_write_audit_ms=29,
+            )
+
+    class FakeHandlerSession:
+        """替换真实 handler 会话。"""
+
+        async def __aenter__(self) -> FakeHandler:
+            """返回伪 handler。"""
+            return FakeHandler()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """测试会话无需清理外部资源。"""
+            _ = exc_type
+            _ = exc
+            _ = traceback
+
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+
+    exit_code = main(["rebuild-active-runtime", "--game", "demo", "--json"])
+
+    captured = capsys.readouterr()
+    raw_payload = cast(object, json.loads(captured.out))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+
+    assert exit_code == 0
+    assert summary["pre_write_check_ms"] == 17
+    assert summary["rust_plan_ms"] == 19
+    assert summary["file_replacement_ms"] == 23
+    assert summary["post_write_audit_ms"] == 29
+    assert summary["plugin_source_ast_source_scan_file_count"] == 10
+    assert summary["plugin_source_ast_runtime_scan_file_count"] == 11
+    assert summary["plugin_source_runtime_map_count"] == 12
 
 
 def test_placeholder_coverage_misuse_reports_json_suggestion(
@@ -530,37 +818,38 @@ def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
     assert "import-manual-translations" in restore_step
 
 
-def test_partial_write_back_gate_only_blocks_saved_translation_risks() -> None:
-    """标准名写回只拦截会写入游戏文件的危险译文。"""
-    report = AgentReport.from_parts(
-        errors=[
-            issue("coverage_missing_translation", "存在还没成功保存译文的文本"),
-            issue("source_residual", "发现译文存在源文残留风险"),
-            issue("text_structure", "发现译文改动了游戏文本结构"),
-            issue("llm_failures", "模型运行存在故障"),
-        ],
-        warnings=[],
-        summary={},
-        details={},
+def test_write_back_summary_report_keeps_timing_fields_separate() -> None:
+    """写回 JSON 摘要必须保留 Rust 计划、文件替换和写后审计的独立耗时语义。"""
+    report = build_write_back_summary_report(
+        WriteBackSummary(
+            data_item_count=3,
+            plugin_item_count=2,
+            terminology_written_count=1,
+            target_font_name="GameFont.ttf",
+            source_font_count=4,
+            replaced_font_reference_count=5,
+            font_copied=True,
+            planned_file_count=6,
+            skipped_file_count=7,
+            plugin_source_ast_source_scan_file_count=8,
+            plugin_source_ast_runtime_scan_file_count=9,
+            plugin_source_runtime_map_count=10,
+            pre_write_check_ms=9,
+            rust_plan_ms=11,
+            file_replacement_ms=13,
+            post_write_audit_ms=17,
+        )
     )
 
-    full_gate_codes = {
-        error.code
-        for error in collect_write_back_gate_errors(
-            report=report,
-            require_complete_translation=True,
-        )
-    }
-    partial_gate_codes = {
-        error.code
-        for error in collect_write_back_gate_errors(
-            report=report,
-            require_complete_translation=False,
-        )
-    }
-
-    assert full_gate_codes == {"coverage_missing_translation", "source_residual", "text_structure", "llm_failures"}
-    assert partial_gate_codes == {"source_residual", "text_structure"}
+    assert report.summary["pre_write_check_ms"] == 9
+    assert report.summary["rust_plan_ms"] == 11
+    assert report.summary["file_replacement_ms"] == 13
+    assert report.summary["post_write_audit_ms"] == 17
+    assert report.summary["planned_file_count"] == 6
+    assert report.summary["skipped_file_count"] == 7
+    assert report.summary["plugin_source_ast_source_scan_file_count"] == 8
+    assert report.summary["plugin_source_ast_runtime_scan_file_count"] == 9
+    assert report.summary["plugin_source_runtime_map_count"] == 10
 
 
 def test_translate_command_accepts_json_summary_flag() -> None:

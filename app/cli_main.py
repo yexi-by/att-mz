@@ -63,6 +63,7 @@ from app.cli import (  # noqa: E402
     format_argv,
     format_namespace,
 )
+from app.application.errors import ApplicationBusinessError  # noqa: E402
 from app.observability import logger, resolve_log_file_path, setup_logger  # noqa: E402
 
 
@@ -244,6 +245,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if exit_code != 0:
             status = "失败"
     except CliBusinessError as error:
+        exit_code = 1
+        status = "失败"
+        if is_json_output_enabled(args):
+            print_json_error(code="business_error", message=str(error))
+        logger.error(f"[tag.failure]命令执行失败[/tag.failure]：{error}")
+    except ApplicationBusinessError as error:
         exit_code = 1
         status = "失败"
         if is_json_output_enabled(args):

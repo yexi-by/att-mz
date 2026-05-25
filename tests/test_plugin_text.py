@@ -7,7 +7,6 @@ from typing import cast
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from app.application.file_writer import reset_writable_copies
 from app.plugin_text import (
     PluginTextExtraction,
     build_plugin_rule_records_from_import,
@@ -16,10 +15,10 @@ from app.plugin_text import (
     parse_plugin_rule_import_text,
     resolve_plugin_leaves,
 )
-from app.plugin_text.write_back import write_plugin_text
 from app.rmmz import load_game_data
 from app.rmmz.schema import PluginTextRuleRecord
 from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
+from tests._native_write_plan_helper import reset_writable_copies, write_plugin_text
 
 
 @pytest.mark.asyncio
@@ -281,7 +280,7 @@ async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_g
     assert item.original_lines == [source_note.strip()]
 
     translated_note = "\n　" + r"\C[2]目标人物的位置\C[0]\n前往村子中央。" + "　\n"
-    item.translation_lines = [translated_note]
+    item.translation_lines = [translated_note.strip()]
     reset_writable_copies(game_data)
     write_plugin_text(game_data, [item])
 

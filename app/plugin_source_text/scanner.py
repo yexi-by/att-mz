@@ -7,7 +7,12 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass
 
-from app.native_javascript_ast import NativeJavaScriptAstContext, parse_native_javascript_string_spans
+from app.native_javascript_ast import (
+    NativeJavaScriptAstContext,
+    NativeJavaScriptStringScan,
+    parse_native_javascript_string_spans,
+    parse_native_javascript_string_spans_batch,
+)
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonObject, TextRules
@@ -59,17 +64,18 @@ KEY_CONTEXT_PATTERN: re.Pattern[str] = re.compile(
 def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> PluginSourceScan:
     """扫描 `js/plugins` 直接源码文件并计算高风险摘要。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
+    spans_by_file = _collect_native_string_literal_spans_batch_required(game_data.plugin_source_files)
     file_scans: list[PluginSourceFileScan] = []
     candidates: list[PluginSourceCandidate] = []
     for file_name, source in sorted(game_data.plugin_source_files.items()):
         active = file_name in enabled_plugin_files
-        file_text_scan = scan_plugin_source_file_text(
+        _literals, file_candidates = _build_literals_and_candidates_from_spans(
             file_name=file_name,
             source=source,
             active=active,
             text_rules=text_rules,
+            spans=spans_by_file[file_name],
         )
-        file_candidates = file_text_scan.candidate_index.candidates
         active_candidates = [candidate for candidate in file_candidates if candidate.active]
         strong_count = sum(1 for candidate in active_candidates if candidate.confidence == "strong")
         medium_count = sum(1 for candidate in active_candidates if candidate.confidence == "medium")
@@ -77,7 +83,7 @@ def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> P
         file_scans.append(
             PluginSourceFileScan(
                 file_name=file_name,
-                file_hash=file_text_scan.file_hash,
+                file_hash=build_plugin_source_file_hash(source),
                 active=active,
                 candidates=file_candidates,
                 strong_context_text_count=strong_count,
@@ -143,6 +149,14 @@ class PluginSourceFileTextScan:
     file_hash: str
     literals: tuple["PluginSourceStringLiteral", ...]
     candidate_index: PluginSourceCandidateIndex
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceBatchTextScan:
+    """多个插件源码文件的严格 AST 批量扫描结果。"""
+
+    file_scans: dict[str, PluginSourceFileTextScan]
+    syntax_errors: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +271,43 @@ def scan_plugin_source_file_text_strict(
             candidates=candidates,
             by_selector={candidate.selector: candidate for candidate in candidates},
         ),
+    )
+
+
+def scan_plugin_source_files_text_strict(
+    *,
+    files: dict[str, str],
+    active_file_names: frozenset[str],
+    text_rules: TextRules | None = None,
+) -> PluginSourceBatchTextScan:
+    """批量严格扫描多个插件源码文件，逐文件保留 JS 语法错误。"""
+    scans = parse_native_javascript_string_spans_batch(files)
+    file_scans: dict[str, PluginSourceFileTextScan] = {}
+    syntax_errors: dict[str, str] = {}
+    for file_name, source in sorted(files.items()):
+        scan = scans[file_name]
+        if scan.has_error:
+            syntax_errors[file_name] = "原生 AST 解析报告 JS 语法错误"
+            continue
+        literals, candidates = _build_literals_and_candidates_from_spans(
+            file_name=file_name,
+            source=source,
+            active=file_name in active_file_names,
+            text_rules=text_rules,
+            spans=_native_scan_to_internal_spans(scan),
+        )
+        file_scans[file_name] = PluginSourceFileTextScan(
+            file_name=file_name,
+            file_hash=build_plugin_source_file_hash(source),
+            literals=literals,
+            candidate_index=PluginSourceCandidateIndex(
+                candidates=candidates,
+                by_selector={candidate.selector: candidate for candidate in candidates},
+            ),
+        )
+    return PluginSourceBatchTextScan(
+        file_scans=file_scans,
+        syntax_errors=syntax_errors,
     )
 
 
@@ -417,33 +468,8 @@ class _StringAstContext:
 
 
 def _collect_string_literal_spans(source: str) -> list[_StringLiteralSpan]:
-    """优先用 Rust AST 收集普通字符串字面量范围。"""
-    native_spans = _collect_native_string_literal_spans(source)
-    if native_spans is not None:
-        return native_spans
-    return _collect_string_literal_spans_fallback(source)
-
-
-def _collect_native_string_literal_spans(source: str) -> list[_StringLiteralSpan] | None:
-    """调用 Rust AST 解析器，解析失败时交给低成本回退扫描。"""
-    try:
-        scan = parse_native_javascript_string_spans(source)
-    except (ImportError, RuntimeError):
-        return None
-    if scan.has_error:
-        return None
-    return [
-        _StringLiteralSpan(
-            kind=span.kind,
-            quote=span.quote,
-            start_index=span.start_index,
-            end_index=span.end_index,
-            content_start_index=span.content_start_index,
-            content_end_index=span.content_end_index,
-            ast_context=_native_ast_context_to_internal(span.ast_context),
-        )
-        for span in scan.spans
-    ]
+    """使用 Rust AST 收集普通字符串字面量范围，解析失败时直接报错。"""
+    return _collect_native_string_literal_spans_required(source)
 
 
 def _collect_native_string_literal_spans_required(source: str) -> list[_StringLiteralSpan]:
@@ -451,6 +477,25 @@ def _collect_native_string_literal_spans_required(source: str) -> list[_StringLi
     scan = parse_native_javascript_string_spans(source)
     if scan.has_error:
         raise RuntimeError("原生 AST 解析报告 JS 语法错误")
+    return _native_scan_to_internal_spans(scan)
+
+
+def _collect_native_string_literal_spans_batch_required(
+    files: dict[str, str],
+) -> dict[str, list[_StringLiteralSpan]]:
+    """批量调用原生 AST 解析器，禁止在严格流程中退回轻量扫描。"""
+    scans = parse_native_javascript_string_spans_batch(files)
+    spans_by_file: dict[str, list[_StringLiteralSpan]] = {}
+    for file_name in sorted(files):
+        scan = scans[file_name]
+        if scan.has_error:
+            raise RuntimeError(f"{file_name} 原生 AST 解析报告 JS 语法错误")
+        spans_by_file[file_name] = _native_scan_to_internal_spans(scan)
+    return spans_by_file
+
+
+def _native_scan_to_internal_spans(scan: NativeJavaScriptStringScan) -> list[_StringLiteralSpan]:
+    """把原生 AST 扫描结果转换为内部 span。"""
     return [
         _StringLiteralSpan(
             kind=span.kind,
@@ -476,56 +521,6 @@ def _native_ast_context_to_internal(context: NativeJavaScriptAstContext) -> _Str
         return_function_name=context.return_function_name,
         assignment_name=context.assignment_name,
     )
-
-
-def _collect_string_literal_spans_fallback(source: str) -> list[_StringLiteralSpan]:
-    """跳过注释并收集普通字符串字面量范围。"""
-    spans: list[_StringLiteralSpan] = []
-    index = 0
-    length = len(source)
-    while index < length:
-        char = source[index]
-        next_char = source[index + 1] if index + 1 < length else ""
-        if char == "/" and next_char == "/":
-            newline_index = source.find("\n", index + 2)
-            index = length if newline_index == -1 else newline_index + 1
-            continue
-        if char == "/" and next_char == "*":
-            close_index = source.find("*/", index + 2)
-            index = length if close_index == -1 else close_index + 2
-            continue
-        if char not in {"'", '"'}:
-            index += 1
-            continue
-        start_index = index
-        index += 1
-        escaped = False
-        while index < length:
-            current = source[index]
-            if escaped:
-                escaped = False
-                index += 1
-                continue
-            if current == "\\":
-                escaped = True
-                index += 1
-                continue
-            if current == char:
-                spans.append(
-                    _StringLiteralSpan(
-                        kind="string",
-                        quote=char,
-                        start_index=start_index,
-                        end_index=index + 1,
-                        content_start_index=start_index + 1,
-                        content_end_index=index,
-                        ast_context=_StringAstContext(node_kind="string"),
-                    )
-                )
-                index += 1
-                break
-            index += 1
-    return spans
 
 
 def _call_api_before(source: str, start_index: int) -> str:
@@ -718,6 +713,7 @@ def _plugin_source_text_structural_flags(text: str) -> list[str]:
 
 __all__ = [
     "PluginSourceCandidateIndex",
+    "PluginSourceBatchTextScan",
     "PluginSourceFileTextScan",
     "PluginSourceStringLiteral",
     "build_plugin_source_candidate_index",
@@ -728,4 +724,5 @@ __all__ = [
     "iter_plugin_source_string_literals",
     "scan_plugin_source_file_text",
     "scan_plugin_source_file_text_strict",
+    "scan_plugin_source_files_text_strict",
 ]

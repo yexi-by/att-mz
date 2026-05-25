@@ -32,7 +32,7 @@ dev = [
 [tool.maturin]
 module-name = "app._native"
 python-source = "."
-manifest-path = "Cargo.toml"
+manifest-path = "rust/Cargo.toml"
 features = ["pyo3/extension-module"]
 
 [tool.basedpyright]

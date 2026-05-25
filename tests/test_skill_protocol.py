@@ -103,6 +103,34 @@ def test_write_back_gate_does_not_require_empty_source_residual_rules() -> None:
         assert "三类外部规则、普通占位符规则和结构化占位符规则已经导入" in text
 
 
+def test_skill_tells_agents_to_use_host_cpu_threads_not_fixed_four() -> None:
+    """Skill 明确 4 不是运行线程上限，长任务优先使用主机逻辑处理器。"""
+    expected_phrases = [
+        "长任务默认尽量榨干运行主机 CPU",
+        "`ATT_MZ_RUST_THREADS`",
+        "当前机器可用逻辑处理器数量",
+        "不要把 `4` 当上限",
+        "`4` 只用于可重复性能验收基线",
+        "专用运行机器按全部逻辑处理器配置",
+    ]
+    for path in (DEV_SKILL, RELEASE_SKILL):
+        text = read(path)
+        for phrase in expected_phrases:
+            assert phrase in text
+
+    contract_phrases = [
+        "Rust 热路径线程数由环境变量 `ATT_MZ_RUST_THREADS` 控制",
+        "没有 `4` 的上限",
+        "`ATT_MZ_RUST_THREADS=0` 或不设置时使用 Rayon 默认线程池",
+        "(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors",
+        "不要把性能门禁里的 `4` 当运行上限",
+    ]
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "cli-command-contract.md")
+        for phrase in contract_phrases:
+            assert phrase in text
+
+
 def test_main_skill_does_not_embed_status_wording_map() -> None:
     """用户表达约束保持通用，不在 Skill 主入口列内部状态词映射。"""
     combined_text = read(DEV_SKILL) + "\n" + read(RELEASE_SKILL)
@@ -207,7 +235,7 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`write-terminology --game <游戏标题>`",
         "空规则需 `--confirm-empty`",
         "空规则导入也传同一组 `--code CODE`",
-        "在写回前流程检查通过后写入稳定名词",
+        "术语专用写入，允许正文仍有还没成功保存译文的文本",
         "日文和英文游戏都使用通用源文残留命令",
     ]:
         assert phrase in text
@@ -617,6 +645,85 @@ def test_release_packaging_script_copies_all_skill_references() -> None:
         'errors="replace"',
     ]:
         assert phrase in text
+
+
+def test_release_packaging_script_runs_packaged_smoke_tests() -> None:
+    """发布脚本在压缩前执行发行包入口冒烟测试。"""
+    text = read(ROOT / "scripts" / "build_release.py")
+
+    for phrase in [
+        "def run_smoke_tests(release_dir: Path) -> None:",
+        '[str(exe_path), "--help"]',
+        '[str(exe_path), "list", "--json"]',
+        "run_smoke_tests(release_dir)",
+        "create_release_zip(release_dir, zip_path)",
+    ]:
+        assert phrase in text
+
+    assert text.index("run_smoke_tests(release_dir)") < text.index("create_release_zip(release_dir, zip_path)")
+
+
+def test_release_docs_and_workflow_include_rust_gates() -> None:
+    """发布文档和 release workflow 同步包含 Rust 交付红线。"""
+    workflow_text = read(ROOT / ".github" / "workflows" / "release.yml")
+    release_doc_text = read(ROOT / "docs" / "development" / "release-and-tests.md")
+    required_commands = [
+        "cargo fmt --manifest-path rust/Cargo.toml -- --check",
+        "cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings",
+        "cargo test --manifest-path rust/Cargo.toml",
+    ]
+
+    for command in required_commands:
+        assert command in workflow_text
+        assert command in release_doc_text
+
+    ordered_steps = [
+        "- name: Type check",
+        "- name: Test",
+        "- name: Rust fmt",
+        "- name: Rust clippy",
+        "- name: Rust test",
+        "- name: Build release zip",
+        "- name: Publish GitHub release",
+    ]
+    ordered_positions = [workflow_text.index(step) for step in ordered_steps]
+    assert ordered_positions == sorted(ordered_positions)
+
+    assert "dry_run" not in workflow_text
+    assert "不创建 GitHub Release" not in release_doc_text
+
+
+def test_release_docs_define_large_sample_performance_gate() -> None:
+    """发布文档必须说明本地真实大样本性能门禁和阈值。"""
+    release_doc_text = read(ROOT / "docs" / "development" / "release-and-tests.md")
+
+    for phrase in [
+        "GitHub 托管 runner",
+        "持有样本的环境",
+        "scripts/benchmark_rebuild_active_runtime.py",
+        "--reset-active-data-from-origin",
+        "--rust-threads 4",
+        "--max-slowest-ms 120000",
+        "--max-rust-plan-ms 45000",
+        "--max-file-replacement-ms 1500",
+        "--max-post-write-audit-ms 20000",
+        "`--rust-threads 4` 只是发布门禁的可重复基线，不是运行上限",
+        "优先使用运行主机可用逻辑处理器数量",
+        "写后审计耗时",
+    ]:
+        assert phrase in release_doc_text
+
+    forbidden_phrases = [
+        "D:\\h-game",
+        "C:/Users/",
+        "C:\\Users\\",
+        "サキュバスアカデミア",
+        "performance-gate.yml",
+        "collect_workflow_evidence.py",
+        "dry_run",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in release_doc_text
 
 
 def test_text_translation_prompt_keeps_protocol_minimal() -> None:

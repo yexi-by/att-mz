@@ -115,13 +115,13 @@ uv run python main.py --agent-mode export-terminology --game <游戏标题> --ou
 uv run python main.py --agent-mode import-terminology --game <游戏标题> --input <术语表目录>/field-terms.json --glossary-input <术语表目录>/glossary.json --json
 ```
 
-在规则前置和质量检查通过后，把稳定名词写进游戏文件：
+在规则前置、术语表、可信源快照和已保存译文质量检查通过后，把稳定名词写进游戏文件：
 
 ```powershell
 uv run python main.py --agent-mode write-terminology --game <游戏标题>
 ```
 
-`write-terminology` 会执行写回前流程检查。三类外部规则、普通占位符规则、结构化占位符规则、术语表和已保存译文质量未通过时，命令会停止，不会绕过正文翻译流程直接写入。
+`write-terminology` 是术语专用写入，允许正文仍有还没成功保存译文的文本；它只会写入稳定术语和已保存且可写的正文译文。三类外部规则、普通占位符规则、结构化占位符规则、术语表、可信源快照、写入目标或已保存译文质量未通过时，命令会停止。
 
 命令当前不支持 `--json`，执行时以终端日志和文件日志确认结果。
 
@@ -163,7 +163,7 @@ uv run python main.py --agent-mode import-note-tag-rules --game <游戏标题> -
 
 如果规则变化导致一部分已保存译文不再属于当前规则范围，导入命令会先把这些译文备份到 `outputs/rule-import-backups/<游戏标题>/...json`，再清理项目数据库里的已保存译文记录。JSON 报告会返回 `deleted_translations_backed_up` 告警，并在 `summary.deleted_translation_backup_path` 给出备份文件路径。若确认规则导错，先重新导入正确规则，再用 `import-manual-translations --game <游戏标题> --input <备份文件> --json` 恢复这些译文。
 
-插件源码文本属于少见支线。工作区默认只生成 `plugin-source-risk-report.json`，风险报告只包含风险摘要和候选数量，不包含 AST selector 或完整候选列表；只有插件源码高风险或支线已有规则时，才生成 `plugin-source-rules.json`。扫描范围固定为 `<游戏目录>/js/plugins/*.js` 的直接文件；不会扫描 `js` 根目录、其他目录或子目录。插件源码命令默认使用 `--view translation-source`，读取用于规则抽取和写回定位的翻译源；需要检查玩家当前实际运行文件时，使用 `audit-active-runtime` 或显式 `--view active-runtime`。当前运行文件只做产物验收，不作为翻译源。低风险且没有启动支线时不用填写空规则，可继续准备占位符和正文翻译。高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认；用户肯定后再导出 AST 地图、整理源码规则并导入：
+插件源码文本属于少见支线。工作区默认只生成 `plugin-source-risk-report.json`，风险报告只包含风险摘要和候选数量，不包含 AST selector 或完整候选列表；只有插件源码高风险或支线已有规则时，才生成 `plugin-source-rules.json`。扫描范围固定为 `<游戏目录>/js/plugins/*.js` 的直接文件；不会扫描 `js` 根目录、其他目录或子目录。插件源码命令默认使用 `--view translation-source`，读取用于规则抽取和写回定位的翻译源；需要检查玩家当前实际运行文件时，使用 `audit-active-runtime` 或显式 `--view active-runtime`。当前运行文件只做写入结果验收，不作为翻译源。低风险且没有启动支线时不用填写空规则，可继续准备占位符和正文翻译。高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认；用户肯定后再导出 AST 地图、整理源码规则并导入：
 
 ```powershell
 uv run python main.py --agent-mode export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json
@@ -220,6 +220,8 @@ uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
 uv run python main.py --agent-mode quality-report --game <游戏标题> --json
 uv run python main.py --agent-mode audit-active-runtime --game <游戏标题> --json
 ```
+
+`translation-status` 默认读取数据库中的最近运行统计；需要重新扫描当前文本范围时加 `--refresh-scope`。只读范围和质量报告默认不执行写入可行性探针；需要在报告里查看写入可行性时给 `text-scope`、`audit-coverage`、`quality-report`、`export-pending-translations` 或 `export-quality-fix-template` 加 `--include-write-probe`。
 
 继续全量翻译：
 
@@ -292,7 +294,7 @@ uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
 uv run python main.py --agent-mode quality-report --game <游戏标题> --json
 ```
 
-报告没有错误后，把译文写进游戏文件：
+报告没有错误、当前规则范围内正文译文完整，并且用户允许写回后，把译文写进游戏文件：
 
 ```powershell
 uv run python main.py --agent-mode write-back --game <游戏标题> --json
@@ -300,13 +302,15 @@ uv run python main.py --agent-mode write-back --game <游戏标题> --json
 
 首次注册游戏时，工具只接受干净原始游戏目录，并在游戏目录内生成可信源快照：完整原始 `data` 备份 `data_origin`、插件配置备份 `js/plugins_origin.js` 和直接插件源码备份 `js/plugins_source_origin`。后续翻译源读取只使用这组快照；缺失、损坏或与数据库 manifest 不一致时，命令会停止并要求用干净游戏目录重新注册。
 
-写进游戏文件时，工具只从可信源快照、已导入规则、术语和已保存译文记录生成 staging 文件，不把当前运行文件当作翻译源。文件哈希、原文、selector 或已保存译文质量不匹配时会停止写入并报告原因。插件源码写入成功后会为已写入译文保存可选诊断映射；当前运行审计直接检查玩家实际运行的 JS 文件是否存在漏翻、坏控制符或 JS 语法错误。
+写进游戏文件时，工具只从可信源快照、已导入规则、术语和已保存译文记录生成待替换文件，不把当前运行文件当作翻译源。文件哈希、原文、selector 或已保存译文质量不匹配时会停止写入并报告原因。插件源码写入成功后会为已写入译文保存可选诊断映射；当前运行审计直接检查玩家实际运行的 JS 文件是否存在漏翻、坏控制符或 JS 语法错误。
 
-如果当前运行文件已经损坏，需要丢弃当前生成物状态并从可信源快照和已保存译文记录重建，使用：
+如果当前运行文件已经损坏，需要从可信源快照和已保存译文记录重建，使用：
 
 ```powershell
 uv run python main.py --agent-mode rebuild-active-runtime --game <游戏标题> --json
 ```
+
+`rebuild-active-runtime` 也是写文件操作，必须通过与 `write-back` 相同的覆盖审计、质量报告、完整译文覆盖、可信源快照和字体覆盖确认检查。它用于恢复当前运行文件状态，不能绕过规则、译文质量或完整覆盖要求。
 
 当前运行审计报错后，用诊断命令反推到已保存译文记录：
 
@@ -328,7 +332,7 @@ uv run python main.py --agent-mode write-back --game <游戏标题> --confirm-fo
 uv run python main.py --agent-mode restore-font --game <游戏标题> --json
 ```
 
-`run-all` 会按固定顺序执行正文翻译和写入；使用前仍应先完成规则、术语和占位符准备：
+`run-all` 会按固定顺序执行正文翻译和写入；最终写入阶段使用同一套写文件前检查。使用前仍应先完成规则、术语和占位符准备：
 
 ```powershell
 uv run python main.py --agent-mode run-all --game <游戏标题>
@@ -370,9 +374,9 @@ uv run pytest
 改到 Rust 原生扩展、构建配置或发布流程时再执行：
 
 ```powershell
-cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path rust/Cargo.toml
 ```
 
 发行版只能由 GitHub Actions 的 `release` 工作流构建。本机负责源码修改、测试和提交，不负责生成正式发行包。

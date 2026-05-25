@@ -9,6 +9,7 @@ from .common import (
     JsonArray,
     JsonObject,
     Path,
+    QualityProgressCallbacks,
     TextRules,
     TextScopeService,
     TranslationItem,
@@ -25,6 +26,7 @@ from .common import (
     issue,
     json,
     load_setting,
+    _noop_quality_progress_callbacks,
 )
 
 
@@ -37,8 +39,13 @@ class ManualTranslationAgentMixin:
         game_title: str,
         output_path: Path,
         limit: int | None,
+        include_write_probe: bool = False,
+        callbacks: QualityProgressCallbacks | None = None,
     ) -> AgentReport:
         """导出还没成功保存译文的条目，供 Agent 手动填写译文。"""
+        set_progress, advance_progress, set_status = callbacks or _noop_quality_progress_callbacks()
+        set_progress(0, 5)
+        set_status("加载游戏数据和规则")
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
             custom_rules = await self._resolve_custom_rules(
@@ -53,25 +60,33 @@ class ManualTranslationAgentMixin:
             )
             game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
+            advance_progress(1)
+            set_status("构建当前文本范围")
             scope = await TextScopeService().build(
                 session=session,
                 game_data=game_data,
                 text_rules=text_rules,
                 translated_items=translated_items,
+                include_write_probe=include_write_probe,
             )
             translated_paths = {item.location_path for item in translated_items}
+            advance_progress(1)
         blocking_errors = _text_scope_blocking_errors(scope)
         if blocking_errors:
+            set_progress(5, 5)
+            set_status("检查没通过，停止导出手动填写译文表")
             return AgentReport.from_parts(
                 errors=blocking_errors,
                 warnings=[],
                 summary={
                     "pending_exported_count": 0,
                     "output": str(output_path),
+                    "write_back_probe_enabled": scope.write_back_probe_enabled,
                 },
                 details={},
             )
 
+        set_status("筛选还没成功保存译文")
         pending_items = [
             item
             for translation_data in scope.translation_data_map.values()
@@ -80,7 +95,9 @@ class ManualTranslationAgentMixin:
         ]
         if limit is not None:
             pending_items = pending_items[: max(limit, 0)]
+        advance_progress(1)
 
+        set_status("写出手动填写译文表")
         payload: JsonObject = {}
         for item in pending_items:
             payload[item.location_path] = _build_manual_translation_template_entry(
@@ -92,16 +109,20 @@ class ManualTranslationAgentMixin:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(output_path, "w", encoding="utf-8") as file:
             _ = await file.write(f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n")
+        advance_progress(1)
 
         warnings: list[AgentIssue] = []
         if not pending_items:
             warnings.append(issue("pending_empty", "当前没有需要手动填写译文的条目"))
+        set_progress(5, 5)
+        set_status("手动填写译文表已完成")
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
             summary={
                 "pending_exported_count": len(pending_items),
                 "output": str(output_path),
+                "write_back_probe_enabled": scope.write_back_probe_enabled,
             },
             details={},
         )

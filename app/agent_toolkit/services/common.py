@@ -21,7 +21,6 @@ from app.agent_toolkit.placeholder_scan import (
     scan_placeholder_candidates,
 )
 from app.agent_toolkit.reports import AgentIssue, AgentReport, issue
-from app.application.file_writer import reset_writable_copies
 from app.application.font_replacement import resolve_replacement_font_path
 from app.config import (
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
@@ -79,7 +78,6 @@ from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object, ensure_json_string_list
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import load_active_runtime_game_data, load_game_data_for_view
-from app.rmmz.write_back import write_data_text
 from app.runtime_paths import resolve_app_path
 from app.rmmz.text_layout import (
     normalize_translated_wrapping_punctuation,
@@ -148,6 +146,7 @@ class AgentServiceContext(Protocol):
         *,
         source_view: GameFileView,
         include_plugin_source_files: bool = True,
+        include_writable_copies: bool = False,
     ) -> GameData:
         """按显式视图加载游戏数据。"""
         ...
@@ -157,6 +156,7 @@ class AgentServiceContext(Protocol):
         session: TargetGameSession,
         *,
         include_plugin_source_files: bool = True,
+        include_writable_copies: bool = False,
     ) -> GameData:
         """加载翻译源视图。"""
         ...
@@ -166,6 +166,7 @@ class AgentServiceContext(Protocol):
         session: TargetGameSession,
         *,
         include_plugin_source_files: bool = True,
+        include_writable_copies: bool = False,
     ) -> GameData:
         """加载当前运行视图。"""
         ...
@@ -1097,6 +1098,7 @@ def _build_coverage_report(
             "stale_translation_count": len(stale_translation_paths),
             "stale_plugin_rule_count": len(scope.stale_plugin_rules),
             "write_back_probe_failed": bool(scope.write_back_probe_error),
+            "write_back_probe_enabled": scope.write_back_probe_enabled,
         },
         details={
             "unwritable_items": active_unwritable_items,
@@ -1106,6 +1108,7 @@ def _build_coverage_report(
             "stale_translation_paths": _string_lines_to_json_array(stale_translation_paths),
             "stale_plugin_rules": scope.stale_plugin_rules_json(),
             "write_back_probe_error": scope.write_back_probe_error,
+            "write_back_probe_enabled": scope.write_back_probe_enabled,
         },
     )
 
@@ -1693,20 +1696,14 @@ def _preview_event_command_write_back(
     extracted_items: list[TranslationItem],
     text_rules: TextRules,
 ) -> None:
-    """用规则命中项做内存回写预演，提前暴露路径结构问题。"""
-    if not extracted_items:
-        return
-    probe_items: list[TranslationItem] = []
-    for item in extracted_items:
-        probe_item = item.model_copy(deep=True)
-        probe_item.translation_lines = _build_write_back_probe_lines(item)
-        probe_items.append(probe_item)
-
-    reset_writable_copies(game_data)
-    try:
-        write_data_text(game_data, probe_items, text_rules=text_rules)
-    finally:
-        reset_writable_copies(game_data)
+    """用 Rust 写入协议检查规则命中项是否可写。"""
+    _ = text_rules
+    unwritable_items = _collect_write_protocol_unwritable_items(
+        game_data=game_data,
+        extracted_items=extracted_items,
+    )
+    if unwritable_items:
+        raise ValueError(f"写入协议检查发现 {len(unwritable_items)} 个不可写命中项")
 
 
 def _collect_write_protocol_unwritable_items(
@@ -1719,8 +1716,10 @@ def _collect_write_protocol_unwritable_items(
         return []
     probe_items: list[TranslationItem] = []
     for item in extracted_items:
-        probe_item = item.model_copy(deep=True)
-        probe_item.translation_lines = _build_write_back_probe_lines(item)
+        probe_item = item.model_copy(
+            update={"translation_lines": _build_write_back_probe_lines(item)},
+            deep=False,
+        )
         probe_items.append(probe_item)
     return collect_native_write_protocol_details(
         game_data=game_data.data,
@@ -1936,7 +1935,6 @@ __all__: list[str] = [
     'AgentIssue',
     'AgentReport',
     'issue',
-    'reset_writable_copies',
     'resolve_replacement_font_path',
     'SettingOverrides',
     'STRUCTURED_PLACEHOLDER_RULES_FILE_NAME',
@@ -1990,7 +1988,6 @@ __all__: list[str] = [
     'GameFileView',
     'load_active_runtime_game_data',
     'load_game_data_for_view',
-    'write_data_text',
     'resolve_app_path',
     'normalize_translated_wrapping_punctuation',
     'split_overwide_lines',

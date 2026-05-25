@@ -164,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(quality_report_parser)
     _ = quality_report_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = quality_report_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；大游戏只读报告默认不启用",
+    )
     _ = quality_report_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     text_scope_parser = subparsers.add_parser(
@@ -172,6 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(text_scope_parser)
     _ = text_scope_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = text_scope_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；大游戏只读清单默认不启用",
+    )
     _ = text_scope_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     audit_coverage_parser = subparsers.add_parser(
@@ -180,6 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(audit_coverage_parser)
     _ = audit_coverage_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = audit_coverage_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；大游戏覆盖审计默认不启用",
+    )
     _ = audit_coverage_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     audit_active_runtime_parser = subparsers.add_parser(
@@ -263,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(export_pending_parser)
     _ = export_pending_parser.add_argument("--output", required=True, help="手动填写译文表输出文件")
     _ = export_pending_parser.add_argument("--limit", type=int, help="最多导出的待填写条目数；省略则导出全部")
+    _ = export_pending_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；默认只按当前文本范围导出",
+    )
     _ = export_pending_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_quality_fix_parser = subparsers.add_parser(
@@ -271,6 +291,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(export_quality_fix_parser)
     _ = export_quality_fix_parser.add_argument("--output", required=True, help="质量问题修复 JSON 输出文件")
+    _ = export_quality_fix_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；默认只按质量问题导出修复表",
+    )
     _ = export_quality_fix_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_manual_parser = subparsers.add_parser(
@@ -537,6 +562,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("translation-status", help="查看最新正文翻译运行状态")
     add_optional_target_arguments(status_parser)
+    _ = status_parser.add_argument(
+        "--refresh-scope",
+        action="store_true",
+        help="重新扫描当前文本范围计算实时待翻数量；大游戏默认使用数据库快速路径",
+    )
     _ = status_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     setattr(parser, "_att_mz_command_names", frozenset(subparsers.choices))
     return parser

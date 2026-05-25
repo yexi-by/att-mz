@@ -15,7 +15,6 @@ from app.cli.runtime import (
     build_setting_overrides,
     build_translation_run_limits,
     ensure_text_translation_success,
-    ensure_write_back_gate,
     resolve_target_game_title,
     translate_text_for_handler,
     write_back_for_handler,
@@ -45,17 +44,10 @@ async def run_rebuild_active_runtime_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     setting_overrides = build_setting_overrides(args)
     async with HandlerSession() as handler:
-        await ensure_write_back_gate(
-            game_title=game_title,
-            setting_overrides=setting_overrides,
-            game_registry=handler.game_registry,
-            require_complete_translation=True,
-            args=args,
-        )
         with build_progress_reporter("重建运行文件", args) as progress:
             summary = await handler.rebuild_active_runtime(
                 game_title=game_title,
-                callbacks=progress.progress_callbacks(),
+                callbacks=progress.status_callbacks(),
                 setting_overrides=setting_overrides,
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
@@ -85,17 +77,10 @@ async def run_write_terminology_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     setting_overrides = build_setting_overrides(args)
     async with HandlerSession() as handler:
-        await ensure_write_back_gate(
-            game_title=game_title,
-            setting_overrides=setting_overrides,
-            game_registry=handler.game_registry,
-            require_complete_translation=False,
-            args=args,
-        )
         with build_progress_reporter("术语写回", args) as progress:
             _ = await handler.write_terminology(
                 game_title=game_title,
-                callbacks=progress.progress_callbacks(),
+                callbacks=progress.status_callbacks(),
                 setting_overrides=setting_overrides,
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )

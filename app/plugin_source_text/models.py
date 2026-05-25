@@ -144,7 +144,7 @@ class PluginSourceScan:
         }
 
     def candidates_json(self) -> JsonArray:
-        """返回兼容旧扫描命令的候选数组。"""
+        """返回插件源码候选数组。"""
         return [candidate.to_json_object() for candidate in self.candidates]
 
 

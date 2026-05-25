@@ -30,8 +30,16 @@ class NativeModule(Protocol):
         """运行 Rust 多线程质检。"""
         raise NotImplementedError
 
+    def scan_quality_counts(self, payload_json: str) -> str:
+        """运行 Rust 多线程质检并只返回计数。"""
+        raise NotImplementedError
+
     def scan_write_protocol(self, payload_json: str) -> str:
         """运行 Rust 多线程写入协议预演。"""
+        raise NotImplementedError
+
+    def scan_write_protocol_count(self, payload_json: str) -> str:
+        """运行 Rust 多线程写入协议预演并只返回计数。"""
         raise NotImplementedError
 
     def native_thread_count(self) -> int:
@@ -49,6 +57,16 @@ class NativeQualityDetails:
     overwide_line_items: JsonArray
 
 
+@dataclass(frozen=True, slots=True)
+class NativeQualityCounts:
+    """Rust 质检核心返回的问题计数。"""
+
+    source_residual_count: int
+    text_structure_count: int
+    placeholder_risk_count: int
+    overwide_line_count: int
+
+
 def collect_native_quality_details(
     *,
     items: list[TranslationItem],
@@ -57,22 +75,11 @@ def collect_native_quality_details(
 ) -> NativeQualityDetails:
     """调用 Rust 多线程核心收集正文质量问题。"""
     native_module = _load_native_module()
-    payload = {
-        "items": [_build_item_payload(item) for item in items],
-        "text_rules": _build_text_rules_payload(text_rules),
-        "source_residual_rules": [
-            {
-                "rule_id": record.rule_id,
-                "rule_type": record.rule_type,
-                "location_path": record.location_path,
-                "pattern_text": record.pattern_text,
-                "allowed_terms": list(record.allowed_terms),
-                "check_group": record.check_group,
-                "reason": record.reason,
-            }
-            for record in source_residual_rules
-        ],
-    }
+    payload = _build_quality_payload(
+        items=items,
+        text_rules=text_rules,
+        source_residual_rules=source_residual_rules,
+    )
     result_text = native_module.scan_quality(json.dumps(payload, ensure_ascii=False))
     result = ensure_json_object(
         # json.loads 的返回值来自动态 JSON 边界，立即交给 coerce_json_value 收窄。
@@ -99,6 +106,48 @@ def collect_native_quality_details(
     )
 
 
+def collect_native_quality_counts(
+    *,
+    items: list[TranslationItem],
+    text_rules: TextRules,
+    source_residual_rules: list[SourceResidualRuleRecord],
+) -> NativeQualityCounts:
+    """调用 Rust 多线程核心收集正文质量问题计数。"""
+    native_module = _load_native_module()
+    payload = _build_quality_payload(
+        items=items,
+        text_rules=text_rules,
+        source_residual_rules=source_residual_rules,
+    )
+    result_text = native_module.scan_quality_counts(json.dumps(payload, ensure_ascii=False))
+    result = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(result_text))),
+        "native_quality_count_result",
+    )
+    return NativeQualityCounts(
+        source_residual_count=_read_non_negative_int(
+            result,
+            "source_residual_count",
+            "native_quality_count_result",
+        ),
+        text_structure_count=_read_non_negative_int(
+            result,
+            "text_structure_count",
+            "native_quality_count_result",
+        ),
+        placeholder_risk_count=_read_non_negative_int(
+            result,
+            "placeholder_risk_count",
+            "native_quality_count_result",
+        ),
+        overwide_line_count=_read_non_negative_int(
+            result,
+            "overwide_line_count",
+            "native_quality_count_result",
+        ),
+    )
+
+
 def native_thread_count() -> int:
     """读取 Rust 质检核心当前会使用的线程数。"""
     native_module = _load_native_module()
@@ -120,6 +169,27 @@ def collect_native_write_protocol_details(
         # json.loads 的返回值来自动态 JSON 边界，立即交给 coerce_json_value 收窄。
         coerce_json_value(cast(object, json.loads(result_text))),
         "native_write_protocol_result",
+    )
+
+
+def count_native_write_protocol_issues(
+    *,
+    game_data: JsonObject,
+    plugins_js: JsonArray,
+    items: list[TranslationItem],
+) -> int:
+    """调用 Rust 多线程核心检查写入协议风险并只返回数量。"""
+    native_module = _load_native_module()
+    payload = {"entries": _build_protocol_entries(game_data=game_data, plugins_js=plugins_js, items=items)}
+    result_text = native_module.scan_write_protocol_count(json.dumps(payload, ensure_ascii=False))
+    result = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(result_text))),
+        "native_write_protocol_count_result",
+    )
+    return _read_non_negative_int(
+        result,
+        "write_protocol_count",
+        "native_write_protocol_count_result",
     )
 
 
@@ -174,6 +244,31 @@ def _load_native_module() -> NativeModule:
     return cast(NativeModule, cast(object, native_module))
 
 
+def _build_quality_payload(
+    *,
+    items: list[TranslationItem],
+    text_rules: TextRules,
+    source_residual_rules: list[SourceResidualRuleRecord],
+) -> JsonObject:
+    """构造 Rust 质检核心输入载荷。"""
+    return {
+        "items": [_build_item_payload(item) for item in items],
+        "text_rules": build_native_text_rules_payload(text_rules),
+        "source_residual_rules": [
+            {
+                "rule_id": record.rule_id,
+                "rule_type": record.rule_type,
+                "location_path": record.location_path,
+                "pattern_text": record.pattern_text,
+                "allowed_terms": list(record.allowed_terms),
+                "check_group": record.check_group,
+                "reason": record.reason,
+            }
+            for record in source_residual_rules
+        ],
+    }
+
+
 def _build_item_payload(item: TranslationItem) -> JsonObject:
     """把单条译文压成 Rust 只需要读取的最小结构。"""
     return {
@@ -183,6 +278,14 @@ def _build_item_payload(item: TranslationItem) -> JsonObject:
         "original_lines": [line for line in item.original_lines],
         "translation_lines": [line for line in item.translation_lines],
     }
+
+
+def _read_non_negative_int(result: JsonObject, key: str, context: str) -> int:
+    """读取 Rust 计数结果中的非负整数。"""
+    value = result[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise TypeError(f"{context}.{key} 必须是非负整数")
+    return value
 
 
 def _build_protocol_entries(
@@ -210,7 +313,7 @@ def _build_plugin_protocol_entry(*, plugins_js: JsonArray, item: TranslationItem
     """构造插件参数写入协议检查条目。"""
     parts = item.location_path.split("/")
     if len(parts) < 3:
-        return _empty_protocol_entry(item)
+        raise ValueError(f"插件参数路径缺少字段段: {item.location_path}")
     plugin = ensure_json_object(plugins_js[int(parts[1])], item.location_path)
     parameters = ensure_json_object(plugin["parameters"], f"{item.location_path}.parameters")
     return {
@@ -318,19 +421,7 @@ def _locate_note_owner(*, value: JsonValue, owner_parts: list[str], context: str
     return ensure_json_object(current_value, f"{context}.note_owner")
 
 
-def _empty_protocol_entry(item: TranslationItem) -> JsonObject:
-    """生成会在 Rust 侧自然跳过的空协议检查条目。"""
-    return {
-        "item": _build_item_payload(item),
-        "mode": "none",
-        "current_value": None,
-        "path_parts": [],
-        "note_text": None,
-        "tag_name": None,
-    }
-
-
-def _build_text_rules_payload(text_rules: TextRules) -> JsonObject:
+def build_native_text_rules_payload(text_rules: TextRules) -> JsonObject:
     """把文本规则压成 Rust 质检核心的输入结构。"""
     setting = text_rules.setting
     return {
@@ -365,9 +456,13 @@ def _build_text_rules_payload(text_rules: TextRules) -> JsonObject:
 
 __all__ = [
     "NativeQualityDetails",
+    "NativeQualityCounts",
     "collect_native_font_replacements",
     "collect_native_note_tag_sources",
+    "collect_native_quality_counts",
     "collect_native_quality_details",
     "collect_native_write_protocol_details",
+    "count_native_write_protocol_issues",
+    "build_native_text_rules_payload",
     "native_thread_count",
 ]

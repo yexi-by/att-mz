@@ -34,12 +34,14 @@ class CoreAgentMixin:
         *,
         source_view: GameFileView,
         include_plugin_source_files: bool = True,
+        include_writable_copies: bool = False,
     ) -> GameData:
         """按显式视图加载单游戏数据，并在翻译源视图绑定会话。"""
         game_data = await load_game_data_for_view(
             session.game_path,
             source_view=source_view,
             include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
         )
         if source_view == GameFileView.TRANSLATION_SOURCE:
             snapshot_records = await session.read_source_snapshot_records()
@@ -57,12 +59,14 @@ class CoreAgentMixin:
         session: TargetGameSession,
         *,
         include_plugin_source_files: bool = True,
+        include_writable_copies: bool = False,
     ) -> GameData:
         """加载翻译源视图，完整原始备份存在时优先读取备份。"""
         return await self._load_game_data_for_view(
             session,
             source_view=GameFileView.TRANSLATION_SOURCE,
             include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
         )
 
     async def _load_active_runtime_game_data(
@@ -70,11 +74,13 @@ class CoreAgentMixin:
         session: TargetGameSession,
         *,
         include_plugin_source_files: bool = True,
+        include_writable_copies: bool = False,
     ) -> GameData:
         """加载当前运行视图，不读取任何 origin 备份。"""
         return await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
         )
 
     async def _extract_active_translation_data_map(

@@ -3,38 +3,58 @@
 import json
 import shutil
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import NoReturn, cast
 
 import pytest
 
-from app.application.file_writer import reset_writable_copies
-from app.application.file_writer import write_game_files
 from app.application.handler import TranslationHandler
+from app.application.errors import WriteBackGateError
 from app.application.summaries import WriteBackSummary
 from app.application.flow_gate import note_tag_rule_scope_hash_for_text_rules, structured_placeholder_scope_hash
+from app.application.flow_gate import event_command_rule_scope_hash_for_setting
 from app.application.font_replacement import (
     apply_font_replacement,
     read_plugins_js_file,
     restore_font_references_from_origin_backups,
 )
 from app.config import SettingOverrides
-from app.config.schemas import TextRulesSetting
+from app.config.schemas import Setting, TextRulesSetting, WriteBackSetting
 from app.note_tag_text import NoteTagTextExtraction, build_note_tag_rule_records_from_import
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.llm import LLMHandler
-from app.persistence import GameRegistry
+from app.native_write_plan import NativePlannedFile, NativeWriteBackPlan, NativeWriteBackSummary
+from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_text import build_plugin_hash
 from app.plugin_source_text import (
+    ActiveRuntimePluginSourceAudit,
+    ActiveRuntimePluginSourceIssue,
     build_plugin_source_rule_records_from_import,
     build_plugin_source_scan,
     parse_plugin_source_rule_import_text,
 )
-from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, STRUCTURED_PLACEHOLDER_RULE_DOMAIN
-from app.rmmz import DataTextExtraction, GameFileView, load_game_data, load_game_data_for_view, read_game_title, resolve_game_layout
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    plugin_rule_scope_hash,
+)
+from app.rmmz import (
+    DataTextExtraction,
+    GameFileView,
+    load_active_runtime_game_data,
+    load_game_data,
+    load_game_data_for_view,
+    read_game_title,
+    resolve_game_layout,
+)
 from app.rmmz.control_codes import CustomPlaceholderRule
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
+    GameData,
     MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
     PLUGINS_FILE_NAME,
@@ -45,10 +65,10 @@ from app.rmmz.schema import (
 )
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
-from app.rmmz.write_back import write_data_text
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
+from tests._native_write_plan_helper import reset_writable_copies, write_data_text, write_game_files
 
 
 def _rewrite_json(path: Path, value: JsonValue) -> None:
@@ -140,6 +160,350 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
             render_template="<{speaker}>",
         ),
     ]
+
+
+async def _prepare_write_gate_session(
+    *,
+    session: TargetGameSession,
+    game_dir: Path,
+    registry: TerminologyRegistry | None = None,
+    glossary: TerminologyGlossary | None = None,
+) -> tuple[GameData, Setting, TextRules]:
+    """让最小游戏通过写文件前置规则，便于测试特定写入风险。"""
+    game_data = await load_game_data(game_dir)
+    setting = load_setting(source_language=session.source_language)
+    placeholder_record = PlaceholderRuleRecord(
+        pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+        placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+    )
+    await session.replace_terminology_bundle(
+        registry=registry or TerminologyRegistry(),
+        glossary=glossary or TerminologyGlossary(),
+    )
+    await session.replace_placeholder_rules([placeholder_record])
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(
+                pattern_text=placeholder_record.pattern_text,
+                placeholder_template=placeholder_record.placeholder_template,
+            ),
+        ),
+        structured_placeholder_rules=(),
+    )
+    await session.replace_rule_review_state(
+        rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+        scope_hash=plugin_rule_scope_hash(game_data),
+        reviewed_empty=True,
+    )
+    await session.replace_rule_review_state(
+        rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+        scope_hash=event_command_rule_scope_hash_for_setting(
+            game_data=game_data,
+            setting=setting,
+        ),
+        reviewed_empty=True,
+    )
+    await session.replace_rule_review_state(
+        rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+        scope_hash=note_tag_rule_scope_hash_for_text_rules(
+            game_data=game_data,
+            text_rules=text_rules,
+        ),
+        reviewed_empty=True,
+    )
+    scope = await TextScopeService().build(
+        session=session,
+        game_data=game_data,
+        text_rules=text_rules,
+    )
+    await session.replace_rule_review_state(
+        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=structured_placeholder_scope_hash(
+            translation_data_map=scope.translation_data_map,
+            structured_rules=(),
+        ),
+        reviewed_empty=True,
+    )
+    await session.replace_rule_review_state(
+        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        scope_hash="placeholder-rules-imported",
+        reviewed_empty=False,
+    )
+    return game_data, setting, text_rules
+
+
+class _NativePlanSessionStub:
+    """测试 Rust 写回计划应用层协议的会话桩。"""
+
+    game_path: Path
+    db_path: Path
+    content_root: Path
+    runtime_map_replace_count: int
+    runtime_map_replace_calls: int
+
+    def __init__(self, tmp_path: Path) -> None:
+        """初始化可满足写回 helper 的最小会话字段。"""
+        self.game_path = tmp_path / "game"
+        self.db_path = tmp_path / "game.db"
+        self.content_root = tmp_path / "game"
+        self.runtime_map_replace_count = 0
+        self.runtime_map_replace_calls = 0
+
+    async def replace_plugin_source_runtime_write_maps(self, records: list[object]) -> None:
+        """记录插件源码当前运行映射是否被替换。"""
+        self.runtime_map_replace_calls += 1
+        self.runtime_map_replace_count = len(records)
+
+    async def replace_font_replacement_records(self, records: list[object]) -> None:
+        """测试中不触发字体记录替换。"""
+        _ = records
+
+
+def _empty_active_runtime_audit() -> ActiveRuntimePluginSourceAudit:
+    """构造没有问题的当前运行文件审计结果。"""
+    return ActiveRuntimePluginSourceAudit(
+        issues=(),
+        text_issue_audit_enabled=True,
+        scanned_file_count=0,
+        active_file_count=0,
+        literal_count=0,
+        active_literal_count=0,
+        read_error_file_count=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_write_back_helper_applies_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通写回快路径必须应用 Rust 计划并执行事务替换。"""
+    session = _NativePlanSessionStub(tmp_path)
+    written_files: list[tuple[Path, str]] = []
+    statuses: list[str] = []
+
+    def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
+        """返回最小 Rust 写回计划，并记录调用模式。"""
+        assert kwargs["mode"] == "write_back"
+        content_output_dir = kwargs["content_output_dir"]
+        assert isinstance(content_output_dir, Path)
+        assert content_output_dir.is_dir()
+        return NativeWriteBackPlan(
+            files=[
+                NativePlannedFile(
+                    target_path=session.content_root / "data" / "System.json",
+                    relative_path="data/System.json",
+                    content="{\"gameTitle\":\"测试\"}\n",
+                )
+            ],
+            plugin_source_runtime_write_maps=[],
+            font_replacement_records=[],
+            summary=NativeWriteBackSummary(
+                data_item_count=1,
+                plugin_item_count=0,
+                terminology_written_count=0,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=1,
+                skipped_file_count=0,
+            ),
+            timings_ms={"total": 1, "active_runtime_audit": 12345},
+        )
+
+    def fake_write_planned_text_files(
+        *,
+        files: list[tuple[Path, str | None, Path | None]],
+        rollback_dir_parent: Path,
+    ) -> None:
+        """记录事务写入计划。"""
+        assert rollback_dir_parent == session.content_root
+        for target_path, content, source_path in files:
+            assert content is not None
+            assert source_path is None
+            written_files.append((target_path, content))
+
+    async def fake_load_active_runtime_game_data(game_path: Path) -> GameData:
+        """模拟写入后重新加载当前运行视图。"""
+        assert game_path == session.game_path
+        return cast(GameData, cast(object, SimpleNamespace()))
+
+    def fake_audit_active_runtime_plugin_source(
+        *,
+        game_data: GameData,
+        text_rules: TextRules,
+        audit_text_issues: bool,
+    ) -> ActiveRuntimePluginSourceAudit:
+        """模拟当前运行文件审计通过。"""
+        _ = game_data
+        _ = text_rules
+        assert audit_text_issues is False
+        return _empty_active_runtime_audit()
+
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
+    monkeypatch.setattr("app.application.handler.write_planned_text_file_sources", fake_write_planned_text_files)
+    monkeypatch.setattr("app.application.handler.load_active_runtime_game_data", fake_load_active_runtime_game_data)
+    monkeypatch.setattr("app.application.handler.audit_active_runtime_plugin_source", fake_audit_active_runtime_plugin_source)
+
+    handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
+    try:
+        summary = await handler.write_runtime_files_with_native_plan(
+            session=cast(TargetGameSession, cast(object, session)),
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None, statuses.append),
+            setting=cast(
+                Setting,
+                cast(
+                    object,
+                    SimpleNamespace(
+                        text_rules=TextRulesSetting(),
+                        write_back=WriteBackSetting(),
+                    ),
+                ),
+            ),
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+            mode="write_back",
+            writable_location_paths=[],
+            confirm_font_overwrite=False,
+            success_phase="游戏文本回写完成",
+        )
+    finally:
+        await handler.close()
+
+    assert summary.data_item_count == 1
+    assert written_files == [(session.content_root / "data" / "System.json", "{\"gameTitle\":\"测试\"}\n")]
+    assert summary.post_write_audit_ms < 12345
+    assert statuses == [
+        "准备 Rust 写回计划输入",
+        "生成 Rust 写回计划",
+        "替换游戏运行文件",
+        "审计写入后的当前运行文件",
+        "保存写入诊断映射",
+    ]
+    assert session.runtime_map_replace_calls == 1
+    assert session.runtime_map_replace_count == 0
+
+
+@pytest.mark.asyncio
+async def test_native_write_back_helper_blocks_runtime_map_when_post_write_audit_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写入后当前运行文件审计失败时，不得保存可用于诊断的 runtime map。"""
+    session = _NativePlanSessionStub(tmp_path)
+    events: list[str] = []
+
+    def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
+        """返回会触发写入后审计失败的最小计划。"""
+        assert kwargs["mode"] == "write_back"
+        content_output_dir = kwargs["content_output_dir"]
+        assert isinstance(content_output_dir, Path)
+        assert content_output_dir.is_dir()
+        return NativeWriteBackPlan(
+            files=[
+                NativePlannedFile(
+                    target_path=session.content_root / "js" / "plugins" / "Broken.js",
+                    relative_path="js/plugins/Broken.js",
+                    content="if (\n",
+                )
+            ],
+            plugin_source_runtime_write_maps=[],
+            font_replacement_records=[],
+            summary=NativeWriteBackSummary(
+                data_item_count=0,
+                plugin_item_count=1,
+                terminology_written_count=0,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=1,
+                skipped_file_count=0,
+            ),
+            timings_ms={"total": 1, "active_runtime_audit": 999},
+        )
+
+    def fake_write_planned_text_files(
+        *,
+        files: list[tuple[Path, str | None, Path | None]],
+        rollback_dir_parent: Path,
+    ) -> None:
+        """记录文件替换已经发生。"""
+        for _target_path, content, source_path in files:
+            assert content is not None
+            assert source_path is None
+        assert rollback_dir_parent == session.content_root
+        events.append("write")
+
+    async def fake_load_active_runtime_game_data(game_path: Path) -> GameData:
+        """记录写入后重新加载当前运行视图。"""
+        assert game_path == session.game_path
+        events.append("load")
+        return cast(GameData, cast(object, SimpleNamespace()))
+
+    def fake_audit_active_runtime_plugin_source(
+        *,
+        game_data: GameData,
+        text_rules: TextRules,
+        audit_text_issues: bool,
+    ) -> ActiveRuntimePluginSourceAudit:
+        """模拟当前运行文件审计发现 JS 语法错误。"""
+        _ = game_data
+        _ = text_rules
+        assert audit_text_issues is False
+        events.append("audit")
+        return ActiveRuntimePluginSourceAudit(
+            issues=(
+                ActiveRuntimePluginSourceIssue(
+                    code="active_runtime_syntax_error",
+                    message="当前游戏运行文件里的插件源码无法完成 JS 语法检查",
+                    file_name="Broken.js",
+                    syntax_error="RuntimeError: 原生 AST 解析报告 JS 语法错误",
+                ),
+            ),
+            text_issue_audit_enabled=True,
+            scanned_file_count=1,
+            active_file_count=1,
+            literal_count=0,
+            active_literal_count=0,
+            read_error_file_count=0,
+        )
+
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
+    monkeypatch.setattr("app.application.handler.write_planned_text_file_sources", fake_write_planned_text_files)
+    monkeypatch.setattr("app.application.handler.load_active_runtime_game_data", fake_load_active_runtime_game_data)
+    monkeypatch.setattr("app.application.handler.audit_active_runtime_plugin_source", fake_audit_active_runtime_plugin_source)
+
+    handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
+    try:
+        with pytest.raises(WriteBackGateError, match="写入后当前运行文件审计未通过"):
+            _ = await handler.write_runtime_files_with_native_plan(
+                session=cast(TargetGameSession, cast(object, session)),
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+                setting=cast(
+                    Setting,
+                    cast(
+                        object,
+                        SimpleNamespace(
+                            text_rules=TextRulesSetting(),
+                            write_back=WriteBackSetting(),
+                        ),
+                    ),
+                ),
+                text_rules=TextRules.from_setting(TextRulesSetting()),
+                mode="write_back",
+                writable_location_paths=[],
+                confirm_font_overwrite=False,
+                success_phase="游戏文本回写完成",
+            )
+    finally:
+        await handler.close()
+
+    assert events == ["write", "load", "audit"]
+    assert session.runtime_map_replace_calls == 0
 
 
 @pytest.mark.asyncio
@@ -689,12 +1053,301 @@ async def test_direct_write_back_rejects_latest_quality_errors(
 
 
 @pytest.mark.asyncio
+async def test_direct_write_back_rejects_missing_workflow_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """直接写入游戏文件不能在外部规则未完成时静默成功。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="检查没通过"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_rebuild_active_runtime_rejects_missing_workflow_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重建当前运行文件也是写文件操作，必须受同一前置规则约束。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="检查没通过"):
+            _ = await handler.rebuild_active_runtime(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重建当前运行文件成功路径必须穿过真实 handler 和 Rust 写回计划。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data = await load_game_data(minimal_game_dir)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[EventCommandParameterFilter(index=0, value="TestPlugin")],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        setting = load_setting(source_language=session.source_language)
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+            structured_placeholder_rules=(),
+        )
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=(),
+            ),
+            reviewed_empty=True,
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    _rewrite_json(
+        minimal_game_dir / "data" / "System.json",
+        {
+            "gameTitle": "损坏的当前运行文件",
+            "terms": {},
+        },
+    )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.rebuild_active_runtime(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    rebuilt_system = ensure_json_object(
+        _read_test_json(minimal_game_dir / "data" / "System.json"),
+        "System.json",
+    )
+    assert rebuilt_system["gameTitle"] == "测试"
+    assert summary.data_item_count > 0
+    assert summary.planned_file_count > 0
+    assert summary.rust_plan_ms >= 0
+    assert summary.file_replacement_ms >= 0
+    assert summary.post_write_audit_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_direct_write_back_rejects_missing_source_snapshot_manifest(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """native 快路径进入 Rust 前必须校验数据库可信源快照 manifest。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await _prepare_write_gate_session(session=session, game_dir=minimal_game_dir)
+        await session.replace_source_snapshot_records([])
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError, match="可信源快照 manifest"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_write_terminology_allows_pending_body_translation_run(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """术语写回只要求术语和写入协议可用，不因正文译文未完成而失败。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+            registry=TerminologyRegistry(speaker_names={"アリス": "爱丽丝"}),
+            glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
+        )
+        _ = await session.start_translation_run(
+            total_extracted=100,
+            pending_count=100,
+            deduplicated_count=100,
+            batch_count=1,
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.write_terminology(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    common_events = ensure_json_array(_read_test_json(minimal_game_dir / "data" / "CommonEvents.json"), "CommonEvents")
+    first_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(first_event["list"], "CommonEvents[1].list")
+    name_parameters = ensure_json_array(
+        ensure_json_object(commands[0], "CommonEvents[1].list[0]")["parameters"],
+        "CommonEvents[1].list[0].parameters",
+    )
+    assert summary.written_count > 0
+    assert name_parameters[4] == "爱丽丝"
+
+
+@pytest.mark.asyncio
 async def test_direct_write_back_rejects_active_runtime_read_error_before_writing_data(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """当前运行插件源码读取失败时，写回后验收失败并保留生成结果。"""
+    """当前运行插件源码读取失败时，Rust 计划阶段直接失败且不写 data。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
@@ -823,16 +1476,16 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
     finally:
         await handler.close()
 
-    assert _read_test_json(common_events_path) != original_events
+    assert _read_test_json(common_events_path) == original_events
 
 
 @pytest.mark.asyncio
-async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_during_post_audit(
+async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_during_plan_audit(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写后自动验收不把已排除的插件源码内部字符串当正文漏翻。"""
+    """Rust 计划检查不把已排除的插件源码内部字符串当正文漏翻。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
@@ -969,6 +1622,13 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             ]
         )
 
+    def forbidden_python_native_check(*args: object, **kwargs: object) -> NoReturn:
+        """写入路径不应在 Python 侧重复执行 Rust 计划会执行的原生检查。"""
+        _ = (args, kwargs)
+        raise AssertionError("写入路径不应重复执行 Python 侧原生检查")
+
+    monkeypatch.setattr("app.application.write_back_gate.collect_native_quality_counts", forbidden_python_native_check)
+    monkeypatch.setattr("app.application.write_back_gate.count_native_write_protocol_issues", forbidden_python_native_check)
     handler = TranslationHandler(registry, LLMHandler())
     try:
         summary = await handler.write_back(
@@ -988,7 +1648,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """当前运行源码审计失败时，字体等生成结果保留给后续诊断。"""
+    """当前运行源码读取失败时，Rust 计划阶段直接失败且不改字体。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
@@ -1129,9 +1789,9 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
     finally:
         await handler.close()
 
-    assert (fonts_dir / replacement_font.name).exists()
-    assert (fonts_dir / "gamefont_origin.css").exists()
-    assert gamefont_css_path.read_text(encoding="utf-8") != original_css
+    assert not (fonts_dir / replacement_font.name).exists()
+    assert not (fonts_dir / "gamefont_origin.css").exists()
+    assert gamefont_css_path.read_text(encoding="utf-8") == original_css
 
 
 @pytest.mark.asyncio
@@ -1319,6 +1979,131 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
     assert ensure_json_array(ensure_json_object(upper_commands[1], "upper.speaker")["parameters"], "upper.speaker.parameters")[0] == "\\N<店员>大写正文"
     assert ensure_json_array(ensure_json_object(dynamic_commands[1], "dynamic.speaker")["parameters"], "dynamic.speaker.parameters")[0] == "<\\n[1]>"
     assert ensure_json_array(ensure_json_object(dynamic_commands[2], "dynamic.body")["parameters"], "dynamic.body.parameters")[0] == "动态正文"
+
+
+@pytest.mark.asyncio
+async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实写回入口用 Rust 计划重建 MV 虚拟名字框运行文件。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
+    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
+        encoding="utf-8"
+    )
+    setting_text = setting_text.replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{prompt_path.as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.extend(
+        [
+            {
+                "id": 2,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["案内人："]},
+                    {"code": 401, "parameters": ["次の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 3,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["案内人「こんにちは」"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+            {
+                "id": 4,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": ["\\N[1]:役者の本文です"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+        ]
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_mv_game_dir,
+            registry=TerminologyRegistry(
+                speaker_names={"案内人": "向导", "MV勇者": "勇者"},
+            ),
+            glossary=TerminologyGlossary(terms={"案内人": "向导", "MV勇者": "勇者"}),
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        custom_translations = {
+            "CommonEvents.json/2/0": ["你好"],
+            "CommonEvents.json/3/0": ["你好」"],
+            "CommonEvents.json/4/0": ["勇者正文"],
+        }
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=custom_translations.get(
+                        item.location_path,
+                        [
+                            _translated_test_line_preserving_controls(line, text_rules)
+                            for line in item.original_lines
+                        ],
+                    ),
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.write_back(
+            game_title="MVテストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    written_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    standalone_commands = ensure_json_array(
+        ensure_json_object(written_events[2], "CommonEvents[2]")["list"],
+        "CommonEvents[2].list",
+    )
+    inline_commands = ensure_json_array(
+        ensure_json_object(written_events[3], "CommonEvents[3]")["list"],
+        "CommonEvents[3].list",
+    )
+    actor_commands = ensure_json_array(
+        ensure_json_object(written_events[4], "CommonEvents[4]")["list"],
+        "CommonEvents[4].list",
+    )
+
+    assert summary.data_item_count >= 3
+    assert ensure_json_array(ensure_json_object(standalone_commands[1], "standalone.speaker")["parameters"], "standalone.speaker.parameters")[0] == "向导："
+    assert ensure_json_array(ensure_json_object(standalone_commands[2], "standalone.body")["parameters"], "standalone.body.parameters")[0] == "你好"
+    assert ensure_json_array(ensure_json_object(inline_commands[1], "inline.speaker")["parameters"], "inline.speaker.parameters")[0] == "向导「你好」"
+    assert ensure_json_array(ensure_json_object(actor_commands[1], "actor.speaker")["parameters"], "actor.speaker.parameters")[0] == "勇者:勇者正文"
 
 
 @pytest.mark.asyncio
@@ -1632,6 +2417,26 @@ async def test_translation_source_view_ignores_damaged_active_data_when_snapshot
 
 
 @pytest.mark.asyncio
+async def test_active_runtime_loader_skips_writable_copies_by_default(minimal_game_dir: Path) -> None:
+    """当前运行只读视图默认不构造写入副本。"""
+    read_only_game_data = await load_active_runtime_game_data(minimal_game_dir)
+    writable_game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
+
+    assert read_only_game_data.data
+    assert read_only_game_data.plugins_js
+    assert read_only_game_data.writable_data == {}
+    assert read_only_game_data.writable_plugins_js == []
+    assert read_only_game_data.writable_plugin_source_files == {}
+    assert writable_game_data.writable_data
+    assert writable_game_data.writable_plugins_js
+    assert writable_game_data.writable_data["System.json"] is not writable_game_data.data["System.json"]
+    assert writable_game_data.writable_plugins_js[0] is not writable_game_data.plugins_js[0]
+
+
+@pytest.mark.asyncio
 async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapshot(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1674,28 +2479,25 @@ async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapsho
 
 
 @pytest.mark.asyncio
-async def test_rebuild_active_runtime_requests_full_restore(
+async def test_rebuild_active_runtime_uses_native_rebuild_helper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """重建入口必须调用全量恢复写回模式。"""
-    captured_force_flags: list[bool] = []
+    """重建入口必须直接调用 Rust 重建 helper。"""
+    captured_calls: list[tuple[str, bool]] = []
 
-    async def fake_write_back(
+    async def fake_rebuild_with_native_plan(
         self: TranslationHandler,
         game_title: str,
         callbacks: tuple[object, object],
         setting_overrides: SettingOverrides | None = None,
         confirm_font_overwrite: bool = False,
-        force_full_restore: bool = False,
     ) -> WriteBackSummary:
-        """记录重建入口传入的全量恢复开关。"""
+        """记录重建入口传入的 native helper 参数。"""
         _ = self
-        _ = game_title
         _ = callbacks
         _ = setting_overrides
-        _ = confirm_font_overwrite
-        captured_force_flags.append(force_full_restore)
+        captured_calls.append((game_title, confirm_font_overwrite))
         return WriteBackSummary(
             data_item_count=0,
             plugin_item_count=0,
@@ -1706,17 +2508,22 @@ async def test_rebuild_active_runtime_requests_full_restore(
             font_copied=False,
         )
 
-    monkeypatch.setattr(TranslationHandler, "write_back", fake_write_back)
+    monkeypatch.setattr(
+        TranslationHandler,
+        "_rebuild_active_runtime_with_native_plan",
+        fake_rebuild_with_native_plan,
+    )
     handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
     try:
         _ = await handler.rebuild_active_runtime(
             game_title="テストゲーム",
             callbacks=(lambda _current, _total: None, lambda _count: None),
+            confirm_font_overwrite=True,
         )
     finally:
         await handler.close()
 
-    assert captured_force_flags == [True]
+    assert captured_calls == [("テストゲーム", True)]
 
 
 @pytest.mark.asyncio
@@ -1892,14 +2699,14 @@ async def test_note_tag_multiline_value_keeps_line_break_structure_before_write_
         ],
         text_rules=text_rules,
     ).extract_all_text()["Items.json"].translation_items
-    note_items[0].translation_lines = ["说明\n「甲乙丙丁戊己，庚辛壬癸」"]
+    note_items[0].translation_lines = ["说明\n「甲乙，丙丁」"]
 
     reset_writable_copies(game_data)
     write_data_text(game_data, [note_items[0]], text_rules)
 
     writable_items = ensure_json_array(game_data.writable_data["Items.json"], "Items.json")
     writable_item = ensure_json_object(writable_items[1], "Items.json[1]")
-    assert writable_item["note"] == "<拡張説明:说明\n「甲乙丙丁戊己，庚辛壬癸」>"
+    assert writable_item["note"] == "<拡張説明:说明\n「甲乙，丙丁」>"
 
 
 @pytest.mark.asyncio
@@ -1941,7 +2748,7 @@ async def test_note_tag_json_string_leaf_uses_visible_text_protocol(minimal_game
     assert note_items[0].original_lines == [source_note.strip()]
 
     translated_note = "\n　" + r"\C[2]详细说明\C[0]\n下一行" + "　\n"
-    note_items[0].translation_lines = [translated_note]
+    note_items[0].translation_lines = [translated_note.strip()]
     reset_writable_copies(game_data)
     write_data_text(game_data, [note_items[0]])
 
@@ -2438,7 +3245,7 @@ async def test_long_text_write_back_ignores_trailing_empty_translation_lines(min
 
 @pytest.mark.asyncio
 async def test_first_write_back_archives_complete_original_data_snapshot(minimal_game_dir: Path) -> None:
-    """首次磁盘回写把完整原始 data 复制到 `data_origin/`。"""
+    """首次磁盘回写会准备完整可信源快照。"""
     game_data = await load_game_data(minimal_game_dir)
     active_data_names = sorted(path.name for path in (minimal_game_dir / "data").glob("*.json"))
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
@@ -2462,7 +3269,7 @@ async def test_first_write_back_archives_complete_original_data_snapshot(minimal
     assert (origin_data_dir / "System.json").exists()
     assert (origin_data_dir / "Tilesets.json").exists()
     assert (origin_data_dir / "UnknownPluginData.json").exists()
-    assert not (minimal_game_dir / "js" / "plugins_origin.js").exists()
+    assert (minimal_game_dir / "js" / "plugins_origin.js").exists()
 
     active_common_events = ensure_json_array(
         _read_test_json(minimal_game_dir / "data" / "CommonEvents.json"),

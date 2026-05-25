@@ -39,17 +39,15 @@ def coerce_json_value(value: object) -> JsonValue:
     if isinstance(value, str | int | float | bool) or value is None:
         return value
     if isinstance(value, list):
-        list_result: list[JsonValue] = []
         for item in cast(list[object], value):
-            list_result.append(coerce_json_value(item))
-        return list_result
+            _ = coerce_json_value(item)
+        return cast(JsonArray, value)
     if isinstance(value, dict):
-        object_result: dict[str, JsonValue] = {}
         for key, child in cast(dict[object, object], value).items():
             if not isinstance(key, str):
                 raise TypeError("JSON 对象键必须是字符串")
-            object_result[key] = coerce_json_value(child)
-        return object_result
+            _ = coerce_json_value(child)
+        return cast(JsonObject, value)
     raise TypeError(f"JSON 值类型无法处理: {type(value).__name__}")
 
 

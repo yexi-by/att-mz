@@ -39,7 +39,7 @@ class TextScopeService:
         game_data: GameData,
         text_rules: TextRules,
         translated_items: list[TranslationItem] | None = None,
-        include_write_probe: bool = True,
+        include_write_probe: bool = False,
     ) -> TextScopeResult:
         """读取规则、展开命中项，并按需生成写入可行性信息。"""
         plugin_rules, stale_plugin_rules = await read_fresh_plugin_text_rules(
@@ -133,6 +133,7 @@ class TextScopeService:
             entries=entries,
             stale_plugin_rules=stale_plugin_rules,
             write_back_probe_error=write_back_probe_error,
+            write_back_probe_enabled=include_write_probe,
         )
 
 

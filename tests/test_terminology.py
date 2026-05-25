@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.application.handler import TranslationHandler, validate_terminology_registry_shape
-from app.application.file_writer import reset_writable_copies
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
 from app.rmmz import DataTextExtraction, load_game_data
@@ -20,7 +19,6 @@ from app.terminology import (
     TerminologyGlossary,
     TerminologyPromptIndex,
     TerminologyRegistry,
-    apply_terminology_translations,
     export_terminology_artifacts,
     load_terminology_glossary,
     load_terminology_registry,
@@ -29,6 +27,7 @@ from app.terminology import (
 from app.terminology.extraction import build_speaker_sample_file_name
 from app.terminology.files import reserve_speaker_sample_file_name
 from app.translation import iter_translation_context_batches
+from tests._native_write_plan_helper import reset_writable_copies, write_terminology_text
 
 
 def json_dump_text(registry: TerminologyRegistry) -> str:
@@ -305,12 +304,12 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     assert summary.sample_file_count == 0
 
     reset_writable_copies(game_data)
-    written_count = apply_terminology_translations(
-        game_data,
-        TerminologyRegistry(speaker_names={"案内人": "向导"}),
-    )
+    with pytest.raises(ValueError, match="MV 术语写回缺少 MV 虚拟名字框规则"):
+        _ = write_terminology_text(
+            game_data,
+            TerminologyRegistry(speaker_names={"案内人": "向导"}),
+        )
 
-    assert written_count == 0
     common_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
     event = ensure_json_object(common_events[1], "CommonEvents[1]")
     commands = ensure_json_array(event["list"], "CommonEvents[1].list")
@@ -455,7 +454,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     assert "案内人「こんにちは」" not in prompt_text
 
     reset_writable_copies(game_data)
-    written_count = apply_terminology_translations(
+    written_count = write_terminology_text(
         game_data,
         TerminologyRegistry(speaker_names={"案内人": "向导", "MV勇者": "勇者", "受付": "接待员"}),
         mv_virtual_namebox_rule_records=mv_namebox_rules,
@@ -530,7 +529,7 @@ async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
 
     reset_writable_copies(game_data)
     with pytest.raises(ValueError) as exc_info:
-        _ = apply_terminology_translations(
+        _ = write_terminology_text(
             game_data,
             TerminologyRegistry(speaker_names={"受付": "接待员"}),
             mv_virtual_namebox_rule_records=conflict_rules,
@@ -649,6 +648,11 @@ async def test_terminology_skips_actor_name_control_variables(
     assert common_event is not None
     common_event.commands[0].parameters[4] = "\\n[1]："
     game_data.data["CommonEvents.json"] = game_data.writable_data["CommonEvents.json"]
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    _ = common_events_path.write_text(
+        json.dumps(common_events, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     summary = await export_terminology_artifacts(
         game_data=game_data,
@@ -664,7 +668,7 @@ async def test_terminology_skips_actor_name_control_variables(
     assert prompt_index.entries == []
 
     reset_writable_copies(game_data)
-    written_count = apply_terminology_translations(
+    written_count = write_terminology_text(
         game_data,
         TerminologyRegistry(speaker_names={"\\n[1]：": "玩家："}),
     )
@@ -833,7 +837,7 @@ async def test_translation_prompt_injects_same_database_entry_name(
 
 
 @pytest.mark.asyncio
-async def test_apply_terminology_translations_updates_all_supported_fields(
+async def test_native_terminology_write_updates_all_supported_fields(
     minimal_game_dir: Path,
 ) -> None:
     """已填写术语表可以直接写回名字框、地图名、数据库名称和系统类型。"""
@@ -849,7 +853,7 @@ async def test_apply_terminology_translations_updates_all_supported_fields(
     )
 
     reset_writable_copies(game_data)
-    written_count = apply_terminology_translations(game_data, registry)
+    written_count = write_terminology_text(game_data, registry)
 
     assert written_count == 7
     map_object = ensure_json_object(game_data.writable_data["Map001.json"], "Map001")

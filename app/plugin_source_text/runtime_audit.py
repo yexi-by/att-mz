@@ -7,13 +7,20 @@ from collections import Counter
 from dataclasses import dataclass
 
 from app.plugin_text import extract_plugin_name
-from app.rmmz.schema import GameData
+from app.rmmz.schema import (
+    GameData,
+    PluginSourceRuntimeScanCacheRecord,
+    PluginSourceRuntimeStringLiteralCacheRecord,
+)
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
 
 from .scanner import (
+    PluginSourceBatchTextScan,
+    PluginSourceCandidateIndex,
+    PluginSourceFileTextScan,
     PluginSourceStringLiteral,
-    iter_plugin_source_string_literals,
-    scan_plugin_source_file_text_strict,
+    build_plugin_source_file_hash,
+    scan_plugin_source_files_text_strict,
 )
 
 RAW_LITERAL_LINE_BREAK_CONTROL_PATTERN: re.Pattern[str] = re.compile(
@@ -56,6 +63,35 @@ class ActiveRuntimePluginSourceIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveRuntimePluginSourceScanCacheStats:
+    """当前运行插件源码 AST 扫描缓存统计。"""
+
+    input_record_count: int
+    current_file_count: int
+    hit_file_count: int
+    miss_file_count: int
+    stale_file_count: int
+    orphan_record_count: int
+    reused_syntax_error_file_count: int
+    rescan_file_count: int
+    refreshed_record_count: int
+
+    def to_summary_json(self) -> JsonObject:
+        """转换成审计摘要字段。"""
+        return {
+            "active_runtime_scan_cache_input_record_count": self.input_record_count,
+            "active_runtime_scan_cache_current_file_count": self.current_file_count,
+            "active_runtime_scan_cache_hit_file_count": self.hit_file_count,
+            "active_runtime_scan_cache_miss_file_count": self.miss_file_count,
+            "active_runtime_scan_cache_stale_file_count": self.stale_file_count,
+            "active_runtime_scan_cache_orphan_record_count": self.orphan_record_count,
+            "active_runtime_scan_cache_reused_syntax_error_file_count": self.reused_syntax_error_file_count,
+            "active_runtime_scan_cache_rescan_file_count": self.rescan_file_count,
+            "active_runtime_scan_cache_refreshed_record_count": self.refreshed_record_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ActiveRuntimePluginSourceAudit:
     """当前运行插件源码审计结果。"""
 
@@ -66,6 +102,7 @@ class ActiveRuntimePluginSourceAudit:
     literal_count: int
     active_literal_count: int
     read_error_file_count: int
+    scan_cache_stats: ActiveRuntimePluginSourceScanCacheStats | None = None
 
     @property
     def issue_counts(self) -> Counter[str]:
@@ -75,7 +112,7 @@ class ActiveRuntimePluginSourceAudit:
     def summary_json(self) -> JsonObject:
         """转换成质量报告摘要字段。"""
         counts = self.issue_counts
-        return {
+        summary: JsonObject = {
             "active_runtime_scanned_file_count": self.scanned_file_count,
             "active_runtime_active_file_count": self.active_file_count,
             "active_runtime_literal_count": self.literal_count,
@@ -88,6 +125,9 @@ class ActiveRuntimePluginSourceAudit:
             "active_runtime_source_residual_count": counts.get("active_runtime_source_residual", 0),
             "active_runtime_placeholder_risk_count": counts.get("active_runtime_placeholder_risk", 0),
         }
+        if self.scan_cache_stats is not None:
+            summary.update(self.scan_cache_stats.to_summary_json())
+        return summary
 
     def issues_json(self, *, limit: int = 100) -> JsonArray:
         """返回前 N 条审计问题。"""
@@ -100,6 +140,8 @@ def audit_active_runtime_plugin_source(
     text_rules: TextRules,
     plugin_source_files: dict[str, str] | None = None,
     plugin_source_read_errors: dict[str, str] | None = None,
+    plugin_source_batch_scan: PluginSourceBatchTextScan | None = None,
+    scan_cache_stats: ActiveRuntimePluginSourceScanCacheStats | None = None,
     audit_text_issues: bool = True,
 ) -> ActiveRuntimePluginSourceAudit:
     """审计当前运行插件源码中的源文残留和坏控制符。"""
@@ -120,6 +162,10 @@ def audit_active_runtime_plugin_source(
     }
     active_missing_file_names = set(enabled_plugin_files) - set(source_files) - set(read_errors)
     active_file_count = len(active_read_error_file_names) + len(active_missing_file_names)
+    batch_scan = plugin_source_batch_scan or scan_plugin_source_files_text_strict(
+        files=source_files,
+        active_file_names=enabled_plugin_files,
+    )
     for file_name in sorted(active_read_error_file_names):
         issues.append(
             ActiveRuntimePluginSourceIssue(
@@ -138,31 +184,25 @@ def audit_active_runtime_plugin_source(
                 read_error=f"启用插件源码文件不存在: js/plugins/{file_name}",
             )
         )
-    for file_name, source in sorted(source_files.items()):
+    for file_name, _source in sorted(source_files.items()):
         active = file_name in enabled_plugin_files
         if active:
             active_file_count += 1
-            try:
-                file_scan = scan_plugin_source_file_text_strict(
-                    file_name=file_name,
-                    source=source,
-                    active=True,
-                )
-            except (ImportError, RuntimeError) as error:
+            syntax_error = batch_scan.syntax_errors.get(file_name)
+            if syntax_error is not None:
                 issues.append(
                     _strict_active_runtime_syntax_issue(
                         file_name=file_name,
-                        error=error,
+                        error=RuntimeError(syntax_error),
                     )
                 )
                 continue
-            literals = file_scan.literals
         else:
-            literals = iter_plugin_source_string_literals(
-                file_name=file_name,
-                source=source,
-                active=False,
-            )
+            syntax_error = batch_scan.syntax_errors.get(file_name)
+            if syntax_error is not None:
+                raise RuntimeError(f"{file_name} {syntax_error}")
+        file_scan = batch_scan.file_scans[file_name]
+        literals = file_scan.literals
         literal_count += len(literals)
         if not active:
             continue
@@ -179,7 +219,177 @@ def audit_active_runtime_plugin_source(
         literal_count=literal_count,
         active_literal_count=active_literal_count,
         read_error_file_count=len(set(read_errors) | active_missing_file_names),
+        scan_cache_stats=scan_cache_stats,
     )
+
+
+def audit_active_runtime_plugin_source_with_scan_cache(
+    *,
+    game_data: GameData,
+    text_rules: TextRules,
+    cache_records: list[PluginSourceRuntimeScanCacheRecord],
+    created_at: str,
+    audit_text_issues: bool = True,
+) -> tuple[ActiveRuntimePluginSourceAudit, list[PluginSourceRuntimeScanCacheRecord]]:
+    """审计当前运行插件源码，并按文件 hash 复用 AST 扫描缓存。"""
+    enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
+    batch_scan, refreshed_cache_records, scan_cache_stats = scan_plugin_source_files_text_strict_with_cache(
+        files=game_data.plugin_source_files,
+        active_file_names=enabled_plugin_files,
+        cache_records=cache_records,
+        created_at=created_at,
+    )
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+        plugin_source_batch_scan=batch_scan,
+        scan_cache_stats=scan_cache_stats,
+        audit_text_issues=audit_text_issues,
+    )
+    return audit, refreshed_cache_records
+
+
+def scan_plugin_source_files_text_strict_with_cache(
+    *,
+    files: dict[str, str],
+    active_file_names: frozenset[str],
+    cache_records: list[PluginSourceRuntimeScanCacheRecord],
+    created_at: str,
+) -> tuple[
+    PluginSourceBatchTextScan,
+    list[PluginSourceRuntimeScanCacheRecord],
+    ActiveRuntimePluginSourceScanCacheStats,
+]:
+    """按文件 hash 复用当前运行插件源码 AST 扫描结果。"""
+    cached_by_file = {
+        record.file_name: record
+        for record in cache_records
+    }
+    current_hashes = {
+        file_name: build_plugin_source_file_hash(source)
+        for file_name, source in files.items()
+    }
+    file_scans: dict[str, PluginSourceFileTextScan] = {}
+    syntax_errors: dict[str, str] = {}
+    uncached_files: dict[str, str] = {}
+    hit_file_count = 0
+    miss_file_count = 0
+    stale_file_count = 0
+    reused_syntax_error_file_count = 0
+    for file_name, source in sorted(files.items()):
+        file_hash = current_hashes[file_name]
+        cached_record = cached_by_file.get(file_name)
+        if cached_record is None:
+            miss_file_count += 1
+            uncached_files[file_name] = source
+            continue
+        if cached_record.file_hash != file_hash:
+            stale_file_count += 1
+            uncached_files[file_name] = source
+            continue
+        hit_file_count += 1
+        if cached_record.syntax_error:
+            reused_syntax_error_file_count += 1
+            syntax_errors[file_name] = cached_record.syntax_error
+            continue
+        file_scans[file_name] = _file_scan_from_cache_record(
+            record=cached_record,
+            active=file_name in active_file_names,
+        )
+
+    if uncached_files:
+        fresh_scan = scan_plugin_source_files_text_strict(
+            files=uncached_files,
+            active_file_names=active_file_names,
+            text_rules=None,
+        )
+        file_scans.update(fresh_scan.file_scans)
+        syntax_errors.update(fresh_scan.syntax_errors)
+
+    batch_scan = PluginSourceBatchTextScan(
+        file_scans=file_scans,
+        syntax_errors=syntax_errors,
+    )
+    refreshed_cache_records = _cache_records_from_batch_scan(
+        batch_scan=batch_scan,
+        current_hashes=current_hashes,
+        created_at=created_at,
+    )
+    scan_cache_stats = ActiveRuntimePluginSourceScanCacheStats(
+        input_record_count=len(cache_records),
+        current_file_count=len(files),
+        hit_file_count=hit_file_count,
+        miss_file_count=miss_file_count,
+        stale_file_count=stale_file_count,
+        orphan_record_count=len(set(cached_by_file) - set(files)),
+        reused_syntax_error_file_count=reused_syntax_error_file_count,
+        rescan_file_count=len(uncached_files),
+        refreshed_record_count=len(refreshed_cache_records),
+    )
+    return batch_scan, refreshed_cache_records, scan_cache_stats
+
+
+def _file_scan_from_cache_record(
+    *,
+    record: PluginSourceRuntimeScanCacheRecord,
+    active: bool,
+) -> PluginSourceFileTextScan:
+    """把数据库缓存记录恢复为运行期 AST 扫描对象。"""
+    literals = tuple(
+        PluginSourceStringLiteral(
+            file_name=record.file_name,
+            selector=literal.selector,
+            text=literal.text,
+            raw_text=literal.raw_text,
+            line=literal.line,
+            start_index=literal.start_index,
+            end_index=literal.end_index,
+            active=active,
+            context=literal.context,
+        )
+        for literal in record.literals
+    )
+    return PluginSourceFileTextScan(
+        file_name=record.file_name,
+        file_hash=record.file_hash,
+        literals=literals,
+        candidate_index=PluginSourceCandidateIndex(candidates=(), by_selector={}),
+    )
+
+
+def _cache_records_from_batch_scan(
+    *,
+    batch_scan: PluginSourceBatchTextScan,
+    current_hashes: dict[str, str],
+    created_at: str,
+) -> list[PluginSourceRuntimeScanCacheRecord]:
+    """把运行期 AST 扫描对象转换为数据库缓存记录。"""
+    records: list[PluginSourceRuntimeScanCacheRecord] = []
+    for file_name in sorted(current_hashes):
+        file_hash = current_hashes[file_name]
+        syntax_error = batch_scan.syntax_errors.get(file_name, "")
+        file_scan = batch_scan.file_scans.get(file_name)
+        records.append(
+            PluginSourceRuntimeScanCacheRecord(
+                file_name=file_name,
+                file_hash=file_hash,
+                syntax_error=syntax_error,
+                literals=[
+                    PluginSourceRuntimeStringLiteralCacheRecord(
+                        selector=literal.selector,
+                        text=literal.text,
+                        raw_text=literal.raw_text,
+                        line=literal.line,
+                        start_index=literal.start_index,
+                        end_index=literal.end_index,
+                        context=literal.context,
+                    )
+                    for literal in (file_scan.literals if file_scan is not None else ())
+                ],
+                created_at=created_at,
+            )
+        )
+    return records
 
 
 def _strict_active_runtime_syntax_issue(
@@ -279,5 +489,8 @@ def _enabled_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
 __all__ = [
     "ActiveRuntimePluginSourceAudit",
     "ActiveRuntimePluginSourceIssue",
+    "ActiveRuntimePluginSourceScanCacheStats",
     "audit_active_runtime_plugin_source",
+    "audit_active_runtime_plugin_source_with_scan_cache",
+    "scan_plugin_source_files_text_strict_with_cache",
 ]
