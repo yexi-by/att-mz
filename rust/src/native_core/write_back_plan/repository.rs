@@ -1,4 +1,6 @@
-use super::models::{MvVirtualNameboxRule, MvVirtualSpeakerPolicy, TranslationItem};
+use super::models::{
+    MvVirtualNameboxRule, MvVirtualSpeakerPolicy, PluginSourceTextRule, TranslationItem,
+};
 use super::utils::collect_python_named_groups;
 use crate::native_core::models::NativeSourceResidualRule;
 use fancy_regex::Regex as FancyRegex;
@@ -99,6 +101,51 @@ pub(super) fn filter_translation_items_by_policy(
         ));
     }
     Ok(items)
+}
+
+pub(super) fn read_plugin_source_text_rules(
+    connection: &Connection,
+) -> Result<Vec<PluginSourceTextRule>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT file_name, file_hash, selector, selector_kind \
+             FROM plugin_source_text_rules ORDER BY file_name, selector_kind, selector",
+        )
+        .map_err(|error| format!("读取插件源码规则 SQL 准备失败: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            let file_name: String = row.get(0)?;
+            let file_hash: String = row.get(1)?;
+            let selector: String = row.get(2)?;
+            let selector_kind: String = row.get(3)?;
+            Ok((file_name, file_hash, selector, selector_kind))
+        })
+        .map_err(|error| format!("读取插件源码规则失败: {error}"))?;
+    let mut rules_by_file: HashMap<String, PluginSourceTextRule> = HashMap::new();
+    for row in rows {
+        let (file_name, file_hash, selector, selector_kind) =
+            row.map_err(|error| format!("读取插件源码规则行失败: {error}"))?;
+        let record =
+            rules_by_file
+                .entry(file_name.clone())
+                .or_insert_with(|| PluginSourceTextRule {
+                    file_name,
+                    file_hash: file_hash.clone(),
+                    selectors: Vec::new(),
+                    excluded_selectors: Vec::new(),
+                });
+        if record.file_hash != file_hash {
+            return Err(format!("插件源码规则文件哈希不一致: {}", record.file_name));
+        }
+        match selector_kind.as_str() {
+            "translate" => record.selectors.push(selector),
+            "excluded" => record.excluded_selectors.push(selector),
+            _ => return Err(format!("插件源码规则 selector 类型无效: {selector_kind}")),
+        }
+    }
+    let mut rules: Vec<PluginSourceTextRule> = rules_by_file.into_values().collect();
+    rules.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    Ok(rules)
 }
 
 pub(super) fn read_source_residual_rules(

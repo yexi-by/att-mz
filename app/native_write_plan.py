@@ -8,7 +8,11 @@ from importlib import import_module
 from pathlib import Path
 from typing import Protocol, cast
 
-from app.rmmz.schema import FontReplacementRecord, PluginSourceRuntimeWriteMapRecord
+from app.rmmz.schema import (
+    FontReplacementRecord,
+    PluginSourceRuntimeMappingKind,
+    PluginSourceRuntimeWriteMapRecord,
+)
 from app.rmmz.text_rules import JsonObject
 
 
@@ -233,6 +237,7 @@ def _parse_runtime_write_maps(result: RawJsonObject) -> list[PluginSourceRuntime
         record = _ensure_object(raw_record, f"plugin_source_runtime_write_maps[{index}]")
         records.append(
             PluginSourceRuntimeWriteMapRecord(
+                mapping_kind=_read_mapping_kind(record, f"runtime_map[{index}]"),
                 location_path=_read_str(record, "location_path", f"runtime_map[{index}]"),
                 source_file_name=_read_str(record, "source_file_name", f"runtime_map[{index}]"),
                 source_selector=_read_str(record, "source_selector", f"runtime_map[{index}]"),
@@ -248,6 +253,14 @@ def _parse_runtime_write_maps(result: RawJsonObject) -> list[PluginSourceRuntime
             )
         )
     return records
+
+
+def _read_mapping_kind(record: RawJsonObject, context: str) -> PluginSourceRuntimeMappingKind:
+    """读取 Rust 返回的插件源码运行映射类型。"""
+    value = _read_str(record, "mapping_kind", context)
+    if value not in ("translated", "excluded"):
+        raise RuntimeError(f"Rust 写回计划 {context}.mapping_kind 必须是 translated 或 excluded")
+    return value
 
 
 def _parse_font_replacement_records(result: RawJsonObject) -> list[FontReplacementRecord]:

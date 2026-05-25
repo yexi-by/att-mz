@@ -112,6 +112,7 @@ from app.rmmz.schema import (
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PLUGINS_FILE_NAME,
+    PluginSourceRuntimeWriteMapRecord,
     PluginTextRuleRecord,
     StructuredPlaceholderRuleRecord,
     TranslationItem,
@@ -1107,16 +1108,17 @@ class TranslationHandler:
             )
             file_replacement_ms = int((time.perf_counter() - file_replacement_started) * 1000)
 
+        set_status("保存写入诊断映射")
+        await session.replace_plugin_source_runtime_write_maps(plan.plugin_source_runtime_write_maps)
         post_write_audit_started = time.perf_counter()
         set_status("审计写入后的当前运行文件")
         active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
         self._assert_post_write_active_runtime_audit_passed(
             game_data=active_runtime_game_data,
             text_rules=text_rules,
+            runtime_write_map_records=plan.plugin_source_runtime_write_maps,
         )
         post_write_audit_ms = int((time.perf_counter() - post_write_audit_started) * 1000)
-        set_status("保存写入诊断映射")
-        await session.replace_plugin_source_runtime_write_maps(plan.plugin_source_runtime_write_maps)
         advance_progress(total_count)
 
         replaced_font_reference_count = plan.summary.replaced_font_reference_count + css_replaced_count
@@ -1151,12 +1153,14 @@ class TranslationHandler:
         *,
         game_data: GameData,
         text_rules: TextRules,
+        runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
     ) -> None:
         """写入后审计当前运行插件源码的可读性和 JS 语法。"""
         audit = audit_active_runtime_plugin_source(
             game_data=game_data,
             text_rules=text_rules,
-            audit_text_issues=False,
+            runtime_write_map_records=runtime_write_map_records,
+            audit_text_issues=bool(runtime_write_map_records),
         )
         if not audit.issues:
             return

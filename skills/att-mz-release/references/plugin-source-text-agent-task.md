@@ -57,7 +57,7 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 - `validate-plugin-source-rules` 会报告翻译 selector 数、排除 selector 数和未审查 selector 数；未审查数量不为 0 时，补全 `plugin-source-rules.json` 后重新校验。
 - `plugin-source-rules.json` 完成后运行 `validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json`。
 - validate 通过后运行 `import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json`。
-- `quality-report` 检查已保存译文记录和规则质量；`audit-active-runtime` 审计 `--view active-runtime` 当前运行文件；不要把当前运行审计结果当作规则 selector 来源。
+- `quality-report` 检查已保存译文记录和规则质量；`audit-active-runtime` 审计当前运行文件。默认审计不是补译清单；只有插件源码规则或写回映射已存在时，当前运行源码文本问题才作为支线诊断处理；不要把当前运行审计结果当作规则 selector 来源。
 
 ## 停止条件
 

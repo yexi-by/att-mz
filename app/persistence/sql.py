@@ -29,7 +29,7 @@ TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -274,6 +274,7 @@ CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE = f"""
 --sql
     CREATE TABLE IF NOT EXISTS [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}] (
         location_path          TEXT PRIMARY KEY,
+        mapping_kind           TEXT NOT NULL CHECK (mapping_kind IN ('translated', 'excluded')),
         source_file_name       TEXT NOT NULL,
         source_selector        TEXT NOT NULL,
         source_file_hash       TEXT NOT NULL,
@@ -429,6 +430,7 @@ INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP = f"""
     INSERT OR REPLACE INTO [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}]
     (
         location_path,
+        mapping_kind,
         source_file_name,
         source_selector,
         source_file_hash,
@@ -441,7 +443,7 @@ INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP = f"""
         runtime_line,
         created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -709,6 +711,7 @@ SELECT_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS = f"""
 --sql
     SELECT
         location_path,
+        mapping_kind,
         source_file_name,
         source_selector,
         source_file_hash,

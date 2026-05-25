@@ -300,7 +300,7 @@ uv run python main.py --agent-mode write-back --game <游戏标题> --json
 
 首次注册游戏时，工具只接受干净原始游戏目录，并在游戏目录内生成可信源快照：完整原始 `data` 备份 `data_origin`、插件配置备份 `js/plugins_origin.js` 和直接插件源码备份 `js/plugins_source_origin`。后续翻译源读取只使用这组快照；缺失、损坏或与数据库 manifest 不一致时，命令会停止并要求用干净游戏目录重新注册。
 
-写进游戏文件时，工具只从可信源快照、已导入规则、术语和已保存译文记录生成待替换文件，不把当前运行文件当作翻译源。文件哈希、原文、selector 或已保存译文质量不匹配时会停止写入并报告原因。插件源码写入成功后会为已写入译文保存可选诊断映射；当前运行审计直接检查玩家实际运行的 JS 文件是否存在漏翻、坏控制符或 JS 语法错误。
+写进游戏文件时，工具只从可信源快照、已导入规则、术语和已保存译文记录生成待替换文件，不把当前运行文件当作翻译源。文件哈希、原文、selector 或已保存译文质量不匹配时会停止写入并报告原因。插件源码写入成功后会为已翻译 selector 和已审查排除 selector 保存可选诊断映射。当前运行审计默认只检查玩家实际运行 JS 文件的读取失败和语法错误；只有插件源码支线已启动或已有写回映射时，才把已管理 selector 的源文残留和坏控制符纳入支线诊断。
 
 如果当前运行文件已经损坏，需要从可信源快照和已保存译文记录重建，使用：
 
@@ -316,7 +316,7 @@ uv run python main.py --agent-mode rebuild-active-runtime --game <游戏标题> 
 uv run python main.py --agent-mode diagnose-active-runtime --game <游戏标题> --output <工作区>/active-runtime-diagnosis.json --json
 ```
 
-诊断只解释会阻止写入验收的问题，并使用写回映射精确匹配当前运行 `runtime_selector`，不会按文本相似度、行号、上下文或 AST 顺序猜测。`mapped_translate` 表示已反推到已保存译文记录；`runtime_mapping_missing` 表示当前运行字符串没有可用写回映射，诊断无法反推到已保存译文。修复路径是补规则、重置或手修已保存译文记录后重新写入，再运行 `audit-active-runtime` 验收。JS 语法错误和文件读取失败没有字符串 selector，需要先恢复或修复当前运行文件。
+诊断只解释会阻止写入验收的问题，并使用写回映射精确匹配当前运行 `runtime_selector`，不会按文本相似度、行号、上下文或 AST 顺序猜测。`mapped_translate` 表示已反推到已保存译文记录；`mapped_excluded` 表示该字符串已审查但不翻译，不能加入重置清单；`runtime_mapping_missing` 表示当前运行字符串没有可用写回映射，诊断无法反推到已保存译文。修复路径是补规则、重置或手修已保存译文记录后重新写入，再运行 `audit-active-runtime` 验收。JS 语法错误和文件读取失败没有字符串 selector，需要先恢复或修复当前运行文件。
 
 如需让配置字体覆盖游戏字体引用：
 
@@ -358,7 +358,7 @@ uv run python main.py --agent-mode audit-active-runtime --game <游戏标题> --
 uv run python main.py --agent-mode diagnose-active-runtime --game <游戏标题> --output <工作区>/active-runtime-diagnosis.json --json
 ```
 
-插件源码风险报告只说明翻译源是否需要启动支线；当前运行文件审计直接检查玩家实际运行的 JS；当前运行诊断只用写回映射反推已保存译文记录。需要让这些文本进入正文翻译时，按插件源码支线导出 AST 地图、导入规则，再执行质量检查和写进游戏文件。
+插件源码风险报告只说明翻译源是否需要启动支线；普通流程不要把当前运行审计里的源语言字符串告警当漏翻清单。当前运行诊断只用写回映射反推已保存译文记录或确认已审查排除项。需要让这些文本进入正文翻译时，按插件源码支线导出 AST 地图、导入规则，再执行质量检查和写进游戏文件。
 
 ## 开发检查
 

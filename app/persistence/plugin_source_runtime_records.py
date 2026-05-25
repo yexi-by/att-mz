@@ -4,6 +4,7 @@ import json
 from typing import cast
 
 from app.rmmz.schema import (
+    PluginSourceRuntimeMappingKind,
     PluginSourceRuntimeScanCacheRecord,
     PluginSourceRuntimeStringLiteralCacheRecord,
     PluginSourceRuntimeWriteMapRecord,
@@ -37,6 +38,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                 [
                     (
                         record.location_path,
+                        record.mapping_kind,
                         record.source_file_name,
                         record.source_selector,
                         record.source_file_hash,
@@ -61,6 +63,10 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
         return [
             PluginSourceRuntimeWriteMapRecord(
                 location_path=row_str(row, "location_path", self.db_path),
+                mapping_kind=cast(
+                    PluginSourceRuntimeMappingKind,
+                    row_str(row, "mapping_kind", self.db_path),
+                ),
                 source_file_name=row_str(row, "source_file_name", self.db_path),
                 source_selector=row_str(row, "source_selector", self.db_path),
                 source_file_hash=row_str(row, "source_file_hash", self.db_path),

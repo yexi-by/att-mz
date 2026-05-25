@@ -43,7 +43,8 @@ use self::quality_gate::{
 };
 use self::repository::{
     filter_translation_items_by_policy, open_readonly_connection, read_mv_virtual_namebox_rules,
-    read_source_residual_rules, read_terminology_terms, read_translation_items,
+    read_plugin_source_text_rules, read_source_residual_rules, read_terminology_terms,
+    read_translation_items,
 };
 use self::terminology::apply_terminology;
 use self::utils::{build_changed_file, externalize_planned_file_contents, is_map_file};
@@ -106,6 +107,7 @@ fn build_write_back_plan_inner(
         allowed_translation_paths,
     )?;
     let source_residual_rules = read_source_residual_rules(&connection)?;
+    let plugin_source_text_rules = read_plugin_source_text_rules(&connection)?;
     let terminology = read_terminology_terms(&connection)?;
     let mv_virtual_namebox_rules = read_mv_virtual_namebox_rules(&connection)?;
     let available_data_file_names = origin_data_file_names(&layout)?;
@@ -216,15 +218,18 @@ fn build_write_back_plan_inner(
         FontPlanSummary::empty()
     };
     let should_restore_all_plugin_sources = plan_mode == WritePlanMode::RebuildActiveRuntime;
-    let plugin_source_files =
-        if should_restore_all_plugin_sources || !plugin_source_items.is_empty() {
-            read_origin_plugin_source_files(&layout.plugin_source_origin_dir)?
-        } else {
-            BTreeMap::new()
-        };
+    let plugin_source_files = if should_restore_all_plugin_sources
+        || !plugin_source_items.is_empty()
+        || !plugin_source_text_rules.is_empty()
+    {
+        read_origin_plugin_source_files(&layout.plugin_source_origin_dir)?
+    } else {
+        BTreeMap::new()
+    };
     let plugin_source_result = write_plugin_source_files(
         plugin_source_files,
         plugin_source_items,
+        plugin_source_text_rules,
         should_restore_all_plugin_sources,
     )?;
     let plugin_source_runtime_map_count = plugin_source_result.runtime_maps.len();

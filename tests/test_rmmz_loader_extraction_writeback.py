@@ -59,6 +59,7 @@ from app.rmmz.schema import (
     NoteTagTextRuleRecord,
     PLUGINS_FILE_NAME,
     PlaceholderRuleRecord,
+    PluginSourceRuntimeWriteMapRecord,
     PluginTextRuleRecord,
     TranslationErrorItem,
     TranslationItem,
@@ -334,11 +335,13 @@ async def test_native_write_back_helper_applies_plan(
         *,
         game_data: GameData,
         text_rules: TextRules,
+        runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
         audit_text_issues: bool,
     ) -> ActiveRuntimePluginSourceAudit:
         """模拟当前运行文件审计通过。"""
         _ = game_data
         _ = text_rules
+        assert runtime_write_map_records == []
         assert audit_text_issues is False
         return _empty_active_runtime_audit()
 
@@ -379,19 +382,19 @@ async def test_native_write_back_helper_applies_plan(
         "准备 Rust 写回计划输入",
         "生成 Rust 写回计划",
         "替换游戏运行文件",
-        "审计写入后的当前运行文件",
         "保存写入诊断映射",
+        "审计写入后的当前运行文件",
     ]
     assert session.runtime_map_replace_calls == 1
     assert session.runtime_map_replace_count == 0
 
 
 @pytest.mark.asyncio
-async def test_native_write_back_helper_blocks_runtime_map_when_post_write_audit_fails(
+async def test_native_write_back_helper_saves_runtime_map_before_post_write_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写入后当前运行文件审计失败时，不得保存可用于诊断的 runtime map。"""
+    """写入后审计失败前先保存诊断映射，方便随后精确反推。"""
     session = _NativePlanSessionStub(tmp_path)
     events: list[str] = []
 
@@ -447,11 +450,13 @@ async def test_native_write_back_helper_blocks_runtime_map_when_post_write_audit
         *,
         game_data: GameData,
         text_rules: TextRules,
+        runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
         audit_text_issues: bool,
     ) -> ActiveRuntimePluginSourceAudit:
         """模拟当前运行文件审计发现 JS 语法错误。"""
         _ = game_data
         _ = text_rules
+        assert runtime_write_map_records == []
         assert audit_text_issues is False
         events.append("audit")
         return ActiveRuntimePluginSourceAudit(
@@ -503,7 +508,8 @@ async def test_native_write_back_helper_blocks_runtime_map_when_post_write_audit
         await handler.close()
 
     assert events == ["write", "load", "audit"]
-    assert session.runtime_map_replace_calls == 0
+    assert session.runtime_map_replace_calls == 1
+    assert session.runtime_map_replace_count == 0
 
 
 @pytest.mark.asyncio

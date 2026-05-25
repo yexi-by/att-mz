@@ -28,6 +28,7 @@ pub(super) struct PluginSourceReplacement {
     pub(super) selector: String,
     pub(super) item: TranslationItem,
     pub(super) span: JavaScriptStringSpan,
+    pub(super) raw_text: String,
     pub(super) visible_text: String,
     pub(super) written_text: String,
     pub(super) source_file_hash: String,
@@ -38,6 +39,14 @@ pub(super) struct PluginSourceReplacementResult {
     pub(super) replacement: PluginSourceReplacement,
     pub(super) runtime_selector: String,
     pub(super) runtime_line: i64,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PluginSourceTextRule {
+    pub(super) file_name: String,
+    pub(super) file_hash: String,
+    pub(super) selectors: Vec<String>,
+    pub(super) excluded_selectors: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -52,6 +61,7 @@ pub(super) struct PlannedFile {
 
 #[derive(Serialize)]
 pub(super) struct RuntimeWriteMap {
+    pub(super) mapping_kind: String,
     pub(super) location_path: String,
     pub(super) source_file_name: String,
     pub(super) source_selector: String,

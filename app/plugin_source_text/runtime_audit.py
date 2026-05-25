@@ -11,6 +11,7 @@ from app.rmmz.schema import (
     GameData,
     PluginSourceRuntimeScanCacheRecord,
     PluginSourceRuntimeStringLiteralCacheRecord,
+    PluginSourceRuntimeWriteMapRecord,
 )
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
 
@@ -22,6 +23,7 @@ from .scanner import (
     build_plugin_source_file_hash,
     scan_plugin_source_files_text_strict,
 )
+from .runtime_mapping import plugin_source_runtime_hash_text
 
 RAW_LITERAL_LINE_BREAK_CONTROL_PATTERN: re.Pattern[str] = re.compile(
     r"(?<!\\)\\n(?P<fragment>[A-Za-z]+\d*\[[^\]\r\n]{0,64}\])"
@@ -141,6 +143,7 @@ def audit_active_runtime_plugin_source(
     plugin_source_files: dict[str, str] | None = None,
     plugin_source_read_errors: dict[str, str] | None = None,
     plugin_source_batch_scan: PluginSourceBatchTextScan | None = None,
+    runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord] | None = None,
     scan_cache_stats: ActiveRuntimePluginSourceScanCacheStats | None = None,
     audit_text_issues: bool = True,
 ) -> ActiveRuntimePluginSourceAudit:
@@ -153,6 +156,10 @@ def audit_active_runtime_plugin_source(
         else game_data.plugin_source_read_errors
     )
     issues: list[ActiveRuntimePluginSourceIssue] = []
+    runtime_write_map_by_key = {
+        (record.runtime_file_name, record.runtime_selector): record
+        for record in (runtime_write_map_records or [])
+    }
     literal_count = 0
     active_literal_count = 0
     active_read_error_file_names = {
@@ -210,7 +217,14 @@ def audit_active_runtime_plugin_source(
         if not audit_text_issues:
             continue
         for literal in literals:
-            issues.extend(_audit_literal(literal=literal, text_rules=text_rules))
+            issues.extend(
+                _audit_literal(
+                    literal=literal,
+                    text_rules=text_rules,
+                    runtime_file_hash=file_scan.file_hash,
+                    runtime_write_map_by_key=runtime_write_map_by_key,
+                )
+            )
     return ActiveRuntimePluginSourceAudit(
         issues=tuple(issues),
         text_issue_audit_enabled=audit_text_issues,
@@ -229,6 +243,7 @@ def audit_active_runtime_plugin_source_with_scan_cache(
     text_rules: TextRules,
     cache_records: list[PluginSourceRuntimeScanCacheRecord],
     created_at: str,
+    runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord] | None = None,
     audit_text_issues: bool = True,
 ) -> tuple[ActiveRuntimePluginSourceAudit, list[PluginSourceRuntimeScanCacheRecord]]:
     """审计当前运行插件源码，并按文件 hash 复用 AST 扫描缓存。"""
@@ -243,6 +258,7 @@ def audit_active_runtime_plugin_source_with_scan_cache(
         game_data=game_data,
         text_rules=text_rules,
         plugin_source_batch_scan=batch_scan,
+        runtime_write_map_records=runtime_write_map_records,
         scan_cache_stats=scan_cache_stats,
         audit_text_issues=audit_text_issues,
     )
@@ -410,8 +426,18 @@ def _audit_literal(
     *,
     literal: PluginSourceStringLiteral,
     text_rules: TextRules,
+    runtime_file_hash: str,
+    runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
 ) -> list[ActiveRuntimePluginSourceIssue]:
     """审计单个当前运行字符串字面量。"""
+    if _is_excluded_runtime_literal(
+        literal=literal,
+        runtime_file_hash=runtime_file_hash,
+        runtime_write_map_by_key=runtime_write_map_by_key,
+    ):
+        return []
+    if runtime_write_map_by_key and (literal.file_name, literal.selector) not in runtime_write_map_by_key:
+        return []
     issues: list[ActiveRuntimePluginSourceIssue] = []
     for fragment in _collect_bad_control_fragments(literal):
         issues.append(
@@ -446,6 +472,22 @@ def _audit_literal(
             )
         )
     return _deduplicate_issues(issues)
+
+
+def _is_excluded_runtime_literal(
+    *,
+    literal: PluginSourceStringLiteral,
+    runtime_file_hash: str,
+    runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
+) -> bool:
+    """判断当前运行字面量是否由已审查排除 selector 精确覆盖。"""
+    record = runtime_write_map_by_key.get((literal.file_name, literal.selector))
+    if record is None or record.mapping_kind != "excluded":
+        return False
+    return (
+        record.runtime_file_hash == runtime_file_hash
+        and record.runtime_text_hash == plugin_source_runtime_hash_text(literal.text)
+    )
 
 
 def _collect_bad_control_fragments(literal: PluginSourceStringLiteral) -> list[str]:

@@ -17,6 +17,7 @@ from app.persistence.sql import (
     CREATE_FIELD_TRANSLATION_TERMS_TABLE,
     CREATE_LLM_FAILURES_TABLE,
     CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
+    CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
     CREATE_TRANSLATION_RUNS_TABLE,
@@ -27,6 +28,7 @@ from app.rmmz.schema import (
     GameData,
     MvVirtualNameboxRuleRecord,
     PluginSourceRuntimeWriteMapRecord,
+    PluginSourceTextRuleRecord,
     TranslationItem,
 )
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, get_default_text_rules
@@ -77,6 +79,7 @@ def write_plugin_source_text(
     game_data: GameData,
     items: list[TranslationItem],
     text_rules: TextRules | None = None,
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None = None,
 ) -> list[PluginSourceRuntimeWriteMapRecord]:
     """通过 Rust 写回计划写入插件源码文本并返回当前运行映射。"""
     plan = _apply_native_write_plan(
@@ -86,6 +89,7 @@ def write_plugin_source_text(
         speaker_name_translations=None,
         terminology_registry=None,
         mv_virtual_namebox_rule_records=None,
+        plugin_source_rule_records=plugin_source_rule_records,
     )
     return plan.plugin_source_runtime_write_maps
 
@@ -146,6 +150,7 @@ def _apply_native_write_plan(
     speaker_name_translations: dict[str, str] | None,
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None = None,
 ) -> NativeWriteBackPlan:
     """创建测试数据库并调用 Rust 写回计划。"""
     _ensure_source_snapshot(game_data)
@@ -155,6 +160,7 @@ def _apply_native_write_plan(
         speaker_name_translations=speaker_name_translations,
         terminology_registry=terminology_registry,
         mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+        plugin_source_rule_records=plugin_source_rule_records,
     )
     try:
         plan = build_native_write_back_plan(
@@ -204,6 +210,7 @@ def _write_temp_db(
     speaker_name_translations: dict[str, str] | None,
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None,
 ) -> Path:
     """把测试条目写入临时 SQLite 数据库。"""
     with tempfile.NamedTemporaryFile(
@@ -224,6 +231,7 @@ def _write_temp_db(
                     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
                     CREATE_FIELD_TRANSLATION_TERMS_TABLE,
                     CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
+                    CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
                     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
                 ]
             )
@@ -249,6 +257,7 @@ def _write_temp_db(
         _insert_speaker_terms(connection, speaker_name_translations)
         _insert_terminology_registry(connection, terminology_registry)
         _insert_mv_virtual_namebox_rules(connection, mv_virtual_namebox_rule_records)
+        _insert_plugin_source_text_rules(connection, plugin_source_rule_records)
         connection.commit()
     finally:
         connection.close()
@@ -320,6 +329,35 @@ def _insert_mv_virtual_namebox_rules(
             )
             for record in records
         ],
+    )
+
+
+def _insert_plugin_source_text_rules(
+    connection: sqlite3.Connection,
+    records: list[PluginSourceTextRuleRecord] | None,
+) -> None:
+    """写入测试插件源码规则。"""
+    if not records:
+        return
+    rows: list[tuple[str, str, str, str]] = []
+    for record in records:
+        rows.extend(
+            (record.file_name, record.file_hash, selector, "translate")
+            for selector in record.selectors
+        )
+        rows.extend(
+            (record.file_name, record.file_hash, selector, "excluded")
+            for selector in record.excluded_selectors
+        )
+    if not rows:
+        return
+    _ = connection.executemany(
+        """
+        INSERT INTO plugin_source_text_rules
+        (file_name, file_hash, selector, selector_kind)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
     )
 
 

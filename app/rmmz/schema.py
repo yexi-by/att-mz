@@ -28,6 +28,7 @@ type ErrorType = Literal["模型返回不可解析", "AI漏翻", "文本结构�
 type TranslationRunStatus = Literal["running", "completed", "blocked", "cancelled", "failed", "stopped"]
 type SourceResidualRuleType = Literal["position", "structural"]
 type MvVirtualNameboxSpeakerPolicy = Literal["translate", "preserve", "actor_name"]
+type PluginSourceRuntimeMappingKind = Literal["translated", "excluded"]
 type LlmFailureCategory = Literal[
     "rate_limit",
     "timeout",
@@ -361,6 +362,7 @@ class PluginSourceTextRuleRecord(BaseModel):
 class PluginSourceRuntimeWriteMapRecord(BaseModel):
     """插件源码写回后从当前运行字符串反推翻译源条目的可选诊断映射。"""
 
+    mapping_kind: PluginSourceRuntimeMappingKind = "translated"
     location_path: str
     source_file_name: str
     source_selector: str

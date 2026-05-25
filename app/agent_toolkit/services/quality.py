@@ -45,6 +45,7 @@ from .common import (
 from app.application.flow_gate import collect_workflow_gate_errors
 from app.plugin_source_text import (
     ActiveRuntimePluginSourceAudit,
+    ActiveRuntimePluginSourceIssue,
     PluginSourceFileTextScan,
     PluginSourceReviewCoverage,
     PluginSourceScan,
@@ -57,7 +58,12 @@ from app.plugin_source_text import (
     plugin_source_runtime_hash_text,
     scan_plugin_source_files_text_strict,
 )
-from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, TranslationItem
+from app.rmmz.schema import (
+    GameData,
+    PluginSourceRuntimeWriteMapRecord,
+    PluginSourceTextRuleRecord,
+    TranslationItem,
+)
 
 
 def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[AgentIssue]:
@@ -119,11 +125,21 @@ def _plugin_source_quality_details(unreviewed_details: JsonArray | None) -> Json
     return {"plugin_source_unreviewed_candidates": unreviewed_details}
 
 
+def _plugin_source_text_audit_enabled(
+    *,
+    rule_records: list[PluginSourceTextRuleRecord],
+    runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
+) -> bool:
+    """判断当前运行审计是否应进入插件源码文本支线。"""
+    return bool(rule_records or runtime_write_map_records)
+
+
 def _build_active_runtime_diagnosis_items(
     *,
     audit: ActiveRuntimePluginSourceAudit,
     runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
     translated_items: list[TranslationItem],
+    active_runtime_game_data: GameData,
     translation_source_game_data: GameData,
     text_rules: TextRules,
 ) -> JsonArray:
@@ -161,7 +177,11 @@ def _build_active_runtime_diagnosis_items(
             items.append(diagnosis)
             continue
         record = write_map_by_runtime_key.get((issue_item.file_name, issue_item.literal.selector))
-        if record is None:
+        if record is None or not _runtime_write_map_matches_issue(
+            record=record,
+            issue_item=issue_item,
+            active_runtime_game_data=active_runtime_game_data,
+        ):
             diagnosis.update(
                 {
                     "diagnosis_status": "runtime_mapping_missing",
@@ -169,6 +189,25 @@ def _build_active_runtime_diagnosis_items(
                     "mapping_reason": "runtime_mapping_missing",
                 }
             )
+            items.append(diagnosis)
+            continue
+        if record.mapping_kind == "excluded":
+            source_hash_matches, source_file_hash_matches = _plugin_source_write_map_source_matches(
+                record=record,
+                plugin_source_files=plugin_source_files,
+                source_scan_cache=source_scan_cache,
+            )
+            diagnosis["diagnosis_status"] = "mapped_excluded"
+            diagnosis["location_path"] = record.location_path
+            diagnosis["source_file_name"] = record.source_file_name
+            diagnosis["source_selector"] = record.source_selector
+            diagnosis["runtime_file_name"] = record.runtime_file_name
+            diagnosis["runtime_selector"] = record.runtime_selector
+            diagnosis["runtime_line"] = record.runtime_line
+            diagnosis["source_hash_matches"] = source_hash_matches
+            diagnosis["source_file_hash_matches"] = source_file_hash_matches
+            diagnosis["suggested_action"] = "当前运行字符串已由插件源码规则标记为已审查不翻译；不要把它加入重置译文清单"
+            diagnosis["mapping_reason"] = "runtime_excluded_map_exact_match"
             items.append(diagnosis)
             continue
         translated_item = translated_by_path.get(record.location_path)
@@ -204,6 +243,24 @@ def _build_active_runtime_diagnosis_items(
         diagnosis["mapping_reason"] = "runtime_write_map_exact_match"
         items.append(diagnosis)
     return items
+
+
+def _runtime_write_map_matches_issue(
+    *,
+    record: PluginSourceRuntimeWriteMapRecord,
+    issue_item: ActiveRuntimePluginSourceIssue,
+    active_runtime_game_data: GameData,
+) -> bool:
+    """确认当前运行问题仍由同一份 runtime map 精确覆盖。"""
+    if issue_item.literal is None:
+        return False
+    source = active_runtime_game_data.plugin_source_files.get(record.runtime_file_name)
+    if source is None:
+        return False
+    return (
+        build_plugin_source_file_hash(source) == record.runtime_file_hash
+        and plugin_source_runtime_hash_text(issue_item.literal.text) == record.runtime_text_hash
+    )
 
 
 def _collect_runtime_write_map_records_for_issues(
@@ -309,6 +366,7 @@ def _active_runtime_diagnosis_summary(
     return {
         "diagnosis_issue_count": len(diagnosis_items),
         "mapped_translate_count": counts.get("mapped_translate", 0),
+        "mapped_excluded_count": counts.get("mapped_excluded", 0),
         "runtime_mapping_missing_count": counts.get("runtime_mapping_missing", 0),
         "runtime_file_unreadable_or_invalid_count": counts.get("runtime_file_unreadable_or_invalid", 0),
     }
@@ -357,11 +415,19 @@ class QualityAgentMixin:
                 session,
                 include_plugin_source_files=True,
             )
+            plugin_source_rule_records = await session.read_plugin_source_text_rules()
+            runtime_write_map_records = await session.read_plugin_source_runtime_write_maps()
+            audit_text_issues = _plugin_source_text_audit_enabled(
+                rule_records=plugin_source_rule_records,
+                runtime_write_map_records=runtime_write_map_records,
+            )
             active_runtime_audit, refreshed_scan_cache = audit_active_runtime_plugin_source_with_scan_cache(
                 game_data=active_runtime_game_data,
                 text_rules=text_rules,
                 cache_records=await session.read_plugin_source_runtime_scan_cache(),
                 created_at=current_timestamp_text(),
+                runtime_write_map_records=runtime_write_map_records,
+                audit_text_issues=audit_text_issues,
             )
             await session.replace_plugin_source_runtime_scan_cache(refreshed_scan_cache)
         errors = _active_runtime_audit_errors(active_runtime_audit)
@@ -407,17 +473,25 @@ class QualityAgentMixin:
             )
             runtime_write_map_records = await session.read_plugin_source_runtime_write_maps()
             translated_items = await session.read_translated_items()
+            plugin_source_rule_records = await session.read_plugin_source_text_rules()
+            audit_text_issues = _plugin_source_text_audit_enabled(
+                rule_records=plugin_source_rule_records,
+                runtime_write_map_records=runtime_write_map_records,
+            )
             active_runtime_audit, refreshed_scan_cache = audit_active_runtime_plugin_source_with_scan_cache(
                 game_data=active_runtime_game_data,
                 text_rules=text_rules,
                 cache_records=await session.read_plugin_source_runtime_scan_cache(),
                 created_at=current_timestamp_text(),
+                runtime_write_map_records=runtime_write_map_records,
+                audit_text_issues=audit_text_issues,
             )
             await session.replace_plugin_source_runtime_scan_cache(refreshed_scan_cache)
         diagnosis_items = _build_active_runtime_diagnosis_items(
             audit=active_runtime_audit,
             runtime_write_map_records=runtime_write_map_records,
             translated_items=translated_items,
+            active_runtime_game_data=active_runtime_game_data,
             translation_source_game_data=translation_source_game_data,
             text_rules=text_rules,
         )

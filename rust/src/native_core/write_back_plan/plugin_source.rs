@@ -1,11 +1,12 @@
 use super::models::{
-    PluginSourceReplacement, PluginSourceReplacementResult, RuntimeWriteMap, TranslationItem,
+    PluginSourceReplacement, PluginSourceReplacementResult, PluginSourceTextRule, RuntimeWriteMap,
+    TranslationItem,
 };
 use super::utils::{current_timestamp_text, sha256_text, sha256_translation_lines};
 use crate::native_core::javascript_ast::{JavaScriptStringSpan, parse_javascript_string_spans};
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub(super) struct PluginSourceWriteResult {
     pub(super) output_files: BTreeMap<String, String>,
@@ -17,6 +18,7 @@ pub(super) struct PluginSourceWriteResult {
 pub(super) fn write_plugin_source_files(
     source_files: BTreeMap<String, String>,
     items: Vec<TranslationItem>,
+    rules: Vec<PluginSourceTextRule>,
     include_unmodified_files: bool,
 ) -> Result<PluginSourceWriteResult, String> {
     let mut items_by_file: HashMap<String, Vec<(String, TranslationItem)>> = HashMap::new();
@@ -27,17 +29,38 @@ pub(super) fn write_plugin_source_files(
             .or_default()
             .push((selector, item));
     }
+    let rules_by_file: HashMap<String, PluginSourceTextRule> = rules
+        .into_iter()
+        .map(|rule| (rule.file_name.clone(), rule))
+        .collect();
+    let file_names: BTreeSet<String> = items_by_file
+        .keys()
+        .chain(rules_by_file.keys())
+        .cloned()
+        .collect();
+    let mut file_work: Vec<(String, Vec<(String, TranslationItem)>)> = Vec::new();
+    for file_name in file_names {
+        let file_items = items_by_file.remove(&file_name).unwrap_or_default();
+        file_work.push((file_name, file_items));
+    }
     let created_at = current_timestamp_text()?;
-    let results: Vec<(String, String, Vec<RuntimeWriteMap>)> = items_by_file
+    let results: Vec<(String, bool, String, Vec<RuntimeWriteMap>)> = file_work
         .into_par_iter()
         .map(|(file_name, file_items)| {
+            let should_write_file = include_unmodified_files || !file_items.is_empty();
             let source = source_files
                 .get(&file_name)
                 .ok_or_else(|| format!("插件源码文件不存在: {file_name}"))?
                 .clone();
-            let (content, maps) =
-                write_single_plugin_source_file(&file_name, &source, file_items, &created_at)?;
-            Ok((file_name, content, maps))
+            let rule = rules_by_file.get(&file_name);
+            let (content, maps) = write_single_plugin_source_file(
+                &file_name,
+                &source,
+                file_items,
+                rule,
+                &created_at,
+            )?;
+            Ok((file_name, should_write_file, content, maps))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut runtime_maps: Vec<RuntimeWriteMap> = Vec::new();
@@ -46,8 +69,10 @@ pub(super) fn write_plugin_source_files(
     } else {
         BTreeMap::new()
     };
-    for (file_name, content, maps) in results {
-        output_files.insert(file_name, content);
+    for (file_name, should_write_file, content, maps) in results {
+        if should_write_file {
+            output_files.insert(file_name, content);
+        }
         runtime_maps.extend(maps);
     }
     let ast_scan_file_count = runtime_maps
@@ -68,6 +93,7 @@ pub(super) fn write_single_plugin_source_file(
     file_name: &str,
     source: &str,
     file_items: Vec<(String, TranslationItem)>,
+    rule: Option<&PluginSourceTextRule>,
     created_at: &str,
 ) -> Result<(String, Vec<RuntimeWriteMap>), String> {
     let scan = parse_javascript_string_spans(source)?;
@@ -75,6 +101,11 @@ pub(super) fn write_single_plugin_source_file(
         return Err(format!("插件源码 JS 语法检查失败: {file_name}"));
     }
     let source_file_hash = sha256_text(source);
+    if let Some(rule_record) = rule
+        && rule_record.file_hash != source_file_hash
+    {
+        return Err(format!("插件源码规则文件哈希已失效: {file_name}"));
+    }
     let mut spans_by_selector: HashMap<String, (JavaScriptStringSpan, String, String)> =
         HashMap::new();
     for span in scan.spans {
@@ -88,7 +119,7 @@ pub(super) fn write_single_plugin_source_file(
     }
     let mut replacements: Vec<PluginSourceReplacement> = Vec::new();
     for (selector, item) in file_items {
-        let (span, _raw_text, visible_text) = spans_by_selector
+        let (span, raw_text, visible_text) = spans_by_selector
             .get(&selector)
             .ok_or_else(|| format!("插件源码 selector 已失效: {}", item.location_path))?
             .clone();
@@ -115,6 +146,7 @@ pub(super) fn write_single_plugin_source_file(
             selector,
             item,
             span,
+            raw_text,
             visible_text,
             written_text,
             source_file_hash: source_file_hash.clone(),
@@ -131,9 +163,10 @@ pub(super) fn write_single_plugin_source_file(
     let runtime_spans_by_selector =
         runtime_spans_by_selector(file_name, &content, runtime_scan.spans)?;
     let mut maps: Vec<RuntimeWriteMap> = Vec::new();
-    for result in replacement_results {
-        assert_runtime_replacement_mapped(file_name, &result, &runtime_spans_by_selector)?;
+    for result in &replacement_results {
+        assert_runtime_replacement_mapped(file_name, result, &runtime_spans_by_selector)?;
         maps.push(RuntimeWriteMap {
+            mapping_kind: "translated".to_string(),
             location_path: result.replacement.item.location_path.clone(),
             source_file_name: file_name.to_string(),
             source_selector: result.replacement.selector.clone(),
@@ -143,7 +176,7 @@ pub(super) fn write_single_plugin_source_file(
                 &result.replacement.item.translation_lines,
             )?,
             runtime_file_name: file_name.to_string(),
-            runtime_selector: result.runtime_selector,
+            runtime_selector: result.runtime_selector.clone(),
             runtime_file_hash: runtime_file_hash.clone(),
             runtime_text_hash: sha256_text(&normalize_visible_text_for_extraction(
                 &unescape_js_text(&result.replacement.written_text),
@@ -152,7 +185,111 @@ pub(super) fn write_single_plugin_source_file(
             created_at: created_at.to_string(),
         });
     }
+    let empty_translation_lines_hash = sha256_translation_lines(&[])?;
+    if let Some(rule_record) = rule {
+        for selector in &rule_record.excluded_selectors {
+            let (span, raw_text, visible_text) =
+                spans_by_selector.get(selector).ok_or_else(|| {
+                    format!("插件源码排除 selector 已失效: js/plugins/{file_name}/{selector}")
+                })?;
+            let (runtime_selector, runtime_line) = runtime_location_for_unchanged_span(
+                file_name,
+                source,
+                span,
+                raw_text,
+                &replacement_results,
+                &runtime_spans_by_selector,
+            )?;
+            maps.push(RuntimeWriteMap {
+                mapping_kind: "excluded".to_string(),
+                location_path: format!("js/plugins/{file_name}/{selector}"),
+                source_file_name: file_name.to_string(),
+                source_selector: selector.clone(),
+                source_file_hash: source_file_hash.clone(),
+                source_text_hash: sha256_text(visible_text),
+                translation_lines_hash: empty_translation_lines_hash.clone(),
+                runtime_file_name: file_name.to_string(),
+                runtime_selector,
+                runtime_file_hash: runtime_file_hash.clone(),
+                runtime_text_hash: sha256_text(visible_text),
+                runtime_line,
+                created_at: created_at.to_string(),
+            });
+        }
+    }
     Ok((content, maps))
+}
+
+fn runtime_location_for_unchanged_span(
+    file_name: &str,
+    source: &str,
+    span: &JavaScriptStringSpan,
+    raw_text: &str,
+    replacement_results: &[PluginSourceReplacementResult],
+    runtime_spans_by_selector: &HashMap<String, String>,
+) -> Result<(String, i64), String> {
+    let mut index_delta: i64 = 0;
+    let mut line_delta: i64 = 0;
+    for result in replacement_results {
+        let replacement_span = &result.replacement.span;
+        if replacement_span.end_index <= span.start_index {
+            let written_text = &result.replacement.written_text;
+            let original_text = &result.replacement.raw_text;
+            index_delta +=
+                written_text.chars().count() as i64 - original_text.chars().count() as i64;
+            line_delta +=
+                count_newlines(written_text) as i64 - count_newlines(original_text) as i64;
+            continue;
+        }
+        if replacement_span.start_index >= span.end_index {
+            break;
+        }
+        return Err(format!(
+            "插件源码排除 selector 与翻译 selector 重叠: {file_name}"
+        ));
+    }
+    let runtime_start_index = add_signed_index(span.start_index, index_delta)?;
+    let runtime_end_index = add_signed_index(span.end_index, index_delta)?;
+    let runtime_selector =
+        candidate_selector_for_span(runtime_start_index, runtime_end_index, raw_text);
+    let Some(runtime_raw_text) = runtime_spans_by_selector.get(&runtime_selector) else {
+        return Err(format!(
+            "插件源码排除 selector 未出现在最终 AST: {file_name}: {runtime_selector}"
+        ));
+    };
+    if runtime_raw_text != raw_text {
+        return Err(format!(
+            "插件源码排除 selector 指向的文本与源文本不一致: {file_name}: {runtime_selector}"
+        ));
+    }
+    let runtime_line = line_number_for_char_index(source, span.start_index) as i64 + line_delta;
+    Ok((runtime_selector, runtime_line))
+}
+
+fn add_signed_index(index: usize, delta: i64) -> Result<usize, String> {
+    if delta >= 0 {
+        return index
+            .checked_add(delta as usize)
+            .ok_or_else(|| "插件源码 runtime selector 范围溢出".to_string());
+    }
+    index
+        .checked_sub(delta.unsigned_abs() as usize)
+        .ok_or_else(|| "插件源码 runtime selector 范围小于 0".to_string())
+}
+
+fn count_newlines(text: &str) -> usize {
+    text.chars()
+        .filter(|char_value| *char_value == '\n')
+        .count()
+}
+
+fn line_number_for_char_index(source: &str, index: usize) -> usize {
+    source
+        .chars()
+        .take(index)
+        .filter(|char_value| *char_value == '\n')
+        .count()
+        + 1
 }
 
 fn runtime_spans_by_selector(

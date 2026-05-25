@@ -223,7 +223,7 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
 async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_changes(
     minimal_game_dir: Path,
 ) -> None:
-    """插件源码写回只为已写入译文返回可选诊断映射。"""
+    """插件源码写回返回已翻译与已审查排除 selector 的诊断映射。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -273,6 +273,7 @@ async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_
         game_data,
         items,
         text_rules=text_rules,
+        plugin_source_rule_records=records,
     )
     final_source = game_data.writable_plugin_source_files["HardcodedText.js"]
     runtime_literals = {
@@ -284,16 +285,19 @@ async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_
         )
     }
 
-    assert len(runtime_write_maps) == 2
+    assert len(runtime_write_maps) == 3
     assert all(record.runtime_selector in runtime_literals for record in runtime_write_maps)
-    assert {record.location_path for record in runtime_write_maps} == {item.location_path for item in items}
-    assert {record.source_selector for record in runtime_write_maps} == {
+    translated_maps = [record for record in runtime_write_maps if record.mapping_kind == "translated"]
+    excluded_maps = [record for record in runtime_write_maps if record.mapping_kind == "excluded"]
+    assert {record.location_path for record in translated_maps} == {item.location_path for item in items}
+    assert {record.source_selector for record in translated_maps} == {
         first_candidate.selector,
         second_candidate.selector,
     }
-    assert category_candidate.selector not in {record.source_selector for record in runtime_write_maps}
-    assert "\\TRP" not in {runtime_literals[record.runtime_selector].text for record in runtime_write_maps}
-    second_record = next(record for record in runtime_write_maps if record.source_selector == second_candidate.selector)
+    assert [record.source_selector for record in excluded_maps] == [category_candidate.selector]
+    assert runtime_literals[excluded_maps[0].runtime_selector].text == "カテゴリ"
+    assert "\\TRP" not in {runtime_literals[record.runtime_selector].text for record in translated_maps}
+    second_record = next(record for record in translated_maps if record.source_selector == second_candidate.selector)
     assert second_record.runtime_selector != second_candidate.selector
     assert runtime_literals[second_record.runtime_selector].text == "短"
 
@@ -1086,7 +1090,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """插件源码高风险且没有源码规则时，正文流程必须停止在占位符阶段之前。"""
+    """显式插件源码风险扫描为高风险且没有规则时，正文流程必须停止。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append(
@@ -1114,6 +1118,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
         game_data = await load_game_data(session.game_path)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
+        plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
 
         errors = await collect_workflow_gate_errors(
             session=session,
@@ -1121,6 +1126,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            plugin_source_scan=plugin_source_scan,
         )
 
     assert errors
@@ -1489,12 +1495,12 @@ async def test_import_plugin_source_rules_rejects_high_risk_empty_review(
 
 
 @pytest.mark.asyncio
-async def test_quality_report_reuses_plugin_source_scan_for_workflow_gate(
+async def test_quality_report_does_not_scan_plugin_source_before_branch_started(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未启动插件源码支线时，质量报告只为流程风险检查扫描一次。"""
+    """未启动插件源码支线时，质量报告不主动解析插件源码候选。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
@@ -1532,7 +1538,7 @@ async def test_quality_report_reuses_plugin_source_scan_for_workflow_gate(
         setting_path=EXAMPLE_SETTING_PATH,
     ).quality_report(game_title="テストゲーム")
 
-    assert scan_count == 1
+    assert scan_count == 0
 
 
 @pytest.mark.asyncio

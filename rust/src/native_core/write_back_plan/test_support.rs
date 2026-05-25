@@ -2,6 +2,7 @@ use super::build_write_back_plan_impl;
 use super::plugin_source::{
     candidate_selector_for_span, normalize_visible_text_for_extraction, unescape_js_text,
 };
+use super::utils::sha256_text;
 use crate::native_core::javascript_ast::parse_javascript_string_spans;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -742,6 +743,94 @@ fn build_plan_returns_plugin_source_runtime_map_verified_against_final_ast() {
     assert_eq!(
         value["summary"]["plugin_source_runtime_map_count"],
         json!(1)
+    );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn build_plan_maps_excluded_plugin_source_selector_after_runtime_shift() {
+    let fixture = create_fixture_dir("att_mz_write_plan_plugin_source_excluded_runtime_map");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    write_plugins_origin(
+        &game_dir,
+        r#"[{"name":"TestPlugin","status":true,"description":"","parameters":{}}]"#,
+    );
+    let source = "const Messages = { title: '長い本文', category: 'カテゴリ' };\n";
+    fs::write(
+        game_dir.join("js").join("plugins").join("TestPlugin.js"),
+        source,
+    )
+    .expect("当前插件源码应可写入");
+    fs::write(
+        game_dir
+            .join("js")
+            .join("plugins_source_origin")
+            .join("TestPlugin.js"),
+        source,
+    )
+    .expect("原始插件源码备份应可写入");
+    let title_selector = plugin_source_selector_for_visible_text(source, "長い本文");
+    let excluded_selector = plugin_source_selector_for_visible_text(source, "カテゴリ");
+    let title_location_path = format!("js/plugins/TestPlugin.js/{title_selector}");
+    insert_translation_item(
+        &db_path,
+        &title_location_path,
+        "short_text",
+        "[\"長い本文\"]",
+        "[]",
+        "[\"短\"]",
+    );
+    insert_plugin_source_text_rule(
+        &db_path,
+        "TestPlugin.js",
+        &sha256_text(source),
+        &excluded_selector,
+        "excluded",
+    );
+    let mut payload = minimal_setting_payload();
+    payload["allowed_translation_paths"]
+        .as_array_mut()
+        .expect("allowed_translation_paths 应是数组")
+        .push(json!(title_location_path));
+
+    let output = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &payload.to_string(),
+        "write_back",
+        false,
+    )
+    .expect("插件源码写回计划应生成已排除 selector runtime map");
+    let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
+    let runtime_maps = value["plugin_source_runtime_write_maps"]
+        .as_array()
+        .expect("runtime maps 应是数组");
+    let translated_map = runtime_maps
+        .iter()
+        .find(|map| map["mapping_kind"] == "translated")
+        .expect("应生成已翻译 runtime map");
+    let excluded_map = runtime_maps
+        .iter()
+        .find(|map| map["mapping_kind"] == "excluded")
+        .expect("应生成已排除 runtime map");
+    let excluded_runtime_selector = excluded_map["runtime_selector"]
+        .as_str()
+        .expect("已排除 runtime selector 应是字符串");
+    let planned_content = planned_file_content(&value, "js/plugins/TestPlugin.js");
+    let excluded_runtime_text =
+        plugin_source_visible_text_by_selector(planned_content, excluded_runtime_selector);
+
+    assert_eq!(runtime_maps.len(), 2);
+    assert_eq!(translated_map["location_path"], title_location_path);
+    assert_eq!(excluded_map["source_selector"], excluded_selector);
+    assert_ne!(excluded_runtime_selector, excluded_selector);
+    assert_eq!(excluded_runtime_text, "カテゴリ");
+    assert_eq!(
+        value["summary"]["plugin_source_runtime_map_count"],
+        json!(2)
     );
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
@@ -1709,6 +1798,13 @@ fn create_minimal_database(db_path: &Path) {
                 check_group TEXT NOT NULL,
                 reason TEXT NOT NULL
             );
+            CREATE TABLE plugin_source_text_rules (
+                file_name TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                selector TEXT NOT NULL,
+                selector_kind TEXT NOT NULL,
+                PRIMARY KEY (file_name, selector)
+            );
             CREATE TABLE terminology_field_terms (
                 category TEXT NOT NULL,
                 source_text TEXT NOT NULL,
@@ -1790,6 +1886,23 @@ fn insert_translation_item(
             ],
         )
         .expect("测试译文应可写入");
+}
+
+fn insert_plugin_source_text_rule(
+    db_path: &Path,
+    file_name: &str,
+    file_hash: &str,
+    selector: &str,
+    selector_kind: &str,
+) {
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    connection
+        .execute(
+            "INSERT INTO plugin_source_text_rules \
+             (file_name, file_hash, selector, selector_kind) VALUES (?1, ?2, ?3, ?4)",
+            params![file_name, file_hash, selector, selector_kind],
+        )
+        .expect("测试插件源码规则应可写入");
 }
 
 fn insert_source_residual_rule(db_path: &Path, location_path: &str, allowed_terms: &str) {

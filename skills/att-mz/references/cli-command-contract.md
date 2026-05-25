@@ -12,12 +12,19 @@ uv run python main.py --agent-mode <命令> ...
 
 文件型规则一律用 `--input <文件>`，不要用 `--rules "$(cat ...)"`，不要把大 JSON 塞进命令行。
 
+## 配置与参数选择
+
+- 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传当前命令必需的定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`、`--json`，以及已满足前置条件的确认参数。
+- 用户明确指定值、CLI 契约要求显式传入，或 CLI 输出说明默认配置缺失、冲突、不适合当前游戏或当前阶段时，立即改用最小范围覆盖：一次性差异用 CLI 参数，运行时性能差异用环境变量，长期稳定差异再调整本地配置。
+- 不要反复用同一套失败配置重试。确认是配置问题后，先根据 CLI 摘要、工作区文件和用户已给信息自行选择合理覆盖；只有涉及模型密钥、费用风险、写文件许可或多种业务结果都合理时，才停下来问用户。
+- 使用覆盖参数后，后续关联命令必须保持同一语义。例如工作区用显式 `--code` 导出事件指令候选时，导入空事件指令规则也要传同一组 `--code CODE`。
+
 ## 性能与 Rust 线程
 
 - Rust 热路径线程数由环境变量 `ATT_MZ_RUST_THREADS` 控制；该值没有 `4` 的上限，必须是非负整数。
-- `ATT_MZ_RUST_THREADS=0` 或不设置时使用 Rayon 默认线程池；需要明确榨干主机性能时，优先显式设置为当前机器可用逻辑处理器数量。
-- 运行准备工作区、验收、插件源码扫描、质量检查、翻译前检查、写进游戏文件、重建当前运行文件和当前运行审计等长任务前，先设置 `ATT_MZ_RUST_THREADS`。Windows PowerShell 可用 `(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors` 获取逻辑处理器数量。
-- 若用户没有要求保留机器交互余量，专用运行机器按全部逻辑处理器配置；如果用户指定线程数，以用户指定为准。不要把性能门禁里的 `4` 当运行上限，`4` 只是可重复基线和阈值比较用配置。
+- `ATT_MZ_RUST_THREADS=0` 或不设置时使用 Rayon 默认线程池；默认先沿用 `setting.toml` 与当前环境，不为了性能基线一开始固定传线程数。
+- 默认线程配置导致吞吐明显不足、CLI 输出提示线程配置不合适、用户要求性能优先，或当前机器是专用运行机器时，再显式设置为合适的逻辑处理器数量。Windows PowerShell 可用 `(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors` 获取逻辑处理器数量。
+- 如果用户指定线程数，以用户指定为准。不要把性能门禁里的 `4` 当运行上限，`4` 只是可重复基线和阈值比较用配置。
 
 ## 编码与 Windows 终端
 
@@ -108,8 +115,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `translation-status --game <游戏标题> --json` | 快速查看最近运行、已保存译文和模型失败数量 | 数量能解释；需重新扫描当前文本范围时加 `--refresh-scope` | 数量下降时继续翻译，停滞时分析失败类型 |
 | `text-scope --game <游戏标题> --json` | 查看统一文本范围和规则来源 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题> --json` | 对比规则命中、译文和当前文本范围 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 补规则、补译文或精确重置 |
-| `audit-active-runtime --game <游戏标题> --json` | 直接审计当前游戏运行文件里的插件源码漏翻、坏控制符和 JS 语法错误 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime` | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录 |
-| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释 | 映射缺失时报告无法反推；已映射问题回到规则、重置或手动译文 |
+| `audit-active-runtime --game <游戏标题> --json` | 审计当前运行插件源码完整性；默认只阻断读取失败和 JS 语法错误，插件源码支线已启动或已有写回映射时才审计已管理 selector 的文本残留和坏控制符 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime`；普通流程不要把源语言字符串告警当漏翻清单 | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录或确认映射缺失 |
+| `diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释；`mapped_excluded` 不进入重置清单 | 映射缺失时报告无法反推；已映射翻译问题回到规则、重置或手动译文 |
 | `quality-report --game <游戏标题> --json` | 判断已保存译文记录、规则、控制符、源文残留、行宽和可生成性是否允许写回 | `status` 不是 `error`；需检查写入可行性时加 `--include-write-probe` | 按明细修译文或规则；有 error 禁止写回 |
 | `export-quality-fix-template --game <游戏标题> --output <文件> --json` | 导出检查没通过译文的修复表 | 输出文件存在，数量可解释；需检查写入可行性时加 `--include-write-probe` | 只改中文译文行后导入 |
 | `export-pending-translations --game <游戏标题> --output <文件> --json` | 导出还没成功保存译文的文本表 | 输出文件存在；可加 `--limit N`；需检查写入可行性时加 `--include-write-probe` | 抽样显示仍适合模型时回到翻译 |
@@ -129,7 +136,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `write-back --game <游戏标题> --json` | 把译文写进游戏文件 | 写文件前检查无 error，命令返回 0 且摘要可读 | 停止交付，按错误修质量、规则或已保存译文记录 |
 | `write-back --game <游戏标题> --confirm-font-overwrite --json` | 写回并覆盖字体引用 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
-| `rebuild-active-runtime --game <游戏标题> --json` | 从可信源快照和已保存译文重建当前运行文件 | 写文件前检查无 error，命令返回 0，随后 `audit-active-runtime` 无 error | 质量问题未清时先修规则、手动译文或精确重置 |
+| `rebuild-active-runtime --game <游戏标题> --json` | 从可信源快照和已保存译文重建当前运行文件 | 写文件前检查无 error，命令返回 0，随后 `audit-active-runtime` 无 error；未启动插件源码支线时不要求处理插件源码内部源语言字符串 | 质量问题未清时先修规则、手动译文或精确重置 |
 | `rebuild-active-runtime --game <游戏标题> --confirm-font-overwrite --json` | 重建运行文件并允许字体覆盖 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
 | `write-terminology --game <游戏标题> --json` | 术语专用写入，并保留已保存且可写的正文译文 | `status` 为 `ok`，摘要包含术语写入和保留正文译文数量 | 术语表、规则前置、可信源快照或已保存译文质量未通过时停止 |
 | `write-terminology --game <游戏标题> --confirm-font-overwrite --json` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过，摘要可解释 | 未确认字体覆盖时不使用 |
