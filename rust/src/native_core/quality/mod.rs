@@ -1,0 +1,98 @@
+//! 翻译质量检查编排。
+//!
+//! 本模块负责解析质量检查输入、并行调度各类检查，并保持 PyO3 门面的输出协议稳定。
+
+mod line_width;
+mod placeholder;
+mod residual;
+mod structure;
+
+use rayon::prelude::*;
+use std::sync::Arc;
+
+use super::details::collect_sorted_details;
+use super::models::{QualityPayload, QualityScanCountOutput, QualityScanOutput};
+use super::pool::run_with_optional_pool;
+use super::rules::compile_rules;
+use line_width::collect_overwide_details;
+use placeholder::collect_placeholder_detail;
+use residual::{collect_residual_detail, index_residual_rules};
+use structure::collect_text_structure_detail;
+
+/// 扫描翻译质量问题并返回稳定 JSON 字符串。
+pub fn scan_quality_impl(payload_json: &str) -> Result<String, String> {
+    let payload: QualityPayload = serde_json::from_str(payload_json)
+        .map_err(|error| format!("Rust 质检输入 JSON 解析失败: {error}"))?;
+    let output = scan_quality_items(
+        payload.items,
+        payload.text_rules,
+        payload.source_residual_rules,
+    )?;
+
+    serde_json::to_string(&output)
+        .map_err(|error| format!("Rust 质检输出 JSON 序列化失败: {error}"))
+}
+
+/// 扫描翻译质量问题并只返回计数。
+pub fn scan_quality_counts_impl(payload_json: &str) -> Result<String, String> {
+    let payload: QualityPayload = serde_json::from_str(payload_json)
+        .map_err(|error| format!("Rust 质检计数输入 JSON 解析失败: {error}"))?;
+    let output = scan_quality_items(
+        payload.items,
+        payload.text_rules,
+        payload.source_residual_rules,
+    )?;
+    let counts = QualityScanCountOutput {
+        source_residual_count: output.source_residual_items.len(),
+        text_structure_count: output.text_structure_items.len(),
+        placeholder_risk_count: output.placeholder_risk_items.len(),
+        overwide_line_count: output.overwide_line_items.len(),
+    };
+    serde_json::to_string(&counts)
+        .map_err(|error| format!("Rust 质检计数输出 JSON 序列化失败: {error}"))
+}
+
+/// 扫描翻译质量问题并返回结构化明细。
+pub(crate) fn scan_quality_items(
+    items: Vec<super::models::NativeTranslationItem>,
+    text_rules: super::models::NativeTextRules,
+    source_residual_rules: Vec<super::models::NativeSourceResidualRule>,
+) -> Result<QualityScanOutput, String> {
+    let rules = Arc::new(compile_rules(text_rules)?);
+    let residual_rules = Arc::new(index_residual_rules(source_residual_rules)?);
+    let items = Arc::new(items);
+
+    run_with_optional_pool(|| {
+        let source_residual_items = collect_sorted_details(
+            items
+                .par_iter()
+                .filter_map(|item| collect_residual_detail(item, &rules, &residual_rules))
+                .collect(),
+        );
+        let text_structure_items = collect_sorted_details(
+            items
+                .par_iter()
+                .filter_map(|item| collect_text_structure_detail(item, &rules))
+                .collect(),
+        );
+        let placeholder_risk_items = collect_sorted_details(
+            items
+                .par_iter()
+                .filter_map(|item| collect_placeholder_detail(item, &rules))
+                .collect(),
+        );
+        let overwide_line_items = collect_sorted_details(
+            items
+                .par_iter()
+                .flat_map(|item| collect_overwide_details(item, &rules))
+                .collect(),
+        );
+
+        QualityScanOutput {
+            source_residual_items,
+            text_structure_items,
+            placeholder_risk_items,
+            overwide_line_items,
+        }
+    })
+}

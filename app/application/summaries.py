@@ -111,6 +111,15 @@ class WriteBackSummary:
     source_font_count: int
     replaced_font_reference_count: int
     font_copied: bool
+    planned_file_count: int = 0
+    skipped_file_count: int = 0
+    plugin_source_ast_source_scan_file_count: int = 0
+    plugin_source_ast_runtime_scan_file_count: int = 0
+    plugin_source_runtime_map_count: int = 0
+    pre_write_check_ms: int = 0
+    rust_plan_ms: int = 0
+    file_replacement_ms: int = 0
+    post_write_audit_ms: int = 0
 
 
 @dataclass(slots=True)

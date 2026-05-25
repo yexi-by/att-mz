@@ -21,7 +21,7 @@
 | `translation_items` | 保存已经通过项目检查的正文译文记录 | `translate`、`import-manual-translations` |
 | `plugin_text_rules` | 保存插件配置中可翻译字符串的 JSONPath 规则 | `import-plugin-rules` |
 | `plugin_source_text_rules` | 保存插件源码中可翻译字符串的 AST selector 规则 | `import-plugin-source-rules` |
-| `plugin_source_runtime_write_map` | 保存插件源码写回后已翻译字符串到当前运行 selector 的可选诊断映射 | `write-back`、`rebuild-active-runtime`、`write-terminology` |
+| `plugin_source_runtime_write_map` | 保存插件源码写回后已翻译或已审查排除字符串到当前运行 selector 的可选诊断映射 | `write-back`、`rebuild-active-runtime`、`write-terminology` |
 | `note_tag_text_rules` | 保存 data 文件 Note 标签中可翻译标签名 | `import-note-tag-rules` |
 | `event_command_text_rule_groups` | 保存事件指令文本规则组和事件指令编码 | `import-event-command-rules` |
 | `event_command_text_rule_filters` | 保存事件指令规则组的参数匹配条件 | `import-event-command-rules` |
@@ -167,11 +167,12 @@
 
 ### `plugin_source_runtime_write_map`
 
-保存插件源码写回后，已翻译插件源码文本到当前运行 JS 字符串的可选诊断映射。它只用于 `diagnose-active-runtime` 精确反推已保存译文记录，不参与翻译源抽取、质量检查或当前运行审计判定。
+保存插件源码写回后，已翻译插件源码文本或已审查排除文本到当前运行 JS 字符串的可选诊断映射。它用于 `diagnose-active-runtime` 精确反推已保存译文记录或确认已排除 selector，也用于当前运行审计避免把已排除的内部字符串误报为漏翻；不参与翻译源抽取。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | `location_path` | `TEXT` | 主键 | 翻译源视图中的插件源码文本定位路径 |
+| `mapping_kind` | `TEXT` | 非空 | 映射类型：`translated` 表示应写成中文译文，`excluded` 表示已审查但不翻译 |
 | `source_file_name` | `TEXT` | 非空 | 翻译源插件源码文件名 |
 | `source_selector` | `TEXT` | 非空 | 翻译源 AST selector |
 | `source_file_hash` | `TEXT` | 非空 | 写回时的翻译源文件哈希 |
@@ -186,9 +187,9 @@
 
 维护规则：
 
-- 插件源码写回成功后，为实际写入的译文记录保存当前运行 selector 映射。
+- 插件源码写回成功后，为实际写入的译文记录和已审查排除 selector 保存当前运行 selector 映射。
 - 导入新的插件源码规则会清空映射，避免旧 selector 影响诊断输出。
-- 当前运行审计直接扫描玩家实际运行文件，报告读取失败、JS 语法错误、坏控制符和源文残留。
+- 当前运行审计默认报告读取失败和 JS 语法错误；插件源码支线已启动或已有写回映射时，才报告已管理 selector 的坏控制符和源文残留。
 - 当前运行诊断只能按 `runtime_file_name + runtime_selector` 精确匹配映射；没有命中时报告无法反推，不做文本相似度、行号、上下文或 AST 顺序猜测。
 
 ### `note_tag_text_rules`
@@ -450,7 +451,8 @@
 
 - 删除对应 `translation_runs` 记录时会级联删除质量问题记录。
 - 手动修复并导入成功后，会按文本内部位置清理对应问题。
-- `write-back` 前必须确认当前质量报告没有阻止写回的问题。
+- `write-back` 和 `rebuild-active-runtime` 前必须确认当前质量报告没有阻止写文件的问题，并且当前规则范围内正文译文完整。
+- `write-terminology` 使用术语专用写入条件，允许正文仍有还没成功保存译文的文本，但术语表、可信源快照、写入目标和已保存译文质量必须通过检查。
 
 ## 关联关系
 

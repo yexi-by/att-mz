@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import re
+
 from app.rmmz.control_codes import (
+    ControlSequenceSpan,
     LITERAL_LINE_BREAK_MARKER,
     LITERAL_LINE_BREAK_PLACEHOLDER,
+    RawControlSequenceCandidate,
     REAL_LINE_BREAK_PLACEHOLDER,
 )
 from app.rmmz.schema import TranslationItem
+from app.rmmz.text_rules import TextRules
 
 EXPLANATION_PREFIXES: tuple[str, ...] = (
     "译文：",
@@ -29,18 +34,23 @@ PROTOCOL_FIELD_PREFIXES: tuple[str, ...] = (
     "translation_lines：",
     '"translation_lines":',
 )
+SUSPICIOUS_N_PREFIX_PATTERN: re.Pattern[str] = re.compile(
+    r"^n(?=[\u3000-\u303f\u3400-\u9fff\uff00-\uffef])"
+)
 
 
 def validate_translation_text_structure(
     *,
     item: TranslationItem,
     translation_lines: list[str],
+    text_rules: TextRules,
     translation_lines_with_placeholders: list[str] | None = None,
 ) -> None:
     """校验译文没有改动单字段结构，也没有混入模型输出协议文本。"""
     errors = collect_translation_text_structure_errors(
         item=item,
         translation_lines=translation_lines,
+        text_rules=text_rules,
         translation_lines_with_placeholders=translation_lines_with_placeholders,
     )
     if errors:
@@ -51,10 +61,18 @@ def collect_translation_text_structure_errors(
     *,
     item: TranslationItem,
     translation_lines: list[str],
+    text_rules: TextRules,
     translation_lines_with_placeholders: list[str] | None = None,
 ) -> list[str]:
     """收集译文结构错误，调用方决定是否作为业务失败处理。"""
     errors = _collect_artifact_errors(item=item, translation_lines=translation_lines)
+    errors.extend(
+        _collect_long_text_artifact_errors(
+            item=item,
+            translation_lines=translation_lines,
+            text_rules=text_rules,
+        )
+    )
     if item.item_type != "short_text":
         return errors
 
@@ -101,6 +119,130 @@ def _collect_artifact_errors(*, item: TranslationItem, translation_lines: list[s
             errors.append("译文包含模型输出协议字段，不是可写入游戏的正文")
             break
     return errors
+
+
+def _collect_long_text_artifact_errors(
+    *,
+    item: TranslationItem,
+    translation_lines: list[str],
+    text_rules: TextRules,
+) -> list[str]:
+    """收集多行正文里的异常空行和转义碎片。"""
+    if item.item_type != "long_text":
+        return []
+
+    errors: list[str] = []
+    errors.extend(
+        _collect_unexpected_empty_line_errors(
+            item=item,
+            translation_lines=translation_lines,
+        )
+    )
+    errors.extend(_collect_suspicious_n_prefix_errors(translation_lines=translation_lines))
+    errors.extend(
+        _collect_unexpected_escape_fragment_errors(
+            translation_lines=translation_lines,
+            text_rules=text_rules,
+        )
+    )
+    return errors
+
+
+def _collect_unexpected_empty_line_errors(
+    *,
+    item: TranslationItem,
+    translation_lines: list[str],
+) -> list[str]:
+    """原文没有对应空行时，拒绝保存模型生成的局部空行。"""
+    original_empty_count = sum(1 for line in item.original_lines if not line.strip())
+    translation_empty_line_numbers = [
+        line_number
+        for line_number, line in enumerate(translation_lines, start=1)
+        if not line.strip()
+    ]
+    if not translation_empty_line_numbers:
+        return []
+    if original_empty_count == 0:
+        joined_numbers = "、".join(
+            str(line_number)
+            for line_number in translation_empty_line_numbers
+        )
+        return [f"原文没有空行，但译文第 {joined_numbers} 行是空行"]
+    if len(translation_empty_line_numbers) > original_empty_count:
+        return [
+            (
+                "译文空行数量超过原文空行数量"
+                f"（原文 {original_empty_count} 行，译文 {len(translation_empty_line_numbers)} 行）"
+            )
+        ]
+    return []
+
+
+def _collect_suspicious_n_prefix_errors(*, translation_lines: list[str]) -> list[str]:
+    """识别疑似字面量换行标记被拆坏后残留的行首 n。"""
+    errors: list[str] = []
+    for line_number, line in enumerate(translation_lines, start=1):
+        stripped_line = line.lstrip()
+        if SUSPICIOUS_N_PREFIX_PATTERN.match(stripped_line) is None:
+            continue
+        errors.append(f"译文第 {line_number} 行以异常 n 开头，疑似字面量换行标记 \\n 被拆坏")
+    return errors
+
+
+def _collect_unexpected_escape_fragment_errors(
+    *,
+    translation_lines: list[str],
+    text_rules: TextRules,
+) -> list[str]:
+    """识别没有被标准控制符或疑似控制符覆盖的裸反斜杠碎片。"""
+    errors: list[str] = []
+    for line_number, line in enumerate(translation_lines, start=1):
+        protected_spans = text_rules.iter_control_sequence_spans(line)
+        raw_candidates = text_rules.iter_unprotected_control_sequence_candidates(line)
+        for index, char in enumerate(line):
+            if char != "\\":
+                continue
+            if _is_index_inside_control_span(index=index, spans=protected_spans):
+                continue
+            if _is_index_inside_raw_candidate(index=index, candidates=raw_candidates):
+                continue
+            errors.append(
+                _format_unexpected_escape_fragment_error(
+                    line_number=line_number,
+                    line=line,
+                    index=index,
+                )
+            )
+            break
+    return errors
+
+
+def _is_index_inside_control_span(*, index: int, spans: list[ControlSequenceSpan]) -> bool:
+    """判断字符位置是否落在已识别的控制符保护范围内。"""
+    return any(
+        span.start_index <= index < span.end_index
+        for span in spans
+    )
+
+
+def _is_index_inside_raw_candidate(
+    *,
+    index: int,
+    candidates: list[RawControlSequenceCandidate],
+) -> bool:
+    """判断字符位置是否落在未保护但可识别的疑似控制符范围内。"""
+    return any(
+        candidate.start_index <= index < candidate.end_index
+        for candidate in candidates
+    )
+
+
+def _format_unexpected_escape_fragment_error(*, line_number: int, line: str, index: int) -> str:
+    """生成异常反斜杠碎片的中文错误说明。"""
+    if index == len(line) - 1:
+        return f"译文第 {line_number} 行存在行尾裸反斜杠，疑似转义或换行标记被拆坏"
+    fragment = line[index : index + 2]
+    return f"译文第 {line_number} 行存在异常反斜杠片段: {fragment}"
 
 
 def count_real_line_breaks(lines: list[str]) -> int:

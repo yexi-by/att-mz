@@ -63,14 +63,8 @@ from app.cli import (  # noqa: E402
     format_argv,
     format_namespace,
 )
+from app.application.errors import ApplicationBusinessError  # noqa: E402
 from app.observability import logger, resolve_log_file_path, setup_logger  # noqa: E402
-
-
-COMMAND_SUGGESTIONS: dict[str, str] = {
-    "scan-placeholder-coverage": "scan-placeholder-candidates",
-    "scan-structured-placeholder-coverage": "scan-structured-placeholder-candidates",
-}
-RAW_GLOBAL_FLAGS: set[str] = {"--debug", "--agent-mode"}
 
 
 def format_exception_summary(error: BaseException) -> str:
@@ -140,35 +134,6 @@ def raw_flag_enabled(argv: Sequence[str], flag: str) -> bool:
     return flag in argv
 
 
-def format_argument_error_message(argv: Sequence[str], message: str) -> str:
-    """
-    为常见命令误用追加可执行的相近命令建议。
-
-    Args:
-        argv: argparse 解析失败时的原始参数。
-        message: argparse 原始错误说明。
-
-    Returns:
-        适合终端和 JSON 输出的参数错误说明。
-    """
-    command_name = _first_raw_command_name(argv)
-    if command_name is None:
-        return message
-    suggestion = COMMAND_SUGGESTIONS.get(command_name)
-    if suggestion is None or suggestion in message:
-        return message
-    return f"{message}。可能想用 `{suggestion}`。"
-
-
-def _first_raw_command_name(argv: Sequence[str]) -> str | None:
-    """从原始参数中提取首个可能的子命令名。"""
-    for item in argv:
-        if item in RAW_GLOBAL_FLAGS or item.startswith("-"):
-            continue
-        return item
-    return None
-
-
 def print_json_error(*, code: str, message: str, detail: str = "") -> None:
     """向 stdout 输出统一结构的 JSON 错误报告。
 
@@ -209,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = build_parser().parse_args(raw_argv)
     except CliArgumentError as error:
-        error_message = format_argument_error_message(raw_argv, str(error))
+        error_message = str(error)
         setup_logger(
             level="DEBUG" if raw_flag_enabled(raw_argv, "--debug") else "INFO",
             use_console=not raw_json_output,
@@ -244,6 +209,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if exit_code != 0:
             status = "失败"
     except CliBusinessError as error:
+        exit_code = 1
+        status = "失败"
+        if is_json_output_enabled(args):
+            print_json_error(code="business_error", message=str(error))
+        logger.error(f"[tag.failure]命令执行失败[/tag.failure]：{error}")
+    except ApplicationBusinessError as error:
         exit_code = 1
         status = "失败"
         if is_json_output_enabled(args):

@@ -16,6 +16,36 @@ from app.rmmz.text_protocol import (
 )
 
 
+def test_coerce_json_value_validates_without_copying_containers() -> None:
+    """JSON 边界收窄只验证结构，不复制大型对象和数组。"""
+    nested_object: dict[str, object] = {"text": "本文"}
+    nested_array: list[object] = [nested_object]
+    raw_value: dict[str, object] = {"items": nested_array, "ok": True}
+
+    coerced_value = coerce_json_value(raw_value)
+
+    assert coerced_value is raw_value
+    assert isinstance(coerced_value, dict)
+    assert coerced_value["items"] is nested_array
+    assert nested_array[0] is nested_object
+
+
+def test_coerce_json_value_still_rejects_invalid_nested_values() -> None:
+    """JSON 边界收窄仍会递归拒绝非 JSON 值。"""
+    raw_value: dict[str, object] = {"items": [object()]}
+
+    with pytest.raises(TypeError, match="JSON 值类型无法处理: object"):
+        _ = coerce_json_value(raw_value)
+
+
+def test_coerce_json_value_still_rejects_non_string_keys() -> None:
+    """JSON 边界收窄仍会拒绝非字符串对象键。"""
+    raw_value: dict[object, object] = {"ok": True, 1: "bad"}
+
+    with pytest.raises(TypeError, match="JSON 对象键必须是字符串"):
+        _ = coerce_json_value(raw_value)
+
+
 def test_visible_text_decodes_and_reencodes_json_string_shell() -> None:
     """JSON 字符串外壳内的玩家可见文本会被解出并按原结构封回。"""
     raw_text = json.dumps(r"\C[2]目標\n本文\C[0]", ensure_ascii=False)

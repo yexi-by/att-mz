@@ -79,6 +79,7 @@ class TextScopeResult:
     entries: list[TextScopeEntry]
     stale_plugin_rules: list[StalePluginRule] = field(default_factory=list)
     write_back_probe_error: str = ""
+    write_back_probe_enabled: bool = False
 
     @property
     def active_paths(self) -> set[str]:

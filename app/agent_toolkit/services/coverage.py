@@ -16,7 +16,12 @@ from .common import (
 class CoverageAgentMixin:
     """承载 AgentToolkitService 的 CoverageAgentMixin 命令族。"""
 
-    async def text_scope(self: AgentServiceContext, *, game_title: str) -> AgentReport:
+    async def text_scope(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        include_write_probe: bool = False,
+    ) -> AgentReport:
         """输出当前游戏统一文本清单。"""
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
@@ -37,6 +42,7 @@ class CoverageAgentMixin:
                 game_data=game_data,
                 text_rules=text_rules,
                 translated_items=translated_items,
+                include_write_probe=include_write_probe,
             )
         translated_paths = {item.location_path for item in translated_items}
         inactive_entries = [
@@ -58,16 +64,23 @@ class CoverageAgentMixin:
                 "inactive_rule_hit_count": len(inactive_entries),
                 "stale_plugin_rule_count": len(scope.stale_plugin_rules),
                 "write_back_probe_failed": bool(scope.write_back_probe_error),
+                "write_back_probe_enabled": scope.write_back_probe_enabled,
             },
             details={
                 "entries": scope.entries_json(),
                 "unwritable_items": [entry.to_json_object() for entry in unwritable_entries],
                 "stale_plugin_rules": scope.stale_plugin_rules_json(),
                 "write_back_probe_error": scope.write_back_probe_error,
+                "write_back_probe_enabled": scope.write_back_probe_enabled,
             },
         )
 
-    async def audit_coverage(self: AgentServiceContext, *, game_title: str) -> AgentReport:
+    async def audit_coverage(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        include_write_probe: bool = False,
+    ) -> AgentReport:
         """审计规则命中、文本清单、已保存译文和写入范围是否一致。"""
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
@@ -88,6 +101,7 @@ class CoverageAgentMixin:
                 game_data=game_data,
                 text_rules=text_rules,
                 translated_items=translated_items,
+                include_write_probe=include_write_probe,
             )
         return _build_coverage_report(
             scope=scope,

@@ -7,7 +7,6 @@ from typing import cast
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from app.application.file_writer import reset_writable_copies
 from app.cli import build_parser, read_bool_arg, read_int_set_arg, read_optional_str_arg
 from app.config.schemas import EventCommandTextSetting
 from app.event_command_text import (
@@ -20,7 +19,7 @@ from app.event_command_text import (
 from app.rmmz import load_game_data
 from app.rmmz.schema import EventCommandTextRuleRecord
 from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
-from app.rmmz.write_back import write_data_text
+from tests._native_write_plan_helper import reset_writable_copies, write_data_text
 
 
 @pytest.mark.asyncio
@@ -306,7 +305,7 @@ async def test_event_command_nested_write_error_reports_location_path(
 
     message = str(exc_info.value)
     assert "CommonEvents.json/1/4/parameters/3/missing" in message
-    assert "事件指令参数键不存在: missing" in message
+    assert "参数键不存在 missing" in message
 
 
 @pytest.mark.asyncio
@@ -360,7 +359,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
     assert item.original_lines == [source_message.strip()]
 
     translated_message = "\n　" + r"\C[2]任务说明\C[0]\n前往村子。" + "　\n"
-    item.translation_lines = [translated_message]
+    item.translation_lines = [translated_message.strip()]
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 

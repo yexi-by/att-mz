@@ -12,6 +12,7 @@ from rich.table import Table
 
 from app.agent_toolkit import AgentReport, AgentToolkitService
 from app.cli.arguments import read_bool_arg, read_str_arg
+from app.cli.errors import CliBusinessError
 from app.cli.runtime import HandlerSession, resolve_optional_target_game_title
 from app.cli.reports import write_report_outputs
 from app.language import parse_source_language
@@ -77,7 +78,10 @@ async def run_add_game_command(args: argparse.Namespace) -> int:
     game_path = Path(read_str_arg(args, "path"))
     source_language = parse_source_language(read_str_arg(args, "source_language"))
     async with HandlerSession() as handler:
-        game_title = await handler.add_game(game_path, source_language=source_language)
+        try:
+            game_title = await handler.add_game(game_path, source_language=source_language)
+        except FileExistsError as error:
+            raise CliBusinessError(str(error)) from error
         if read_bool_arg(args, "json_output"):
             report = AgentReport.from_parts(
                 errors=[],

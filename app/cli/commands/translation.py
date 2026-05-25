@@ -35,6 +35,7 @@ async def run_quality_report_command(args: argparse.Namespace) -> int:
         report = await service.quality_report(
             game_title=game_title,
             callbacks=progress.status_callbacks(),
+            include_write_probe=read_bool_arg(args, "include_write_probe"),
         )
     write_report_outputs(report=report, args=args, title="翻译质量报告")
     return 1 if report.status == "error" else 0
@@ -44,7 +45,10 @@ async def run_text_scope_command(args: argparse.Namespace) -> int:
     """执行 `text-scope` 命令。"""
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
-    report = await service.text_scope(game_title=game_title)
+    report = await service.text_scope(
+        game_title=game_title,
+        include_write_probe=read_bool_arg(args, "include_write_probe"),
+    )
     write_report_outputs(report=report, args=args, title="统一文本清单")
     return 1 if report.status == "error" else 0
 
@@ -53,7 +57,10 @@ async def run_audit_coverage_command(args: argparse.Namespace) -> int:
     """执行 `audit-coverage` 命令。"""
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
-    report = await service.audit_coverage(game_title=game_title)
+    report = await service.audit_coverage(
+        game_title=game_title,
+        include_write_probe=read_bool_arg(args, "include_write_probe"),
+    )
     write_report_outputs(report=report, args=args, title="覆盖审计报告")
     return 1 if report.status == "error" else 0
 
@@ -123,11 +130,14 @@ async def run_export_pending_translations_command(args: argparse.Namespace) -> i
     output_path = read_required_path_arg(args, "output")
     limit = read_optional_int_arg(args, "limit")
     service = AgentToolkitService()
-    report = await service.export_pending_translations(
-        game_title=game_title,
-        output_path=output_path,
-        limit=limit,
-    )
+    with build_progress_reporter("手动填写译文表导出", args) as progress:
+        report = await service.export_pending_translations(
+            game_title=game_title,
+            output_path=output_path,
+            limit=limit,
+            include_write_probe=read_bool_arg(args, "include_write_probe"),
+            callbacks=progress.status_callbacks(),
+        )
     write_report_outputs(report=report, args=args, title="手动填写译文表导出报告", write_output_file=False)
     return 1 if report.status == "error" else 0
 
@@ -137,10 +147,13 @@ async def run_export_quality_fix_template_command(args: argparse.Namespace) -> i
     game_title = await resolve_target_game_title(args)
     output_path = read_required_path_arg(args, "output")
     service = AgentToolkitService()
-    report = await service.export_quality_fix_template(
-        game_title=game_title,
-        output_path=output_path,
-    )
+    with build_progress_reporter("质量修复模板导出", args) as progress:
+        report = await service.export_quality_fix_template(
+            game_title=game_title,
+            output_path=output_path,
+            include_write_probe=read_bool_arg(args, "include_write_probe"),
+            callbacks=progress.status_callbacks(),
+        )
     write_report_outputs(report=report, args=args, title="质量修复模板导出报告", write_output_file=False)
     return 1 if report.status == "error" else 0
 
@@ -170,7 +183,12 @@ async def run_translation_status_command(args: argparse.Namespace) -> int:
     """执行 `translation-status` 命令。"""
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
-    report = await service.translation_status(game_title=game_title)
+    with build_progress_reporter("正文翻译状态", args) as progress:
+        report = await service.translation_status(
+            game_title=game_title,
+            refresh_scope=read_bool_arg(args, "refresh_scope"),
+            callbacks=progress.status_callbacks(),
+        )
     write_report_outputs(report=report, args=args, title="正文翻译状态")
     return 1 if report.status == "error" else 0
 

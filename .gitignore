@@ -29,6 +29,8 @@ app/_native*.pdb
 logs/
 scripts/*
 !scripts/build_release.py
+!scripts/benchmark_active_runtime_audit.py
+!scripts/benchmark_rebuild_active_runtime.py
 
 
 

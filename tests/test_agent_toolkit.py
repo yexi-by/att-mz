@@ -12,6 +12,7 @@ from app.agent_toolkit.placeholder_scan import (
     count_uncovered_candidates,
     scan_placeholder_candidates as scan_placeholder_candidate_spans,
 )
+from app.agent_toolkit.reports import AgentReport
 from app.application.flow_gate import (
     collect_workflow_gate_errors,
     event_command_rule_scope_hash_for_command_codes,
@@ -24,10 +25,16 @@ from app.application.handler import TranslationHandler
 from app.config import SettingOverrides
 from app.config.schemas import TextRulesSetting
 from app.llm import LLMHandler
-from app.native_quality import collect_native_quality_details
-from app.persistence import GameRegistry
+from app.native_quality import collect_native_quality_counts, collect_native_quality_details
+from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_text import build_plugin_hash
-from app.plugin_source_text import build_plugin_source_file_hash, build_plugin_source_scan, iter_plugin_source_string_literals
+from app.plugin_source_text import (
+    PluginSourceBatchTextScan,
+    build_plugin_source_file_hash,
+    build_plugin_source_scan,
+    iter_plugin_source_string_literals,
+    scan_plugin_source_files_text_strict as real_scan_plugin_source_files_text_strict,
+)
 from app.plugin_source_text.runtime_mapping import (
     plugin_source_runtime_hash_lines,
     plugin_source_runtime_hash_text,
@@ -38,6 +45,7 @@ from app.rmmz.loader import load_active_runtime_game_data, load_game_data
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
+    GameData,
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
@@ -65,11 +73,30 @@ from app.rule_review import (
     plugin_rule_scope_hash,
 )
 from app.text_scope import TextScopeEntry, TextScopeResult, TextScopeService
+from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+class _AgentToolkitServiceProbe(AgentToolkitService):
+    """暴露测试用公开方法，避免测试直接访问受保护 mixin API。"""
+
+    async def load_translation_source_for_test(
+        self,
+        session: TargetGameSession,
+        *,
+        include_writable_copies: bool | None = None,
+    ) -> GameData:
+        """调用翻译源加载入口并保留默认参数行为。"""
+        if include_writable_copies is None:
+            return await self._load_translation_source_game_data(session)
+        return await self._load_translation_source_game_data(
+            session,
+            include_writable_copies=include_writable_copies,
+        )
 
 
 def load_json_object(path: Path) -> dict[str, object]:
@@ -223,6 +250,31 @@ async def test_doctor_creates_missing_db_directory(tmp_path: Path) -> None:
     error_codes = {error.code for error in report.errors}
     assert "db_dir" not in error_codes
     assert db_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_translation_source_load_skips_writable_copies_by_default(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Agent 只读翻译源加载默认不构造大型可写副本。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = _AgentToolkitServiceProbe(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    async with await registry.open_game("テストゲーム") as session:
+        game_data = await service.load_translation_source_for_test(session)
+        writable_game_data = await service.load_translation_source_for_test(
+            session,
+            include_writable_copies=True,
+        )
+
+    assert game_data.data
+    assert game_data.writable_data == {}
+    assert game_data.writable_plugins_js == []
+    assert game_data.writable_plugin_source_files == {}
+    assert writable_game_data.writable_data
+    assert writable_game_data.writable_plugins_js
 
 
 @pytest.mark.asyncio
@@ -730,8 +782,8 @@ async def test_text_scope_and_audit_coverage_use_unified_contract(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
-    scope_report = await service.text_scope(game_title="テストゲーム")
-    audit_report = await service.audit_coverage(game_title="テストゲーム")
+    scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
+    audit_report = await service.audit_coverage(game_title="テストゲーム", include_write_probe=True)
 
     entries = ensure_json_array(scope_report.details["entries"], "entries")
     first_entry = ensure_json_object(entries[0], "entries[0]")
@@ -778,12 +830,13 @@ async def test_text_scope_and_audit_coverage_use_real_write_probe(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
-    scope_report = await service.text_scope(game_title="テストゲーム")
-    audit_report = await service.audit_coverage(game_title="テストゲーム")
+    scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
+    audit_report = await service.audit_coverage(game_title="テストゲーム", include_write_probe=True)
     unwritable_items = ensure_json_array(scope_report.details["unwritable_items"], "unwritable_items")
     first_unwritable = ensure_json_object(unwritable_items[0], "unwritable_items[0]")
 
     assert scope_report.summary["unwritable_count"] == 1
+    assert scope_report.summary["write_back_probe_enabled"] is True
     assert first_unwritable["can_write_back"] is False
     assert first_unwritable["cannot_process_reason"] == "探针失败"
     assert audit_report.status == "error"
@@ -791,6 +844,93 @@ async def test_text_scope_and_audit_coverage_use_real_write_probe(
     extractable_count = scope_report.summary["extractable_count"]
     assert isinstance(extractable_count, int)
     assert audit_report.summary["writable_count"] == extractable_count - 1
+
+
+@pytest.mark.asyncio
+async def test_write_back_probe_uses_shallow_probe_items(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写入探针只替换译文行，不深拷贝原文和定位结构。"""
+    game_data = await load_game_data(minimal_game_dir)
+    source_item = TranslationItem(
+        location_path="Items.json/1/name",
+        item_type="short_text",
+        role="item_name",
+        original_lines=["薬草"],
+        source_line_paths=["Items.json/1/name"],
+        translation_lines=["既存译文"],
+        placeholder_map={"[RMMZ_TEST_1]": "\\C[1]"},
+    )
+    received_items: list[TranslationItem] = []
+
+    def fake_collect_native_write_protocol_details(
+        *,
+        game_data: JsonObject,
+        plugins_js: list[JsonValue],
+        items: list[TranslationItem],
+    ) -> list[JsonValue]:
+        """捕获探针条目，避免测试依赖 Rust 写入协议结果。"""
+        _ = (game_data, plugins_js)
+        received_items.extend(items)
+        return []
+
+    monkeypatch.setattr(
+        "app.text_scope.write_probe.collect_native_write_protocol_details",
+        fake_collect_native_write_protocol_details,
+    )
+
+    reasons = collect_write_back_probe_reasons(
+        game_data=game_data,
+        active_items=[source_item],
+    )
+
+    assert reasons == {}
+    assert len(received_items) == 1
+    probe_item = received_items[0]
+    assert probe_item is not source_item
+    assert probe_item.original_lines is source_item.original_lines
+    assert probe_item.source_line_paths is source_item.source_line_paths
+    assert probe_item.placeholder_map is source_item.placeholder_map
+    assert probe_item.translation_lines == ["回写校验"]
+    assert source_item.translation_lines == ["既存译文"]
+
+
+@pytest.mark.asyncio
+async def test_read_only_scope_reports_skip_write_probe_by_default(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """只读文本范围报告默认不执行写入探针。"""
+
+    def forbidden_write_probe(*args: object, **kwargs: object) -> NoReturn:
+        """默认只读报告不应触碰写入协议探针。"""
+        _ = (args, kwargs)
+        raise AssertionError("只读文本范围报告默认不应执行写入探针")
+
+    monkeypatch.setattr(
+        "app.text_scope.write_probe.collect_native_write_protocol_details",
+        forbidden_write_probe,
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending.json"
+
+    scope_report = await service.text_scope(game_title="テストゲーム")
+    audit_report = await service.audit_coverage(game_title="テストゲーム")
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    pending_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+
+    assert scope_report.summary["write_back_probe_enabled"] is False
+    assert audit_report.summary["write_back_probe_enabled"] is False
+    assert quality_report.summary["write_back_probe_enabled"] is False
+    assert pending_report.summary["write_back_probe_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -819,9 +959,9 @@ async def test_text_scope_reports_global_write_probe_failure(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
-    scope_report = await service.text_scope(game_title="テストゲーム")
-    audit_report = await service.audit_coverage(game_title="テストゲーム")
-    quality_report = await service.quality_report(game_title="テストゲーム")
+    scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
+    audit_report = await service.audit_coverage(game_title="テストゲーム", include_write_probe=True)
+    quality_report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
 
     assert scope_report.status == "error"
     assert audit_report.status == "error"
@@ -834,12 +974,12 @@ async def test_text_scope_reports_global_write_probe_failure(
 
 
 @pytest.mark.asyncio
-async def test_text_scope_reports_partial_write_probe_failure_per_item(
+async def test_text_scope_reports_batch_write_probe_failure_directly(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写入协议探针部分失败时必须标记具体条目，不把坏路径当成可写。"""
+    """写入协议批量探针失败时直接报告全局错误。"""
     failed_single_path = ""
 
     def flaky_collect_native_write_protocol_details(
@@ -848,7 +988,7 @@ async def test_text_scope_reports_partial_write_probe_failure_per_item(
         plugins_js: list[JsonValue],
         items: list[TranslationItem],
     ) -> list[JsonValue]:
-        """模拟批量探针失败、逐条探针仅一个条目失败。"""
+        """模拟批量探针失败，不再逐条重试。"""
         nonlocal failed_single_path
         _ = (game_data, plugins_js)
         if len(items) > 1:
@@ -867,18 +1007,13 @@ async def test_text_scope_reports_partial_write_probe_failure_per_item(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
-    scope_report = await service.text_scope(game_title="テストゲーム")
+    scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
 
     assert scope_report.status == "error"
-    assert failed_single_path
-    assert scope_report.summary["write_back_probe_failed"] is False
-    assert scope_report.summary["unwritable_count"] == 1
-    unwritable_items = ensure_json_array(scope_report.details["unwritable_items"], "unwritable_items")
-    first_unwritable = ensure_json_object(unwritable_items[0], "unwritable_items[0]")
-    assert first_unwritable["location_path"] == failed_single_path
-    reason = first_unwritable["cannot_process_reason"]
-    assert isinstance(reason, str)
-    assert "写入协议探针失败" in reason
+    assert not failed_single_path
+    assert scope_report.summary["write_back_probe_failed"] is True
+    assert scope_report.summary["unwritable_count"] == 0
+    assert {error.code for error in scope_report.errors} == {"write_probe_failed"}
 
 
 @pytest.mark.asyncio
@@ -925,7 +1060,7 @@ async def test_quality_report_stops_on_coverage_error_before_native_checks(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
-    report = await service.quality_report(game_title="テストゲーム")
+    report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
 
     assert report.status == "error"
     assert "coverage_unwritable" in {error.code for error in report.errors}
@@ -972,6 +1107,7 @@ async def test_export_quality_fix_template_stops_on_text_scope_blocker(
     report = await service.export_quality_fix_template(
         game_title="テストゲーム",
         output_path=output_path,
+        include_write_probe=True,
     )
 
     assert report.status == "error"
@@ -1171,11 +1307,11 @@ async def test_feedback_verification_reads_active_files_not_origin_backups(
 
 
 @pytest.mark.asyncio
-async def test_quality_report_audits_active_runtime_plugin_source_not_origin_backups(
+async def test_default_active_runtime_audit_skips_plugin_source_text_branch(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """质量报告不混入当前运行审计，当前运行问题由独立命令报告。"""
+    """未启动插件源码支线时，当前运行审计只做运行完整性检查。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -1230,12 +1366,12 @@ async def test_quality_report_audits_active_runtime_plugin_source_not_origin_bac
     quality_report = await service.quality_report(game_title="テストゲーム")
     runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
 
-    assert quality_report.status == "error"
-    assert runtime_report.status == "error"
+    assert runtime_report.status == "ok"
     assert "active_runtime_placeholder_risk" not in {error.code for error in quality_report.errors}
-    assert "active_runtime_placeholder_risk" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_placeholder_risk" not in {error.code for error in runtime_report.errors}
     assert "active_runtime_placeholder_risk_count" not in quality_report.summary
-    assert runtime_report.summary["active_runtime_placeholder_risk_count"] == 1
+    assert runtime_report.summary["active_runtime_text_issue_audit_enabled"] is False
+    assert runtime_report.summary["active_runtime_placeholder_risk_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -1379,6 +1515,84 @@ async def test_active_runtime_audit_rejects_plugin_source_syntax_errors(
 
 
 @pytest.mark.asyncio
+async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_files(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行审计跨命令复用 AST 缓存，并在文件 hash 变化时重新扫描。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "CacheSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    source_path = plugin_source_dir / "CacheSource.js"
+    _ = source_path.write_text("const Messages = { title: 'カテゴリ' };\n", encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    first_report = await service.audit_active_runtime(game_title="テストゲーム")
+    assert first_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        cached_records = await session.read_plugin_source_runtime_scan_cache()
+    cached_by_name = {record.file_name: record for record in cached_records}
+    assert "CacheSource.js" in cached_by_name
+    assert cached_by_name["CacheSource.js"].literals
+    cached_file_count = len(cached_records)
+    assert first_report.summary["active_runtime_scan_cache_input_record_count"] == 0
+    assert first_report.summary["active_runtime_scan_cache_current_file_count"] == cached_file_count
+    assert first_report.summary["active_runtime_scan_cache_hit_file_count"] == 0
+    assert first_report.summary["active_runtime_scan_cache_miss_file_count"] == cached_file_count
+    assert first_report.summary["active_runtime_scan_cache_rescan_file_count"] == cached_file_count
+
+    scan_calls: list[tuple[str, ...]] = []
+
+    def counting_scan(
+        *,
+        files: dict[str, str],
+        active_file_names: frozenset[str],
+        text_rules: TextRules | None = None,
+    ) -> PluginSourceBatchTextScan:
+        """记录真正进入 AST 扫描的文件。"""
+        scan_calls.append(tuple(sorted(files)))
+        return real_scan_plugin_source_files_text_strict(
+            files=files,
+            active_file_names=active_file_names,
+            text_rules=text_rules,
+        )
+
+    monkeypatch.setattr(
+        "app.plugin_source_text.runtime_audit.scan_plugin_source_files_text_strict",
+        counting_scan,
+    )
+    second_report = await service.audit_active_runtime(game_title="テストゲーム")
+    assert second_report.status == "ok"
+    assert second_report.summary["active_runtime_scan_cache_hit_file_count"] == cached_file_count
+    assert second_report.summary["active_runtime_scan_cache_miss_file_count"] == 0
+    assert second_report.summary["active_runtime_scan_cache_stale_file_count"] == 0
+    assert second_report.summary["active_runtime_scan_cache_rescan_file_count"] == 0
+    assert scan_calls == []
+
+    _ = source_path.write_text("const Messages = { title: 'カテゴリ変更' };\n", encoding="utf-8")
+    third_report = await service.audit_active_runtime(game_title="テストゲーム")
+    assert third_report.status == "ok"
+    assert third_report.summary["active_runtime_scan_cache_hit_file_count"] == cached_file_count - 1
+    assert third_report.summary["active_runtime_scan_cache_stale_file_count"] == 1
+    assert third_report.summary["active_runtime_scan_cache_rescan_file_count"] == 1
+    assert scan_calls == [("CacheSource.js",)]
+
+
+@pytest.mark.asyncio
 async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_cache(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1514,11 +1728,124 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
 
 
 @pytest.mark.asyncio
-async def test_diagnose_active_runtime_never_guesses_without_runtime_map(
+async def test_diagnose_active_runtime_batches_translation_source_scans(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行诊断反推翻译源时必须批量扫描源插件文件。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugin_names = ["BadSourceA", "BadSourceB"]
+    for plugin_name in plugin_names:
+        plugins.append({"name": plugin_name, "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    origin_sources = {
+        "BadSourceA.js": "const Messages = { category: '原文A' };\n",
+        "BadSourceB.js": "const Messages = { category: '原文B' };\n",
+    }
+    active_sources = {
+        "BadSourceA.js": "const Messages = { category: 'カテゴリA' };\n",
+        "BadSourceB.js": "const Messages = { category: 'カテゴリB' };\n",
+    }
+    for file_name, source in origin_sources.items():
+        _ = (plugin_source_dir / file_name).write_text(source, encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    for file_name, source in active_sources.items():
+        _ = (plugin_source_dir / file_name).write_text(source, encoding="utf-8")
+
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        source_game_data = await load_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(session.game_path)
+        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        translation_items: list[TranslationItem] = []
+        runtime_maps: list[PluginSourceRuntimeWriteMapRecord] = []
+        for index, file_name in enumerate(sorted(origin_sources)):
+            source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == file_name)
+            source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == file_name)
+            runtime_source = active_game_data.plugin_source_files[file_name]
+            runtime_literal = iter_plugin_source_string_literals(
+                file_name=file_name,
+                source=runtime_source,
+                active=True,
+            )[0]
+            location_path = f"js/plugins/{file_name}/{source_candidate.selector}"
+            translation_item = TranslationItem(
+                location_path=location_path,
+                item_type="short_text",
+                original_lines=[source_candidate.text],
+                source_line_paths=[location_path],
+                translation_lines=[runtime_literal.text],
+            )
+            translation_items.append(translation_item)
+            runtime_maps.append(
+                PluginSourceRuntimeWriteMapRecord(
+                    location_path=location_path,
+                    source_file_name=file_name,
+                    source_selector=source_candidate.selector,
+                    source_file_hash=source_file_scan.file_hash,
+                    source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
+                    translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
+                    runtime_file_name=file_name,
+                    runtime_selector=runtime_literal.selector,
+                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
+                    runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
+                    runtime_line=runtime_literal.line,
+                    created_at=f"2026-05-24T00:00:0{index}",
+                )
+            )
+        await session.write_translation_items(translation_items)
+        await session.replace_plugin_source_runtime_write_maps(runtime_maps)
+
+    from app.plugin_source_text.scanner import scan_plugin_source_files_text_strict as real_batch_scan
+
+    batch_calls: list[tuple[str, ...]] = []
+
+    def counting_source_batch_scan(
+        *,
+        files: dict[str, str],
+        active_file_names: frozenset[str],
+        text_rules: TextRules | None,
+    ) -> PluginSourceBatchTextScan:
+        """记录诊断反推阶段扫描过的翻译源插件文件。"""
+        batch_calls.append(tuple(sorted(files)))
+        return real_batch_scan(
+            files=files,
+            active_file_names=active_file_names,
+            text_rules=text_rules,
+        )
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.scan_plugin_source_files_text_strict",
+        counting_source_batch_scan,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.diagnose_active_runtime(game_title="テストゲーム")
+
+    assert report.status == "error"
+    assert report.summary["mapped_translate_count"] == 2
+    assert batch_calls == [("BadSourceA.js", "BadSourceB.js")]
+
+
+@pytest.mark.asyncio
+async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtime_map(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """没有写回映射时，诊断不能按文本或上下文猜测已保存译文记录。"""
+    """默认模式没有写回映射时，不把源码字符串猜成漏翻诊断。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -1564,31 +1891,19 @@ async def test_diagnose_active_runtime_never_guesses_without_runtime_map(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム", output_path=tmp_path / "diagnosis.json")
 
-    assert report.status == "error"
-    missing_issue_count = report.summary["runtime_mapping_missing_count"]
-    assert isinstance(missing_issue_count, int)
-    assert missing_issue_count >= 1
+    assert report.status == "ok"
+    assert report.summary["active_runtime_text_issue_audit_enabled"] is False
+    assert report.summary["runtime_mapping_missing_count"] == 0
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
-    diagnosis_item = next(
-        item
-        for item in diagnosis_items
-        if ensure_json_object(
-            ensure_json_object(item, "diagnosis_item")["issue"],
-            "diagnosis_item.issue",
-        )["file"] == "BadSource.js"
-    )
-    diagnosis = ensure_json_object(diagnosis_item, "diagnosis_item")
-    assert diagnosis["diagnosis_status"] == "runtime_mapping_missing"
-    assert "location_path" not in diagnosis
-    assert "无法反推" in str(diagnosis["suggested_action"])
+    assert diagnosis_items == []
 
 
 @pytest.mark.asyncio
-async def test_diagnose_active_runtime_reports_unmapped_source_residual(
+async def test_diagnose_active_runtime_default_mode_skips_unmapped_source_residual(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """未写入过译文的当前运行源码残留只报告无法反推，不猜规则候选。"""
+    """未启动插件源码支线时，当前运行源码残留不是补译诊断。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -1610,18 +1925,15 @@ async def test_diagnose_active_runtime_reports_unmapped_source_residual(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム")
 
-    assert report.status == "error"
-    missing_count = report.summary["runtime_mapping_missing_count"]
-    assert isinstance(missing_count, int)
-    assert missing_count >= 1
+    assert report.status == "ok"
+    assert report.summary["active_runtime_text_issue_audit_enabled"] is False
+    assert report.summary["runtime_mapping_missing_count"] == 0
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
-    diagnosis = ensure_json_object(diagnosis_items[0], "diagnosis_item")
-    assert diagnosis["diagnosis_status"] == "runtime_mapping_missing"
-    assert "plugin_source_rule_candidate" not in diagnosis
+    assert diagnosis_items == []
 
 
 @pytest.mark.asyncio
-async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual(
+async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual_without_map(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
@@ -1670,6 +1982,85 @@ async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual
     assert report.summary["runtime_mapping_missing_count"] == 1
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
     assert len(diagnosis_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime_map(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """已审查排除 selector 有精确 runtime map 时，不再当作插件源码漏翻。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BadSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    active_source = "const Messages = { category: 'カテゴリ' };\n"
+    _ = (plugin_source_dir / "BadSource.js").write_text(active_source, encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        source_game_data = await load_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(session.game_path)
+        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
+        source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
+        runtime_source = active_game_data.plugin_source_files["BadSource.js"]
+        runtime_literal = iter_plugin_source_string_literals(
+            file_name="BadSource.js",
+            source=runtime_source,
+            active=True,
+        )[0]
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="BadSource.js",
+                    file_hash=source_file_scan.file_hash,
+                    selectors=[],
+                    excluded_selectors=[source_candidate.selector],
+                )
+            ]
+        )
+        await session.replace_plugin_source_runtime_write_maps(
+            [
+                PluginSourceRuntimeWriteMapRecord(
+                    mapping_kind="excluded",
+                    location_path=f"js/plugins/BadSource.js/{source_candidate.selector}",
+                    source_file_name="BadSource.js",
+                    source_selector=source_candidate.selector,
+                    source_file_hash=source_file_scan.file_hash,
+                    source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
+                    translation_lines_hash=plugin_source_runtime_hash_lines([]),
+                    runtime_file_name="BadSource.js",
+                    runtime_selector=runtime_literal.selector,
+                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
+                    runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
+                    runtime_line=runtime_literal.line,
+                    created_at="2026-05-24T00:00:00",
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.audit_active_runtime(game_title="テストゲーム")
+    diagnosis = await service.diagnose_active_runtime(game_title="テストゲーム")
+
+    assert report.status == "ok"
+    assert report.summary["active_runtime_text_issue_audit_enabled"] is True
+    assert report.summary["active_runtime_source_residual_count"] == 0
+    assert diagnosis.status == "ok"
+    assert diagnosis.summary["diagnosis_issue_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -2226,8 +2617,9 @@ async def test_validate_agent_workspace_blocks_uncovered_structured_candidates(
     tmp_path: Path,
     sample_text: str,
     expected_candidate: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """工作区整体验收必须把未覆盖的结构化协议外壳候选作为错误返回。"""
+    """工作区验收复用已抽取正文扫描结构化协议外壳候选。"""
     common_events_path = minimal_english_game_dir / "data" / "CommonEvents.json"
     raw_value = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
     common_events = ensure_json_array(coerce_json_value(raw_value), "CommonEvents.json")
@@ -2247,6 +2639,38 @@ async def test_validate_agent_workspace_blocks_uncovered_structured_candidates(
         game_title="English Fixture Game",
         output_dir=workspace,
         command_codes=None,
+    )
+
+    async def forbidden_structured_validation(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+        sample_texts: list[str],
+    ) -> AgentReport:
+        """工作区验收不应为结构化占位符校验再抽取一次全量正文。"""
+        _ = (self, game_title, rules_text, sample_texts)
+        raise AssertionError("validate-agent-workspace 不应重新执行结构化占位符全量校验")
+
+    async def forbidden_structured_scan(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """工作区验收不应为结构化占位符覆盖再抽取一次全量正文。"""
+        _ = (self, game_title, rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行结构化占位符全量扫描")
+
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "validate_structured_placeholder_rules",
+        forbidden_structured_validation,
+    )
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "scan_structured_placeholder_candidates",
+        forbidden_structured_scan,
     )
     report = await service.validate_agent_workspace(game_title="English Fixture Game", workspace=workspace)
 
@@ -2406,8 +2830,9 @@ async def test_validate_plugin_rules_reports_json_string_leaf_candidates(
 async def test_prepare_agent_workspace_uses_mv_event_command_default(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MV 工作区摘要和事件指令样本按 356 插件命令生成。"""
+    """MV 工作区摘要按 356 插件命令生成，并复用虚拟名字框上下文验收。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -2460,11 +2885,47 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     assert "mv-virtual-namebox-rules.json" in manifest_files
     assert len(commands) == 1
 
+    async def forbidden_mv_namebox_revalidation(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """工作区验收已经持有 MV 虚拟名字框上下文，不应再调用全量规则校验器。"""
+        _ = (self, game_title, rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行 MV 虚拟名字框全量校验")
+
+    _ = (workspace / "mv-virtual-namebox-rules.json").write_text(
+        f"{_mv_virtual_namebox_rules_text()}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "validate_mv_virtual_namebox_rules",
+        forbidden_mv_namebox_revalidation,
+    )
+    validation_report = await service.validate_agent_workspace(
+        game_title="MVテストゲーム",
+        workspace=workspace,
+    )
+    validation_error_codes = {error.code for error in validation_report.errors}
+    mv_validation_details = ensure_json_object(
+        coerce_json_value(validation_report.details["mv_virtual_namebox_rules"]),
+        "details.mv_virtual_namebox_rules",
+    )
+    mv_validation_rules = ensure_json_array(
+        coerce_json_value(mv_validation_details["rules"]),
+        "details.mv_virtual_namebox_rules.rules",
+    )
+    assert "mv_virtual_namebox_rules_invalid" not in validation_error_codes
+    assert len(mv_validation_rules) == 1
+
 
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_prefills_imported_database_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """二次翻译工作区会回填当前数据库中已导入的规则和术语表。"""
     items_path = minimal_game_dir / "data" / "Items.json"
@@ -2556,6 +3017,52 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
         game_title="テストゲーム",
         output_dir=workspace,
         command_codes=None,
+    )
+
+    async def forbidden_plugin_revalidation(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """工作区验收已经持有插件参数校验上下文，不应再调用全量规则校验器。"""
+        _ = (self, game_title, rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行插件参数全量校验")
+
+    async def forbidden_note_tag_revalidation(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """工作区验收已经持有 Note 标签校验上下文，不应再调用全量规则校验器。"""
+        _ = (self, game_title, rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行 Note 标签全量校验")
+
+    async def forbidden_event_command_revalidation(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """工作区验收已经持有事件指令校验上下文，不应再调用全量规则校验器。"""
+        _ = (self, game_title, rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行事件指令全量校验")
+
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "validate_plugin_rules",
+        forbidden_plugin_revalidation,
+    )
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "validate_note_tag_rules",
+        forbidden_note_tag_revalidation,
+    )
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "validate_event_command_rules",
+        forbidden_event_command_revalidation,
     )
     validation_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
@@ -2724,6 +3231,129 @@ async def test_validate_agent_workspace_blocks_missing_manifest(
 
 
 @pytest.mark.asyncio
+async def test_validate_agent_workspace_reports_long_task_stages(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区验收向 CLI 报告可观测的长任务阶段。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    progress_updates: list[tuple[int, int]] = []
+    advanced_steps: list[int] = []
+    statuses: list[str] = []
+
+    def set_progress(current: int, total: int) -> None:
+        """记录绝对进度。"""
+        progress_updates.append((current, total))
+
+    def advance_progress(count: int) -> None:
+        """记录阶段推进。"""
+        advanced_steps.append(count)
+
+    def set_status(status: str) -> None:
+        """记录阶段状态。"""
+        statuses.append(status)
+
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    _ = await service.validate_agent_workspace(
+        game_title="テストゲーム",
+        workspace=workspace,
+        callbacks=(set_progress, advance_progress, set_status),
+    )
+
+    assert progress_updates[0] == (0, 12)
+    assert sum(advanced_steps) == 12
+    for expected_status in [
+        "读取工作区清单",
+        "加载翻译源视图",
+        "抽取当前文本范围",
+        "扫描插件源码",
+        "校验插件规则",
+        "校验结构化占位符规则",
+        "汇总工作区校验报告",
+    ]:
+        assert expected_status in statuses
+
+
+@pytest.mark.asyncio
+async def test_manual_export_and_status_commands_report_long_task_stages(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动修复表和刷新状态查询向 CLI 报告可观测阶段。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    quality_fix_path = tmp_path / "quality-fix.json"
+    progress_updates: list[tuple[int, int]] = []
+    advanced_steps: list[int] = []
+    statuses: list[str] = []
+
+    def set_progress(current: int, total: int) -> None:
+        """记录绝对进度。"""
+        progress_updates.append((current, total))
+
+    def advance_progress(count: int) -> None:
+        """记录阶段推进。"""
+        advanced_steps.append(count)
+
+    def set_status(status: str) -> None:
+        """记录阶段状态。"""
+        statuses.append(status)
+
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.start_translation_run(
+            total_extracted=12,
+            pending_count=8,
+            deduplicated_count=7,
+            batch_count=2,
+        )
+
+    pending_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=3,
+        callbacks=(set_progress, advance_progress, set_status),
+    )
+    status_report = await service.translation_status(
+        game_title="テストゲーム",
+        refresh_scope=True,
+        callbacks=(set_progress, advance_progress, set_status),
+    )
+    quality_fix_report = await service.export_quality_fix_template(
+        game_title="テストゲーム",
+        output_path=quality_fix_path,
+        callbacks=(set_progress, advance_progress, set_status),
+    )
+
+    assert pending_report.status == "ok"
+    assert status_report.status == "ok"
+    assert quality_fix_report.status in {"ok", "warning"}
+    assert pending_path.exists()
+    assert quality_fix_path.exists()
+    assert progress_updates[0] == (0, 5)
+    assert advanced_steps
+    for expected_status in [
+        "加载游戏数据和规则",
+        "构建当前文本范围",
+        "筛选还没成功保存译文",
+        "手动填写译文表已完成",
+        "刷新当前文本范围",
+        "正文翻译状态已完成",
+        "调用 Rust 原生质检核心（",
+        "质量修复表已完成",
+    ]:
+        assert any(status.startswith(expected_status) for status in statuses)
+
+
+@pytest.mark.asyncio
 async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_states(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -2810,8 +3440,9 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
 async def test_validate_agent_workspace_rejects_high_risk_empty_plugin_source_review(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """高风险插件源码空规则即使有旧确认状态，工作区验收也必须报错。"""
+    """高风险插件源码空规则复用工作区扫描结果并报错。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
@@ -2850,6 +3481,21 @@ async def test_validate_agent_workspace_rejects_high_risk_empty_plugin_source_re
             reviewed_empty=True,
         )
 
+    async def forbidden_plugin_source_revalidation(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        rules_text: str,
+    ) -> AgentReport:
+        """工作区验收已经持有插件源码扫描结果，不应再调用全量规则校验器。"""
+        _ = (self, game_title, rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行插件源码全量校验")
+
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "validate_plugin_source_rules",
+        forbidden_plugin_source_revalidation,
+    )
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
     assert "plugin_source_rules_empty_high_risk" in {error.code for error in report.errors}
@@ -2945,8 +3591,9 @@ async def test_validate_agent_workspace_reports_invalid_glossary_file(
 async def test_validate_agent_workspace_blocks_uncovered_placeholder_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """工作区验收会阻断未覆盖当前正文控制符的占位符规则。"""
+    """工作区验收复用已抽取正文扫描普通占位符覆盖。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -2959,6 +3606,21 @@ async def test_validate_agent_workspace_blocks_uncovered_placeholder_rules(
     )
     _ = (workspace / "placeholder-rules.json").write_text("{}\n", encoding="utf-8")
 
+    async def forbidden_placeholder_rescan(
+        self: AgentToolkitService,
+        *,
+        game_title: str,
+        custom_placeholder_rules_text: str | None,
+    ) -> AgentReport:
+        """工作区验收不应为普通占位符覆盖再抽取一次全量正文。"""
+        _ = (self, game_title, custom_placeholder_rules_text)
+        raise AssertionError("validate-agent-workspace 不应重新执行普通占位符全量扫描")
+
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "scan_placeholder_candidates",
+        forbidden_placeholder_rescan,
+    )
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
     assert report.status == "error"
@@ -3154,7 +3816,7 @@ async def test_manual_pending_translation_export_and_import(
         game_title="テストゲーム",
         input_path=pending_path,
     )
-    status_report = await service.translation_status(game_title="テストゲーム")
+    status_report = await service.translation_status(game_title="テストゲーム", refresh_scope=True)
     quality_report = await service.quality_report(game_title="テストゲーム")
 
     assert import_report.status == "ok"
@@ -3170,6 +3832,42 @@ async def test_manual_pending_translation_export_and_import(
     translated_by_path = {item.location_path: item for item in translated_items}
     assert translated_by_path[target_path].translation_lines == ["你好"]
     assert quality_errors == []
+
+
+@pytest.mark.asyncio
+async def test_translation_status_uses_database_fast_path_by_default(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """状态查询默认不能重新加载游戏文件和构建完整文本范围。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """快速状态查询不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status 默认不应加载游戏文件")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.start_translation_run(
+            total_extracted=12,
+            pending_count=8,
+            deduplicated_count=7,
+            batch_count=2,
+        )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.translation_status(game_title="テストゲーム")
+
+    assert report.status == "ok"
+    assert report.summary["scope_refreshed"] is False
+    assert report.summary["pending_count"] == 8
+    assert report.summary["extractable_count"] == 12
 
 
 @pytest.mark.asyncio
@@ -4610,22 +5308,32 @@ def test_native_quality_reports_structured_placeholder_conflicts() -> None:
             ),
         ),
     )
+    items = [
+        TranslationItem(
+            location_path="CommonEvents.json/1/0",
+            item_type="long_text",
+            role="Guide",
+            original_lines=["<Mini Label: Alraune>"],
+            source_line_paths=["CommonEvents.json/1/1"],
+            translation_lines=["<Mini Label: 阿尔劳娜>"],
+        )
+    ]
     details = collect_native_quality_details(
-        items=[
-            TranslationItem(
-                location_path="CommonEvents.json/1/0",
-                item_type="long_text",
-                role="Guide",
-                original_lines=["<Mini Label: Alraune>"],
-                source_line_paths=["CommonEvents.json/1/1"],
-                translation_lines=["<Mini Label: 阿尔劳娜>"],
-            )
-        ],
+        items=items,
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+    counts = collect_native_quality_counts(
+        items=items,
         text_rules=text_rules,
         source_residual_rules=[],
     )
 
     assert len(details.placeholder_risk_items) == 1
+    assert counts.placeholder_risk_count == 1
+    assert counts.source_residual_count == len(details.source_residual_items)
+    assert counts.text_structure_count == len(details.text_structure_items)
+    assert counts.overwide_line_count == len(details.overwide_line_items)
     assert "结构化占位符保护片段与已有控制符规则重叠" in json.dumps(
         details.placeholder_risk_items,
         ensure_ascii=False,
@@ -4932,3 +5640,67 @@ async def test_quality_report_flags_saved_short_text_structure_errors(
     assert "text_structure" in error_codes
     assert report.summary["text_structure_count"] == 1
     assert text_structure_detail["location_path"] == "Items.json/1/description"
+
+
+@pytest.mark.asyncio
+async def test_quality_report_flags_saved_long_text_artifacts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量报告会拦截已保存 long_text 中的异常空行和转义碎片。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/0",
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは", "怖がらなくていい"],
+                    source_line_paths=["CommonEvents.json/1/1", "CommonEvents.json/1/2"],
+                    translation_lines=[
+                        "「不用那么害怕也行。",
+                        "　看样子你是不习惯吧……？\\",
+                        "",
+                        "　来，把身体交给我吧。」",
+                    ],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.quality_report(game_title="テストゲーム")
+
+    error_codes = {error.code for error in report.errors}
+    text_structure_items = ensure_json_array(report.details["text_structure_items"], "text_structure_items")
+    text_structure_detail = ensure_json_object(text_structure_items[0], "text_structure_items[0]")
+    reason_text = str(text_structure_detail["reason"])
+    assert "text_structure" in error_codes
+    assert report.summary["text_structure_count"] == 1
+    assert text_structure_detail["location_path"] == "CommonEvents.json/1/0"
+    assert "原文没有空行" in reason_text
+    assert "行尾裸反斜杠" in reason_text
+
+
+def test_native_quality_accepts_long_text_empty_line_and_standard_controls() -> None:
+    """Rust 质检允许原文需要的空行和正常 RPG Maker 控制符。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="CommonEvents.json/1/0",
+                item_type="long_text",
+                role="アリス",
+                original_lines=[r"\N[1]\C[4]こんにちは\C[0]\!", "", r"\\"],
+                source_line_paths=["CommonEvents.json/1/1"],
+                translation_lines=[r"\N[1]\C[4]你好\C[0]\!", "", r"\\"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert details.text_structure_items == []
+    assert details.placeholder_risk_items == []

@@ -164,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(quality_report_parser)
     _ = quality_report_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = quality_report_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；大游戏只读报告默认不启用",
+    )
     _ = quality_report_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     text_scope_parser = subparsers.add_parser(
@@ -172,6 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(text_scope_parser)
     _ = text_scope_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = text_scope_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；大游戏只读清单默认不启用",
+    )
     _ = text_scope_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     audit_coverage_parser = subparsers.add_parser(
@@ -180,6 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(audit_coverage_parser)
     _ = audit_coverage_parser.add_argument("--output", help="写出 JSON 报告文件")
+    _ = audit_coverage_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；大游戏覆盖审计默认不启用",
+    )
     _ = audit_coverage_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     audit_active_runtime_parser = subparsers.add_parser(
@@ -263,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(export_pending_parser)
     _ = export_pending_parser.add_argument("--output", required=True, help="手动填写译文表输出文件")
     _ = export_pending_parser.add_argument("--limit", type=int, help="最多导出的待填写条目数；省略则导出全部")
+    _ = export_pending_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；默认只按当前文本范围导出",
+    )
     _ = export_pending_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_quality_fix_parser = subparsers.add_parser(
@@ -271,6 +291,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(export_quality_fix_parser)
     _ = export_quality_fix_parser.add_argument("--output", required=True, help="质量问题修复 JSON 输出文件")
+    _ = export_quality_fix_parser.add_argument(
+        "--include-write-probe",
+        action="store_true",
+        help="额外执行写入可行性探针；默认只按质量问题导出修复表",
+    )
     _ = export_quality_fix_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_manual_parser = subparsers.add_parser(
@@ -360,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="明确允许本次写回用配置字体覆盖游戏字体引用",
     )
-    add_setting_override_arguments(write_back_parser)
+    add_setting_override_arguments(write_back_parser, include_translation=False)
 
     rebuild_active_runtime_parser = subparsers.add_parser(
         "rebuild-active-runtime",
@@ -373,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="明确允许本次重建用配置字体覆盖游戏字体引用",
     )
-    add_setting_override_arguments(rebuild_active_runtime_parser)
+    add_setting_override_arguments(rebuild_active_runtime_parser, include_translation=False)
 
     restore_font_parser = subparsers.add_parser(
         "restore-font",
@@ -381,7 +406,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(restore_font_parser)
     _ = restore_font_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
-    add_setting_override_arguments(restore_font_parser)
+    add_setting_override_arguments(
+        restore_font_parser,
+        include_translation=False,
+        include_text_rules=False,
+    )
 
     export_terminology_parser = subparsers.add_parser(
         "export-terminology",
@@ -413,7 +442,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="明确允许本次写回用配置字体覆盖游戏字体引用",
     )
-    add_setting_override_arguments(write_terminology_parser)
+    _ = write_terminology_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮术语写入摘要 JSON")
+    add_setting_override_arguments(write_terminology_parser, include_translation=False)
 
     run_all_parser = subparsers.add_parser("run-all", help="按固定顺序执行正文翻译和回写")
     add_optional_target_arguments(run_all_parser)
@@ -423,6 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_translation_limit_arguments(run_all_parser)
     _ = run_all_parser.add_argument("--skip-write-back", action="store_true", help="跳过最终回写阶段")
+    _ = run_all_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮流水线摘要 JSON")
     _ = run_all_parser.add_argument(
         "--confirm-font-overwrite",
         action="store_true",
@@ -537,6 +568,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("translation-status", help="查看最新正文翻译运行状态")
     add_optional_target_arguments(status_parser)
+    _ = status_parser.add_argument(
+        "--refresh-scope",
+        action="store_true",
+        help="重新扫描当前文本范围计算实时待翻数量；大游戏默认使用数据库快速路径",
+    )
     _ = status_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     setattr(parser, "_att_mz_command_names", frozenset(subparsers.choices))
     return parser
@@ -562,36 +598,41 @@ def add_setting_override_arguments(
     parser: argparse.ArgumentParser,
     *,
     include_source_lines_output: bool = False,
+    include_translation: bool = True,
+    include_text_rules: bool = True,
 ) -> None:
-    """为支持配置覆盖的命令增加 `setting.toml` 等价参数。"""
+    """为命令增加可实际生效的 `setting.toml` 覆盖参数。"""
     group = parser.add_argument_group("配置覆盖")
-    _ = group.add_argument("--llm-model", help="正文模型名称")
-    _ = group.add_argument("--llm-timeout", type=int, help="正文模型请求超时秒数")
-    _ = group.add_argument("--translation-token-size", type=int, help="每批目标 token 上限")
-    _ = group.add_argument("--translation-factor", type=float, help="字符到 token 的换算系数")
-    _ = group.add_argument("--translation-max-command-items", type=int, help="同角色连续补充条目上限")
-    _ = group.add_argument("--translation-worker-count", type=int, help="正文翻译并发 worker 数")
-    _ = group.add_argument("--translation-rpm", help="正文翻译 RPM；传 none 表示不限速")
-    _ = group.add_argument("--translation-retry-count", type=int, help="可恢复错误重试次数")
-    _ = group.add_argument("--translation-retry-delay", type=int, help="可恢复错误重试间隔秒数")
-    if include_source_lines_output:
-        source_lines_group = group.add_mutually_exclusive_group()
-        _ = source_lines_group.add_argument(
-            "--include-source-lines",
-            action="store_true",
-            default=None,
-            dest="include_source_lines",
-            help="要求模型输出原文对照字段",
-        )
-        _ = source_lines_group.add_argument(
-            "--no-source-lines",
-            action="store_false",
-            default=None,
-            dest="include_source_lines",
-            help="要求模型不要输出原文对照字段",
-        )
-    _ = group.add_argument("--system-prompt", help="正文翻译系统提示词文本")
+    if include_translation:
+        _ = group.add_argument("--llm-model", help="正文模型名称")
+        _ = group.add_argument("--llm-timeout", type=int, help="正文模型请求超时秒数")
+        _ = group.add_argument("--translation-token-size", type=int, help="每批目标 token 上限")
+        _ = group.add_argument("--translation-factor", type=float, help="字符到 token 的换算系数")
+        _ = group.add_argument("--translation-max-command-items", type=int, help="同角色连续补充条目上限")
+        _ = group.add_argument("--translation-worker-count", type=int, help="正文翻译并发 worker 数")
+        _ = group.add_argument("--translation-rpm", help="正文翻译 RPM；传 none 表示不限速")
+        _ = group.add_argument("--translation-retry-count", type=int, help="可恢复错误重试次数")
+        _ = group.add_argument("--translation-retry-delay", type=int, help="可恢复错误重试间隔秒数")
+        if include_source_lines_output:
+            source_lines_group = group.add_mutually_exclusive_group()
+            _ = source_lines_group.add_argument(
+                "--include-source-lines",
+                action="store_true",
+                default=None,
+                dest="include_source_lines",
+                help="要求模型输出原文对照字段",
+            )
+            _ = source_lines_group.add_argument(
+                "--no-source-lines",
+                action="store_false",
+                default=None,
+                dest="include_source_lines",
+                help="要求模型不要输出原文对照字段",
+            )
+        _ = group.add_argument("--system-prompt", help="正文翻译系统提示词文本")
     _ = group.add_argument("--replacement-font-path", help="用户确认覆盖字体后使用的候选字体路径")
+    if not include_text_rules:
+        return
     _ = group.add_argument(
         "--event-command-default-code",
         action="extend",

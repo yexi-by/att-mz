@@ -63,6 +63,8 @@ def test_main_skills_are_progressive_workflow_entrypoints() -> None:
             "对用户报告时，把内部状态、字段名和命令结果转成业务影响与下一步动作",
             "派发子代理时不能只概括任务",
             "必须复制对应任务契约",
+            "普通流程不自动读取插件源码做语义分析",
+            "`mapped_excluded` 表示已审查但不翻译",
         ]:
             assert phrase in text
         for reference_name in REQUIRED_REFERENCE_NAMES:
@@ -101,6 +103,47 @@ def test_write_back_gate_does_not_require_empty_source_residual_rules() -> None:
         assert "源文保留例外已经导入" not in text
         assert "质量检查没有提示源文残留时，不把空源文保留例外当写回前置" in text
         assert "三类外部规则、普通占位符规则和结构化占位符规则已经导入" in text
+
+
+def test_skill_defaults_to_setting_toml_before_overrides() -> None:
+    """Skill 要求先使用本地配置，配置不适合时再最小覆盖。"""
+    expected_phrases = [
+        "业务参数和可调开关默认使用 `setting.toml` 与本地配置",
+        "命令必需定位参数",
+        "默认配置已被 CLI 输出证明不适合当前阶段",
+        "环境变量或 CLI 参数做最小覆盖",
+        "长任务先沿用 `setting.toml` 与当前环境中的线程配置",
+        "默认配置导致吞吐明显不足",
+        "`ATT_MZ_RUST_THREADS`",
+        "不要把 `4` 当上限",
+        "`4` 只用于可重复性能验收基线",
+    ]
+    for path in (DEV_SKILL, RELEASE_SKILL):
+        text = read(path)
+        for phrase in expected_phrases:
+            assert phrase in text
+
+    contract_phrases = [
+        "## 配置与参数选择",
+        "第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置",
+        "命令行只传当前命令必需的定位参数",
+        "立即改用最小范围覆盖",
+        "一次性差异用 CLI 参数",
+        "运行时性能差异用环境变量",
+        "不要反复用同一套失败配置重试",
+        "使用覆盖参数后，后续关联命令必须保持同一语义",
+        "Rust 热路径线程数由环境变量 `ATT_MZ_RUST_THREADS` 控制",
+        "没有 `4` 的上限",
+        "`ATT_MZ_RUST_THREADS=0` 或不设置时使用 Rayon 默认线程池",
+        "默认先沿用 `setting.toml` 与当前环境",
+        "不为了性能基线一开始固定传线程数",
+        "(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors",
+        "不要把性能门禁里的 `4` 当运行上限",
+    ]
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "cli-command-contract.md")
+        for phrase in contract_phrases:
+            assert phrase in text
 
 
 def test_main_skill_does_not_embed_status_wording_map() -> None:
@@ -196,7 +239,7 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`export-terminology --game <游戏标题> --output-dir <术语工作目录>`",
         "`scan-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
         "`validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --output <完整报告> --json`",
-        "`run-all --game <游戏标题> --skip-write-back`",
+        "`run-all --game <游戏标题> --skip-write-back --json`",
         "`translation-status --game <游戏标题> --json`",
         "`audit-coverage --game <游戏标题> --json`",
         "`audit-active-runtime --game <游戏标题> --json`",
@@ -204,11 +247,14 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "`quality-report --game <游戏标题> --json`",
         "`verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json`",
         "`write-back --game <游戏标题> --json`",
-        "`write-terminology --game <游戏标题>`",
+        "`write-terminology --game <游戏标题> --json`",
         "空规则需 `--confirm-empty`",
         "空规则导入也传同一组 `--code CODE`",
-        "在写回前流程检查通过后写入稳定名词",
+        "术语专用写入，允许正文仍有还没成功保存译文的文本",
         "日文和英文游戏都使用通用源文残留命令",
+        "普通流程不要把源语言字符串告警当漏翻清单",
+        "`mapped_excluded` 不进入重置清单",
+        "未启动插件源码支线时不要求处理插件源码内部源语言字符串",
     ]:
         assert phrase in text
 
@@ -402,11 +448,12 @@ def test_plugin_source_reference_allows_read_only_source_cross_check() -> None:
             "不扫描 `js` 根目录，不递归子目录，不读取 `data` 目录",
             "不读取 A.T.T MZ 项目源码或数据库",
             "不修改 JS 源码，不写回游戏文件，不直接改数据库",
-            "源码注释、插件头、相邻 key、对象/数组结构和调用函数只能用于判断语义，不能写进规则文件",
-            "默认使用 `--view translation-source`",
-            "审计 `--view active-runtime` 当前运行文件",
-        ]:
-            assert phrase in text
+                "源码注释、插件头、相邻 key、对象/数组结构和调用函数只能用于判断语义，不能写进规则文件",
+                "默认使用 `--view translation-source`",
+                "`audit-active-runtime` 审计当前运行文件",
+                "默认审计不是补译清单",
+            ]:
+                assert phrase in text
 
 
 def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> None:
@@ -541,6 +588,8 @@ def test_public_readme_describes_plugin_source_side_branch_commands() -> None:
         "导出插件源码 AST 地图",
         "校验插件源码规则",
         "导入插件源码规则",
+        "默认不把插件源码内部源语言字符串当作漏翻清单",
+        "`mapped_excluded` 表示已审查但不翻译",
         "export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json",
         "validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json",
         "import-plugin-source-rules --game <游戏标题> --input <规则文件> --json",
@@ -556,6 +605,7 @@ def test_plugin_source_skill_allows_explicit_low_risk_request() -> None:
         task_text = read(references / "plugin-source-text-agent-task.md")
         workflow_text = read(references / "external-rules-workflow.md")
         assert "低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务" in task_text
+        assert "默认审计不是补译清单" in task_text
         assert "插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动" in workflow_text
 
 
@@ -565,6 +615,16 @@ def test_database_wiki_documents_configured_event_command_defaults() -> None:
 
     assert "`[event_command_text.default_command_codes_by_engine]`" in text
     assert "会按当前游戏引擎选择默认事件指令编码" not in text
+
+
+def test_database_wiki_documents_plugin_source_runtime_mapping_kind() -> None:
+    """数据库说明必须区分插件源码已翻译映射和已排除映射。"""
+    text = read(ROOT / "docs" / "database-wiki.md")
+
+    assert "`mapping_kind`" in text
+    assert "`translated` 表示应写成中文译文" in text
+    assert "`excluded` 表示已审查但不翻译" in text
+    assert "当前运行审计默认报告读取失败和 JS 语法错误" in text
 
 
 def test_subtask_package_mode_document_defines_portable_contract() -> None:
@@ -617,6 +677,85 @@ def test_release_packaging_script_copies_all_skill_references() -> None:
         'errors="replace"',
     ]:
         assert phrase in text
+
+
+def test_release_packaging_script_runs_packaged_smoke_tests() -> None:
+    """发布脚本在压缩前执行发行包入口冒烟测试。"""
+    text = read(ROOT / "scripts" / "build_release.py")
+
+    for phrase in [
+        "def run_smoke_tests(release_dir: Path) -> None:",
+        '[str(exe_path), "--help"]',
+        '[str(exe_path), "list", "--json"]',
+        "run_smoke_tests(release_dir)",
+        "create_release_zip(release_dir, zip_path)",
+    ]:
+        assert phrase in text
+
+    assert text.index("run_smoke_tests(release_dir)") < text.index("create_release_zip(release_dir, zip_path)")
+
+
+def test_release_docs_and_workflow_include_rust_gates() -> None:
+    """发布文档和 release workflow 同步包含 Rust 交付红线。"""
+    workflow_text = read(ROOT / ".github" / "workflows" / "release.yml")
+    release_doc_text = read(ROOT / "docs" / "development" / "release-and-tests.md")
+    required_commands = [
+        "cargo fmt --manifest-path rust/Cargo.toml -- --check",
+        "cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings",
+        "cargo test --manifest-path rust/Cargo.toml",
+    ]
+
+    for command in required_commands:
+        assert command in workflow_text
+        assert command in release_doc_text
+
+    ordered_steps = [
+        "- name: Type check",
+        "- name: Test",
+        "- name: Rust fmt",
+        "- name: Rust clippy",
+        "- name: Rust test",
+        "- name: Build release zip",
+        "- name: Publish GitHub release",
+    ]
+    ordered_positions = [workflow_text.index(step) for step in ordered_steps]
+    assert ordered_positions == sorted(ordered_positions)
+
+    assert "dry_run" not in workflow_text
+    assert "不创建 GitHub Release" not in release_doc_text
+
+
+def test_release_docs_define_large_sample_performance_gate() -> None:
+    """发布文档必须说明本地真实大样本性能门禁和阈值。"""
+    release_doc_text = read(ROOT / "docs" / "development" / "release-and-tests.md")
+
+    for phrase in [
+        "GitHub 托管 runner",
+        "持有样本的环境",
+        "scripts/benchmark_rebuild_active_runtime.py",
+        "--reset-active-data-from-origin",
+        "--rust-threads 4",
+        "--max-slowest-ms 120000",
+        "--max-rust-plan-ms 45000",
+        "--max-file-replacement-ms 1500",
+        "--max-post-write-audit-ms 20000",
+        "`--rust-threads 4` 只是发布门禁的可重复基线，不是运行上限",
+        "优先使用运行主机可用逻辑处理器数量",
+        "写后审计耗时",
+    ]:
+        assert phrase in release_doc_text
+
+    forbidden_phrases = [
+        "D:\\h-game",
+        "C:/Users/",
+        "C:\\Users\\",
+        "サキュバスアカデミア",
+        "performance-gate.yml",
+        "collect_workflow_evidence.py",
+        "dry_run",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in release_doc_text
 
 
 def test_text_translation_prompt_keeps_protocol_minimal() -> None:

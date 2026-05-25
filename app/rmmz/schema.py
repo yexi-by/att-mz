@@ -28,6 +28,7 @@ type ErrorType = Literal["模型返回不可解析", "AI漏翻", "文本结构�
 type TranslationRunStatus = Literal["running", "completed", "blocked", "cancelled", "failed", "stopped"]
 type SourceResidualRuleType = Literal["position", "structural"]
 type MvVirtualNameboxSpeakerPolicy = Literal["translate", "preserve", "actor_name"]
+type PluginSourceRuntimeMappingKind = Literal["translated", "excluded"]
 type LlmFailureCategory = Literal[
     "rate_limit",
     "timeout",
@@ -361,6 +362,7 @@ class PluginSourceTextRuleRecord(BaseModel):
 class PluginSourceRuntimeWriteMapRecord(BaseModel):
     """插件源码写回后从当前运行字符串反推翻译源条目的可选诊断映射。"""
 
+    mapping_kind: PluginSourceRuntimeMappingKind = "translated"
     location_path: str
     source_file_name: str
     source_selector: str
@@ -372,6 +374,28 @@ class PluginSourceRuntimeWriteMapRecord(BaseModel):
     runtime_file_hash: str
     runtime_text_hash: str
     runtime_line: int = Field(ge=1)
+    created_at: str
+
+
+class PluginSourceRuntimeStringLiteralCacheRecord(BaseModel):
+    """当前运行插件源码 AST 字符串字面量缓存。"""
+
+    selector: str
+    text: str
+    raw_text: str
+    line: int = Field(ge=1)
+    start_index: int = Field(ge=0)
+    end_index: int = Field(ge=0)
+    context: str
+
+
+class PluginSourceRuntimeScanCacheRecord(BaseModel):
+    """当前运行插件源码按文件 hash 保存的 AST 扫描缓存。"""
+
+    file_name: str
+    file_hash: str
+    syntax_error: str = ""
+    literals: list[PluginSourceRuntimeStringLiteralCacheRecord] = Field(default_factory=list)
     created_at: str
 
 
@@ -515,6 +539,8 @@ __all__: list[str] = [
     "MvVirtualNameboxSpeakerPolicy",
     "NoteTagTextRuleRecord",
     "PluginTextRuleRecord",
+    "PluginSourceRuntimeScanCacheRecord",
+    "PluginSourceRuntimeStringLiteralCacheRecord",
     "PluginSourceRuntimeWriteMapRecord",
     "PluginSourceTextRuleRecord",
     "PlaceholderRuleRecord",

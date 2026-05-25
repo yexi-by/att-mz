@@ -7,6 +7,7 @@ SCHEMA_VERSION_TABLE_NAME = "schema_version"
 PLUGIN_TEXT_RULES_TABLE_NAME = "plugin_text_rules"
 PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME = "plugin_source_text_rules"
 PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME = "plugin_source_runtime_write_map"
+PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME = "plugin_source_runtime_scan_cache"
 SOURCE_SNAPSHOT_FILES_TABLE_NAME = "source_snapshot_files"
 NOTE_TAG_TEXT_RULES_TABLE_NAME = "note_tag_text_rules"
 EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE_NAME = "event_command_text_rule_groups"
@@ -28,7 +29,7 @@ TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 11
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -38,6 +39,7 @@ EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     PLUGIN_TEXT_RULES_TABLE_NAME,
     PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME,
     PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME,
+    PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME,
     SOURCE_SNAPSHOT_FILES_TABLE_NAME,
     NOTE_TAG_TEXT_RULES_TABLE_NAME,
     EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE_NAME,
@@ -272,6 +274,7 @@ CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE = f"""
 --sql
     CREATE TABLE IF NOT EXISTS [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}] (
         location_path          TEXT PRIMARY KEY,
+        mapping_kind           TEXT NOT NULL CHECK (mapping_kind IN ('translated', 'excluded')),
         source_file_name       TEXT NOT NULL,
         source_selector        TEXT NOT NULL,
         source_file_hash       TEXT NOT NULL,
@@ -284,6 +287,18 @@ CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE = f"""
         runtime_line           INTEGER NOT NULL,
         created_at             TEXT NOT NULL,
         UNIQUE (runtime_file_name, runtime_selector)
+    )
+;
+"""
+
+CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}] (
+        file_name    TEXT PRIMARY KEY,
+        file_hash    TEXT NOT NULL,
+        syntax_error TEXT NOT NULL,
+        literals_json TEXT NOT NULL,
+        created_at   TEXT NOT NULL
     )
 ;
 """
@@ -415,6 +430,7 @@ INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP = f"""
     INSERT OR REPLACE INTO [{PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME}]
     (
         location_path,
+        mapping_kind,
         source_file_name,
         source_selector,
         source_file_hash,
@@ -427,7 +443,7 @@ INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP = f"""
         runtime_line,
         created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -695,6 +711,7 @@ SELECT_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS = f"""
 --sql
     SELECT
         location_path,
+        mapping_kind,
         source_file_name,
         source_selector,
         source_file_hash,
@@ -904,6 +921,28 @@ DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS = f"""
 ;
 """
 
+INSERT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE = f"""
+--sql
+    INSERT OR REPLACE INTO [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}]
+    (file_name, file_hash, syntax_error, literals_json, created_at)
+    VALUES (?, ?, ?, ?, ?)
+;
+"""
+
+SELECT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE = f"""
+--sql
+    SELECT file_name, file_hash, syntax_error, literals_json, created_at
+    FROM [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}]
+    ORDER BY file_name
+;
+"""
+
+DELETE_ALL_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE = f"""
+--sql
+    DELETE FROM [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}]
+;
+"""
+
 DELETE_ALL_NOTE_TAG_TEXT_RULES = f"""
 --sql
     DELETE FROM [{NOTE_TAG_TEXT_RULES_TABLE_NAME}]
@@ -1020,6 +1059,7 @@ __all__: list[str] = [
     "CREATE_PLUGIN_TEXT_RULES_TABLE",
     "CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE",
     "CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE",
+    "CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE",
     "CREATE_SOURCE_SNAPSHOT_FILES_TABLE",
     "CREATE_RULE_REVIEW_STATES_TABLE",
     "CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE",
@@ -1043,6 +1083,7 @@ __all__: list[str] = [
     "DELETE_ALL_PLUGIN_TEXT_RULES",
     "DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES",
     "DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS",
+    "DELETE_ALL_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE",
     "DELETE_ALL_SOURCE_SNAPSHOT_FILES",
     "DELETE_RULE_REVIEW_STATE",
     "DELETE_ALL_FIELD_TRANSLATION_TERMS",
@@ -1071,6 +1112,7 @@ __all__: list[str] = [
     "INSERT_PLUGIN_TEXT_RULE",
     "INSERT_PLUGIN_SOURCE_TEXT_RULE",
     "INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP",
+    "INSERT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE",
     "INSERT_SOURCE_SNAPSHOT_FILE",
     "INSERT_TRANSLATION_QUALITY_ERROR",
     "INSERT_FIELD_TRANSLATION_TERM",
@@ -1087,6 +1129,7 @@ __all__: list[str] = [
     "PLUGIN_TEXT_RULES_TABLE_NAME",
     "PLUGIN_SOURCE_TEXT_RULES_TABLE_NAME",
     "PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE_NAME",
+    "PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME",
     "SOURCE_SNAPSHOT_FILES_TABLE_NAME",
     "RULE_REVIEW_STATES_TABLE_NAME",
     "SOURCE_RESIDUAL_RULES_TABLE_NAME",
@@ -1109,6 +1152,7 @@ __all__: list[str] = [
     "SELECT_PLUGIN_TEXT_RULES",
     "SELECT_PLUGIN_SOURCE_TEXT_RULES",
     "SELECT_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS",
+    "SELECT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE",
     "SELECT_SOURCE_SNAPSHOT_FILES",
     "SELECT_RULE_REVIEW_STATE",
     "SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN",

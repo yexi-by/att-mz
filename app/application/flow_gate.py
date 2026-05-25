@@ -15,6 +15,7 @@ from app.agent_toolkit.placeholder_scan import (
     placeholder_candidates_to_details,
     scan_placeholder_candidates,
 )
+from app.application.errors import WorkflowGateError
 from app.config.schemas import Setting
 from app.event_command_text import resolve_event_command_codes
 from app.note_tag_text.exporter import collect_note_tag_candidates
@@ -154,7 +155,7 @@ async def assert_workflow_gate_passed(
         plugin_source_scan=plugin_source_scan,
     )
     if errors:
-        raise RuntimeError(format_workflow_gate_error(errors))
+        raise WorkflowGateError(format_workflow_gate_error(errors))
 
 
 def ensure_empty_rule_import_allowed(
@@ -419,9 +420,11 @@ async def _plugin_source_rule_gate_errors(
     scan: PluginSourceScan | None = None,
 ) -> list[WorkflowGateIssue]:
     """高风险插件源码文本必须先确认并导入源码规则。"""
+    records = await session.read_plugin_source_text_rules()
+    if scan is None and not records:
+        return []
     if scan is None:
         scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    records = await session.read_plugin_source_text_rules()
     fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
         game_data=game_data,
         rule_records=records,

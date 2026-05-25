@@ -28,7 +28,10 @@ from .rules import (
 from .runtime_audit import (
     ActiveRuntimePluginSourceAudit,
     ActiveRuntimePluginSourceIssue,
+    ActiveRuntimePluginSourceScanCacheStats,
     audit_active_runtime_plugin_source,
+    audit_active_runtime_plugin_source_with_scan_cache,
+    scan_plugin_source_files_text_strict_with_cache,
 )
 from .runtime_mapping import (
     plugin_source_runtime_hash_lines,
@@ -36,6 +39,7 @@ from .runtime_mapping import (
 )
 from .scanner import (
     PluginSourceCandidateIndex,
+    PluginSourceBatchTextScan,
     PluginSourceFileTextScan,
     PluginSourceStringLiteral,
     build_plugin_source_candidate_index,
@@ -45,11 +49,13 @@ from .scanner import (
     iter_plugin_source_string_literals,
     scan_plugin_source_file_text,
     scan_plugin_source_file_text_strict,
+    scan_plugin_source_files_text_strict,
 )
 
 __all__ = [
     "PluginSourceCandidate",
     "PluginSourceCandidateIndex",
+    "PluginSourceBatchTextScan",
     "PluginSourceFileScan",
     "PluginSourceFileTextScan",
     "PluginSourceRisk",
@@ -62,7 +68,10 @@ __all__ = [
     "StalePluginSourceTextRule",
     "ActiveRuntimePluginSourceAudit",
     "ActiveRuntimePluginSourceIssue",
+    "ActiveRuntimePluginSourceScanCacheStats",
     "audit_active_runtime_plugin_source",
+    "audit_active_runtime_plugin_source_with_scan_cache",
+    "scan_plugin_source_files_text_strict_with_cache",
     "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
     "build_plugin_source_rule_records_from_import",
@@ -80,4 +89,5 @@ __all__ = [
     "plugin_source_rule_records_to_import_json",
     "scan_plugin_source_file_text",
     "scan_plugin_source_file_text_strict",
+    "scan_plugin_source_files_text_strict",
 ]

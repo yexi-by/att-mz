@@ -52,13 +52,19 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 )
 
 
-async def load_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
+async def load_game_data(
+    game_path: str | Path,
+    *,
+    include_plugin_source_files: bool = True,
+    include_writable_copies: bool = True,
+) -> GameData:
     """加载游戏数据；业务服务层必须使用显式视图入口。"""
     return await _load_game_data(
         game_path,
         use_origin_backups=True,
         require_origin_backups=False,
         include_plugin_source_files=include_plugin_source_files,
+        include_writable_copies=include_writable_copies,
     )
 
 
@@ -67,6 +73,7 @@ async def load_game_data_for_view(
     *,
     source_view: GameFileView,
     include_plugin_source_files: bool = True,
+    include_writable_copies: bool = True,
 ) -> GameData:
     """按指定文件视图加载游戏数据。"""
     return await _load_game_data(
@@ -74,24 +81,37 @@ async def load_game_data_for_view(
         use_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
         require_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=include_plugin_source_files,
+        include_writable_copies=include_writable_copies,
     )
 
 
-async def load_active_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
+async def load_active_game_data(
+    game_path: str | Path,
+    *,
+    include_plugin_source_files: bool = True,
+    include_writable_copies: bool = True,
+) -> GameData:
     """从 RPG Maker 游戏根目录加载当前激活文件，不读取完整原始备份。"""
     return await load_game_data_for_view(
         game_path,
         source_view=GameFileView.ACTIVE_RUNTIME,
         include_plugin_source_files=include_plugin_source_files,
+        include_writable_copies=include_writable_copies,
     )
 
 
-async def load_active_runtime_game_data(game_path: str | Path, *, include_plugin_source_files: bool = True) -> GameData:
+async def load_active_runtime_game_data(
+    game_path: str | Path,
+    *,
+    include_plugin_source_files: bool = True,
+    include_writable_copies: bool = False,
+) -> GameData:
     """从 RPG Maker 游戏根目录加载当前运行视图文件。"""
     return await load_game_data_for_view(
         game_path,
         source_view=GameFileView.ACTIVE_RUNTIME,
         include_plugin_source_files=include_plugin_source_files,
+        include_writable_copies=include_writable_copies,
     )
 
 
@@ -99,6 +119,7 @@ async def load_translation_source_game_data(
     game_path: str | Path,
     *,
     include_plugin_source_files: bool = True,
+    include_writable_copies: bool = True,
 ) -> GameData:
     """从 RPG Maker 游戏根目录加载翻译源视图文件。"""
     return await _load_game_data(
@@ -106,6 +127,7 @@ async def load_translation_source_game_data(
         use_origin_backups=True,
         require_origin_backups=True,
         include_plugin_source_files=include_plugin_source_files,
+        include_writable_copies=include_writable_copies,
     )
 
 
@@ -115,6 +137,7 @@ async def _load_game_data(
     use_origin_backups: bool,
     require_origin_backups: bool,
     include_plugin_source_files: bool,
+    include_writable_copies: bool,
 ) -> GameData:
     """按指定来源策略加载标准数据文件并构造 `GameData`。"""
     layout = resolve_game_layout(game_path)
@@ -197,17 +220,17 @@ async def _load_game_data(
     return GameData(
         layout=layout,
         data=data,
-        writable_data=copy.deepcopy(data),
+        writable_data=copy.deepcopy(data) if include_writable_copies else {},
         map_data=map_data,
         system=system,
         common_events=common_events,
         troops=troops,
         base_data=base_data,
         plugins_js=plugins_js,
-        writable_plugins_js=copy.deepcopy(plugins_js),
+        writable_plugins_js=copy.deepcopy(plugins_js) if include_writable_copies else [],
         plugin_source_files=plugin_source_files,
         plugin_source_read_errors=plugin_source_read_errors,
-        writable_plugin_source_files=dict(plugin_source_files),
+        writable_plugin_source_files=dict(plugin_source_files) if include_writable_copies else {},
     )
 
 
@@ -563,7 +586,7 @@ def _decode_json_value(*, content: str, source: Path) -> JsonValue:
     try:
         decoded = cast(object, json.loads(content))
         # 标准库 JSON 解码器只会产生项目 JsonValue 覆盖的基本类型、列表和字符串键对象。
-        # 这里不再二次递归复制，避免大体量游戏数据加载阶段重复消耗 CPU。
+        # JSON 解码结果在本函数内直接完成类型收窄，避免大体量游戏数据加载阶段重复消耗 CPU。
         return cast(JsonValue, decoded)
     except TypeError as error:
         raise TypeError(f"JSON 内容不是项目允许的值类型: {source}") from error

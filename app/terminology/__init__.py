@@ -17,7 +17,6 @@ from .schemas import (
     collect_terminology_bundle_errors,
     validate_terminology_bundle,
 )
-from .write_back import apply_terminology_translations
 
 __all__: list[str] = [
     "DatabaseTermContext",
@@ -29,7 +28,6 @@ __all__: list[str] = [
     "TerminologyPromptEntry",
     "TerminologyPromptIndex",
     "TerminologyRegistry",
-    "apply_terminology_translations",
     "collect_terminology_bundle_errors",
     "export_terminology_artifacts",
     "load_terminology_glossary",

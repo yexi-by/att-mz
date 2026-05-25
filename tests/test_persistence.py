@@ -16,6 +16,8 @@ from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     LlmFailureRecord,
     PlaceholderRuleRecord,
+    PluginSourceRuntimeScanCacheRecord,
+    PluginSourceRuntimeStringLiteralCacheRecord,
     PluginSourceRuntimeWriteMapRecord,
     PluginTextRuleRecord,
     SourceResidualRuleRecord,
@@ -197,6 +199,24 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         await session.replace_plugin_source_runtime_write_maps([runtime_write_map])
         assert await session.read_plugin_source_runtime_write_maps() == [runtime_write_map]
+        runtime_scan_cache = PluginSourceRuntimeScanCacheRecord(
+            file_name="Source.js",
+            file_hash="runtime-file-hash",
+            literals=[
+                PluginSourceRuntimeStringLiteralCacheRecord(
+                    selector="ast:string:1:10:bbbb",
+                    text="当前运行文本",
+                    raw_text="当前运行文本",
+                    line=1,
+                    start_index=1,
+                    end_index=10,
+                    context="property:title",
+                )
+            ],
+            created_at="2026-05-24T00:00:01",
+        )
+        await session.replace_plugin_source_runtime_scan_cache([runtime_scan_cache])
+        assert await session.read_plugin_source_runtime_scan_cache() == [runtime_scan_cache]
 
         event_rule = EventCommandTextRuleRecord(
             command_code=357,

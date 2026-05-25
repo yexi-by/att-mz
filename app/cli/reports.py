@@ -11,7 +11,12 @@ from rich.table import Table
 
 from app.agent_toolkit import AgentIssue, AgentReport
 from app.agent_toolkit.reports import issue
-from app.application.handler import FontRestoreSummary, TextTranslationSummary, WriteBackSummary
+from app.application.handler import (
+    FontRestoreSummary,
+    TerminologyWriteSummary,
+    TextTranslationSummary,
+    WriteBackSummary,
+)
 from app.cli.arguments import read_bool_arg, read_optional_path_arg
 from app.observability import console, logger
 from app.rmmz.json_types import JsonArray, JsonObject, JsonValue
@@ -52,17 +57,65 @@ def build_write_back_summary_report(summary: WriteBackSummary) -> AgentReport:
     return AgentReport.from_parts(
         errors=[],
         warnings=[],
+        summary=_build_write_back_summary_object(summary),
+        details={},
+    )
+
+
+def build_terminology_write_summary_report(summary: TerminologyWriteSummary) -> AgentReport:
+    """把术语专用写入摘要转换为稳定 JSON 报告。"""
+    return AgentReport.from_parts(
+        errors=[],
+        warnings=[],
         summary={
-            "data_item_count": summary.data_item_count,
-            "plugin_item_count": summary.plugin_item_count,
-            "terminology_written_count": summary.terminology_written_count,
-            "target_font_name": summary.target_font_name or "",
-            "source_font_count": summary.source_font_count,
-            "replaced_font_reference_count": summary.replaced_font_reference_count,
-            "font_copied": summary.font_copied,
+            "written_count": summary.written_count,
+            "preserved_translation_count": summary.preserved_translation_count,
         },
         details={},
     )
+
+
+def build_run_all_summary_report(
+    *,
+    text_summary: TextTranslationSummary,
+    write_back_summary: WriteBackSummary | None,
+) -> AgentReport:
+    """把 `run-all` 翻译和写文件结果转换为稳定 JSON 报告。"""
+    write_back_performed = write_back_summary is not None
+    summary: JsonObject = {
+        "run_id": text_summary.run_id,
+        "total_extracted_items": text_summary.total_extracted_items,
+        "pending_count": text_summary.pending_count,
+        "deduplicated_count": text_summary.deduplicated_count,
+        "batch_count": text_summary.batch_count,
+        "success_count": text_summary.success_count,
+        "quality_error_count": text_summary.error_count,
+        "llm_failure_count": text_summary.llm_failure_count,
+        "write_back_performed": write_back_performed,
+        "write_back_skipped": not write_back_performed,
+        "write_back_planned_file_count": 0,
+        "write_back_skipped_file_count": 0,
+        "write_back_data_item_count": 0,
+        "write_back_plugin_item_count": 0,
+        "write_back_terminology_written_count": 0,
+    }
+    details: JsonObject = {
+        "translation": _build_translation_summary_object(text_summary),
+        "write_back": None,
+    }
+    if write_back_summary is not None:
+        write_summary = _build_write_back_summary_object(write_back_summary)
+        summary.update(
+            {
+                "write_back_planned_file_count": write_back_summary.planned_file_count,
+                "write_back_skipped_file_count": write_back_summary.skipped_file_count,
+                "write_back_data_item_count": write_back_summary.data_item_count,
+                "write_back_plugin_item_count": write_back_summary.plugin_item_count,
+                "write_back_terminology_written_count": write_back_summary.terminology_written_count,
+            }
+        )
+        details["write_back"] = write_summary
+    return AgentReport.from_parts(errors=[], warnings=[], summary=summary, details=details)
 
 
 def build_font_restore_summary_report(summary: FontRestoreSummary) -> AgentReport:
@@ -182,9 +235,47 @@ def render_agent_report(*, report: AgentReport, title: str) -> None:
             warning_table.add_row(item.code, item.message)
         console.print(warning_table)
 
+
+def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonObject:
+    """构建正文翻译摘要 JSON 对象。"""
+    return {
+        "run_id": summary.run_id,
+        "total_extracted_items": summary.total_extracted_items,
+        "pending_count": summary.pending_count,
+        "deduplicated_count": summary.deduplicated_count,
+        "batch_count": summary.batch_count,
+        "success_count": summary.success_count,
+        "quality_error_count": summary.error_count,
+        "llm_failure_count": summary.llm_failure_count,
+    }
+
+
+def _build_write_back_summary_object(summary: WriteBackSummary) -> JsonObject:
+    """构建游戏文件写入摘要 JSON 对象。"""
+    return {
+        "data_item_count": summary.data_item_count,
+        "plugin_item_count": summary.plugin_item_count,
+        "terminology_written_count": summary.terminology_written_count,
+        "target_font_name": summary.target_font_name or "",
+        "source_font_count": summary.source_font_count,
+        "replaced_font_reference_count": summary.replaced_font_reference_count,
+        "font_copied": summary.font_copied,
+        "planned_file_count": summary.planned_file_count,
+        "skipped_file_count": summary.skipped_file_count,
+        "plugin_source_ast_source_scan_file_count": summary.plugin_source_ast_source_scan_file_count,
+        "plugin_source_ast_runtime_scan_file_count": summary.plugin_source_ast_runtime_scan_file_count,
+        "plugin_source_runtime_map_count": summary.plugin_source_runtime_map_count,
+        "pre_write_check_ms": summary.pre_write_check_ms,
+        "rust_plan_ms": summary.rust_plan_ms,
+        "file_replacement_ms": summary.file_replacement_ms,
+        "post_write_audit_ms": summary.post_write_audit_ms,
+    }
+
 __all__ = [
     "build_font_restore_summary_report",
+    "build_run_all_summary_report",
     "build_sampled_stdout_report",
+    "build_terminology_write_summary_report",
     "build_translate_summary_report",
     "build_write_back_summary_report",
     "REPORT_STDOUT_SAMPLE_LIMIT",

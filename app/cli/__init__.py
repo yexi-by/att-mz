@@ -17,7 +17,7 @@ from app.cli.errors import CliArgumentError, CliBusinessError
 from app.cli.parser import build_parser, parser_command_names
 from app.cli.progress import build_progress_reporter
 from app.cli.reports import build_translate_summary_report, write_report_outputs
-from app.cli.runtime import collect_write_back_gate_errors, ensure_text_translation_not_blocked
+from app.cli.runtime import ensure_text_translation_not_blocked
 
 __all__: list[str] = [
     "CliArgumentError",
@@ -25,7 +25,6 @@ __all__: list[str] = [
     "build_parser",
     "build_progress_reporter",
     "build_translate_summary_report",
-    "collect_write_back_gate_errors",
     "dispatch_command",
     "ensure_text_translation_not_blocked",
     "format_argv",

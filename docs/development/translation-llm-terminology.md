@@ -2,7 +2,7 @@
 
 ## 职责
 
-`app.translation` 负责正文翻译批次、上下文构造、运行内去重复用、LLM 请求重试、文本结构校验和译文验证。`app.llm` 是 OpenAI 兼容聊天客户端门面，`app.llm_request_body_extra` 负责额外请求体参数解析与限制。`app.language` 与 `app.language_profiles` 定义源语言和语言档案。`app.terminology` 负责术语候选提取、临时文件读写、正文提示词术语索引和术语写入。
+`app.translation` 负责正文翻译批次、上下文构造、运行内去重复用、LLM 请求重试、文本结构校验和译文验证。`app.llm` 是 OpenAI 兼容聊天客户端门面，`app.llm_request_body_extra` 负责额外请求体参数解析与限制。`app.language` 与 `app.language_profiles` 定义源语言和语言档案。`app.terminology` 负责术语候选提取、临时文件读写和正文提示词术语索引，术语写入由 Rust 写回计划统一生成。
 
 ## 输入
 
@@ -29,6 +29,7 @@
 - `app.text_scope` 提供当前需要处理的文本范围。
 - `app.persistence` 保存译文、失败记录和术语记录。
 - `app.agent_toolkit` 导出人工修复表和质量报告。
+- `app.native_write_plan` 调用 Rust 写回计划生成术语和译文的文件替换内容。
 
 ## 主要入口
 
@@ -39,7 +40,7 @@
 - `app.llm.handler.LLMHandler`
 - `app.terminology.extraction`
 - `app.terminology.files`
-- `app.terminology.write_back`
+- `app.native_write_plan.build_native_write_back_plan`
 
 ## 测试覆盖
 

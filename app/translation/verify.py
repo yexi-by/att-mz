@@ -160,6 +160,7 @@ async def verify_translation_batch(
                 item=item,
                 translation_lines=translation_lines,
                 translation_lines_with_placeholders=item.translation_lines_with_placeholders,
+                text_rules=text_rules,
             )
         except ValueError as error:
             error_items.append(

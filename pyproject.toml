@@ -1,6 +1,6 @@
 [project]
 name = "att-mz"
-version = "0.1.6"
+version = "0.1.7"
 description = "Autonomous Translation Toolkit for RPG Maker MZ"
 requires-python = ">=3.14"
 dependencies = [
@@ -32,7 +32,7 @@ dev = [
 [tool.maturin]
 module-name = "app._native"
 python-source = "."
-manifest-path = "Cargo.toml"
+manifest-path = "rust/Cargo.toml"
 features = ["pyo3/extension-module"]
 
 [tool.basedpyright]

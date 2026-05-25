@@ -6,8 +6,9 @@
 
 from dataclasses import dataclass
 
+from app.application.errors import WriteBackGateError
 from app.config.schemas import Setting
-from app.native_quality import collect_native_quality_details, collect_native_write_protocol_details
+from app.native_quality import collect_native_quality_counts, count_native_write_protocol_issues
 from app.persistence import TargetGameSession
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import TextRules
@@ -31,6 +32,7 @@ async def assert_write_back_quality_passed(
     translated_items: list[TranslationItem],
     require_complete_translation: bool,
     scope: TextScopeResult | None = None,
+    include_native_checks: bool = True,
 ) -> None:
     """质量检查未通过时直接中断写入游戏文件。"""
     errors = await collect_write_back_quality_errors(
@@ -41,10 +43,11 @@ async def assert_write_back_quality_passed(
         translated_items=translated_items,
         require_complete_translation=require_complete_translation,
         scope=scope,
+        include_native_checks=include_native_checks,
     )
     if errors:
         messages = "；".join(error.message for error in errors)
-        raise RuntimeError(f"写进游戏文件前检查没通过：{messages}")
+        raise WriteBackGateError(f"写进游戏文件前检查没通过：{messages}")
 
 
 async def collect_write_back_quality_errors(
@@ -56,6 +59,7 @@ async def collect_write_back_quality_errors(
     translated_items: list[TranslationItem],
     require_complete_translation: bool,
     scope: TextScopeResult | None = None,
+    include_native_checks: bool = True,
 ) -> list[WriteBackQualityIssue]:
     """收集当前已保存译文是否允许写入游戏文件的质量错误。"""
     if scope is None:
@@ -64,6 +68,7 @@ async def collect_write_back_quality_errors(
             game_data=game_data,
             text_rules=text_rules,
             translated_items=translated_items,
+            include_write_probe=True,
         )
     errors: list[WriteBackQualityIssue] = []
     translated_paths = {item.location_path for item in translated_items}
@@ -116,52 +121,53 @@ async def collect_write_back_quality_errors(
                 )
             )
 
-    source_residual_rules = await session.read_source_residual_rules()
-    native_quality = collect_native_quality_details(
-        items=active_translated_items,
-        text_rules=text_rules,
-        source_residual_rules=source_residual_rules,
-    )
-    if native_quality.placeholder_risk_items:
-        errors.append(
-            WriteBackQualityIssue(
-                code="placeholder_risk",
-                message=f"发现 {len(native_quality.placeholder_risk_items)} 条译文里的游戏控制符可能被改坏",
-            )
+    if include_native_checks:
+        source_residual_rules = await session.read_source_residual_rules()
+        native_quality = collect_native_quality_counts(
+            items=active_translated_items,
+            text_rules=text_rules,
+            source_residual_rules=source_residual_rules,
         )
-    if native_quality.source_residual_items:
-        errors.append(
-            WriteBackQualityIssue(
-                code="source_residual",
-                message=f"发现 {len(native_quality.source_residual_items)} 条译文存在{setting.text_rules.source_residual_label}残留风险",
+        if native_quality.placeholder_risk_count:
+            errors.append(
+                WriteBackQualityIssue(
+                    code="placeholder_risk",
+                    message=f"发现 {native_quality.placeholder_risk_count} 条译文里的游戏控制符可能被改坏",
+                )
             )
-        )
-    if native_quality.text_structure_items:
-        errors.append(
-            WriteBackQualityIssue(
-                code="text_structure",
-                message=f"发现 {len(native_quality.text_structure_items)} 条译文改动了游戏文本结构",
+        if native_quality.source_residual_count:
+            errors.append(
+                WriteBackQualityIssue(
+                    code="source_residual",
+                    message=f"发现 {native_quality.source_residual_count} 条译文存在{setting.text_rules.source_residual_label}残留风险",
+                )
             )
-        )
-    if native_quality.overwide_line_items:
-        errors.append(
-            WriteBackQualityIssue(
-                code="overwide_line",
-                message=f"发现 {len(native_quality.overwide_line_items)} 行译文超过当前长文本宽度上限",
+        if native_quality.text_structure_count:
+            errors.append(
+                WriteBackQualityIssue(
+                    code="text_structure",
+                    message=f"发现 {native_quality.text_structure_count} 条译文改动了游戏文本结构",
+                )
             )
-        )
+        if native_quality.overwide_line_count:
+            errors.append(
+                WriteBackQualityIssue(
+                    code="overwide_line",
+                    message=f"发现 {native_quality.overwide_line_count} 行译文超过当前长文本宽度上限",
+                )
+            )
 
-    if not scope.write_back_probe_error:
-        protocol_items = collect_native_write_protocol_details(
+    if include_native_checks and not scope.write_back_probe_error:
+        protocol_count = count_native_write_protocol_issues(
             game_data=game_data.data,
             plugins_js=[plugin for plugin in game_data.plugins_js],
             items=active_translated_items,
         )
-        if protocol_items:
+        if protocol_count:
             errors.append(
                 WriteBackQualityIssue(
                     code="write_back_protocol",
-                    message=f"发现 {len(protocol_items)} 条译文写回后会破坏游戏或插件解析协议",
+                    message=f"发现 {protocol_count} 条译文写回后会破坏游戏或插件解析协议",
                 )
             )
     return errors
