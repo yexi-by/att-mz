@@ -1860,6 +1860,7 @@ def _prepare_manual_translation_item(
         item=cloned_item,
         translation_lines=normalized_translation_lines,
         translation_lines_with_placeholders=cloned_item.translation_lines_with_placeholders,
+        text_rules=text_rules,
     )
     cloned_item.verify_placeholders(text_rules)
     cloned_item.translation_lines = list(cloned_item.translation_lines_with_placeholders)

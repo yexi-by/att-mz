@@ -5640,3 +5640,67 @@ async def test_quality_report_flags_saved_short_text_structure_errors(
     assert "text_structure" in error_codes
     assert report.summary["text_structure_count"] == 1
     assert text_structure_detail["location_path"] == "Items.json/1/description"
+
+
+@pytest.mark.asyncio
+async def test_quality_report_flags_saved_long_text_artifacts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量报告会拦截已保存 long_text 中的异常空行和转义碎片。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/0",
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは", "怖がらなくていい"],
+                    source_line_paths=["CommonEvents.json/1/1", "CommonEvents.json/1/2"],
+                    translation_lines=[
+                        "「不用那么害怕也行。",
+                        "　看样子你是不习惯吧……？\\",
+                        "",
+                        "　来，把身体交给我吧。」",
+                    ],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.quality_report(game_title="テストゲーム")
+
+    error_codes = {error.code for error in report.errors}
+    text_structure_items = ensure_json_array(report.details["text_structure_items"], "text_structure_items")
+    text_structure_detail = ensure_json_object(text_structure_items[0], "text_structure_items[0]")
+    reason_text = str(text_structure_detail["reason"])
+    assert "text_structure" in error_codes
+    assert report.summary["text_structure_count"] == 1
+    assert text_structure_detail["location_path"] == "CommonEvents.json/1/0"
+    assert "原文没有空行" in reason_text
+    assert "行尾裸反斜杠" in reason_text
+
+
+def test_native_quality_accepts_long_text_empty_line_and_standard_controls() -> None:
+    """Rust 质检允许原文需要的空行和正常 RPG Maker 控制符。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    details = collect_native_quality_details(
+        items=[
+            TranslationItem(
+                location_path="CommonEvents.json/1/0",
+                item_type="long_text",
+                role="アリス",
+                original_lines=[r"\N[1]\C[4]こんにちは\C[0]\!", "", r"\\"],
+                source_line_paths=["CommonEvents.json/1/1"],
+                translation_lines=[r"\N[1]\C[4]你好\C[0]\!", "", r"\\"],
+            )
+        ],
+        text_rules=text_rules,
+        source_residual_rules=[],
+    )
+
+    assert details.text_structure_items == []
+    assert details.placeholder_risk_items == []

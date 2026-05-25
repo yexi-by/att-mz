@@ -596,6 +596,54 @@ pub(crate) fn collect_unprotected_control_sequences(
     Ok(counts)
 }
 
+pub(crate) fn collect_unexpected_escape_fragments(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<Vec<UnexpectedEscapeFragment>, String> {
+    let mut fragments = Vec::new();
+    for (line_index, line) in lines.iter().enumerate() {
+        let protected_spans = iter_control_sequence_spans(line, rules)?;
+        let raw_candidates = iter_raw_control_sequence_candidates(line);
+        for (byte_index, char_value) in line.char_indices() {
+            if char_value != '\\' {
+                continue;
+            }
+            if is_byte_inside_control_span(byte_index, &protected_spans) {
+                continue;
+            }
+            if is_byte_inside_raw_candidate(byte_index, &raw_candidates) {
+                continue;
+            }
+            fragments.push(UnexpectedEscapeFragment {
+                line_number: line_index + 1,
+                fragment: escape_fragment_preview(line, byte_index),
+                trailing: byte_index == line.len() - 1,
+            });
+            break;
+        }
+    }
+    Ok(fragments)
+}
+
+fn is_byte_inside_control_span(byte_index: usize, spans: &[ControlSpan]) -> bool {
+    spans
+        .iter()
+        .any(|span| byte_index >= span.start && byte_index < span.end)
+}
+
+fn is_byte_inside_raw_candidate(
+    byte_index: usize,
+    candidates: &[RawControlSequenceCandidate],
+) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| byte_index >= candidate.start && byte_index < candidate.end)
+}
+
+fn escape_fragment_preview(line: &str, byte_index: usize) -> String {
+    line[byte_index..].chars().take(2).collect()
+}
+
 fn is_covered_by_control_span(
     candidate: &RawControlSequenceCandidate,
     spans: &[ControlSpan],
@@ -645,4 +693,10 @@ struct RawControlSequenceCandidate {
     start: usize,
     end: usize,
     original: String,
+}
+
+pub(crate) struct UnexpectedEscapeFragment {
+    pub(crate) line_number: usize,
+    pub(crate) fragment: String,
+    pub(crate) trailing: bool,
 }

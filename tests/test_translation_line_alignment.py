@@ -689,15 +689,70 @@ async def test_long_text_keeps_more_model_lines_without_merging() -> None:
 
 
 @pytest.mark.asyncio
-async def test_long_text_keeps_empty_lines_when_width_split_expands_lines() -> None:
-    """行宽兜底切分非空行时保留模型输出的空行。"""
+async def test_long_text_keeps_empty_lines_when_original_has_empty_lines() -> None:
+    """原文确实包含空行时，行宽兜底后保留对应译文空行。"""
     item = await _verify_single_long_text(
-        original_lines=["あ", "い"],
+        original_lines=["あ", "", "い"],
         translated_text="甲乙丙丁\n\n乙",
         text_rules=_build_text_rules(width_limit=2),
     )
 
     assert item.translation_lines == ["甲乙", "丙丁", "", "乙"]
+
+
+@pytest.mark.parametrize(
+    ("translation_lines", "expected_detail"),
+    [
+        (["第一行", "", "第三行"], "原文没有空行"),
+        (["第一行\\"], "行尾裸反斜杠"),
+        (["第一行\\坏了"], "异常反斜杠片段"),
+        (["第一行", "n糟了"], "异常 n 开头"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_long_text_artifacts_are_recorded_as_text_structure_errors(
+    translation_lines: list[str],
+    expected_detail: str,
+) -> None:
+    """long_text 局部空行和异常转义碎片不能保存为正常译文。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["あ", "い"],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=translation_lines,
+        text_rules=text_rules,
+    )
+
+    assert right_items is None
+    assert error_items is not None
+    assert error_items[0].error_type == "文本结构不匹配"
+    assert any(expected_detail in detail for detail in error_items[0].error_detail)
+
+
+@pytest.mark.asyncio
+async def test_long_text_artifact_check_accepts_empty_line_and_standard_controls() -> None:
+    """原文需要空行或标准控制符时，long_text 结构校验不误报。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=[r"\N[1]\C[4]あ\C[0]\!", "", r"\\"],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=[r"\N[1]\C[4]甲\C[0]\!", "", r"\\"],
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == [r"\N[1]\C[4]甲\C[0]\!", "", r"\\"]
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@
 
 use serde_json::{Value, json};
 
+use super::super::controls::collect_unexpected_escape_fragments;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeTranslationItem};
 use super::super::placeholders::{
@@ -21,6 +22,7 @@ pub(super) fn collect_text_structure_detail(
             mask_translation_controls(item, rules, &placeholder_build)?;
         collect_text_structure_errors(
             item,
+            rules,
             &item.translation_lines,
             &translation_lines_with_placeholders,
             &placeholder_build.original_lines_with_placeholders,
@@ -42,11 +44,12 @@ pub(super) fn collect_text_structure_detail(
 
 fn collect_text_structure_errors(
     item: &NativeTranslationItem,
+    rules: &CompiledRules,
     translation_lines: &[String],
     translation_lines_with_placeholders: &[String],
     original_lines_with_placeholders: &[String],
 ) -> Result<Vec<String>, String> {
-    let mut errors = collect_artifact_errors(item, translation_lines);
+    let mut errors = collect_artifact_errors(item, translation_lines, rules)?;
     if item.item_type != "short_text" {
         return Ok(errors);
     }
@@ -82,7 +85,8 @@ fn collect_text_structure_errors(
 fn collect_artifact_errors(
     item: &NativeTranslationItem,
     translation_lines: &[String],
-) -> Vec<String> {
+    rules: &CompiledRules,
+) -> Result<Vec<String>, String> {
     let mut errors = Vec::new();
     let joined_text = translation_lines.join("\n");
     if !item.location_path.is_empty() && joined_text.contains(&item.location_path) {
@@ -118,7 +122,103 @@ fn collect_artifact_errors(
             break;
         }
     }
-    errors
+    if item.item_type == "long_text" {
+        errors.extend(collect_unexpected_empty_line_errors(
+            item,
+            translation_lines,
+        ));
+        errors.extend(collect_suspicious_n_prefix_errors(translation_lines));
+        errors.extend(
+            collect_unexpected_escape_fragments(translation_lines, rules)?
+                .into_iter()
+                .map(|fragment| {
+                    if fragment.trailing {
+                        format!(
+                            "译文第 {} 行存在行尾裸反斜杠，疑似转义或换行标记被拆坏",
+                            fragment.line_number
+                        )
+                    } else {
+                        format!(
+                            "译文第 {} 行存在异常反斜杠片段: {}",
+                            fragment.line_number, fragment.fragment
+                        )
+                    }
+                }),
+        );
+    }
+    Ok(errors)
+}
+
+fn collect_unexpected_empty_line_errors(
+    item: &NativeTranslationItem,
+    translation_lines: &[String],
+) -> Vec<String> {
+    let original_empty_count = item
+        .original_lines
+        .iter()
+        .filter(|line| line.trim().is_empty())
+        .count();
+    let translation_empty_line_numbers: Vec<usize> = translation_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if line.trim().is_empty() {
+                Some(index + 1)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if translation_empty_line_numbers.is_empty() {
+        return Vec::new();
+    }
+    if original_empty_count == 0 {
+        return vec![format!(
+            "原文没有空行，但译文第 {} 行是空行",
+            translation_empty_line_numbers
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<String>>()
+                .join("、")
+        )];
+    }
+    if translation_empty_line_numbers.len() > original_empty_count {
+        return vec![format!(
+            "译文空行数量超过原文空行数量（原文 {} 行，译文 {} 行）",
+            original_empty_count,
+            translation_empty_line_numbers.len()
+        )];
+    }
+    Vec::new()
+}
+
+fn collect_suspicious_n_prefix_errors(translation_lines: &[String]) -> Vec<String> {
+    translation_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if has_suspicious_n_prefix(line) {
+                Some(format!(
+                    "译文第 {} 行以异常 n 开头，疑似字面量换行标记 \\n 被拆坏",
+                    index + 1
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn has_suspicious_n_prefix(line: &str) -> bool {
+    let mut chars = line.trim_start().chars();
+    matches!(chars.next(), Some('n')) && chars.next().is_some_and(is_cjk_or_fullwidth_char)
+}
+
+fn is_cjk_or_fullwidth_char(char_value: char) -> bool {
+    matches!(
+        char_value as u32,
+        0x3000..=0x303f | 0x3400..=0x9fff | 0xff00..=0xffef
+    )
 }
 
 fn count_real_line_breaks(lines: &[String]) -> usize {

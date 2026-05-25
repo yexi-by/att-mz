@@ -799,6 +799,7 @@ def test_literal_line_break_placeholder_structure_rejects_additions() -> None:
         validate_translation_text_structure(
             item=item,
             translation_lines=["说明\\n正文\\n补充"],
+            text_rules=rules,
             translation_lines_with_placeholders=item.translation_lines_with_placeholders,
         )
 
