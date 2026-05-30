@@ -8,11 +8,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.application.handler import TranslationHandler, validate_terminology_registry_shape
+from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
 from app.rmmz import DataTextExtraction, load_game_data
 from app.rmmz.schema import MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
-from app.rmmz.text_rules import coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
+from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.terminology import (
     SpeakerDialogueContext,
     TerminologyCategory,
@@ -24,7 +25,7 @@ from app.terminology import (
     load_terminology_registry,
     validate_terminology_bundle,
 )
-from app.terminology.extraction import build_speaker_sample_file_name
+from app.terminology.extraction import build_speaker_sample_file_name, is_translatable_terminology_source
 from app.terminology.files import reserve_speaker_sample_file_name
 from app.translation import iter_translation_context_batches
 from tests._native_write_plan_helper import reset_writable_copies, write_terminology_text
@@ -147,6 +148,92 @@ async def test_export_terminology_writes_terms_and_contexts(
     assert contexts_by_name["説明役"] == ["別マップの本文です。"]
     assert (summary.speaker_context_dir / "アリス.json").exists()
     assert summary.database_context_path.exists()
+
+
+def test_english_terminology_source_detection_ignores_control_sequence_letters() -> None:
+    """英文术语候选判断会先剥离控制符再检查可翻译源文。"""
+    text_rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
+
+    assert is_translatable_terminology_source(r"\c[14]Old Gate", text_rules)
+    assert not is_translatable_terminology_source(r"\c[14]水池的水位已然降低...", text_rules)
+
+
+@pytest.mark.asyncio
+async def test_english_terminology_export_skips_existing_chinese_terms(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """英文术语表导出只收集仍含英文源文的字段候选。"""
+    common_events_path = minimal_english_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))),
+        "CommonEvents.json",
+    )
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    name_command = ensure_json_object(commands[0], "CommonEvents[1].list[0]")
+    name_parameters = ensure_json_array(name_command["parameters"], "CommonEvents[1].list[0].parameters")
+    name_parameters[4] = r"\c[14]水池的水位已然降低..."
+    _ = common_events_path.write_text(
+        json.dumps(common_events, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    map_path = minimal_english_game_dir / "data" / "Map001.json"
+    map_data = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(map_path.read_text(encoding="utf-8")))),
+        "Map001.json",
+    )
+    map_data["displayName"] = r"\c[14]水池"
+    _ = map_path.write_text(json.dumps(map_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    actors_path = minimal_english_game_dir / "data" / "Actors.json"
+    actors = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(actors_path.read_text(encoding="utf-8")))),
+        "Actors.json",
+    )
+    actor = ensure_json_object(actors[1], "Actors[1]")
+    actor["name"] = "米拉"
+    actor["nickname"] = "新人"
+    _ = actors_path.write_text(json.dumps(actors, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    items_path = minimal_english_game_dir / "data" / "Items.json"
+    items = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(items_path.read_text(encoding="utf-8")))),
+        "Items.json",
+    )
+    item = ensure_json_object(items[1], "Items[1]")
+    item["name"] = "回复药"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+    try:
+        summary = await handler.export_terminology(
+            game_title="English Fixture Game",
+            output_dir=tmp_path / "terminology",
+        )
+    finally:
+        await handler.close()
+
+    exported_registry = TerminologyRegistry.model_validate_json(
+        summary.field_terms_path.read_text(encoding="utf-8")
+    )
+    exported_text = json_dump_text(exported_registry)
+    assert r"\c[14]水池" not in exported_text
+    assert "水池的水位" not in exported_text
+    assert "米拉" not in exported_text
+    assert "新人" not in exported_text
+    assert "回复药" not in exported_text
+    assert "Gatekeeper" in exported_registry.speaker_names
+    assert "Enemy" in exported_registry.speaker_names
+    assert exported_registry.map_display_names == {}
+    assert exported_registry.actor_names == {}
+    assert exported_registry.actor_nicknames == {}
+    assert exported_registry.item_names == {}
+    assert exported_registry.skill_names == {"Flame": ""}
+    assert exported_registry.system_elements == {"Fire": ""}
 
 
 @pytest.mark.asyncio

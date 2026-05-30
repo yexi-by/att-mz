@@ -273,6 +273,17 @@ class TranslationHandler:
             for record in records
         )
 
+    async def _load_session_profile_text_rules(self, session: TargetGameSession) -> TextRules:
+        """按当前配置和已导入占位符规则构造文本判断规则。"""
+        setting = self._load_setting(source_language=session.source_language)
+        placeholder_records = await session.read_placeholder_rules()
+        structured_placeholder_records = await session.read_structured_placeholder_rules()
+        return self._load_text_rules(
+            setting,
+            placeholder_rule_records=placeholder_records,
+            structured_placeholder_rule_records=structured_placeholder_records,
+        )
+
     async def _load_session_game_data(self, session: TargetGameSession) -> GameData:
         """加载目标游戏数据并绑定到当前命令会话。"""
         game_data = await load_game_data_for_view(
@@ -318,10 +329,12 @@ class TranslationHandler:
         """把外部插件规则 JSON 导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
+            text_rules = await self._load_session_profile_text_rules(session)
             import_file = await load_plugin_rule_import_file(input_path)
             rule_records = build_plugin_rule_records_from_import(
                 game_data=game_data,
                 import_file=import_file,
+                text_rules=text_rules,
             )
             if not rule_records:
                 ensure_empty_rule_confirmed(
@@ -1229,10 +1242,12 @@ class TranslationHandler:
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
+            text_rules = await self._load_session_profile_text_rules(session)
             summary = await export_terminology_artifacts(
                 game_data=game_data,
                 output_dir=output_dir,
                 mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+                text_rules=text_rules,
             )
             logger.success(f"[tag.success]术语表工程导出完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 字段译名表 [tag.path]{summary.field_terms_path}[/tag.path] 正文术语表 [tag.path]{summary.glossary_path}[/tag.path] 上下文目录 [tag.path]{summary.contexts_dir}[/tag.path]")
             return summary
@@ -1249,9 +1264,11 @@ class TranslationHandler:
             registry = await load_terminology_registry(field_terms_path=input_path)
             glossary = await load_terminology_glossary(glossary_path=glossary_input_path)
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
+            text_rules = await self._load_session_profile_text_rules(session)
             expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
                 game_data=game_data,
                 mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+                text_rules=text_rules,
             ).extract_registry_and_contexts()
             validate_terminology_registry_shape(
                 imported_registry=registry,

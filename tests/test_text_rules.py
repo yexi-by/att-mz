@@ -11,6 +11,7 @@ from app.config.custom_placeholder_rules import (
     load_custom_placeholder_rules_text,
 )
 from app.config.schemas import TextRulesSetting
+from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.rmmz.control_codes import (
     CustomPlaceholderRule,
     LITERAL_ESCAPE_PLACEHOLDERS,
@@ -272,6 +273,15 @@ def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> No
     assert rules.should_translate_source_text("Go east; then open the gate.")
     assert rules.should_translate_source_text("Use {item} to continue.")
     assert rules.should_translate_source_text("Look => move")
+    assert rules.should_translate_source_text(r"\c[14]The water level has dropped...")
+    assert rules.should_translate_source_text("Auto")
+    assert rules.should_translate_source_text("Default")
+    assert rules.should_translate_source_text("GameOver")
+    assert rules.should_translate_source_text("AutoSave")
+    assert rules.should_translate_source_text("SkillTree")
+    assert rules.should_translate_source_text("Route66")
+    assert rules.should_translate_source_text("Save_File")
+    assert not rules.should_translate_source_text(r"\c[14]水池的水位已然降低...")
     assert not rules.should_translate_source_text("img/pictures/Actor1.png")
     assert not rules.should_translate_source_text("audio/se/Decision1.ogg")
     assert not rules.should_translate_source_text("damageFormula")
@@ -288,16 +298,7 @@ def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> No
 
 def test_english_source_residual_allows_default_ui_abbreviations() -> None:
     """英文源文残留会拦截漏翻句子，并允许默认 UI 缩写保留。"""
-    rules = TextRules.from_setting(
-        TextRulesSetting(
-            source_language="en",
-            source_residual_label="英文",
-            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-            source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-            allowed_source_residual_terms=["HP", "MP", "TP", "OK"],
-            source_residual_terms_ignore_case=True,
-        )
-    )
+    rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
 
     with pytest.raises(ValueError, match="英文残留"):
         rules.check_source_residual(["Are you really going in there?"])
@@ -310,6 +311,8 @@ def test_english_source_residual_allows_default_ui_abbreviations() -> None:
 
     rules.check_source_residual(["HP 恢复 10 点"])
     rules.check_source_residual(["OK"])
+    rules.check_source_residual(["BGM 已切换"])
+    rules.check_source_residual(["NPC 的 ATK 提升 3 点"])
 
 
 def test_structural_source_residual_rule_only_masks_protocol_terms() -> None:

@@ -126,6 +126,10 @@ class PlaceholderRuleAgentMixin:
                     if not sample_texts:
                         game_data = await self._load_translation_source_game_data(session)
                         setting = load_setting(self.setting_path, source_language=session.source_language)
+                        extraction_rules = TextRules.from_setting(
+                            setting.text_rules,
+                            structured_placeholder_rules=structured_rules,
+                        )
                         preview_rules = TextRules.from_setting(
                             setting.text_rules,
                             custom_placeholder_rules=custom_rules,
@@ -134,7 +138,7 @@ class PlaceholderRuleAgentMixin:
                         translation_data_map = await self._extract_active_translation_data_map(
                             session=session,
                             game_data=game_data,
-                            text_rules=preview_rules,
+                            text_rules=extraction_rules,
                         )
                         sample_texts = _collect_placeholder_preview_samples(translation_data_map, preview_rules)
                         if not sample_texts:

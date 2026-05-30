@@ -1,180 +1,124 @@
-# A.T.T MZ
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://readme-typing-svg.demolab.com?font=Noto+Sans+SC&weight=700&size=36&duration=3000&pause=1000&color=58A6FF&center=true&vCenter=true&width=600&lines=A.T.T+MZ+%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B" />
+    <img src="https://readme-typing-svg.demolab.com?font=Noto+Sans+SC&weight=700&size=36&duration=3000&pause=1000&color=0969DA&center=true&vCenter=true&width=600&lines=A.T.T+MZ+%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B" alt="A.T.T MZ 快速开始" />
+  </picture>
+</p>
 
-面向 Agent 的 RPG Maker MV/MZ 汉化闭环工具：规则扫描、术语整理、模型翻译、质量检查、把译文写进游戏文件和试玩反馈补漏。
+<p align="center"><b>一个命令行工具包，让 AI 帮你把 RPG Maker 游戏翻译成中文。</b></p>
 
-A.T.T MZ 以 Agent 执行协议为核心。程序负责提取文本、保存译文、校验规则、生成质量报告和写进游戏文件；Codex、Claude Code 或其他 Agent 按项目 Skill 组织流程，审查术语、处理规则、修复失败译文，并根据试玩反馈继续补漏。发行包已经包含可执行文件、默认配置、字体、提示词和 Agent Skill；普通使用不需要安装 Python、Rust、uv，也不需要读取源码。
+你不需要懂编程，也不需要自己判断游戏引擎或原文语言。告诉 AI 你的游戏在哪，它会先检查，再带你完成汉化。
 
-## 下载
+> ⚠️ **目前仅支持 RPG Maker MV / MZ 游戏。** 后续支持 XP、VX Ace 等引擎在技术上很简单——只是作者暂时没有想玩的游戏。如果你有需求，去 [GitHub](https://github.com/yexi-by/att-mz) ⭐ 点个 Star 或提个 Issue，给作者一点更新的动力。
 
-- Windows 发行包：从 [GitHub Releases](https://github.com/yexi-by/att-mz/releases/latest) 下载 `att-mz-windows-x86_64.zip`。
-- 源码运行和开发说明：阅读 [进阶教学与源码编译](docs/advanced-usage.md)。
+## ✨ 工具优点
 
-## 适合什么
+| 功能 | 说明 |
+|---|---|
+| 🧵 高并发翻译 | 可配置的并发数量和请求速率，大批量文本也能快速跑完 |
+| 💾 译文持久化缓存 | 中断后重新运行自动跳过已翻译内容，不重复工作，不重复花钱 |
+| 🔄 运行时去重 | 同一轮内出现多次的相同原文只翻译一次，结果自动复用到所有位置 |
+| 🛡️ 细粒度失败处理 | 翻译出错不会整批丢弃，单条失败不影响同批其他成功条目，重试、标记、分类逐级收窄 |
+| 🔧 全角引号自修复 | 模型可能把日文「」改写成中文""或英文""，工具会自动还原为源文标点字符 |
+| 📜 剧本化翻译上下文 | 按地图场景和角色对话组织翻译内容，模型看到的是带上下文的剧本而非散装文本 |
+| 📚 引擎级术语表 | 从游戏数据自动提取角色名、技能名等术语候选，Agent 填写后注入翻译流程，确保术语前后一致 |
+| 🔒 语义化占位符 | 游戏控制符在翻译时被替换为可读标记，模型只翻译文字不碰控制符，翻译后精确还原 |
+| ✏️ 自定义占位符 | 游戏自带的特殊标记可以由 Agent 分析后自行定义保护规则 |
+| ✅ 翻译格式检查 | 逐条检查漏翻、控制符破坏、源文残留、行宽超标等问题，生成可定位的质量报告 |
+| 🤖 Agent 自主分析工作流 | 插件参数、事件指令、Note 标签中哪些文本该翻译、哪些不该碰，全部由 Agent 自主判断并写成规则 |
 
-- 把 RPG Maker MV/MZ 日文或英文游戏汉化成第一版可试玩结果。
-- 让 Codex、Claude Code 或其他 Agent 按项目 Skill 扫描规则、整理术语、翻译正文、检查译文，并把译文写进游戏文件。
-- 在写进游戏文件前检查没成功保存译文的文本、源语言残留、必须原样保留的游戏控制符风险和游戏窗口放不下的长行。
-- 把试玩中发现的漏翻、误翻、显示异常和语气问题整理成反馈清单，再定位、修复、检查并重新写进游戏文件。
+## 📋 你需要准备什么
 
-不适合直接修改图片文字、音频或视频。插件源码文本默认只做风险扫描；高风险或用户明确要求处理时，再按 AST 地图导出、规则校验和规则导入流程处理。源码文本提取和写回由 A.T.T MZ 的 AST 流程执行，规则没有校验通过时不会进入正文翻译。
+三样东西：
 
-## 核心特点
+1. 🤖 **一个能执行命令的现代 AI Agent** — 你的 AI 助手
+2. 📦 **A.T.T MZ 发行包** — 翻译工具
+3. 🔑 **一个大模型 API Key** — 翻译引擎的"钥匙"
 
-- Agent 优先：项目提供可执行的 Skill 和命令契约，让 Agent 按阶段完成汉化流程。
-- 闭环流程：从注册游戏、准备工作区、导入术语和规则，到模型翻译、质量检查、写进游戏文件和试玩反馈补漏，全部由 CLI 状态和报告串联。
-- 硬检查优先：字段译名表、正文术语表、外部规则和占位符规则不完整时，命令会直接报错；质量报告有错误时不能继续写进游戏文件。
-- 可恢复运行：译文记录、术语、规则、日志和质量结果保存在项目数据目录，失败后按报告修复再继续。
+## 🤖 第一步：选一个 Agent
 
-## 你需要准备
+需要能执行命令、读写文件、处理多步骤任务的 Agent。下面是一些选择：
 
-- A.T.T MZ Windows 发行包 ZIP。
-- 一个可运行的 RPG Maker MV/MZ 游戏目录。
-- 一个 OpenAI 兼容接口的模型服务地址、API Key 和模型名。
-- 一个能执行任务的 Agent。建议把发行版目录作为 Agent 的工作目录。
+| Agent | 形式 | 说明 |
+|-------|------|------|
+| [Codex 桌面版](https://chatgpt.com/zh-Hans-CN/codex/) | 🖥️ 桌面应用 | 开箱即用 |
+| [VS Code](https://code.visualstudio.com/) + [Cline](https://github.com/cline/cline) / [Kilo](https://github.com/kilocode/kilo-code) 等 | 🧩 编辑器插件 | 适合已在用 VS Code 的人 |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ⌨️ 命令行 | Anthropic 官方 CLI Agent |
+| [Pi](https://github.com/earendil-works/pi) | ⌨️ 命令行 | 轻量终端 Agent |
+| [OpenClaw](https://github.com/openclaw/openclaw) | ⌨️ 命令行 | 开源跨平台个人 AI 助理 |
+| [Hermes](https://github.com/NousResearch/hermes-agent) | ⌨️ 命令行 | Nous Research 出品，支持子代理调度 |
 
-## 第一次使用
+以上只是举例，选择你顺手的即可。如果 Agent 支持调用子代理，翻译流程会跑得更快，但不是必须。
 
-1. 解压发行包到 `<发行版目录>`。
-2. 打开 `<发行版目录>\setting.toml`，填写模型配置：
+怎么算装好了？在对话框里输入"你好"，AI 回复你了就说明 OK。
+
+> 💡 下面教程以 **Codex 桌面版** 为例。用其他 Agent 的话步骤完全一样——Agent 里都有开文件夹和对话框。
+
+## ⚙️ 第二步：下载 A.T.T MZ 并配置模型
+
+1. 打开 [GitHub Releases](https://github.com/yexi-by/att-mz/releases/latest)，下载 `att-mz-windows-x86_64.zip`（目前仅提供 Windows 版）
+2. 右键 zip → 全部解压缩 → 放到你方便找的位置
+3. 用记事本打开解压出来的 `setting.toml`，填模型配置：
 
 ```toml
 [llm]
-base_url = "https://<模型服务地址>/v1"
-api_key = "<API Key>"
-model = "<模型名>"
+base_url = "https://你的服务商地址/v1"
+api_key = "你的API Key"
+model = "模型名称"
 timeout = 600
 ```
 
-3. 在 PowerShell 中进入发行版目录：
+4. 保存、关闭
 
-```powershell
-cd <发行版目录>
-```
+`base_url`、`api_key`、`model` 这三个值你的 API 服务商会提供。常用的服务商有阿里云百炼、DeepSeek、硅基流动、OpenRouter 等。不知道填什么的话，直接问你的 Agent：「我的 API 服务商是 xxx，帮我填好 A.T.T MZ 的模型配置」。
 
-4. 运行自检：
+> 💡 如果你习惯用源码运行，看 [进阶教学与源码编译](docs/advanced-usage.md)。普通使用不需要。
 
-```powershell
-.\att-mz.exe --agent-mode doctor --no-check-llm --json
-```
+## 📂 第三步：用 Agent 打开你的游戏目录
 
-如果要同时检查模型连通性，去掉 `--no-check-llm`：
+用 Agent 打开你的游戏目录。游戏目录是你要翻译的项目——里面有游戏数据、剧情文本、插件脚本。A.T.T MZ 是外部工具，以命令行方式被 Agent 调用。
 
-```powershell
-.\att-mz.exe --agent-mode doctor --json
-```
+操作：在 Agent 中点击"打开文件夹"，选择你的游戏目录。
 
-## 注册游戏
+## 🚀 第四步：告诉 Agent 你要汉化
 
-日文游戏：
+在对话框里输入：
 
-```powershell
-.\att-mz.exe --agent-mode add-game --path <游戏目录> --source-language ja --json
-```
+> A.T.T MZ 在 `<A.T.T MZ 目录>`，用它的 Skill（`<A.T.T MZ 目录>\skills\att-mz\SKILL.md`）把这个游戏汉化成中文。原文语言如果不确定，请先检查游戏文件再继续。
 
-英文游戏：
+如果你已经在 Agent 中安装了 att-mz Skill，Skill 路径可以省略：
 
-```powershell
-.\att-mz.exe --agent-mode add-game --path <游戏目录> --source-language en --json
-```
+> A.T.T MZ 在 `<A.T.T MZ 目录>`，用它的 Skill 把这个游戏汉化成中文。原文语言如果不确定，请先检查游戏文件再继续。
 
-`add-game` 首次注册只接受干净原始游戏目录；目录内不能已有 `data_origin`、`js/plugins_origin.js` 或 `js/plugins_source_origin`。注册成功后，后续命令使用报告里的 `<游戏标题>`。
+Agent 收到任务后，会自己完成整个流程：
 
-## 交给 Agent
+- 🔍 识别游戏引擎（RPG Maker MV 或 MZ）
+- 🌐 判断原文语言（日文或英文）
+- 📝 注册游戏、导出文本、分析规则
+- 🤖 调用模型翻译正文
+- ✅ 检查翻译质量
+- 💾 确认没问题后把译文写进游戏文件
 
-用 Agent 打开发行版目录，提交下面这段任务说明：
+过程中 Agent 会一步步向你报告进度。遇到需要确认的事情（比如要不要换游戏字体），它会主动问你。你只需要回答"可以"或"不行"。
 
-```text
-请使用 <发行版目录>/skills/att-mz/SKILL.md 自动汉化这个 RPG Maker MV/MZ 游戏。
+## 🎯 第五步：试玩 + 反馈
 
-发行版目录：<发行版目录>
-游戏目录：<游戏目录>
-游戏原文语言：ja 或 en
-目标：先完成规则扫描、术语表、正文翻译和质量检查；确认质量报告没有错误后，再把译文写进游戏文件。
-要求：所有命令使用 .\att-mz.exe --agent-mode ...；命令契约写有 --json 的步骤必须保留 --json，只导出文件的步骤按 Skill 命令契约使用 --output；不要读取源码；不要直接修改数据库；不要跳过校验。
-```
+AI 把译文写进游戏文件后，打开游戏实际玩一遍。如果发现：
 
-Agent 会按 Skill 流程准备工作区、分析插件和事件指令规则、检查插件源码风险、导入术语表和规则、翻译正文、生成质量报告，并在确认没有无法继续的问题后把译文写进游戏文件。第一次写进游戏文件得到的是第一版可试玩汉化结果；稳定版本需要根据实际游玩反馈继续查缺补漏。翻译和写入前会执行程序硬检查：字段译名表、正文术语表、外部规则和占位符规则不完整时，命令会直接报错；插件源码高风险且未确认处理，或已启动支线但仍有候选未归入翻译或排除时，正文翻译也会停止。
+- 👀 有文字还是日文/英文（漏翻）
+- 💬 翻译不通顺或意思不对（误翻）
+- 📏 文字太长显示不全（显示问题）
 
-## 常用命令
+直接在 Agent 对话框里说：
 
-| 目的 | 命令 |
-| --- | --- |
-| 检查发行版配置 | `.\att-mz.exe --agent-mode doctor --no-check-llm --json` |
-| 列出已注册游戏 | `.\att-mz.exe --agent-mode list --json` |
-| 注册日文游戏 | `.\att-mz.exe --agent-mode add-game --path <游戏目录> --source-language ja --json` |
-| 注册英文游戏 | `.\att-mz.exe --agent-mode add-game --path <游戏目录> --source-language en --json` |
-| 准备 Agent 工作区 | `.\att-mz.exe --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json` |
-| 校验 Agent 工作区 | `.\att-mz.exe --agent-mode validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告> --json` |
-| 小批量试翻 | `.\att-mz.exe --agent-mode translate --game <游戏标题> --max-batches 1 --json` |
-| 查看翻译状态 | `.\att-mz.exe --agent-mode translation-status --game <游戏标题> --json` |
-| 查看当前文本范围 | `.\att-mz.exe --agent-mode text-scope --game <游戏标题> --json` |
-| 审计覆盖范围 | `.\att-mz.exe --agent-mode audit-coverage --game <游戏标题> --json` |
-| 审计当前运行文件 | `.\att-mz.exe --agent-mode audit-active-runtime --game <游戏标题> --json` |
-| 反推当前运行文件问题 | `.\att-mz.exe --agent-mode diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json` |
-| 查看质量报告 | `.\att-mz.exe --agent-mode quality-report --game <游戏标题> --json` |
-| 把译文写进游戏文件 | `.\att-mz.exe --agent-mode write-back --game <游戏标题> --json` |
-| 允许本次写入时覆盖字体引用 | `.\att-mz.exe --agent-mode write-back --game <游戏标题> --confirm-font-overwrite --json` |
-| 从可信源快照重建当前运行文件 | `.\att-mz.exe --agent-mode rebuild-active-runtime --game <游戏标题> --json` |
-| 按原始备份还原项目覆盖过的字体引用 | `.\att-mz.exe --agent-mode restore-font --game <游戏标题> --json` |
-| 按试玩反馈反查原文 | `.\att-mz.exe --agent-mode verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json` |
-| 扫描插件源码文本风险 | `.\att-mz.exe --agent-mode scan-plugin-source-text --game <游戏标题> --output <风险报告文件> --json` |
-| 导出插件源码 AST 地图 | `.\att-mz.exe --agent-mode export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json` |
-| 校验插件源码规则 | `.\att-mz.exe --agent-mode validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json` |
-| 导入插件源码规则 | `.\att-mz.exe --agent-mode import-plugin-source-rules --game <游戏标题> --input <规则文件> --json` |
+> 游戏里 NPC "老爷爷" 说的话还是日文，帮我查一下
 
-`translation-status` 默认读取数据库中的最近运行统计；需要重新扫描当前文本范围时加 `--refresh-scope`。`text-scope`、`audit-coverage`、`quality-report`、`export-pending-translations` 和 `export-quality-fix-template` 默认不执行写入可行性探针；需要在报告里查看写入可行性时加 `--include-write-probe`。实际写文件命令始终执行写文件前检查。
+> 物品说明栏里的文字太长了，显示不全
 
-## 写进游戏文件前
+Agent 会定位问题、修复译文、重新写进游戏。试玩 → 反馈 → 修复，这个循环可以反复进行，直到你满意为止。
 
-写入前必须先运行：
+## 💬 遇到问题了？
 
-```powershell
-.\att-mz.exe --agent-mode audit-coverage --game <游戏标题> --json
-.\att-mz.exe --agent-mode quality-report --game <游戏标题> --json
-```
+**直接问 Agent。** 任何关于本项目的问题——配置报错、翻译卡住、游戏跑不起来——全部问它。Agent 读了项目说明和 Skill，比你自己翻 FAQ 快得多。
 
-只有报告没有错误、当前规则范围内正文译文完整，并且用户允许写回时，才执行：
-
-```powershell
-.\att-mz.exe --agent-mode write-back --game <游戏标题> --json
-```
-
-如果报告提示还有没成功保存译文的文本、必须原样保留的游戏控制符风险、源语言残留或某一行太长，先按报告修复，再重新检查。
-
-`quality-report` 只检查已保存译文记录、规则、控制符、源语言残留、行宽和可生成性；它不把当前运行文件当翻译源，也不靠当前运行文件决定是否可以生成。`write-back` 会从注册时保存的可信源快照和已保存译文记录生成文件，并在写入后验收当前运行文件。
-
-如果当前运行文件已经损坏，需要从可信源快照和已保存译文记录重建，使用：
-
-```powershell
-.\att-mz.exe --agent-mode rebuild-active-runtime --game <游戏标题> --json
-```
-
-`rebuild-active-runtime` 也是写文件操作，必须通过与 `write-back` 相同的覆盖审计、质量报告、完整译文覆盖、可信源快照和字体覆盖确认检查。它用于恢复当前运行文件状态，不能绕过规则、译文质量或完整覆盖要求。
-
-如果 `write-back` 或 `rebuild-active-runtime` 提示当前运行插件源码读取失败或 JS 语法错误，先修复当前运行文件状态后重新写入。`audit-active-runtime` 默认不把插件源码内部源语言字符串当作漏翻清单；只有插件源码支线已启动或已有写回映射时，才把已管理 selector 的源文残留和坏控制符纳入诊断。需要反推到已保存译文时，使用 `diagnose-active-runtime` 生成诊断。诊断只解释会阻止写入验收的问题，并读取写回时保存的确定性映射，把当前运行 JS 问题连接回翻译源 `location_path` 和已保存译文记录；`mapped_excluded` 表示已审查但不翻译，没有映射时会明确报告无法反推，不会按文本相似度、行号或上下文猜测。修复必须改规则、重置译文或导入手动译文后重新写入，不能直接修改当前 JS 作为翻译源。
-
-## 字体处理
-
-普通写入不会改字体引用。只有明确传入 `--confirm-font-overwrite` 时，工具才会按 `setting.toml` 的候选字体配置替换游戏字体引用。
-
-若需要撤回项目覆盖过的字体引用：
-
-```powershell
-.\att-mz.exe --agent-mode restore-font --game <游戏标题> --json
-```
-
-## 数据位置
-
-- 已注册游戏和译文记录：`<发行版目录>\data\db`
-- 日志：`<发行版目录>\logs`
-- Agent 临时工作区：由 `prepare-agent-workspace --output-dir <工作区>` 指定
-- 写入时修改的游戏文件：目标游戏目录内的 RPG Maker 数据文件和插件配置
-- 注册游戏时创建的可信源快照：目标游戏目录内的 `data_origin`、`js/plugins_origin.js` 和 `js/plugins_source_origin`
-
-## 出错时怎么做
-
-- 命令返回 `status=error` 时，不要继续下一步，先按报告修复原因。
-- 配置错误先运行 `doctor`。
-- 规则文件错误先运行对应的 `validate-...` 命令。
-- 翻译质量错误先导出质量修复表或手动译文表，修好后重新导入。
-- 写入后试玩发现原文，先整理反馈原文清单，再运行 `verify-feedback-text` 反查位置。
+打开对话框，直接问。

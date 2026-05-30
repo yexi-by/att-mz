@@ -10,6 +10,7 @@ from app.rmmz.mv_namebox import (
 )
 from app.rmmz.schema import Code, GameData
 from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .schemas import (
     DatabaseTermContext,
@@ -60,9 +61,11 @@ class TerminologyExtraction:
         self,
         game_data: GameData,
         mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
+        text_rules: TextRules | None = None,
     ) -> None:
         """初始化提取器。"""
         self.game_data: GameData = game_data
+        self.text_rules: TextRules = text_rules if text_rules is not None else get_default_text_rules()
         self.mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...] = runtime_mv_virtual_namebox_rules(
             mv_virtual_namebox_rule_records or []
         )
@@ -93,7 +96,7 @@ class TerminologyExtraction:
         display_names: set[str] = set()
         for map_data in self.game_data.map_data.values():
             source_text = map_data.displayName.strip()
-            if is_translatable_terminology_source(source_text):
+            if self._is_translatable_terminology_source(source_text):
                 display_names.add(source_text)
         return sorted(display_names)
 
@@ -108,7 +111,7 @@ class TerminologyExtraction:
                 if item is None:
                     continue
                 source_name = item.name.strip()
-                if is_translatable_terminology_source(source_name):
+                if self._is_translatable_terminology_source(source_name):
                     category_map.setdefault(category, {})[source_name] = ""
                     database_contexts.append(
                         DatabaseTermContext(
@@ -120,7 +123,7 @@ class TerminologyExtraction:
                 if file_name != "Actors.json":
                     continue
                 nickname = item.nickname.strip()
-                if is_translatable_terminology_source(nickname):
+                if self._is_translatable_terminology_source(nickname):
                     category_map.setdefault("actor_nicknames", {})[nickname] = ""
                     database_contexts.append(
                         DatabaseTermContext(
@@ -134,7 +137,7 @@ class TerminologyExtraction:
             values = _read_system_term_values(game_data=self.game_data, field_name=field_name)
             for value in values:
                 source_text = value.strip()
-                if not is_translatable_terminology_source(source_text):
+                if not self._is_translatable_terminology_source(source_text):
                     continue
                 category_map.setdefault(category, {})[source_text] = ""
                 database_contexts.append(
@@ -222,7 +225,7 @@ class TerminologyExtraction:
         for command_index, command in enumerate(commands):
             if command.code != Code.NAME:
                 continue
-            source_text = read_name_box_text(command)
+            source_text = read_name_box_text(command, self.text_rules)
             if source_text is None:
                 continue
             lines = collect_following_dialogue_lines(commands, command_index)
@@ -253,7 +256,7 @@ class TerminologyExtraction:
             if not virtual_speaker.requires_translation:
                 continue
             source_text = virtual_speaker.speaker
-            if not is_translatable_terminology_source(source_text):
+            if not self._is_translatable_terminology_source(source_text):
                 continue
             body_lines = _build_mv_virtual_speaker_context_lines(
                 lines=lines,
@@ -261,6 +264,10 @@ class TerminologyExtraction:
                 first_body_text=virtual_speaker.body_text,
             )
             dialogue_map.setdefault(source_text, []).extend(body_lines)
+
+    def _is_translatable_terminology_source(self, source_text: str) -> bool:
+        """按当前源语言判断字段术语是否需要填写译名。"""
+        return is_translatable_terminology_source(source_text, self.text_rules)
 
 
 def build_speaker_sample_file_name(name: str) -> str:
@@ -272,7 +279,7 @@ def build_speaker_sample_file_name(name: str) -> str:
     return f"{normalized}.json"
 
 
-def read_name_box_text(command: EventCommand) -> str | None:
+def read_name_box_text(command: EventCommand, text_rules: TextRules | None = None) -> str | None:
     """读取 MZ `101.parameters[4]` 名字框文本。"""
     if len(command.parameters) < 5:
         return None
@@ -280,17 +287,22 @@ def read_name_box_text(command: EventCommand) -> str | None:
     if not isinstance(raw_name, str):
         return None
     source_text = raw_name.strip()
-    if not is_translatable_terminology_source(source_text):
+    if not is_translatable_terminology_source(source_text, text_rules):
         return None
     return source_text
 
 
-def is_translatable_terminology_source(source_text: str) -> bool:
+def is_translatable_terminology_source(source_text: str, text_rules: TextRules | None = None) -> bool:
     """判断术语原文是否适合交给外部 Agent 填写译名。"""
     normalized_text = source_text.strip()
     if not normalized_text:
         return False
-    return ACTOR_NAME_CONTROL_PATTERN.search(normalized_text) is None
+    if ACTOR_NAME_CONTROL_PATTERN.search(normalized_text) is not None:
+        return False
+    rules = text_rules if text_rules is not None else get_default_text_rules()
+    if rules.setting.source_language == "en":
+        return rules.should_translate_source_text(normalized_text)
+    return True
 
 
 def _read_system_term_values(*, game_data: GameData, field_name: str) -> list[str]:

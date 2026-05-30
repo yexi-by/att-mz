@@ -142,7 +142,10 @@ class TextRules:
             and self._is_english_protocol_noise_text(normalized_text)
         ):
             return False
-        return self.source_text_required_pattern.search(normalized_text) is not None
+        detection_text = self.strip_rm_control_sequences(normalized_text)
+        if not detection_text:
+            return False
+        return self.source_text_required_pattern.search(detection_text) is not None
 
     def should_translate_source_lines(self, lines: list[str]) -> bool:
         """判断多行原文是否至少包含一处需要翻译的源语言字符。"""
@@ -368,12 +371,7 @@ class TextRules:
             "true",
             "false",
             "null",
-            "none",
-            "auto",
-            "left",
-            "right",
-            "center",
-            "default",
+            "undefined",
             "gamefont",
         }:
             return True
@@ -399,13 +397,10 @@ class TextRules:
             return True
         if re.search(r"[+\-*/<>=]=?|&&|\|\|", stripped_text) and len(re.findall(r"[A-Za-z]{2,}", stripped_text)) < 2:
             return True
-        if re.fullmatch(r"[A-Za-z0-9_./\\:-]+", stripped_text):
-            if re.search(r"\d", stripped_text) and not re.search(r"\s", stripped_text):
-                return True
-            if "_" in stripped_text or "/" in stripped_text or "\\" in stripped_text:
-                return True
-            if re.search(r"[a-z][A-Z]", stripped_text):
-                return True
+        if re.search(r"[/\\]", stripped_text) and re.fullmatch(r"[A-Za-z0-9_./\\:-]+", stripped_text):
+            return True
+        if re.fullmatch(r"[a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*", stripped_text):
+            return True
         return False
 
     def _looks_like_english_script_punctuation(self, text: str) -> bool:

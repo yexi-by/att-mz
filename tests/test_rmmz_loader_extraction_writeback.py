@@ -770,6 +770,43 @@ async def test_english_visible_401_short_fragment_is_extracted(
 
 
 @pytest.mark.asyncio
+async def test_english_visible_401_control_only_letters_do_not_extract_chinese_text(
+    minimal_game_dir: Path,
+) -> None:
+    """英文事件正文判断先剥离控制符，避免把颜色控制符当英文源文。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 3,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2, "Guide"]},
+                {"code": 401, "parameters": [r"\c[14]水池的水位已然降低..."]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(
+            source_language="en",
+            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_text_exclusion_profile="english_protocol_noise",
+        )
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
+    items_by_path = {
+        item.location_path: item
+        for data in extracted.values()
+        for item in data.translation_items
+    }
+
+    assert "CommonEvents.json/3/0" not in items_by_path
+
+
+@pytest.mark.asyncio
 async def test_english_description_with_this_is_extracted(minimal_english_game_dir: Path) -> None:
     """英文说明里的自然语言 this 不能被当作脚本协议噪音过滤。"""
     items_path = minimal_english_game_dir / "data" / "Items.json"

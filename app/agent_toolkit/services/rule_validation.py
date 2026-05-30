@@ -622,11 +622,15 @@ class RuleValidationAgentMixin:
                 structured_rules = await self._resolve_structured_rules(session=session)
                 game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
-            records = build_plugin_rule_records_from_import(game_data=game_data, import_file=import_file)
             text_rules = TextRules.from_setting(
                 setting.text_rules,
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
+            )
+            records = build_plugin_rule_records_from_import(
+                game_data=game_data,
+                import_file=import_file,
+                text_rules=text_rules,
             )
             extracted_map = PluginTextExtraction(
                 game_data,
@@ -668,7 +672,7 @@ class RuleValidationAgentMixin:
             if not records:
                 warnings.append(issue("plugin_rules_empty", "插件规则为空"))
             if records and not extracted_items:
-                warnings.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
+                errors.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
         except Exception as error:
             errors.append(issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}"))
             records = []

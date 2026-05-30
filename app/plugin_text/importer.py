@@ -8,7 +8,8 @@ import aiofiles
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from app.rmmz.schema import GameData, PluginTextRuleRecord
-from app.rmmz.text_rules import JsonValue, coerce_json_value
+from app.rmmz.text_protocol import normalize_visible_text_for_extraction
+from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, get_default_text_rules
 
 from .common import (
     build_json_string_leaf_path_hint,
@@ -78,8 +79,10 @@ def build_plugin_rule_records_from_import(
     *,
     game_data: GameData,
     import_file: PluginRuleImportFile,
+    text_rules: TextRules | None = None,
 ) -> list[PluginTextRuleRecord]:
     """把索引优先的外部插件规则转换成数据库规则记录。"""
+    rules = text_rules if text_rules is not None else get_default_text_rules()
     records: list[PluginTextRuleRecord] = []
     seen_plugin_indices: set[int] = set()
     for spec in import_file:
@@ -104,6 +107,7 @@ def build_plugin_rule_records_from_import(
                 plugin_name=spec.plugin_name,
                 plugin=plugin,
                 path_templates=spec.paths,
+                text_rules=rules,
             )
         )
     return records
@@ -115,9 +119,15 @@ def build_plugin_rule_record(
     plugin_name: str,
     plugin: dict[str, JsonValue],
     path_templates: list[str],
+    text_rules: TextRules,
 ) -> PluginTextRuleRecord:
     """校验单个插件路径列表并构造数据库记录。"""
     resolved_leaves = resolve_plugin_leaves(plugin)
+    string_leaf_map = {
+        leaf.path: leaf.value
+        for leaf in resolved_leaves
+        if leaf.value_type == "string" and isinstance(leaf.value, str)
+    }
     accepted_paths: list[str] = []
     for path_template in path_templates:
         matched_paths = expand_rule_to_leaf_paths(
@@ -132,6 +142,19 @@ def build_plugin_rule_record(
             hint_suffix = "" if hint is None else f"。{hint}"
             raise ValueError(
                 f"插件 {plugin_name} 的路径没有命中当前插件字符串叶子: {path_template}{hint_suffix}"
+            )
+        translatable_hit_found = False
+        for leaf_path in matched_paths:
+            leaf_value = string_leaf_map.get(leaf_path)
+            if leaf_value is None:
+                continue
+            normalized_value = normalize_visible_text_for_extraction(leaf_value)
+            if text_rules.should_translate_source_text(normalized_value):
+                translatable_hit_found = True
+                break
+        if not translatable_hit_found:
+            raise ValueError(
+                f"插件 {plugin_name} 的路径没有命中玩家可见可翻译文本: {path_template}"
             )
         accepted_paths.append(path_template)
 

@@ -7,6 +7,8 @@ from typing import cast
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from app.config.schemas import TextRulesSetting
+from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.plugin_text import (
     PluginTextExtraction,
     build_plugin_rule_records_from_import,
@@ -17,7 +19,7 @@ from app.plugin_text import (
 )
 from app.rmmz import load_game_data
 from app.rmmz.schema import PluginTextRuleRecord
-from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
+from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from tests._native_write_plan_helper import reset_writable_copies, write_plugin_text
 
 
@@ -126,6 +128,34 @@ async def test_plugin_rule_import_rejects_plugin_index_name_mismatch(minimal_gam
         _ = build_plugin_rule_records_from_import(game_data=game_data, import_file=import_file)
 
 
+@pytest.mark.asyncio
+async def test_plugin_rule_import_rejects_paths_without_english_source_text(
+    minimal_english_game_dir: Path,
+) -> None:
+    """英文插件规则不能把协议值当成可导入的可见文本路径。"""
+    game_data = await load_game_data(minimal_english_game_dir)
+    import_file = parse_plugin_rule_import_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "VisiblePlugin",
+                    "paths": ["$['parameters']['Enabled']"],
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+    text_rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
+
+    with pytest.raises(ValueError, match="没有命中玩家可见可翻译文本"):
+        _ = build_plugin_rule_records_from_import(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+        )
+
+
 def test_plugin_rule_import_rejects_non_integer_plugin_index() -> None:
     """插件索引只接受 JSON 整数，避免字符串或布尔值被隐式转换成下标。"""
     invalid_payloads = [
@@ -191,6 +221,56 @@ async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) 
         "plugins.js/0/Nested/text",
         "plugins.js/0/List/0/text",
         "plugins.js/0/List/1/text",
+    }
+
+
+@pytest.mark.asyncio
+async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
+    minimal_english_game_dir: Path,
+) -> None:
+    """英文插件规则命中的短 UI 文本不能被协议噪音过滤静默跳过。"""
+    game_data = await load_game_data(minimal_english_game_dir)
+    plugin = ensure_json_object(game_data.plugins_js[0], "plugins[0]")
+    parameters = ensure_json_object(plugin["parameters"], "plugins[0].parameters")
+    parameters["AutoSaveLabel"] = "AutoSave"
+    parameters["GameOverLabel"] = "GameOver"
+    parameters["RouteLabel"] = "Route66"
+    parameters["SaveFileLabel"] = "Save_File"
+    rule_record = PluginTextRuleRecord(
+        plugin_index=0,
+        plugin_name="VisiblePlugin",
+        plugin_hash="hash",
+        path_templates=[
+            "$['parameters']['AutoSaveLabel']",
+            "$['parameters']['GameOverLabel']",
+            "$['parameters']['RouteLabel']",
+            "$['parameters']['SaveFileLabel']",
+            "$['parameters']['Formula']",
+            "$['parameters']['Enabled']",
+        ],
+    )
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(
+            source_language="en",
+            source_residual_label="英文",
+            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+            source_text_exclusion_profile="english_protocol_noise",
+            source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
+        )
+    )
+
+    extracted = PluginTextExtraction(
+        game_data,
+        plugin_rule_records=[rule_record],
+        text_rules=text_rules,
+    ).extract_all_text()
+    items = extracted["plugins.js"].translation_items
+
+    assert {item.location_path for item in items} == {
+        "plugins.js/0/AutoSaveLabel",
+        "plugins.js/0/GameOverLabel",
+        "plugins.js/0/RouteLabel",
+        "plugins.js/0/SaveFileLabel",
     }
 
 

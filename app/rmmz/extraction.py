@@ -365,7 +365,10 @@ class DataTextExtraction:
         normalized_text = self.text_rules.normalize_extraction_text(text)
         if not normalized_text:
             return False
-        return self.text_rules.source_text_required_pattern.search(normalized_text) is not None
+        detection_text = self.text_rules.strip_rm_control_sequences(normalized_text)
+        if not detection_text:
+            return False
+        return self.text_rules.source_text_required_pattern.search(detection_text) is not None
 
     def _should_keep_translation_item(self, item: TranslationItem) -> bool:
         """判断提取条目是否保留到正文翻译流程。"""

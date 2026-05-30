@@ -23,7 +23,8 @@ from app.application.flow_gate import (
 )
 from app.application.handler import TranslationHandler
 from app.config import SettingOverrides
-from app.config.schemas import TextRulesSetting
+from app.config.schemas import Setting, TextRulesSetting
+from app.language import SourceLanguage
 from app.llm import LLMHandler
 from app.native_quality import collect_native_quality_counts, collect_native_quality_details
 from app.persistence import GameRegistry, TargetGameSession
@@ -413,7 +414,14 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """插件规则为空时默认报错；显式确认后允许保存当前插件范围的空结果。"""
-    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path / "app-home"))
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
@@ -465,6 +473,95 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     assert translated_items == []
     assert state is not None
     assert state.scope_hash == plugin_rule_scope_hash(await load_game_data(minimal_game_dir))
+
+
+@pytest.mark.asyncio
+async def test_import_plugin_rules_rejects_english_protocol_value_paths(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """插件规则导入会拒绝英文模式下只命中协议值的路径。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    rules_path = tmp_path / "plugin-rules.json"
+    _ = rules_path.write_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "VisiblePlugin",
+                    "paths": ["$['parameters']['Enabled']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+
+    try:
+        with pytest.raises(ValueError, match="没有命中玩家可见可翻译文本"):
+            _ = await handler.import_plugin_rules(
+                game_title="English Fixture Game",
+                input_path=rules_path,
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_import_plugin_rules_uses_configured_text_rules(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件规则导入按当前配置判断命中文本，不能退回固定语言档案。"""
+    configured_text_rules = TextRulesSetting(
+        source_language="en",
+        source_residual_label="英文",
+        source_text_required_pattern="true",
+        source_text_exclusion_profile="none",
+        source_residual_segment_pattern="true",
+    )
+
+    def fake_load_setting(
+        setting_path: str | Path | None = None,
+        overrides: SettingOverrides | None = None,
+        source_language: SourceLanguage = "ja",
+    ) -> Setting:
+        """返回带测试文本规则的配置。"""
+        target_setting_path = EXAMPLE_SETTING_PATH if setting_path is None else Path(setting_path)
+        setting = load_setting(target_setting_path, overrides=overrides, source_language=source_language)
+        return setting.model_copy(update={"text_rules": configured_text_rules})
+
+    monkeypatch.setattr("app.application.handler.load_setting", fake_load_setting)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    rules_path = tmp_path / "plugin-rules.json"
+    _ = rules_path.write_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "VisiblePlugin",
+                    "paths": ["$['parameters']['Enabled']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+
+    try:
+        summary = await handler.import_plugin_rules(
+            game_title="English Fixture Game",
+            input_path=rules_path,
+        )
+    finally:
+        await handler.close()
+
+    assert summary.imported_rule_count == 1
 
 
 @pytest.mark.asyncio
@@ -2827,6 +2924,35 @@ async def test_validate_plugin_rules_reports_json_string_leaf_candidates(
 
 
 @pytest.mark.asyncio
+async def test_validate_plugin_rules_rejects_english_protocol_value_paths(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """插件规则校验会把英文模式下只命中协议值的路径报告为错误。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_plugin_rules(
+        game_title="English Fixture Game",
+        rules_text=json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "VisiblePlugin",
+                    "paths": ["$['parameters']['Enabled']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    assert report.status == "error"
+    assert {error.code for error in report.errors} == {"plugin_rules_invalid"}
+    assert "没有命中玩家可见可翻译文本" in report.errors[0].message
+
+
+@pytest.mark.asyncio
 async def test_prepare_agent_workspace_uses_mv_event_command_default(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
@@ -5154,6 +5280,35 @@ async def test_quality_report_accepts_saved_short_text_real_line_breaks(
     report = await service.quality_report(game_title="テストゲーム")
 
     assert report.summary["placeholder_risk_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quality_report_allows_common_english_rpg_abbreviations(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """英文质量检查允许常见 RPG 与系统缩写保留在中文译文中。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    async with await registry.open_game("English Fixture Game") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/0",
+                    item_type="long_text",
+                    role="Guide",
+                    original_lines=["Play the BGM before the NPC raises ATK."],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["在 NPC 提升 ATK 前播放 BGM。"],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.quality_report(game_title="English Fixture Game")
+
+    assert report.summary["source_residual_count"] == 0
+    assert report.details["source_residual_items"] == []
 
 
 @pytest.mark.asyncio

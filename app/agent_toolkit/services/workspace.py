@@ -264,6 +264,7 @@ class WorkspaceAgentMixin:
             game_data=game_data,
             output_dir=target_dir / "terminology",
             mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
+            text_rules=text_rules,
         )
         if terminology_registry is not None:
             exported_registry = await load_terminology_registry(field_terms_path=terminology_summary.field_terms_path)
@@ -552,6 +553,7 @@ class WorkspaceAgentMixin:
                 expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
                     game_data=game_data,
                     mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+                    text_rules=text_rules,
                 ).extract_registry_and_contexts()
                 _validate_terminology_registry_shape(
                     imported_registry=registry,
@@ -957,7 +959,11 @@ def _validate_workspace_plugin_rules(
     details: JsonObject = {"rules": []}
     try:
         import_file = parse_plugin_rule_import_text(rules_text)
-        records = build_plugin_rule_records_from_import(game_data=game_data, import_file=import_file)
+        records = build_plugin_rule_records_from_import(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+        )
         extracted_map = PluginTextExtraction(
             game_data,
             plugin_rule_records=records,
@@ -998,7 +1004,7 @@ def _validate_workspace_plugin_rules(
         if not records:
             warnings.append(issue("plugin_rules_empty", "插件规则为空"))
         if records and not extracted_items:
-            warnings.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
+            errors.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
     except Exception as error:
         errors.append(issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}"))
         records = []

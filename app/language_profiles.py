@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from app.config.schemas import TextRulesSetting
 from app.language import SourceLanguage, SourceTextExclusionProfile
 
 JAPANESE_PROMPT_FILE = "prompts/text_translation_ja_to_zh_system.md"
@@ -75,6 +76,37 @@ ENGLISH_PROFILE = LanguageProfile(
         "Lv",
         "LV",
         "OK",
+        "BGM",
+        "BGS",
+        "ME",
+        "SE",
+        "NPC",
+        "ATK",
+        "DEF",
+        "MAT",
+        "MDF",
+        "AGI",
+        "LUK",
+        "HIT",
+        "EVA",
+        "CRI",
+        "CEV",
+        "MEV",
+        "MRF",
+        "CNT",
+        "HRG",
+        "MRG",
+        "TRG",
+        "TGR",
+        "GRD",
+        "REC",
+        "PHA",
+        "MCR",
+        "TCR",
+        "PDR",
+        "MDR",
+        "FDR",
+        "EXR",
     ),
     source_residual_terms_ignore_case=True,
 )
@@ -88,6 +120,22 @@ LANGUAGE_PROFILES: dict[SourceLanguage, LanguageProfile] = {
 def language_profile(source_language: SourceLanguage) -> LanguageProfile:
     """读取指定源语言的语言档案。"""
     return LANGUAGE_PROFILES[source_language]
+
+
+def build_text_rules_setting_for_language_profile(source_language: SourceLanguage) -> TextRulesSetting:
+    """构造不依赖配置文件的源语言文本规则。"""
+    profile = language_profile(source_language)
+    return TextRulesSetting(
+        source_language=profile.source_language,
+        source_residual_label=profile.residual_label,
+        source_text_required_pattern=profile.source_text_required_pattern,
+        source_text_exclusion_profile=profile.source_text_exclusion_profile,
+        source_residual_segment_pattern=profile.source_residual_segment_pattern,
+        source_residual_allowed_chars=list(profile.source_residual_allowed_chars),
+        source_residual_allowed_tail_chars=list(profile.source_residual_allowed_tail_chars),
+        allowed_source_residual_terms=list(profile.allowed_source_residual_terms),
+        source_residual_terms_ignore_case=profile.source_residual_terms_ignore_case,
+    )
 
 
 def apply_language_profile_to_raw_config(
@@ -140,6 +188,7 @@ def _read_or_create_section(raw_config: dict[str, object], section_name: str) ->
 __all__: list[str] = [
     "LanguageProfile",
     "apply_language_profile_to_raw_config",
+    "build_text_rules_setting_for_language_profile",
     "language_profile",
     "resolve_profile_prompt_path",
 ]

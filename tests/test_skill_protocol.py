@@ -564,12 +564,13 @@ def test_docs_do_not_own_agent_task_contracts() -> None:
     assert "`docs/event-command-rules-agent-prompt.md`" not in combined_skill_text
 
 
-def test_public_docs_describe_json_flag_as_command_contract() -> None:
-    """公开文档不得把不支持 --json 的导出命令写成统一机器输出。"""
+def test_public_readmes_keep_command_contracts_out_of_quick_start() -> None:
+    """公开 README 是快速开始入口，不承载 Agent 命令契约。"""
     for path in (ROOT / "README.md", ROOT / "docs" / "release-readme.md"):
         text = read(path)
-        assert "命令契约写有 --json 的步骤必须保留 --json" in text
-        assert "只导出文件的步骤按 Skill 命令契约使用 --output" in text
+        assert "## 常用命令" not in text
+        assert "命令契约写有 --json 的步骤必须保留 --json" not in text
+        assert "只导出文件的步骤按 Skill 命令契约使用 --output" not in text
         assert "所有命令使用 .\\att-mz.exe --agent-mode ... --json" not in text
 
     advanced_usage = read(ROOT / "docs" / "advanced-usage.md")
@@ -578,25 +579,25 @@ def test_public_docs_describe_json_flag_as_command_contract() -> None:
     assert "源码运行时所有命令都使用：" not in advanced_usage
 
 
-def test_public_readme_describes_plugin_source_side_branch_commands() -> None:
-    """发行版 README 必须把插件源码支线写成风险扫描到规则导入的完整流程。"""
-    text = read(ROOT / "README.md")
+def test_advanced_usage_describes_plugin_source_side_branch_commands() -> None:
+    """插件源码支线命令由进阶文档承载，README 只保留大众入口。"""
+    text = read(ROOT / "docs" / "advanced-usage.md")
     for phrase in [
-        "插件源码文本默认只做风险扫描",
-        "高风险或用户明确要求处理时，再按 AST 地图导出、规则校验和规则导入流程处理",
-        "扫描插件源码文本风险",
-        "导出插件源码 AST 地图",
-        "校验插件源码规则",
-        "导入插件源码规则",
-        "默认不把插件源码内部源语言字符串当作漏翻清单",
-        "`mapped_excluded` 表示已审查但不翻译",
-        "export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json",
-        "validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json",
-        "import-plugin-source-rules --game <游戏标题> --input <规则文件> --json",
+        "插件源码文本属于少见支线",
+        "只有插件源码高风险或支线已有规则时",
+        "高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认",
+        "export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json",
+        "validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json",
+        "import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json",
+        "`mapped_excluded` 表示该字符串已审查但不翻译",
     ]:
         assert phrase in text
-    assert "插件源码扫描只会输出候选文本" not in text
-    assert "扫描插件源码文本候选" not in text
+
+    for path in (ROOT / "README.md", ROOT / "docs" / "release-readme.md"):
+        readme_text = read(path)
+        assert "export-plugin-source-ast-map --game" not in readme_text
+        assert "validate-plugin-source-rules --game" not in readme_text
+        assert "import-plugin-source-rules --game" not in readme_text
 
 
 def test_plugin_source_skill_allows_explicit_low_risk_request() -> None:

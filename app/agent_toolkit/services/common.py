@@ -1025,11 +1025,12 @@ def _placeholder_preview_loses_visible_source_text(
     text_for_model = sample_preview.get("text_for_model")
     if not isinstance(original_text, str) or not isinstance(text_for_model, str):
         return False
-    if not text_rules.should_translate_source_text(original_text):
+    detection_rules = TextRules.from_setting(text_rules.setting)
+    if not detection_rules.should_translate_source_text(original_text):
         return False
-    model_visible_text = text_rules.placeholder_token_pattern.sub("", text_for_model)
-    model_visible_text = text_rules.strip_rm_control_sequences(model_visible_text)
-    return not text_rules.should_translate_source_text(model_visible_text)
+    model_visible_text = detection_rules.placeholder_token_pattern.sub("", text_for_model)
+    model_visible_text = detection_rules.strip_rm_control_sequences(model_visible_text)
+    return not detection_rules.should_translate_source_text(model_visible_text)
 
 
 def _build_coverage_report(
