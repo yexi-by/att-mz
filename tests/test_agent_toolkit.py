@@ -476,6 +476,7 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_home_with_example_setting")
 async def test_import_plugin_rules_rejects_english_protocol_value_paths(
     minimal_english_game_dir: Path,
     tmp_path: Path,

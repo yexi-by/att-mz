@@ -5,7 +5,25 @@ from pathlib import Path
 
 import pytest
 
+from app.runtime_paths import APP_HOME_ENV_NAME
 from app.rmmz.text_rules import JsonValue
+
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+@pytest.fixture
+def app_home_with_example_setting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """创建带示例配置的临时应用目录，避免测试依赖开发机私有配置。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
+        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
+        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+    )
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    return app_home
 
 
 def write_json(path: Path, value: JsonValue) -> None:

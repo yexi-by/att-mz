@@ -159,6 +159,7 @@ def test_english_terminology_source_detection_ignores_control_sequence_letters()
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_home_with_example_setting")
 async def test_english_terminology_export_skips_existing_chinese_terms(
     minimal_english_game_dir: Path,
     tmp_path: Path,
@@ -237,6 +238,7 @@ async def test_english_terminology_export_skips_existing_chinese_terms(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_home_with_example_setting")
 async def test_import_terminology_rejects_field_terms_without_glossary(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -282,6 +284,7 @@ async def test_import_terminology_rejects_field_terms_without_glossary(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_home_with_example_setting")
 async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_terms(
     minimal_game_dir: Path,
     tmp_path: Path,
