@@ -9,7 +9,7 @@
 
 你不需要懂编程，也不需要自己判断游戏引擎或原文语言。告诉 AI 你的游戏在哪，它会先检查，再带你完成汉化。
 
-> ⚠️ **目前仅支持 RPG Maker MV / MZ 游戏。** 后续支持 XP、VX Ace 等引擎在技术上很简单——只是作者暂时没有想玩的游戏。如果你有需求，去 [GitHub](https://github.com/yexi-by/att-mz) ⭐ 点个 Star 或提个 Issue，给作者一点更新的动力。
+> ⚠️ **目前仅支持 RPG Maker MV / MZ 游戏。** 后续支持 XP、VX、VX Ace 等 RGSS 系列引擎需要新增归档解包、Ruby Marshal 反序列化和 Ruby / RGSS 脚本解析等适配层。如果你有需求，去 [GitHub](https://github.com/yexi-by/att-mz) ⭐ 点个 Star 或提个 Issue，给作者一点更新的动力。
 
 ## ✨ 工具优点
 
