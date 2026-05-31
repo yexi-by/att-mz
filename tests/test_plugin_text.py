@@ -11,6 +11,7 @@ from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.plugin_text import (
     PluginTextExtraction,
+    build_plugin_hash,
     build_plugin_rule_records_from_import,
     export_plugins_json_file,
     load_plugin_rule_import_file,
@@ -204,7 +205,7 @@ async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) 
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
-        plugin_hash="hash",
+        plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
         path_templates=[
             "$['parameters']['Message']",
             "$['parameters']['Nested']['text']",
@@ -225,6 +226,36 @@ async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) 
 
 
 @pytest.mark.asyncio
+async def test_plugin_text_extraction_rejects_stale_rule_hash(minimal_game_dir: Path) -> None:
+    """插件配置变化后，提取阶段不能把过期规则当成空命中继续执行。"""
+    game_data = await load_game_data(minimal_game_dir)
+    rule_record = PluginTextRuleRecord(
+        plugin_index=0,
+        plugin_name="TestPlugin",
+        plugin_hash="stale-hash",
+        path_templates=["$['parameters']['Message']"],
+    )
+
+    with pytest.raises(RuntimeError, match="插件规则已过期"):
+        _ = PluginTextExtraction(game_data, [rule_record]).extract_all_text()
+
+
+@pytest.mark.asyncio
+async def test_plugin_text_extraction_rejects_missing_plugin_index(minimal_game_dir: Path) -> None:
+    """插件下标失效时，提取阶段必须显式报错。"""
+    game_data = await load_game_data(minimal_game_dir)
+    rule_record = PluginTextRuleRecord(
+        plugin_index=len(game_data.plugins_js),
+        plugin_name="RemovedPlugin",
+        plugin_hash="removed-hash",
+        path_templates=["$['parameters']['Message']"],
+    )
+
+    with pytest.raises(RuntimeError, match="超出当前 plugins.js 范围"):
+        _ = PluginTextExtraction(game_data, [rule_record]).extract_all_text()
+
+
+@pytest.mark.asyncio
 async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
     minimal_english_game_dir: Path,
 ) -> None:
@@ -239,7 +270,7 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="VisiblePlugin",
-        plugin_hash="hash",
+        plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
         path_templates=[
             "$['parameters']['AutoSaveLabel']",
             "$['parameters']['GameOverLabel']",
@@ -281,7 +312,7 @@ async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_di
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
-        plugin_hash="hash",
+        plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
         path_templates=[
             "$['parameters']['Message']",
             "$['parameters']['Nested']['text']",
@@ -315,7 +346,7 @@ async def test_plugin_text_write_back_rejects_internal_placeholder_leak(minimal_
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
-        plugin_hash="hash",
+        plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
         path_templates=["$['parameters']['Message']"],
     )
     item = PluginTextExtraction(game_data, [rule_record]).extract_all_text()[
@@ -346,7 +377,7 @@ async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_g
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
-        plugin_hash="hash",
+        plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
         path_templates=[
             "$['parameters']['MainEvents'][0]['MainEventNote']",
         ],

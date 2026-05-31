@@ -7,7 +7,6 @@
 
 import asyncio
 
-from json_repair import repair_json
 from pydantic import BaseModel, RootModel
 
 from app.rmmz.schema import ErrorType, TranslationErrorItem, TranslationItem
@@ -58,9 +57,7 @@ async def verify_translation_batch(
     error_items: list[TranslationErrorItem] = []
 
     try:
-        clean_result = repair_json(ai_result, return_objects=False)
-
-        response_items = TranslationResponse.model_validate_json(clean_result).root
+        response_items = TranslationResponse.model_validate_json(ai_result).root
         prompt_id_by_location_path = _validate_prompt_id_map(
             items=items,
             prompt_ids_by_location_path=prompt_ids_by_location_path,

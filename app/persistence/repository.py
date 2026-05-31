@@ -468,10 +468,10 @@ async def find_registered_game_by_path(
         connection = await open_connection(db_path)
         try:
             await check_connection_readable(connection=connection, db_path=db_path)
-            try:
-                metadata = await read_metadata(connection=connection, db_path=db_path)
-            except RuntimeError:
+            table_names = await read_table_names(connection)
+            if not _is_att_mz_database_candidate(table_names):
                 continue
+            metadata = await read_metadata(connection=connection, db_path=db_path)
             if metadata.game_path != game_path and metadata.content_root != content_root:
                 continue
             await ensure_schema_compatible(connection=connection, db_path=db_path)
@@ -479,6 +479,11 @@ async def find_registered_game_by_path(
         finally:
             await connection.close()
     return None
+
+
+def _is_att_mz_database_candidate(table_names: set[str]) -> bool:
+    """判断 SQLite 文件是否包含本项目声明的业务表。"""
+    return bool(table_names.intersection(EXPECTED_STATIC_TABLE_NAMES))
 
 
 class GameRegistry:

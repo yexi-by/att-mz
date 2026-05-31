@@ -10,6 +10,12 @@ from app.config import SettingOverrides
 from app.utils.config_loader_utils import load_setting
 
 ROOT = Path(__file__).resolve().parents[1]
+MINIMAL_PROMPT_TEMPLATE = """系统提示词
+字段：{{输出字段列表}}
+规则：{{原文对照规则}}
+示例：
+{{原文对照示例行}}
+"""
 
 
 def test_load_setting_applies_cli_overrides_without_reading_prompt_file(
@@ -68,7 +74,7 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
         text_translation_retry_count=5,
         text_translation_retry_delay=3,
         text_translation_include_source_lines=True,
-        text_translation_system_prompt="直接传入的系统提示词",
+        text_translation_system_prompt=MINIMAL_PROMPT_TEMPLATE,
         event_command_default_codes=[357, 355],
         strip_wrapping_punctuation_pairs=[("《", "》")],
         preserve_wrapping_punctuation_pairs=[("『", "』")],
@@ -98,8 +104,8 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
     assert setting.text_translation.retry_delay == 3
     assert setting.text_translation.include_source_lines is True
     assert setting.text_translation.system_prompt_file == "<cli>"
-    assert setting.text_translation.system_prompt.startswith("直接传入的系统提示词")
-    assert "必须额外包含 `source_lines`" in setting.text_translation.system_prompt
+    assert setting.text_translation.system_prompt.startswith("系统提示词")
+    assert "`source_lines` 尽量原样复制输入原文，用于人工对照。" in setting.text_translation.system_prompt
     assert setting.event_command_text.default_command_codes == [357, 355]
     assert setting.text_rules.strip_wrapping_punctuation_pairs == [("《", "》")]
     assert setting.text_rules.preserve_wrapping_punctuation_pairs == [("『", "』")]
@@ -182,11 +188,28 @@ def test_builtin_prompt_template_can_enable_source_lines_protocol(
     assert "本轮输出协议补充" not in system_prompt
 
 
-def test_custom_prompt_without_template_can_enable_source_lines_protocol(
+def test_custom_prompt_without_template_fails_fast(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """自定义提示词缺少模板时仍追加协议，避免开关静默失效。"""
+    """自定义提示词缺少模板时必须停止加载，避免静默拼接协议。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        text_translation_extra="include_source_lines = true",
+        prompt_text="系统提示词",
+    )
+
+    with pytest.raises(ValueError, match="正文翻译提示词模板缺少必要占位符"):
+        _ = load_setting(setting_path=setting_path)
+
+def test_custom_prompt_template_can_enable_source_lines_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自定义提示词模板开启后会在原位要求原文对照字段。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
     setting_path = _write_minimal_setting(
@@ -199,7 +222,8 @@ def test_custom_prompt_without_template_can_enable_source_lines_protocol(
 
     assert setting.text_translation.include_source_lines is True
     assert setting.text_translation.system_prompt.startswith("系统提示词")
-    assert "必须额外包含 `source_lines`" in setting.text_translation.system_prompt
+    assert "`source_lines` 尽量原样复制输入原文，用于人工对照。" in setting.text_translation.system_prompt
+    assert "本轮输出协议补充" not in setting.text_translation.system_prompt
 
 
 def test_default_prompt_files_do_not_request_source_lines() -> None:
@@ -249,7 +273,7 @@ default_command_codes = [357]
 """,
         encoding="utf-8",
     )
-    _ = (tmp_path / "prompt.txt").write_text("系统提示词", encoding="utf-8")
+    _ = (tmp_path / "prompt.txt").write_text(MINIMAL_PROMPT_TEMPLATE, encoding="utf-8")
     monkeypatch.setenv(LLM_BASE_URL_ENV_NAME, "https://env.example.com")
     monkeypatch.setenv(LLM_API_KEY_ENV_NAME, "env-key")
 
@@ -318,10 +342,11 @@ def _write_minimal_setting(
     *,
     request_body_extra_text: str,
     text_translation_extra: str = "",
+    prompt_text: str = MINIMAL_PROMPT_TEMPLATE,
 ) -> Path:
     """写入只包含配置加载测试所需字段的设置文件。"""
     setting_path = tmp_path / "setting.toml"
-    _ = (tmp_path / "prompt.txt").write_text("系统提示词", encoding="utf-8")
+    _ = (tmp_path / "prompt.txt").write_text(prompt_text, encoding="utf-8")
     _ = setting_path.write_text(
         f"""
 [llm]

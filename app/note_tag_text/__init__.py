@@ -1,6 +1,6 @@
 """Note 标签文本规则公共导出入口。"""
 
-from .extraction import NoteTagTextExtraction
+from .extraction import NoteTagTextExtraction, note_tag_location_path_matches_rule
 from .exporter import export_note_tag_candidates_file
 from .importer import (
     NoteTagRuleImportFile,
@@ -21,6 +21,7 @@ __all__: list[str] = [
     "export_note_tag_candidates_file",
     "iter_note_tag_matches",
     "load_note_tag_rule_import_file",
+    "note_tag_location_path_matches_rule",
     "parse_note_tag_rule_import_text",
     "replace_note_tag_value",
 ]

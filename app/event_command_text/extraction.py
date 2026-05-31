@@ -39,10 +39,16 @@ class EventCommandTextExtraction:
 
         translation_data_map: dict[str, TranslationData] = {}
         seen_location_paths: set[str] = set()
+        command_hit_counts = [0 for _rule in self.rule_records]
+        path_hit_counts: dict[tuple[int, str], int] = {
+            (rule_index, path_template): 0
+            for rule_index, rule in enumerate(self.rule_records)
+            for path_template in rule.path_templates
+        }
         for path, display_name, command in iter_all_commands(self.game_data):
             matched_rules = [
-                rule
-                for rule in self.rule_records
+                (rule_index, rule)
+                for rule_index, rule in enumerate(self.rule_records)
                 if rule.command_code == command.code
                 and command_matches_filters(
                     parameters=command.parameters,
@@ -69,7 +75,8 @@ class EventCommandTextExtraction:
             string_leaf_map = {
                 leaf.path: leaf.value for leaf in resolved_leaves if leaf.value_type == "string"
             }
-            for rule in matched_rules:
+            for rule_index, rule in matched_rules:
+                command_hit_counts[rule_index] += 1
                 for path_template in rule.path_templates:
                     matched_paths = expand_rule_to_leaf_paths(
                         path_template=path_template,
@@ -80,13 +87,14 @@ class EventCommandTextExtraction:
                             json_path=leaf_path,
                             command_location_path=command_location_path,
                         )
-                        if location_path in seen_location_paths:
-                            continue
                         leaf_value = string_leaf_map.get(leaf_path)
                         if not isinstance(leaf_value, str):
                             continue
+                        path_hit_counts[(rule_index, path_template)] += 1
                         normalized_value = normalize_visible_text_for_extraction(leaf_value)
                         if not self.text_rules.should_translate_source_text(normalized_value):
+                            continue
+                        if location_path in seen_location_paths:
                             continue
                         seen_location_paths.add(location_path)
                         translation_data_map[file_name].translation_items.append(
@@ -97,11 +105,48 @@ class EventCommandTextExtraction:
                             )
                         )
 
-        return {
+        result = {
             file_name: data
             for file_name, data in translation_data_map.items()
             if data.translation_items
         }
+        _ensure_event_command_rules_have_current_hits(
+            rules=self.rule_records,
+            command_hit_counts=command_hit_counts,
+            path_hit_counts=path_hit_counts,
+        )
+        return result
+
+
+def _ensure_event_command_rules_have_current_hits(
+    *,
+    rules: list[EventCommandTextRuleRecord],
+    command_hit_counts: list[int],
+    path_hit_counts: dict[tuple[int, str], int],
+) -> None:
+    """确认已保存事件指令规则仍然命中当前游戏。"""
+    for rule_index, rule in enumerate(rules):
+        rule_label = _event_command_rule_label(rule)
+        if command_hit_counts[rule_index] == 0:
+            raise RuntimeError(
+                f"事件指令规则已过期: {rule_label} 没有命中当前游戏指令，请重新导出并导入事件指令规则"
+            )
+        for path_template in rule.path_templates:
+            if path_hit_counts[(rule_index, path_template)] == 0:
+                raise RuntimeError(
+                    f"事件指令规则已过期: {rule_label} 路径没有命中当前字符串叶子: {path_template}，请重新导出并导入事件指令规则"
+                )
+
+
+def _event_command_rule_label(rule: EventCommandTextRuleRecord) -> str:
+    """生成适合错误信息展示的事件指令规则摘要。"""
+    if not rule.parameter_filters:
+        return f"command_code={rule.command_code}"
+    filters = ",".join(
+        f"{parameter_filter.index}={parameter_filter.value}"
+        for parameter_filter in rule.parameter_filters
+    )
+    return f"command_code={rule.command_code} match={filters}"
 
 
 __all__: list[str] = ["EventCommandTextExtraction"]

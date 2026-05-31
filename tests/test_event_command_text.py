@@ -257,6 +257,143 @@ async def test_event_command_rule_import_extracts_and_writes_back(
 
 
 @pytest.mark.asyncio
+async def test_event_command_extraction_rejects_stale_command_match(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """事件指令参数变化后，已保存规则不能静默变成空命中。"""
+    game_data = await load_game_data(minimal_game_dir)
+    input_path = tmp_path / "event-command-rules.json"
+    _ = input_path.write_text(
+        json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {
+                            "0": "TestPlugin",
+                            "1": "Show",
+                        },
+                        "paths": ["$['parameters'][3]['message']"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    records = build_event_command_rule_records_from_import(
+        game_data=game_data,
+        import_file=await load_event_command_rule_import_file(input_path),
+    )
+
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    command = ensure_json_object(commands[4], "CommonEvents[1].list[4]")
+    parameters = ensure_json_array(command["parameters"], "CommonEvents[1].list[4].parameters")
+    parameters[1] = "RenamedAction"
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+    stale_game_data = await load_game_data(minimal_game_dir)
+
+    with pytest.raises(RuntimeError, match="事件指令规则已过期"):
+        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+
+
+@pytest.mark.asyncio
+async def test_event_command_extraction_rejects_stale_path_template(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """事件指令嵌套字段消失后，已保存路径规则必须显式失败。"""
+    game_data = await load_game_data(minimal_game_dir)
+    input_path = tmp_path / "event-command-rules.json"
+    _ = input_path.write_text(
+        json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {
+                            "0": "TestPlugin",
+                            "1": "Show",
+                        },
+                        "paths": ["$['parameters'][3]['message']"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    records = build_event_command_rule_records_from_import(
+        game_data=game_data,
+        import_file=await load_event_command_rule_import_file(input_path),
+    )
+
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    command = ensure_json_object(commands[4], "CommonEvents[1].list[4]")
+    parameters = ensure_json_array(command["parameters"], "CommonEvents[1].list[4].parameters")
+    payload = ensure_json_object(parameters[3], "CommonEvents[1].list[4].parameters[3]")
+    _ = payload.pop("message")
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+    stale_game_data = await load_game_data(minimal_game_dir)
+
+    with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
+        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+
+
+@pytest.mark.asyncio
+async def test_event_command_extraction_rejects_path_changed_to_non_string_leaf(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """事件指令路径仍存在但不再是字符串叶子时，规则必须显式过期。"""
+    game_data = await load_game_data(minimal_game_dir)
+    input_path = tmp_path / "event-command-rules.json"
+    _ = input_path.write_text(
+        json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {
+                            "0": "TestPlugin",
+                            "1": "Show",
+                        },
+                        "paths": ["$['parameters'][3]['message']"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    records = build_event_command_rule_records_from_import(
+        game_data=game_data,
+        import_file=await load_event_command_rule_import_file(input_path),
+    )
+
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    command = ensure_json_object(commands[4], "CommonEvents[1].list[4]")
+    parameters = ensure_json_array(command["parameters"], "CommonEvents[1].list[4].parameters")
+    payload = ensure_json_object(parameters[3], "CommonEvents[1].list[4].parameters[3]")
+    payload["message"] = {"text": "イベントコマンド"}
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+    stale_game_data = await load_game_data(minimal_game_dir)
+
+    with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
+        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+
+
+@pytest.mark.asyncio
 async def test_event_command_nested_write_error_reports_location_path(
     minimal_game_dir: Path,
     tmp_path: Path,

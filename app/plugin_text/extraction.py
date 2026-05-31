@@ -14,10 +14,12 @@ from app.rmmz.schema import (
     TranslationData,
     TranslationItem,
 )
-from app.rmmz.text_rules import TextRules, get_default_text_rules
+from app.rmmz.text_rules import JsonValue, TextRules, get_default_text_rules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.plugin_text.common import (
+    build_plugin_hash,
     expand_rule_to_leaf_paths,
+    extract_plugin_name,
     jsonpath_to_location_path,
     resolve_plugin_leaves,
 )
@@ -43,9 +45,13 @@ class PluginTextExtraction:
         for rule_record in self.plugin_rule_records:
             if not rule_record.path_templates:
                 continue
-            if rule_record.plugin_index >= len(self.game_data.plugins_js):
-                continue
-            translation_items.extend(self._extract_plugin_items(rule_record=rule_record))
+            plugin = self._validated_plugin(rule_record)
+            translation_items.extend(
+                self._extract_plugin_items(
+                    rule_record=rule_record,
+                    plugin=plugin,
+                )
+            )
 
         if not translation_items:
             return {}
@@ -57,9 +63,32 @@ class PluginTextExtraction:
             )
         }
 
-    def _extract_plugin_items(self, *, rule_record: PluginTextRuleRecord) -> list[TranslationItem]:
-        """根据单个插件规则快照提取正文条目。"""
+    def _validated_plugin(self, rule_record: PluginTextRuleRecord) -> dict[str, JsonValue]:
+        """确认数据库规则仍然匹配当前插件配置。"""
+        if rule_record.plugin_index >= len(self.game_data.plugins_js):
+            raise RuntimeError(
+                f"插件规则已过期: plugin_index={rule_record.plugin_index} 已超出当前 plugins.js 范围，请重新导出并导入插件规则"
+            )
         plugin = self.game_data.plugins_js[rule_record.plugin_index]
+        current_plugin_name = extract_plugin_name(plugin, rule_record.plugin_index)
+        if rule_record.plugin_name != current_plugin_name:
+            raise RuntimeError(
+                f"插件规则已过期: plugin_index={rule_record.plugin_index} 名称不匹配，规则={rule_record.plugin_name}，当前={current_plugin_name}，请重新导出并导入插件规则"
+            )
+        current_plugin_hash = build_plugin_hash(plugin)
+        if rule_record.plugin_hash != current_plugin_hash:
+            raise RuntimeError(
+                f"插件规则已过期: plugin_index={rule_record.plugin_index} 插件配置 hash 不匹配，请重新导出并导入插件规则"
+            )
+        return plugin
+
+    def _extract_plugin_items(
+        self,
+        *,
+        rule_record: PluginTextRuleRecord,
+        plugin: dict[str, JsonValue],
+    ) -> list[TranslationItem]:
+        """根据单个插件规则快照提取正文条目。"""
         resolved_leaves = resolve_plugin_leaves(plugin)
         string_leaf_map = {
             leaf.path: leaf.value for leaf in resolved_leaves if leaf.value_type == "string"

@@ -6,31 +6,26 @@ from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
-    EventCommandTextExtraction,
-    JsonArray,
     JsonObject,
-    JsonValue,
     NoteTagTextExtraction,
-    PLUGINS_FILE_NAME,
+    NoteTagTextRuleRecord,
     Path,
-    PluginTextExtraction,
     TextRules,
-    _build_rule_metric_detail,
-    _collect_write_protocol_unwritable_items,
-    _json_items_by_location_path,
+    TranslationItem,
+    _format_mv_namebox_rule_error,
     _note_tag_item_matches_rule,
-    _preview_event_command_write_back,
+    _validate_event_command_rules_with_context,
+    _validate_mv_virtual_namebox_rules_with_context,
+    _validate_note_tag_rules_with_context,
+    _validate_plugin_source_rules_with_context,
+    _validate_plugin_rules_with_context,
     _write_json_object,
-    build_event_command_rule_records_from_import,
     build_note_tag_rule_records_from_import,
-    build_plugin_rule_records_from_import,
     collect_translation_data_paths,
     export_note_tag_candidates_file,
     issue,
     load_setting,
-    parse_event_command_rule_import_text,
     parse_note_tag_rule_import_text,
-    parse_plugin_rule_import_text,
 )
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.flow_gate import (
@@ -52,7 +47,7 @@ from app.rmmz.mv_namebox import (
     parse_mv_virtual_namebox_rule_import_text,
     validate_mv_virtual_namebox_rules_against_game,
 )
-from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord, TranslationItem
+from app.rmmz.schema import PluginSourceTextRuleRecord
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
@@ -60,29 +55,25 @@ from app.rule_review import (
     plugin_source_rule_scope_hash,
     mv_virtual_namebox_rule_scope_hash,
 )
-from app.text_scope.write_probe import collect_write_back_probe_reasons
 
 
-def _collect_plugin_source_unwritable_items(
+def _translation_paths_matching_note_rules(
     *,
-    game_data: GameData,
-    extracted_items: list[TranslationItem],
-) -> JsonArray:
-    """把插件源码写回预演原因转换为校验报告明细。"""
-    if not extracted_items:
-        return []
-    reasons = collect_write_back_probe_reasons(
-        game_data=game_data,
-        active_items=extracted_items,
-    )
-    return [
-        {
-            "location_path": location_path,
-            "reason": reason,
-        }
-        for location_path, reason in sorted(reasons.items())
-        if location_path.startswith("js/plugins/")
-    ]
+    translated_items: list[TranslationItem],
+    rule_records: list[NoteTagTextRuleRecord],
+) -> set[str]:
+    """从已保存译文中找出属于指定 Note 标签规则的定位路径。"""
+    return {
+        item.location_path
+        for item in translated_items
+        for rule_record in rule_records
+        if _note_tag_item_matches_rule(item=item, rule_record=rule_record)
+    }
+
+
+def _plugin_source_rule_prefixes(rule_records: list[PluginSourceTextRuleRecord]) -> list[str]:
+    """返回插件源码规则影响的已保存译文路径前缀。"""
+    return sorted({f"js/plugins/{record.file_name}/" for record in rule_records})
 
 
 class RuleValidationAgentMixin:
@@ -125,78 +116,28 @@ class RuleValidationAgentMixin:
         rules_text: str,
     ) -> AgentReport:
         """校验 MV 虚拟名字框规则 JSON 文本并报告候选命中情况。"""
-        errors: list[AgentIssue] = []
-        warnings: list[AgentIssue] = []
-        details: JsonObject = {"rules": [], "matched_candidates": []}
-        records: list[MvVirtualNameboxRuleRecord] = []
-        existing_records: list[MvVirtualNameboxRuleRecord] = []
-        candidate_count = 0
-        matched_candidate_count = 0
-        newly_matched_candidate_count = 0
         try:
-            records = parse_mv_virtual_namebox_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 game_data = await self._load_translation_source_game_data(session)
+                existing_records = []
                 if game_data.layout.engine_kind == "mv":
                     existing_records = await session.read_mv_virtual_namebox_rules()
-            if game_data.layout.engine_kind != "mv":
-                errors.append(issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用"))
-                return AgentReport.from_parts(
-                    errors=errors,
-                    warnings=[],
-                    summary={
-                        "rule_count": 0,
-                        "candidate_count": 0,
-                        "matched_candidate_count": 0,
-                        "newly_matched_candidate_count": 0,
-                    },
-                    details=details,
-                )
-            candidates = mv_virtual_namebox_candidate_details(game_data)
-            candidate_count = len(candidates)
-            rule_errors, match_details = validate_mv_virtual_namebox_rules_against_game(
-                game_data=game_data,
-                records=records,
-            )
-            errors.extend(
-                issue("mv_virtual_namebox_rules_invalid", _format_mv_namebox_rule_error(error_detail))
-                for error_detail in rule_errors
-            )
-            matched_candidate_count = len(match_details)
-            _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_game(
-                game_data=game_data,
-                records=existing_records,
-            )
-            existing_match_keys = _mv_namebox_match_keys(existing_match_details)
-            newly_matched_candidates: JsonArray = [
-                detail
-                for detail in match_details
-                if _mv_namebox_match_key(detail) not in existing_match_keys
-            ]
-            newly_matched_candidate_count = len(newly_matched_candidates)
-            details = {
-                "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
-                "matched_candidates": match_details,
-                "newly_matched_candidates": newly_matched_candidates,
-                "candidate_count": candidate_count,
-            }
-            if not records:
-                warnings.append(issue("mv_virtual_namebox_rules_empty", "MV 虚拟名字框规则为空"))
-            elif matched_candidate_count == 0 and candidate_count > 0:
-                warnings.append(issue("mv_virtual_namebox_rules_no_hits", "MV 虚拟名字框规则没有命中任何候选"))
         except Exception as error:
-            errors.append(issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则不可导入: {type(error).__name__}: {error}"))
-            records = []
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "rule_count": len(records),
-                "candidate_count": candidate_count,
-                "matched_candidate_count": matched_candidate_count,
-                "newly_matched_candidate_count": newly_matched_candidate_count,
-            },
-            details=details,
+            return AgentReport.from_parts(
+                errors=[issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details={"rules": [], "matched_candidates": []},
+            )
+        return _validate_mv_virtual_namebox_rules_with_context(
+            rules_text=rules_text,
+            game_data=game_data,
+            existing_records=existing_records,
         )
 
     async def import_mv_virtual_namebox_rules(
@@ -296,11 +237,7 @@ class RuleValidationAgentMixin:
 
     async def validate_note_tag_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
         """校验 Note 标签规则 JSON 文本并报告命中情况。"""
-        errors: list[AgentIssue] = []
-        warnings: list[AgentIssue] = []
-        details: JsonObject = {"rules": []}
         try:
-            import_file = parse_note_tag_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
@@ -315,89 +252,26 @@ class RuleValidationAgentMixin:
                 )
                 game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
-            records = build_note_tag_rule_records_from_import(
-                game_data=game_data,
-                import_file=import_file,
-                text_rules=text_rules,
-            )
-            extracted_map = NoteTagTextExtraction(
-                game_data=game_data,
-                rule_records=records,
-                text_rules=text_rules,
-            ).extract_all_text()
-            extracted_items = [
-                item
-                for translation_data in extracted_map.values()
-                for item in translation_data.translation_items
-            ]
-            unwritable_items = _collect_write_protocol_unwritable_items(
-                game_data=game_data,
-                extracted_items=extracted_items,
-            )
-            try:
-                _preview_event_command_write_back(
-                    game_data=game_data,
-                    extracted_items=extracted_items,
-                    text_rules=text_rules,
-                )
-                details["write_back_preview"] = {
-                    "checked_item_count": len(extracted_items),
-                    "status": "ok",
-                }
-            except Exception as error:
-                errors.append(
-                    issue(
-                        "note_tag_write_back_invalid",
-                        f"Note 标签规则命中项无法回写: {type(error).__name__}: {error}",
-                    )
-                )
-                details["write_back_preview"] = {
-                    "checked_item_count": len(extracted_items),
-                    "status": "error",
-                    "reason": f"{type(error).__name__}: {error}",
-                }
-            if unwritable_items:
-                errors.append(issue("note_tag_write_back_unwritable", f"Note 标签规则存在 {len(unwritable_items)} 个不可写命中项"))
-            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
-            details["rules"] = [
-                {
-                    "file_name": record.file_name,
-                    "tag_count": len(record.tag_names),
-                    "tag_names": list(record.tag_names),
-                    **_build_rule_metric_detail(
-                        record_items=record_items,
-                        translated_paths=translated_paths,
-                        unwritable_items_by_path=unwritable_items_by_path,
-                    ),
-                }
-                for record in records
-                for record_items in [[
-                    item
-                    for item in extracted_items
-                    if _note_tag_item_matches_rule(item=item, rule_record=record)
-                ]]
-            ]
-            if not records:
-                warnings.append(issue("note_tag_rules_empty", "Note 标签规则为空"))
         except Exception as error:
-            errors.append(issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}"))
-            records = []
-            extracted_items = []
-            translated_paths = set()
-            unwritable_items = []
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "file_count": len(records),
-                "tag_count": sum(len(record.tag_names) for record in records),
-                "hit_count": len(extracted_items),
-                "extractable_count": len(extracted_items),
-                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
-                "writable_count": len(extracted_items) - len(unwritable_items),
-                "unwritable_count": len(unwritable_items),
-            },
-            details=details,
+            return AgentReport.from_parts(
+                errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={
+                    "file_count": 0,
+                    "tag_count": 0,
+                    "hit_count": 0,
+                    "extractable_count": 0,
+                    "translated_count": 0,
+                    "writable_count": 0,
+                    "unwritable_count": 0,
+                },
+                details={"rules": []},
+            )
+        return _validate_note_tag_rules_with_context(
+            rules_text=rules_text,
+            game_data=game_data,
+            text_rules=text_rules,
+            translated_paths=translated_paths,
         )
 
     async def import_note_tag_rules(
@@ -434,12 +308,9 @@ class RuleValidationAgentMixin:
                         confirm_empty=confirm_empty,
                     )
                 old_records = await session.read_note_tag_text_rules()
-                old_note_paths = collect_translation_data_paths(
-                    NoteTagTextExtraction(
-                        game_data=game_data,
-                        rule_records=old_records,
-                        text_rules=text_rules,
-                    ).extract_all_text()
+                old_note_paths = _translation_paths_matching_note_rules(
+                    translated_items=await session.read_translated_items(),
+                    rule_records=old_records,
                 )
                 new_note_paths = collect_translation_data_paths(
                     NoteTagTextExtraction(
@@ -608,11 +479,7 @@ class RuleValidationAgentMixin:
 
     async def validate_plugin_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
         """校验插件规则 JSON 文本并报告命中情况。"""
-        errors: list[AgentIssue] = []
-        warnings: list[AgentIssue] = []
-        details: JsonObject = {"rules": []}
         try:
-            import_file = parse_plugin_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
@@ -627,81 +494,31 @@ class RuleValidationAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            records = build_plugin_rule_records_from_import(
-                game_data=game_data,
-                import_file=import_file,
-                text_rules=text_rules,
-            )
-            extracted_map = PluginTextExtraction(
-                game_data,
-                plugin_rule_records=records,
-                text_rules=text_rules,
-            ).extract_all_text()
-            extracted_items = [
-                item
-                for translation_data in extracted_map.values()
-                for item in translation_data.translation_items
-            ]
-            unwritable_items = _collect_write_protocol_unwritable_items(
-                game_data=game_data,
-                extracted_items=extracted_items,
-            )
-            if unwritable_items:
-                errors.append(issue("plugin_rules_unwritable", f"插件规则存在 {len(unwritable_items)} 个不可写命中项"))
-            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
-            details["rules"] = [
-                {
-                    "plugin_index": record.plugin_index,
-                    "plugin_name": record.plugin_name,
-                    "plugin_hash": record.plugin_hash,
-                    "path_count": len(record.path_templates),
-                    "paths": list(record.path_templates),
-                    **_build_rule_metric_detail(
-                        record_items=record_items,
-                        translated_paths=translated_paths,
-                        unwritable_items_by_path=unwritable_items_by_path,
-                    ),
-                }
-                for record in records
-                for record_items in [[
-                    item
-                    for item in extracted_items
-                    if item.location_path.startswith(f"{PLUGINS_FILE_NAME}/{record.plugin_index}/")
-                ]]
-            ]
-            if not records:
-                warnings.append(issue("plugin_rules_empty", "插件规则为空"))
-            if records and not extracted_items:
-                errors.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
         except Exception as error:
-            errors.append(issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}"))
-            records = []
-            extracted_items = []
-            translated_paths = set()
-            unwritable_items = []
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "plugin_count": len(records),
-                "rule_count": sum(len(record.path_templates) for record in records),
-                "hit_count": len(extracted_items),
-                "extractable_count": len(extracted_items),
-                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
-                "writable_count": len(extracted_items) - len(unwritable_items),
-                "unwritable_count": len(unwritable_items),
-            },
-            details=details,
+            return AgentReport.from_parts(
+                errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={
+                    "plugin_count": 0,
+                    "rule_count": 0,
+                    "hit_count": 0,
+                    "extractable_count": 0,
+                    "translated_count": 0,
+                    "writable_count": 0,
+                    "unwritable_count": 0,
+                },
+                details={"rules": []},
+            )
+        return _validate_plugin_rules_with_context(
+            rules_text=rules_text,
+            game_data=game_data,
+            text_rules=text_rules,
+            translated_paths=translated_paths,
         )
 
     async def validate_plugin_source_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
         """校验插件源码文本规则 JSON 文本并报告命中情况。"""
-        errors: list[AgentIssue] = []
-        warnings: list[AgentIssue] = []
-        details: JsonObject = {"rules": []}
-        unreviewed_count = 0
         try:
-            import_file = parse_plugin_source_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
@@ -717,99 +534,30 @@ class RuleValidationAgentMixin:
                 game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
             scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-            records = build_plugin_source_rule_records_from_import(
-                game_data=game_data,
-                import_file=import_file,
-                text_rules=text_rules,
-                scan=scan,
-            )
-            review = collect_plugin_source_review_coverage(scan=scan, rule_records=records)
-            unreviewed_count = len(review.unreviewed_candidates)
-            extracted_map = PluginSourceTextExtraction(
-                game_data,
-                rule_records=records,
-                text_rules=text_rules,
-                scan=scan,
-            ).extract_all_text()
-            extracted_items = [
-                item
-                for translation_data in extracted_map.values()
-                for item in translation_data.translation_items
-            ]
-            unwritable_items = _collect_plugin_source_unwritable_items(
-                game_data=game_data,
-                extracted_items=extracted_items,
-            )
-            if unwritable_items:
-                errors.append(
-                    issue(
-                        "plugin_source_write_back_unwritable",
-                        f"插件源码规则存在 {len(unwritable_items)} 个不可写命中项",
-                    )
-                )
-            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
-            details["rules"] = [
-                {
-                    "file": record.file_name,
-                    "file_hash": record.file_hash,
-                    "selector_count": len(record.selectors),
-                    "excluded_selector_count": len(record.excluded_selectors),
-                    "reviewed_selector_count": len(record.selectors) + len(record.excluded_selectors),
-                    "selectors": list(record.selectors),
-                    "excluded_selectors": list(record.excluded_selectors),
-                    **_build_rule_metric_detail(
-                        record_items=record_items,
-                        translated_paths=translated_paths,
-                        unwritable_items_by_path=unwritable_items_by_path,
-                    ),
-                }
-                for record in records
-                for record_items in [[
-                    item
-                    for item in extracted_items
-                    if item.location_path.startswith(f"js/plugins/{record.file_name}/")
-                ]]
-            ]
-            if not records:
-                warnings.append(issue("plugin_source_rules_empty", "插件源码规则为空"))
-            excluded_selector_count = sum(len(record.excluded_selectors) for record in records)
-            if records and not extracted_items and excluded_selector_count == 0:
-                warnings.append(issue("plugin_source_rules_no_hits", "插件源码规则没有提取到任何可翻译文本"))
-            if unreviewed_count:
-                review_issue = issue(
-                    "plugin_source_review_incomplete",
-                    f"插件源码规则还有 {unreviewed_count} 个候选未归入翻译或排除",
-                )
-                if scan.risk.high_risk or records:
-                    errors.append(review_issue)
-                else:
-                    warnings.append(review_issue)
         except Exception as error:
-            errors.append(issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}"))
-            records = []
-            extracted_items = []
-            translated_paths = set()
-            unwritable_items = []
-            unreviewed_count = 0
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "file_count": len(records),
-                "selector_count": sum(len(record.selectors) for record in records),
-                "excluded_selector_count": sum(len(record.excluded_selectors) for record in records),
-                "reviewed_selector_count": sum(
-                    len(record.selectors) + len(record.excluded_selectors)
-                    for record in records
-                ),
-                "unreviewed_selector_count": unreviewed_count,
-                "hit_count": len(extracted_items),
-                "extractable_count": len(extracted_items),
-                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
-                "writable_count": len(extracted_items) - len(unwritable_items),
-                "unwritable_count": len(unwritable_items),
-            },
-            details=details,
+            return AgentReport.from_parts(
+                errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={
+                    "file_count": 0,
+                    "selector_count": 0,
+                    "excluded_selector_count": 0,
+                    "reviewed_selector_count": 0,
+                    "unreviewed_selector_count": 0,
+                    "hit_count": 0,
+                    "extractable_count": 0,
+                    "translated_count": 0,
+                    "writable_count": 0,
+                    "unwritable_count": 0,
+                },
+                details={"rules": []},
+            )
+        return _validate_plugin_source_rules_with_context(
+            rules_text=rules_text,
+            game_data=game_data,
+            text_rules=text_rules,
+            scan=scan,
+            translated_paths=translated_paths,
         )
 
     async def import_plugin_source_rules(
@@ -876,14 +624,10 @@ class RuleValidationAgentMixin:
                         rule_label="插件源码规则",
                         confirm_empty=confirm_empty,
                     )
-                old_paths = collect_translation_data_paths(
-                    PluginSourceTextExtraction(
-                        game_data,
-                        rule_records=old_records,
-                        text_rules=text_rules,
-                        scan=scan,
-                    ).extract_all_text()
+                old_translated_items = await session.read_translated_items_by_prefixes(
+                    _plugin_source_rule_prefixes(old_records)
                 )
+                old_paths = {item.location_path for item in old_translated_items}
                 new_paths = collect_translation_data_paths(
                     PluginSourceTextExtraction(
                         game_data,
@@ -896,7 +640,12 @@ class RuleValidationAgentMixin:
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
                 if stale_paths:
-                    stale_items = await session.read_translated_items_by_paths(stale_paths)
+                    stale_path_set = set(stale_paths)
+                    stale_items = [
+                        item
+                        for item in old_translated_items
+                        if item.location_path in stale_path_set
+                    ]
                     backup = await write_rule_import_translation_backup(
                         game_title=game_title,
                         domain="plugin-source-rules",
@@ -962,11 +711,7 @@ class RuleValidationAgentMixin:
 
     async def validate_event_command_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
         """校验事件指令规则 JSON 文本并报告命中情况。"""
-        errors: list[AgentIssue] = []
-        warnings: list[AgentIssue] = []
-        details: JsonObject = {"rules": []}
         try:
-            import_file = parse_event_command_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
@@ -976,100 +721,31 @@ class RuleValidationAgentMixin:
                 structured_rules = await self._resolve_structured_rules(session=session)
                 game_data = await self._load_translation_source_game_data(session)
                 translated_paths: set[str] = await session.read_translation_location_paths()
-            records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
             text_rules = TextRules.from_setting(
                 setting.text_rules,
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            extracted_map = EventCommandTextExtraction(
-                game_data,
-                rule_records=records,
-                text_rules=text_rules,
-            ).extract_all_text()
-            extracted_items = [
-                item
-                for translation_data in extracted_map.values()
-                for item in translation_data.translation_items
-            ]
-            unwritable_items = _collect_write_protocol_unwritable_items(
-                game_data=game_data,
-                extracted_items=extracted_items,
-            )
-            try:
-                _preview_event_command_write_back(
-                    game_data=game_data,
-                    extracted_items=extracted_items,
-                    text_rules=text_rules,
-                )
-                details["write_back_preview"] = {
-                    "checked_item_count": len(extracted_items),
-                    "status": "ok",
-                }
-            except Exception as error:
-                errors.append(
-                    issue(
-                        "event_command_write_back_invalid",
-                        f"事件指令规则命中项无法回写: {type(error).__name__}: {error}",
-                    )
-                )
-                details["write_back_preview"] = {
-                    "checked_item_count": len(extracted_items),
-                    "status": "error",
-                    "reason": f"{type(error).__name__}: {error}",
-                }
-            if unwritable_items:
-                errors.append(issue("event_command_rules_unwritable", f"事件指令规则存在 {len(unwritable_items)} 个不可写命中项"))
-            unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
-            rule_details: JsonArray = []
-            for record in records:
-                record_extracted_map = EventCommandTextExtraction(
-                    game_data,
-                    rule_records=[record],
-                    text_rules=text_rules,
-                ).extract_all_text()
-                record_items = [
-                    item
-                    for translation_data in record_extracted_map.values()
-                    for item in translation_data.translation_items
-                ]
-                rule_details.append(
-                    {
-                        "command_code": record.command_code,
-                        "match_count": len(record.parameter_filters),
-                        "path_count": len(record.path_templates),
-                        "paths": list(record.path_templates),
-                        **_build_rule_metric_detail(
-                            record_items=record_items,
-                            translated_paths=translated_paths,
-                            unwritable_items_by_path=unwritable_items_by_path,
-                        ),
-                    }
-                )
-            details["rules"] = rule_details
-            if not records:
-                warnings.append(issue("event_command_rules_empty", "事件指令规则为空"))
-            if records and not extracted_items:
-                warnings.append(issue("event_command_rules_no_hits", "事件指令规则没有提取到任何可翻译文本"))
         except Exception as error:
-            errors.append(issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}"))
-            records = []
-            extracted_items = []
-            translated_paths = set()
-            unwritable_items = []
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "rule_group_count": len(records),
-                "path_rule_count": sum(len(record.path_templates) for record in records),
-                "hit_count": len(extracted_items),
-                "extractable_count": len(extracted_items),
-                "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
-                "writable_count": len(extracted_items) - len(unwritable_items),
-                "unwritable_count": len(unwritable_items),
-            },
-            details=details,
+            return AgentReport.from_parts(
+                errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={
+                    "rule_group_count": 0,
+                    "path_rule_count": 0,
+                    "hit_count": 0,
+                    "extractable_count": 0,
+                    "translated_count": 0,
+                    "writable_count": 0,
+                    "unwritable_count": 0,
+                },
+                details={"rules": []},
+            )
+        return _validate_event_command_rules_with_context(
+            rules_text=rules_text,
+            game_data=game_data,
+            text_rules=text_rules,
+            translated_paths=translated_paths,
         )
 
 
@@ -1079,42 +755,3 @@ def _summary_int_from_payload(payload: JsonObject, key: str) -> int:
     if isinstance(raw_value, bool) or not isinstance(raw_value, int):
         raise RuntimeError(f"MV 虚拟名字框候选导出缺少有效计数字段: {key}")
     return raw_value
-
-
-def _mv_namebox_match_key(detail: JsonValue) -> tuple[str, str] | None:
-    """生成虚拟名字框候选命中身份，用于对比已保存规则。"""
-    if not isinstance(detail, dict):
-        return None
-    location_path = detail.get("location_path")
-    text = detail.get("text")
-    if isinstance(location_path, str) and isinstance(text, str):
-        return location_path, text
-    return None
-
-
-def _mv_namebox_match_keys(details: JsonArray) -> set[tuple[str, str]]:
-    """读取一组虚拟名字框候选命中的身份集合。"""
-    keys: set[tuple[str, str]] = set()
-    for detail in details:
-        key = _mv_namebox_match_key(detail)
-        if key is not None:
-            keys.add(key)
-    return keys
-
-
-def _format_mv_namebox_rule_error(error_detail: JsonValue) -> str:
-    """把 MV 虚拟名字框规则校验明细转换成一句用户可读错误。"""
-    if not isinstance(error_detail, dict):
-        return str(error_detail)
-    message_value = error_detail.get("message")
-    message = message_value if isinstance(message_value, str) and message_value else "规则校验失败"
-    location_value = error_detail.get("location_path")
-    rule_value = error_detail.get("rule_name")
-    prefixes: list[str] = []
-    if isinstance(location_value, str) and location_value:
-        prefixes.append(location_value)
-    if isinstance(rule_value, str) and rule_value:
-        prefixes.append(rule_value)
-    if not prefixes:
-        return message
-    return f"{' / '.join(prefixes)}: {message}"

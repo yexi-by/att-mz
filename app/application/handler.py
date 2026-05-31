@@ -77,6 +77,7 @@ from app.note_tag_text import (
     build_note_tag_rule_records_from_import,
     export_note_tag_candidates_file,
     load_note_tag_rule_import_file,
+    note_tag_location_path_matches_rule,
 )
 from app.persistence import GameRegistry, TargetGameSession
 from app.persistence.repository import current_timestamp_text
@@ -172,6 +173,23 @@ def _unpack_write_progress_callbacks(
         logger.debug(f"[tag.phase]写文件阶段[/tag.phase] {status}")
 
     return set_progress, advance_progress, set_status
+
+
+def _translation_paths_matching_note_rules(
+    *,
+    translated_items: list[TranslationItem],
+    rule_records: list[NoteTagTextRuleRecord],
+) -> set[str]:
+    """从已保存译文中找出属于指定 Note 标签规则的定位路径。"""
+    return {
+        item.location_path
+        for item in translated_items
+        for rule_record in rule_records
+        if note_tag_location_path_matches_rule(
+            location_path=item.location_path,
+            rule_record=rule_record,
+        )
+    }
 
 
 class TranslationHandler:
@@ -586,12 +604,9 @@ class TranslationHandler:
                 rule.file_name: rule
                 for rule in await session.read_note_tag_text_rules()
             }
-            old_note_paths = collect_translation_data_paths(
-                NoteTagTextExtraction(
-                    game_data=game_data,
-                    rule_records=list(old_rules.values()),
-                    text_rules=text_rules,
-                ).extract_all_text()
+            old_note_paths = _translation_paths_matching_note_rules(
+                translated_items=await session.read_translated_items(),
+                rule_records=list(old_rules.values()),
             )
             new_note_paths = collect_translation_data_paths(
                 NoteTagTextExtraction(
@@ -1174,6 +1189,10 @@ class TranslationHandler:
             text_rules=text_rules,
             runtime_write_map_records=runtime_write_map_records,
             audit_text_issues=bool(runtime_write_map_records),
+            text_issue_scope_keys=frozenset(
+                (record.runtime_file_name, record.runtime_selector)
+                for record in runtime_write_map_records
+            ) if runtime_write_map_records else None,
         )
         if not audit.issues:
             return

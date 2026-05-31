@@ -1,6 +1,7 @@
 """插件源码文本风险扫描、规则提取和写回测试。"""
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -220,6 +221,33 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
 
 
 @pytest.mark.asyncio
+async def test_plugin_source_extraction_rejects_stale_rule_hash(minimal_game_dir: Path) -> None:
+    """插件源码文件变化后，提取阶段不能静默跳过过期 selector 规则。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HardcodedText.js").write_text(
+        "const Messages = { title: 'プラグイン直書き' };\n",
+        encoding="utf-8",
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "HardcodedText.js")
+    record = PluginSourceTextRuleRecord(
+        file_name="HardcodedText.js",
+        file_hash="stale-hash",
+        selectors=[candidate.selector],
+    )
+
+    with pytest.raises(RuntimeError, match="插件源码规则已过期"):
+        _ = PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()
+
+
+@pytest.mark.asyncio
 async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_changes(
     minimal_game_dir: Path,
 ) -> None:
@@ -427,17 +455,17 @@ async def test_plugin_source_extraction_scans_each_file_once(
     )
     call_count = 0
 
-    def counting_native_scan(source: str) -> object:
-        """统计源码提取阶段调用原生 AST 的次数。"""
+    from app.native_javascript_ast import NativeJavaScriptStringScan, parse_native_javascript_string_spans_batch
+
+    def counting_native_batch(files: Mapping[str, str]) -> dict[str, NativeJavaScriptStringScan]:
+        """统计源码提取阶段调用批量原生 AST 的次数。"""
         nonlocal call_count
         call_count += 1
-        from app.native_javascript_ast import parse_native_javascript_string_spans
-
-        return parse_native_javascript_string_spans(source)
+        return parse_native_javascript_string_spans_batch(files)
 
     monkeypatch.setattr(
-        "app.plugin_source_text.scanner.parse_native_javascript_string_spans",
-        counting_native_scan,
+        "app.plugin_source_text.scanner.parse_native_javascript_string_spans_batch",
+        counting_native_batch,
     )
 
     extracted = PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()
@@ -1492,6 +1520,76 @@ async def test_import_plugin_source_rules_rejects_high_risk_empty_review(
 
     assert report.status == "error"
     assert "plugin_source_review_incomplete" in {error.code for error in report.errors}
+
+
+@pytest.mark.asyncio
+async def test_import_plugin_source_rules_replaces_stale_existing_rule(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧插件源码规则过期时，仍然可以导入新规则并清理旧译文。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HardcodedText.js").write_text(
+        "const Messages = { title: 'プラグイン直書き' };\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+    candidate = next(
+        candidate
+        for candidate in build_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates
+        if candidate.file_name == "HardcodedText.js"
+    )
+    stale_item = TranslationItem(
+        location_path="js/plugins/HardcodedText.js/stale-selector",
+        item_type="short_text",
+        original_lines=["古いプラグイン"],
+        translation_lines=["旧插件"],
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="HardcodedText.js",
+                    file_hash="stale-hash",
+                    selectors=["stale-selector"],
+                )
+            ]
+        )
+        await session.write_translation_items([stale_item])
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).import_plugin_source_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "HardcodedText.js",
+                    "selectors": [candidate.selector],
+                    "excluded_selectors": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        rules = await session.read_plugin_source_text_rules()
+        paths = await session.read_translation_location_paths()
+
+    assert report.status == "warning"
+    assert report.summary["deleted_translation_items"] == 1
+    assert [rule.selectors for rule in rules] == [[candidate.selector]]
+    assert stale_item.location_path not in paths
 
 
 @pytest.mark.asyncio

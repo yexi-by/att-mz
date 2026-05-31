@@ -7,6 +7,7 @@ from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .models import PluginSourceScan
 from .scanner import PluginSourceCandidateIndex, build_plugin_source_candidate_index
+from .rules import StalePluginSourceTextRule, filter_fresh_plugin_source_text_rules
 
 
 class PluginSourceTextExtraction:
@@ -27,14 +28,17 @@ class PluginSourceTextExtraction:
 
     def extract_all_text(self) -> dict[str, TranslationData]:
         """按规则全量提取插件源码文本。"""
+        rule_records = self._validated_rule_records()
         result: dict[str, TranslationData] = {}
         records_by_file: dict[str, list[PluginSourceTextRuleRecord]] = {}
-        for record in self.rule_records:
+        for record in rule_records:
             records_by_file.setdefault(record.file_name, []).append(record)
         for file_name, records in records_by_file.items():
             source = self.game_data.plugin_source_files.get(file_name)
             if source is None:
-                continue
+                raise RuntimeError(
+                    f"插件源码规则已过期: {file_name}: 插件源码文件不存在，请重新导出并导入插件源码规则"
+                )
             file_key = plugin_source_file_key(file_name)
             candidate_index = self._candidate_index_for_file(
                 file_name=file_name,
@@ -47,6 +51,21 @@ class PluginSourceTextExtraction:
                 continue
             result[file_key] = TranslationData(display_name=None, translation_items=items)
         return result
+
+    def _validated_rule_records(self) -> list[PluginSourceTextRuleRecord]:
+        """确认数据库插件源码规则仍然匹配当前运行源码。"""
+        if not self.rule_records:
+            return []
+        scan = self._scan_for_validation()
+        fresh_rules, stale_rules = filter_fresh_plugin_source_text_rules(
+            game_data=self.game_data,
+            rule_records=self.rule_records,
+            text_rules=self.text_rules,
+            scan=scan,
+        )
+        if stale_rules:
+            raise RuntimeError(_format_stale_plugin_source_rule_error(stale_rules))
+        return fresh_rules
 
     def _extract_file_items(
         self,
@@ -94,6 +113,30 @@ class PluginSourceTextExtraction:
             active=True,
             text_rules=self.text_rules,
         )
+
+    def _scan_for_validation(self) -> PluginSourceScan:
+        """读取或创建一次插件源码扫描结果。"""
+        if self.scan is None:
+            from .scanner import build_plugin_source_scan
+
+            self.scan = build_plugin_source_scan(
+                game_data=self.game_data,
+                text_rules=self.text_rules,
+            )
+        return self.scan
+
+
+def _format_stale_plugin_source_rule_error(
+    stale_rules: list[StalePluginSourceTextRule],
+) -> str:
+    """把插件源码过期规则压缩成稳定错误信息。"""
+    first_rule = stale_rules[0]
+    suffix = "" if len(stale_rules) == 1 else f" 等 {len(stale_rules)} 个文件"
+    return (
+        "插件源码规则已过期: "
+        f"{first_rule.file_name}{suffix}: {first_rule.reason}，"
+        "请重新导出并导入插件源码规则"
+    )
 
 
 def plugin_source_file_key(file_name: str) -> str:

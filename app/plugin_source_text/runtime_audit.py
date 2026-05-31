@@ -146,6 +146,7 @@ def audit_active_runtime_plugin_source(
     runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord] | None = None,
     scan_cache_stats: ActiveRuntimePluginSourceScanCacheStats | None = None,
     audit_text_issues: bool = True,
+    text_issue_scope_keys: frozenset[tuple[str, str]] | None = None,
 ) -> ActiveRuntimePluginSourceAudit:
     """审计当前运行插件源码中的源文残留和坏控制符。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
@@ -217,6 +218,9 @@ def audit_active_runtime_plugin_source(
         if not audit_text_issues:
             continue
         for literal in literals:
+            literal_scope_key = (literal.file_name, literal.selector)
+            if text_issue_scope_keys is not None and literal_scope_key not in text_issue_scope_keys:
+                continue
             issues.extend(
                 _audit_literal(
                     literal=literal,
@@ -245,6 +249,7 @@ def audit_active_runtime_plugin_source_with_scan_cache(
     created_at: str,
     runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord] | None = None,
     audit_text_issues: bool = True,
+    text_issue_scope_keys: frozenset[tuple[str, str]] | None = None,
 ) -> tuple[ActiveRuntimePluginSourceAudit, list[PluginSourceRuntimeScanCacheRecord]]:
     """审计当前运行插件源码，并按文件 hash 复用 AST 扫描缓存。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
@@ -261,6 +266,7 @@ def audit_active_runtime_plugin_source_with_scan_cache(
         runtime_write_map_records=runtime_write_map_records,
         scan_cache_stats=scan_cache_stats,
         audit_text_issues=audit_text_issues,
+        text_issue_scope_keys=text_issue_scope_keys,
     )
     return audit, refreshed_cache_records
 
@@ -435,8 +441,6 @@ def _audit_literal(
         runtime_file_hash=runtime_file_hash,
         runtime_write_map_by_key=runtime_write_map_by_key,
     ):
-        return []
-    if runtime_write_map_by_key and (literal.file_name, literal.selector) not in runtime_write_map_by_key:
         return []
     issues: list[ActiveRuntimePluginSourceIssue] = []
     for fragment in _collect_bad_control_fragments(literal):

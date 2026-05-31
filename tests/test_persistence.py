@@ -413,6 +413,47 @@ async def test_register_game_reuses_registered_path_after_active_title_changes(
 
 
 @pytest.mark.asyncio
+async def test_register_game_rejects_att_mz_database_with_broken_metadata(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """路径匹配扫描遇到项目数据库元数据损坏时不能静默跳过。"""
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    db_path = db_dir / "BrokenMetadata.db"
+    with sqlite3.connect(db_path) as connection:
+        _ = connection.execute("CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)")
+        _ = connection.execute(
+            "INSERT INTO schema_version (schema_key, version) VALUES ('current', ?)",
+            (CURRENT_SCHEMA_VERSION,),
+        )
+    registry = GameRegistry(db_dir)
+
+    with pytest.raises(RuntimeError, match="metadata"):
+        _ = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    assert sorted(path.name for path in db_dir.glob("*.db")) == ["BrokenMetadata.db"]
+
+
+@pytest.mark.asyncio
+async def test_register_game_ignores_unrelated_sqlite_database(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """路径匹配扫描可以跳过不含项目业务表的外部 SQLite 文件。"""
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    with sqlite3.connect(db_dir / "ExternalTool.db") as connection:
+        _ = connection.execute("CREATE TABLE external_cache (id INTEGER PRIMARY KEY)")
+    registry = GameRegistry(db_dir)
+
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    assert record.game_title == "テストゲーム"
+    assert sorted(path.name for path in db_dir.glob("*.db")) == ["ExternalTool.db", "テストゲーム.db"]
+
+
+@pytest.mark.asyncio
 async def test_source_residual_rule_type_must_be_known(minimal_game_dir: Path, tmp_path: Path) -> None:
     """数据库里的源文残留例外规则类型损坏时必须立刻报错。"""
     registry = GameRegistry(tmp_path / "db")

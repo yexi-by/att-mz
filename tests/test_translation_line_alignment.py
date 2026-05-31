@@ -611,6 +611,41 @@ async def test_translation_response_duplicate_valid_id_blocks_batch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_translation_response_rejects_repairable_invalid_json() -> None:
+    """可被第三方修复的非严格 JSON 不能作为正常译文保存。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["こんにちは"],
+    )
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+    ai_result = """[
+  {
+    "id": "1",
+    "translation_lines": ["你好",],
+  }
+]"""
+
+    await verify_translation_batch(
+        ai_result=ai_result,
+        items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
+    assert right_queue.empty()
+    error_items = await error_queue.get()
+    assert error_items is not None
+    assert error_items[0].error_type == "模型返回不可解析"
+    assert error_items[0].model_response == ai_result
+
+
+@pytest.mark.asyncio
 async def test_array_response_line_count_mismatch_is_recorded() -> None:
     """array 译文行数仍按本地原文数量校验。"""
     text_rules = _build_text_rules(width_limit=40)

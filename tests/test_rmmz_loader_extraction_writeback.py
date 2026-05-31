@@ -337,12 +337,14 @@ async def test_native_write_back_helper_applies_plan(
         text_rules: TextRules,
         runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
         audit_text_issues: bool,
+        text_issue_scope_keys: frozenset[tuple[str, str]] | None,
     ) -> ActiveRuntimePluginSourceAudit:
         """模拟当前运行文件审计通过。"""
         _ = game_data
         _ = text_rules
         assert runtime_write_map_records == []
         assert audit_text_issues is False
+        assert text_issue_scope_keys is None
         return _empty_active_runtime_audit()
 
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
@@ -452,12 +454,14 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
         text_rules: TextRules,
         runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
         audit_text_issues: bool,
+        text_issue_scope_keys: frozenset[tuple[str, str]] | None,
     ) -> ActiveRuntimePluginSourceAudit:
         """模拟当前运行文件审计发现 JS 语法错误。"""
         _ = game_data
         _ = text_rules
         assert runtime_write_map_records == []
         assert audit_text_issues is False
+        assert text_issue_scope_keys is None
         events.append("audit")
         return ActiveRuntimePluginSourceAudit(
             issues=(
@@ -2713,6 +2717,34 @@ async def test_note_tag_rules_extract_and_write_back_only_target_values(minimal_
     writable_item = ensure_json_object(writable_items[1], "Items.json[1]")
 
     assert writable_item["note"] == "<拡張説明:第一行\n第二行>\n<upgrade:1,2,3>\n<ExtendDesc:別説明>"
+
+
+@pytest.mark.asyncio
+async def test_note_tag_extraction_rejects_stale_rule_without_current_tag(minimal_game_dir: Path) -> None:
+    """Note 标签被移除后，已保存规则不能静默变成空命中。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = _read_test_json(items_path)
+    items = ensure_json_array(raw_items, "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:薬草の詳細説明>\n<upgrade:1,2,3>"
+    _rewrite_json(items_path, raw_items)
+
+    game_data = await load_game_data(minimal_game_dir)
+    rule_records = build_note_tag_rule_records_from_import(
+        game_data=game_data,
+        import_file={"Items.json": ["拡張説明"]},
+        text_rules=get_default_text_rules(),
+    )
+    item["note"] = "<upgrade:1,2,3>"
+    _rewrite_json(items_path, raw_items)
+    stale_game_data = await load_game_data(minimal_game_dir)
+
+    with pytest.raises(RuntimeError, match="Note 标签规则已过期"):
+        _ = NoteTagTextExtraction(
+            game_data=stale_game_data,
+            rule_records=rule_records,
+            text_rules=get_default_text_rules(),
+        ).extract_all_text()
 
 
 @pytest.mark.asyncio

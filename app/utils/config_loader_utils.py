@@ -37,18 +37,6 @@ SOURCE_LINES_ENABLED_RULE = "`source_lines` 尽量原样复制输入原文，用
 SOURCE_LINES_DISABLED_RULE = "不要输出 `source_lines`；只输出本轮要求字段。"
 SOURCE_LINES_ENABLED_EXAMPLE_LINE = '    "source_lines": ["<输入原文>"],'
 SOURCE_LINES_DISABLED_EXAMPLE_LINE = ""
-SOURCE_LINES_ENABLED_FALLBACK_PROTOCOL = """
-
-# 本轮输出协议补充
-
-- 每个 JSON 数组元素必须额外包含 `source_lines`，按输入原文逐行复制，用于人工对照。
-"""
-SOURCE_LINES_DISABLED_FALLBACK_PROTOCOL = """
-
-# 本轮输出协议补充
-
-- 每个 JSON 数组元素不要输出 `source_lines`，只输出 `id`、`role`、`translation_lines`。
-"""
 
 
 def resolve_setting_path(setting_path: str | Path | None = None) -> Path:
@@ -159,13 +147,6 @@ def _render_text_translation_prompt_template(
 ) -> str:
     """渲染正文翻译提示词里的输出协议模板。"""
     marker_hits = [marker for marker in PROMPT_TEMPLATE_MARKERS if marker in system_prompt]
-    if not marker_hits:
-        protocol = (
-            SOURCE_LINES_ENABLED_FALLBACK_PROTOCOL
-            if include_source_lines
-            else SOURCE_LINES_DISABLED_FALLBACK_PROTOCOL
-        )
-        return system_prompt.rstrip() + protocol
     if len(marker_hits) != len(PROMPT_TEMPLATE_MARKERS):
         missing_markers = [
             marker for marker in PROMPT_TEMPLATE_MARKERS if marker not in system_prompt

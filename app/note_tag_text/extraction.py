@@ -32,10 +32,18 @@ class NoteTagTextExtraction:
         seen_location_paths: set[str] = set()
         all_sources = collect_note_tag_sources(game_data=self.game_data)
         for rule_record in self.rule_records:
+            matching_sources = [
+                source
+                for source in all_sources
+                if note_file_pattern_matches(file_name=source.file_name, file_pattern=rule_record.file_name)
+            ]
+            if not matching_sources:
+                raise RuntimeError(
+                    f"Note 标签规则已过期: {rule_record.file_name} 没有命中当前游戏 note 字段，请重新导出并导入 Note 标签规则"
+                )
             tag_names = set(rule_record.tag_names)
-            for source in all_sources:
-                if not note_file_pattern_matches(file_name=source.file_name, file_pattern=rule_record.file_name):
-                    continue
+            tag_hit_counts = {tag_name: 0 for tag_name in rule_record.tag_names}
+            for source in matching_sources:
                 matches_by_tag: dict[str, list[str]] = {}
                 for match in iter_note_tag_matches(source.note_text):
                     if match.tag_name not in tag_names or match.value_span is None:
@@ -46,6 +54,7 @@ class NoteTagTextExtraction:
                     values = matches_by_tag.get(tag_name, [])
                     if not values:
                         continue
+                    tag_hit_counts[tag_name] += len(values)
                     if len(values) > 1:
                         raise ValueError(
                             f"{source.location_prefix}/note/{tag_name} 标签重复，无法生成唯一定位路径"
@@ -71,7 +80,42 @@ class NoteTagTextExtraction:
                             original_lines=[normalized_value],
                         )
                     )
+            _ensure_note_tag_rule_has_current_hits(
+                rule_record=rule_record,
+                tag_hit_counts=tag_hit_counts,
+            )
         return translation_data_map
 
 
-__all__: list[str] = ["NoteTagTextExtraction"]
+def _ensure_note_tag_rule_has_current_hits(
+    *,
+    rule_record: NoteTagTextRuleRecord,
+    tag_hit_counts: dict[str, int],
+) -> None:
+    """确认已保存 Note 标签规则仍然命中当前游戏。"""
+    for tag_name in rule_record.tag_names:
+        rule_label = f"{rule_record.file_name}/{tag_name}"
+        if tag_hit_counts[tag_name] == 0:
+            raise RuntimeError(
+                f"Note 标签规则已过期: {rule_label} 没有命中当前游戏 Note 标签，请重新导出并导入 Note 标签规则"
+            )
+
+
+def note_tag_location_path_matches_rule(
+    *,
+    location_path: str,
+    rule_record: NoteTagTextRuleRecord,
+) -> bool:
+    """判断已保存译文定位是否属于指定 Note 标签规则。"""
+    parts = location_path.split("/")
+    if len(parts) < 3 or parts[-2] != "note":
+        return False
+    file_name = parts[0]
+    tag_name = parts[-1]
+    return (
+        tag_name in rule_record.tag_names
+        and note_file_pattern_matches(file_name=file_name, file_pattern=rule_record.file_name)
+    )
+
+
+__all__: list[str] = ["NoteTagTextExtraction", "note_tag_location_path_matches_rule"]
