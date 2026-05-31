@@ -188,6 +188,7 @@ class TextTranslation:
                 await verify_translation_batch(
                     ai_result=ai_result,
                     items=batch.items,
+                    prompt_ids_by_location_path=batch.prompt_ids_by_location_path,
                     right_queue=right_queue,
                     error_queue=error_queue,
                     text_rules=self.text_rules,

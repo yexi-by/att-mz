@@ -1,7 +1,7 @@
 """
 正文翻译校验模块。
 
-负责解析模型返回的 JSON，按 `location_path` 映射回翻译条目，并执行漏翻、
+负责解析模型返回的 JSON，按批次内临时 ID 映射回翻译条目，并执行漏翻、
 占位符和源文残留校验。
 """
 
@@ -35,7 +35,7 @@ ERR_EMPTY_TRANSLATION: ErrorType = "AI漏翻"
 class TranslationResponseItem(BaseModel):
     """模型返回的单条对照译文。"""
 
-    id: str
+    id: str | int
     translation_lines: list[str]
 
 
@@ -47,6 +47,7 @@ async def verify_translation_batch(
     *,
     ai_result: str,
     items: list[TranslationItem],
+    prompt_ids_by_location_path: dict[str, str],
     right_queue: asyncio.Queue[list[TranslationItem] | None],
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None],
     text_rules: TextRules,
@@ -60,7 +61,14 @@ async def verify_translation_batch(
         clean_result = repair_json(ai_result, return_objects=False)
 
         response_items = TranslationResponse.model_validate_json(clean_result).root
-        translation_map = _build_translation_line_map(response_items=response_items, items=items)
+        prompt_id_by_location_path = _validate_prompt_id_map(
+            items=items,
+            prompt_ids_by_location_path=prompt_ids_by_location_path,
+        )
+        translation_map = _build_translation_line_map(
+            response_items=response_items,
+            valid_prompt_ids=set(prompt_id_by_location_path.values()),
+        )
     except Exception as error:
         for item in items:
             error_items.append(
@@ -80,7 +88,8 @@ async def verify_translation_batch(
         return
 
     for item in items:
-        model_translation_lines = translation_map.get(item.location_path)
+        prompt_id = prompt_id_by_location_path[item.location_path]
+        model_translation_lines = translation_map.get(prompt_id)
         if model_translation_lines is None:
             error_items.append(
                 TranslationErrorItem(
@@ -90,7 +99,7 @@ async def verify_translation_batch(
                     original_lines=list(item.original_lines),
                     translation_lines=[],
                     error_type=ERR_MISSING_KEY,
-                    error_detail=[f"AI漏翻: 未找到键 {item.location_path}"],
+                    error_detail=[f"AI漏翻: 未找到键 {prompt_id}"],
                     model_response=ai_result,
                 )
             )
@@ -228,18 +237,45 @@ async def verify_translation_batch(
 def _build_translation_line_map(
     *,
     response_items: list[TranslationResponseItem],
-    items: list[TranslationItem],
+    valid_prompt_ids: set[str],
 ) -> dict[str, list[str]]:
     """按本地批次条目收窄模型译文，忽略无关字段和未知 ID。"""
-    valid_ids = {item.location_path for item in items}
     translation_map: dict[str, list[str]] = {}
     for response_item in response_items:
-        if response_item.id not in valid_ids:
+        response_id = str(response_item.id)
+        if response_id not in valid_prompt_ids:
             continue
-        if response_item.id in translation_map:
-            raise ValueError(f"模型返回重复 ID: {response_item.id}")
-        translation_map[response_item.id] = list(response_item.translation_lines)
+        if response_id in translation_map:
+            raise ValueError(f"模型返回重复 ID: {response_id}")
+        translation_map[response_id] = list(response_item.translation_lines)
     return translation_map
+
+
+def _validate_prompt_id_map(
+    *,
+    items: list[TranslationItem],
+    prompt_ids_by_location_path: dict[str, str],
+) -> dict[str, str]:
+    """校验当前批次真实内部位置和模型临时 ID 的绑定关系。"""
+    item_location_paths = {item.location_path for item in items}
+    extra_location_paths = sorted(set(prompt_ids_by_location_path).difference(item_location_paths))
+    if extra_location_paths:
+        joined_paths = "、".join(extra_location_paths)
+        raise ValueError(f"批次模型临时 ID 包含未知文本内部位置: {joined_paths}")
+
+    prompt_id_by_location_path: dict[str, str] = {}
+    seen_prompt_ids: set[str] = set()
+    for item in items:
+        prompt_id = prompt_ids_by_location_path.get(item.location_path)
+        if prompt_id is None:
+            raise ValueError(f"批次缺少模型临时 ID: {item.location_path}")
+        if not prompt_id:
+            raise ValueError(f"批次模型临时 ID 为空: {item.location_path}")
+        if prompt_id in seen_prompt_ids:
+            raise ValueError(f"批次模型临时 ID 重复: {prompt_id}")
+        seen_prompt_ids.add(prompt_id)
+        prompt_id_by_location_path[item.location_path] = prompt_id
+    return prompt_id_by_location_path
 
 
 def _is_empty_translation_lines(translation_lines: list[str]) -> bool:

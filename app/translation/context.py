@@ -66,6 +66,7 @@ def iter_translation_context_batches(
     system_message = ChatMessage(role="system", text=system_prompt)
     current_length = 0
     current_items: list[TranslationItem] = []
+    current_prompt_ids: dict[str, str] = {}
     main_bodies: list[str] = []
     display_name = translation_data.display_name or ""
     items = translation_data.translation_items
@@ -76,6 +77,7 @@ def iter_translation_context_batches(
         current_length += _append_item_to_batch(
             item=item,
             current_items=current_items,
+            current_prompt_ids=current_prompt_ids,
             main_bodies=main_bodies,
             text_rules=text_rules,
         )
@@ -89,12 +91,14 @@ def iter_translation_context_batches(
             yield _build_translation_batch(
                 system_message=system_message,
                 current_items=current_items,
+                current_prompt_ids=current_prompt_ids,
                 display_name=display_name,
                 main_bodies=main_bodies,
                 terminology_prompt_index=terminology_prompt_index,
             )
             current_length = 0
             current_items = []
+            current_prompt_ids = {}
             main_bodies = []
             continue
 
@@ -112,6 +116,7 @@ def iter_translation_context_batches(
             current_length += _append_item_to_batch(
                 item=next_item,
                 current_items=current_items,
+                current_prompt_ids=current_prompt_ids,
                 main_bodies=main_bodies,
                 text_rules=text_rules,
             )
@@ -121,18 +126,21 @@ def iter_translation_context_batches(
         yield _build_translation_batch(
             system_message=system_message,
             current_items=current_items,
+            current_prompt_ids=current_prompt_ids,
             display_name=display_name,
             main_bodies=main_bodies,
             terminology_prompt_index=terminology_prompt_index,
         )
         current_length = 0
         current_items = []
+        current_prompt_ids = {}
         main_bodies = []
 
     if current_items:
         yield _build_translation_batch(
             system_message=system_message,
             current_items=current_items,
+            current_prompt_ids=current_prompt_ids,
             display_name=display_name,
             main_bodies=main_bodies,
             terminology_prompt_index=terminology_prompt_index,
@@ -143,6 +151,7 @@ def _build_translation_batch(
     *,
     system_message: ChatMessage,
     current_items: list[TranslationItem],
+    current_prompt_ids: dict[str, str],
     display_name: str,
     main_bodies: list[str],
     terminology_prompt_index: TerminologyPromptIndex | None,
@@ -164,6 +173,7 @@ def _build_translation_batch(
     )
     return TranslationBatch(
         items=current_items,
+        prompt_ids_by_location_path=dict(current_prompt_ids),
         messages=[
             system_message,
             ChatMessage(
@@ -174,12 +184,17 @@ def _build_translation_batch(
     )
 
 
-def _format_translation_item(item: TranslationItem, masked_text: str, sequence: int) -> str:
+def _format_translation_item(
+    item: TranslationItem,
+    masked_text: str,
+    sequence: int,
+    prompt_id: str,
+) -> str:
     """将单个 `TranslationItem` 格式化成上下文正文块。"""
     if item.item_type == "long_text":
         return LONG_TEXT_CONTEXT_TEMPLATE.format(
             sequence=sequence,
-            id=item.location_path,
+            id=prompt_id,
             item_type=item.item_type,
             role=item.role or "",
             lines=masked_text,
@@ -187,7 +202,7 @@ def _format_translation_item(item: TranslationItem, masked_text: str, sequence: 
     if item.item_type == "array":
         return ARRAY_CONTEXT_TEMPLATE.format(
             sequence=sequence,
-            id=item.location_path,
+            id=prompt_id,
             item_type=item.item_type,
             role=item.role or "",
             line_count=len(item.original_lines),
@@ -196,7 +211,7 @@ def _format_translation_item(item: TranslationItem, masked_text: str, sequence: 
     if item.item_type == "short_text":
         return SHORT_TEXT_CONTEXT_TEMPLATE.format(
             sequence=sequence,
-            id=item.location_path,
+            id=prompt_id,
             item_type=item.item_type,
             role=item.role or "",
             lines=masked_text,
@@ -208,6 +223,7 @@ def _append_item_to_batch(
     *,
     item: TranslationItem,
     current_items: list[TranslationItem],
+    current_prompt_ids: dict[str, str],
     main_bodies: list[str],
     text_rules: TextRules,
 ) -> int:
@@ -217,11 +233,15 @@ def _append_item_to_batch(
         masked_text = "".join(item.original_lines_with_placeholders)
     else:
         masked_text = "\n".join(item.original_lines_with_placeholders)
+    sequence = len(current_items) + 1
+    prompt_id = str(sequence)
     formatted_item = _format_translation_item(
         item=item,
         masked_text=masked_text,
-        sequence=len(current_items) + 1,
+        sequence=sequence,
+        prompt_id=prompt_id,
     )
+    current_prompt_ids[item.location_path] = prompt_id
     main_bodies.append(formatted_item)
     current_items.append(item)
     return len(formatted_item)

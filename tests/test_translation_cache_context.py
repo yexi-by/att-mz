@@ -52,7 +52,11 @@ def test_translation_context_prompt_contains_map_and_body_without_terms() -> Non
     assert "# 正文" in user_prompt
     assert "## 1" in user_prompt
     assert "地图：始まりの町" in user_prompt
-    assert "id: Map001.json/1/0/0" in user_prompt
+    assert batches[0].prompt_ids_by_location_path == {"Map001.json/1/0/0": "1"}
+    assert "id: 1" in user_prompt
+    assert "Map001.json" not in user_prompt
+    assert "location_path" not in user_prompt
+    assert "位置:" not in user_prompt
     assert "type: long_text" in user_prompt
     assert "role: 村人" in user_prompt
     assert "こんにちは" in user_prompt
@@ -84,6 +88,43 @@ def test_translation_context_keeps_array_output_line_count_hint() -> None:
     user_prompt = batches[0].messages[1].text
 
     assert "line_count: 2" in user_prompt
+
+
+def test_translation_context_resets_prompt_ids_for_each_batch() -> None:
+    """每个模型批次独立使用短 ID，不把真实内部位置暴露给模型。"""
+    data = TranslationData(
+        display_name=None,
+        translation_items=[
+            TranslationItem(
+                location_path="Map001.json/1/0/0",
+                item_type="short_text",
+                original_lines=["一つ目"],
+            ),
+            TranslationItem(
+                location_path="Map001.json/1/0/1",
+                item_type="short_text",
+                original_lines=["二つ目"],
+            ),
+        ],
+    )
+
+    batches = list(
+        iter_translation_context_batches(
+            translation_data=data,
+            token_size=1,
+            factor=1.0,
+            max_command_items=3,
+            system_prompt="系统提示",
+            text_rules=get_default_text_rules(),
+        )
+    )
+
+    assert [batch.prompt_ids_by_location_path for batch in batches] == [
+        {"Map001.json/1/0/0": "1"},
+        {"Map001.json/1/0/1": "1"},
+    ]
+    assert all("id: 1" in batch.messages[1].text for batch in batches)
+    assert all("Map001.json" not in batch.messages[1].text for batch in batches)
 
 
 def test_short_text_real_line_break_is_hidden_from_prompt() -> None:

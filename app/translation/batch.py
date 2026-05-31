@@ -11,6 +11,7 @@ class TranslationBatch:
     """一次模型请求需要处理的正文条目与消息列表。"""
 
     items: list[TranslationItem]
+    prompt_ids_by_location_path: dict[str, str]
     messages: list[ChatMessage]
 
 

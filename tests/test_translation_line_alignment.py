@@ -37,12 +37,13 @@ def _build_model_response(
     *,
     item: TranslationItem,
     translation_lines: list[str],
+    prompt_id: str | int = "1",
     source_lines: list[str] | None = None,
     extra_fields: dict[str, object] | None = None,
 ) -> str:
     """构建新数组协议下的模型返回。"""
     response_item: dict[str, object] = {
-        "id": item.location_path,
+        "id": prompt_id,
         "role": item.role or "",
         "source_lines": source_lines if source_lines is not None else list(item.original_lines),
         "translation_lines": translation_lines,
@@ -74,6 +75,7 @@ async def _verify_single_long_text(
             translation_lines=translated_text.splitlines(),
         ),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -99,6 +101,7 @@ async def _verify_single_item(
     await verify_translation_batch(
         ai_result=_build_model_response(item=item, translation_lines=translation_lines),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -368,7 +371,7 @@ async def test_translation_response_accepts_minimal_output_protocol() -> None:
     ai_result = json.dumps(
         [
             {
-                "id": item.location_path,
+                "id": "1",
                 "role": item.role,
                 "translation_lines": ["你好"],
             }
@@ -379,6 +382,40 @@ async def test_translation_response_accepts_minimal_output_protocol() -> None:
     await verify_translation_batch(
         ai_result=ai_result,
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
+    assert error_queue.empty()
+    result = await right_queue.get()
+    assert result is not None
+    assert result[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_translation_response_accepts_numeric_prompt_id() -> None:
+    """模型把短 ID 返回为 JSON 数字时，仍按字符串 ID 匹配译文。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        role="村人",
+        original_lines=["こんにちは"],
+    )
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+
+    await verify_translation_batch(
+        ai_result=_build_model_response(
+            item=item,
+            prompt_id=1,
+            translation_lines=["你好"],
+        ),
+        items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -412,6 +449,7 @@ async def test_translation_response_ignores_source_lines_and_extra_fields() -> N
             extra_fields={"type": "wrong", "unused": ["ignored"]},
         ),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -473,7 +511,7 @@ async def test_translation_response_missing_id_is_recorded_as_missing_key() -> N
     ai_result = json.dumps(
         [
             {
-                "id": "Map999.json/1/0/0",
+                "id": "999",
                 "role": "",
                 "source_lines": ["こんにちは"],
                 "translation_lines": ["你好"],
@@ -485,6 +523,7 @@ async def test_translation_response_missing_id_is_recorded_as_missing_key() -> N
     await verify_translation_batch(
         ai_result=ai_result,
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -524,6 +563,7 @@ async def test_empty_translation_lines_are_recorded_as_missing_translation(
     await verify_translation_batch(
         ai_result=_build_model_response(item=item, translation_lines=translation_lines),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -547,7 +587,7 @@ async def test_translation_response_duplicate_valid_id_blocks_batch() -> None:
     )
     item.build_placeholders(text_rules)
     response_item = {
-        "id": item.location_path,
+        "id": "1",
         "role": "",
         "source_lines": ["こんにちは"],
         "translation_lines": ["你好"],
@@ -558,6 +598,7 @@ async def test_translation_response_duplicate_valid_id_blocks_batch() -> None:
     await verify_translation_batch(
         ai_result=json.dumps([response_item, response_item], ensure_ascii=False),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -585,6 +626,7 @@ async def test_array_response_line_count_mismatch_is_recorded() -> None:
     await verify_translation_batch(
         ai_result=_build_model_response(item=item, translation_lines=["是"]),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
@@ -665,6 +707,7 @@ async def test_invalid_model_response_is_recorded_on_error_items() -> None:
     await verify_translation_batch(
         ai_result=raw_response,
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=_build_text_rules(width_limit=47),
@@ -1062,6 +1105,7 @@ async def test_short_text_inner_book_title_quote_converted_to_curly_quote_is_res
             translation_lines=[translated_text],
         ),
         items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
         right_queue=right_queue,
         error_queue=error_queue,
         text_rules=text_rules,
