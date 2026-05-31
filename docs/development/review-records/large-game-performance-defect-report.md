@@ -19,17 +19,17 @@
 
 | 命令 | profile 总耗时 | 关键热点 |
 | --- | ---: | --- |
-| `quality-report --json` | 94.276s | JS AST 解析 450 次；`TextScopeService.build` 59.588s；写回探针 18.929s；Rust 译文质检 2.881s |
-| `audit-coverage --json` | 63.960s | JS AST 解析 274 次；`TextScopeService.build` 56.640s；写回探针 23.753s |
-| `scan-plugin-source-text --json` | 30.235s | 单轮插件源码扫描 176 文件；JS AST 解析 176 次 |
-| `export-plugin-source-ast-map --json` | 29.436s | 单轮插件源码扫描 176 文件；JSON 写出不是主耗时 |
-| `audit-active-runtime --json` | 30.068s | 当前运行插件源码审计 24.747s；严格 JS AST 扫描 160 文件 |
-| `diagnose-active-runtime --json` | 35.716s | 当前运行插件源码审计 24.115s；反推匹配本身约 0.011s |
-| `export-pending-translations --json` | 143.443s | 即使 pending 为 0，仍构建完整文本范围并执行写回探针 |
-| `translation-status --json` | 35.507s | 状态查询执行完整提取范围构建；JS AST 解析 176 次 |
-| `prepare-agent-workspace --json` | 60.936s | 插件源码扫描 2 轮；Note 标签原生扫描 3 次 |
-| `validate-agent-workspace --json` | 291.923s | 插件源码扫描 7 轮；JS AST 解析 1330 次；Note 标签原生扫描 14 次；普通/结构化占位符覆盖扫描重复执行 |
-| `rebuild-active-runtime --json` | CLI 日志 97.96s | Rust 写回计划 19.090s；其余主要在 Python 写入前检查和重复扫描 |
+| `quality-report` | 94.276s | JS AST 解析 450 次；`TextScopeService.build` 59.588s；写回探针 18.929s；Rust 译文质检 2.881s |
+| `audit-coverage` | 63.960s | JS AST 解析 274 次；`TextScopeService.build` 56.640s；写回探针 23.753s |
+| `scan-plugin-source-text` | 30.235s | 单轮插件源码扫描 176 文件；JS AST 解析 176 次 |
+| `export-plugin-source-ast-map` | 29.436s | 单轮插件源码扫描 176 文件；JSON 写出不是主耗时 |
+| `audit-active-runtime` | 30.068s | 当前运行插件源码审计 24.747s；严格 JS AST 扫描 160 文件 |
+| `diagnose-active-runtime` | 35.716s | 当前运行插件源码审计 24.115s；反推匹配本身约 0.011s |
+| `export-pending-translations` | 143.443s | 即使 pending 为 0，仍构建完整文本范围并执行写回探针 |
+| `translation-status` | 35.507s | 状态查询执行完整提取范围构建；JS AST 解析 176 次 |
+| `prepare-agent-workspace` | 60.936s | 插件源码扫描 2 轮；Note 标签原生扫描 3 次 |
+| `validate-agent-workspace` | 291.923s | 插件源码扫描 7 轮；JS AST 解析 1330 次；Note 标签原生扫描 14 次；普通/结构化占位符覆盖扫描重复执行 |
+| `rebuild-active-runtime` | CLI 日志 97.96s | Rust 写回计划 19.090s；其余主要在 Python 写入前检查和重复扫描 |
 
 `rebuild-active-runtime` 的 Rust 写回计划分段：
 

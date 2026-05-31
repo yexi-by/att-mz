@@ -6,7 +6,7 @@
 
 - 只读文件：`<工作区>/event-commands.json`。
 - 任务参数：`<发行版目录>`、`<工作区>`、`<游戏标题>`。
-- 可参考信息：主代理可说明 `export-event-commands-json` 已成功生成 `<工作区>/event-commands.json`；该导出命令不提供 `--json` 摘要。
+- 可参考信息：主代理可说明 `export-event-commands-json` 已成功生成 `<工作区>/event-commands.json`，并读取 stdout JSON 摘要。
 
 ## 逻辑
 
@@ -61,7 +61,7 @@
 写完后建议主代理运行：
 
 ```powershell
-.\att-mz.exe --agent-mode validate-event-command-rules --game <游戏标题> --input <工作区>/event-command-rules.json --json
+.\att-mz.exe validate-event-command-rules --game <游戏标题> --input <工作区>/event-command-rules.json
 ```
 
 如果校验失败，只修 `<工作区>/event-command-rules.json` 后重跑同一校验命令；不要绕过 CLI 导入。

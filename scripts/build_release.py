@@ -174,7 +174,7 @@ def run_smoke_tests(release_dir: Path) -> None:
         errors="replace",
     )
     subprocess.run(
-        [str(exe_path), "list", "--json"],
+        [str(exe_path), "list"],
         cwd=release_dir,
         check=True,
         capture_output=True,

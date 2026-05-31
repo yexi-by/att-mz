@@ -28,7 +28,18 @@ async def run_export_plugins_json_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     output_path = read_required_path_arg(args, "output")
     async with HandlerSession() as handler:
-        _ = await handler.export_plugins_json(game_title=game_title, output_path=output_path)
+        summary = await handler.export_plugins_json(game_title=game_title, output_path=output_path)
+    report = AgentReport.from_parts(
+        errors=[],
+        warnings=[],
+        summary={
+            "game": game_title,
+            "output": summary.output_path,
+            "plugin_count": summary.plugin_count,
+        },
+        details={},
+    )
+    write_report_outputs(report=report, args=args, title="插件配置 JSON 导出报告", write_output_file=False)
     return 0
 
 
@@ -44,8 +55,6 @@ async def run_import_plugin_rules_command(args: argparse.Namespace) -> int:
                 confirm_empty=read_bool_arg(args, "confirm_empty"),
             )
     except Exception as error:
-        if not read_bool_arg(args, "json_output"):
-            raise
         report = AgentReport.from_parts(
             errors=[issue("plugin_rules_invalid", f"插件规则导入失败: {type(error).__name__}: {error}")],
             warnings=[],
@@ -54,26 +63,25 @@ async def run_import_plugin_rules_command(args: argparse.Namespace) -> int:
         )
         write_report_outputs(report=report, args=args, title="插件规则导入报告")
         return 1
-    if read_bool_arg(args, "json_output"):
-        warnings = build_deleted_translation_warnings(
-            deleted_translation_items=summary.deleted_translation_items,
-            backup_path=summary.deleted_translation_backup_path,
-            rule_label="插件规则",
-        )
-        report = AgentReport.from_parts(
-            errors=[],
-            warnings=warnings,
-            summary={
-                "game": game_title,
-                "input": str(input_path),
-                "imported_plugin_count": summary.imported_plugin_count,
-                "imported_rule_count": summary.imported_rule_count,
-                "deleted_translation_items": summary.deleted_translation_items,
-                "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
-            },
-            details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
-        )
-        write_report_outputs(report=report, args=args, title="插件规则导入报告")
+    warnings = build_deleted_translation_warnings(
+        deleted_translation_items=summary.deleted_translation_items,
+        backup_path=summary.deleted_translation_backup_path,
+        rule_label="插件规则",
+    )
+    report = AgentReport.from_parts(
+        errors=[],
+        warnings=warnings,
+        summary={
+            "game": game_title,
+            "input": str(input_path),
+            "imported_plugin_count": summary.imported_plugin_count,
+            "imported_rule_count": summary.imported_rule_count,
+            "deleted_translation_items": summary.deleted_translation_items,
+            "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
+        },
+        details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
+    )
+    write_report_outputs(report=report, args=args, title="插件规则导入报告")
     return 0
 
 
@@ -83,11 +91,22 @@ async def run_export_event_commands_json_command(args: argparse.Namespace) -> in
     output_path = read_required_path_arg(args, "output")
     command_codes = read_int_set_arg(args, "codes")
     async with HandlerSession() as handler:
-        _ = await handler.export_event_commands_json(
+        summary = await handler.export_event_commands_json(
             game_title=game_title,
             output_path=output_path,
             command_codes=command_codes,
         )
+    report = AgentReport.from_parts(
+        errors=[],
+        warnings=[],
+        summary={
+            "game": game_title,
+            "output": summary.output_path,
+            "command_count": summary.command_count,
+        },
+        details={},
+    )
+    write_report_outputs(report=report, args=args, title="事件指令参数 JSON 导出报告", write_output_file=False)
     return 0
 
 
@@ -105,8 +124,6 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
                 command_codes=command_codes,
             )
     except Exception as error:
-        if not read_bool_arg(args, "json_output"):
-            raise
         report = AgentReport.from_parts(
             errors=[issue("event_command_rules_invalid", f"事件指令规则导入失败: {type(error).__name__}: {error}")],
             warnings=[],
@@ -115,26 +132,25 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
         )
         write_report_outputs(report=report, args=args, title="事件指令规则导入报告")
         return 1
-    if read_bool_arg(args, "json_output"):
-        warnings = build_deleted_translation_warnings(
-            deleted_translation_items=summary.deleted_translation_items,
-            backup_path=summary.deleted_translation_backup_path,
-            rule_label="事件指令规则",
-        )
-        report = AgentReport.from_parts(
-            errors=[],
-            warnings=warnings,
-            summary={
-                "game": game_title,
-                "input": str(input_path),
-                "imported_rule_group_count": summary.imported_rule_group_count,
-                "imported_path_rule_count": summary.imported_path_rule_count,
-                "deleted_translation_items": summary.deleted_translation_items,
-                "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
-            },
-            details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
-        )
-        write_report_outputs(report=report, args=args, title="事件指令规则导入报告")
+    warnings = build_deleted_translation_warnings(
+        deleted_translation_items=summary.deleted_translation_items,
+        backup_path=summary.deleted_translation_backup_path,
+        rule_label="事件指令规则",
+    )
+    report = AgentReport.from_parts(
+        errors=[],
+        warnings=warnings,
+        summary={
+            "game": game_title,
+            "input": str(input_path),
+            "imported_rule_group_count": summary.imported_rule_group_count,
+            "imported_path_rule_count": summary.imported_path_rule_count,
+            "deleted_translation_items": summary.deleted_translation_items,
+            "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
+        },
+        details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
+    )
+    write_report_outputs(report=report, args=args, title="事件指令规则导入报告")
     return 0
 
 

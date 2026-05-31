@@ -51,7 +51,7 @@
 - JSON 键是正则表达式，值是 `[CUSTOM_...]` 模板；不要写反。
 - 裸控制符紧贴正文时，先确认协议边界，再只保护协议本体。
 - 宽规则如果会匹配普通转义、换行或可翻译正文，必须收窄。
-- `validate-placeholder-rules --sample <原文片段> --input <规则文件> --json` 的预览里，去掉 `[CUSTOM_...]` 后仍应看到需要翻译的玩家可见文本。
+- `validate-placeholder-rules --sample <原文片段> --input <规则文件>` 的预览里，去掉 `[CUSTOM_...]` 后仍应看到需要翻译的玩家可见文本。
 
 ## 三类外部规则样例
 

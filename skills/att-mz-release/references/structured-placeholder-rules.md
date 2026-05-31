@@ -44,10 +44,10 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 
 1. 确认目标文本已经进入正文翻译集合。结构化规则不会让未被提取的插件参数、事件指令参数或 Note 标签值自动进入翻译。
 2. 编写或修改 `<工作区>/structured-placeholder-rules.json`。
-3. 运行 `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件> --json`。
-4. 运行 `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件> --json`，检查候选覆盖和未覆盖风险。
-5. 校验通过且覆盖风险已确认后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件> --json`。
-6. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告> --json`，确保工作区整体可继续。
+3. 运行 `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
+4. 运行 `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>`，检查候选覆盖和未覆盖风险。
+5. 校验通过且覆盖风险已确认后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
+6. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`，确保工作区整体可继续。
 
 这套流程和普通正则占位符规则是并列关系：普通规则继续负责整段不可翻译片段，结构化规则只保护固定协议外壳并暴露中间显示文本。两者都必须通过 CLI 校验后保存为当前游戏有效规则，不能互相覆盖保护范围。
 

@@ -1,7 +1,7 @@
 [project]
 name = "att-mz"
 version = "0.1.8"
-description = "Autonomous Translation Toolkit for RPG Maker MZ"
+description = "面向 RPG Maker（RM）游戏的 Agent 汉化工具包"
 requires-python = ">=3.14"
 dependencies = [
     "aiofiles>=25.1.0",
@@ -11,7 +11,6 @@ dependencies = [
     "loguru>=0.7.3",
     "openai>=2.26.0",
     "pydantic>=2.12.5",
-    "rich>=14.3.3",
 ]
 
 [project.scripts]

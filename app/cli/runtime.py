@@ -15,7 +15,6 @@ from app.application.handler import (
     WriteBackSummary,
 )
 from app.cli.arguments import (
-    read_bool_arg,
     read_optional_bool_arg,
     read_optional_float_arg,
     read_optional_int_arg,
@@ -66,10 +65,9 @@ async def translate_text_for_handler(
     setting_overrides: SettingOverrides,
     placeholder_rules_text: str | None,
     run_limits: TranslationRunLimits,
-    args: argparse.Namespace,
 ) -> TextTranslationSummary:
     """使用已创建的编排器翻译正文。"""
-    with build_progress_reporter("正文翻译", args) as progress:
+    with build_progress_reporter("正文翻译") as progress:
         return await handler.translate_text(
             game_title=game_title,
             setting_overrides=setting_overrides,
@@ -84,15 +82,15 @@ async def write_back_for_handler(
     handler: TranslationHandler,
     game_title: str,
     setting_overrides: SettingOverrides,
-    args: argparse.Namespace,
+    confirm_font_overwrite: bool,
 ) -> WriteBackSummary:
     """使用已创建的编排器回写译文。"""
-    with build_progress_reporter("回写数据", args) as progress:
+    with build_progress_reporter("回写数据") as progress:
         return await handler.write_back(
             game_title=game_title,
             callbacks=progress.status_callbacks(),
             setting_overrides=setting_overrides,
-            confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
+            confirm_font_overwrite=confirm_font_overwrite,
         )
 
 

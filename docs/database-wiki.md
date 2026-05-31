@@ -53,9 +53,9 @@
 
 - `add-game` 负责解析干净原始游戏目录，并把 `metadata` 的游戏目录、真实内容目录、引擎类型和版本写入数据库，同时把当前游戏源语言写入 `language_settings`。
 - `add-game` 首次注册会创建可信源快照，并把快照路径、大小、哈希和更新时间写入 `source_snapshot_files`；翻译源读取只信这组快照。
-- `list --json` 会展示 `game_title`、`game_path`、`content_root`、`engine_kind`、`engine_version`、`source_language`、`target_language` 和 `db_path`，用于快速确认已注册游戏是否绑定到正确内容目录和语言档案。
-- `prepare-agent-workspace --json` 会在摘要和详情里展示引擎类型、引擎版本、真实内容目录、实际数据目录和当前源语言；外部 Agent 应以这个工作区输出为准。
-- MV 游戏的 `prepare-agent-workspace --json` 会导出 `mv-virtual-namebox-candidates.json` 和 `mv-virtual-namebox-rules.json`；第零轮导入规则后需要重新准备工作区，让第一轮术语文件按已保存规则生成。
+- `list` 会展示 `game_title`、`game_path`、`content_root`、`engine_kind`、`engine_version`、`source_language`、`target_language` 和 `db_path`，用于快速确认已注册游戏是否绑定到正确内容目录和语言档案。
+- `prepare-agent-workspace` 会在摘要和详情里展示引擎类型、引擎版本、真实内容目录、实际数据目录和当前源语言；外部 Agent 应以这个工作区输出为准。
+- MV 游戏的 `prepare-agent-workspace` 会导出 `mv-virtual-namebox-candidates.json` 和 `mv-virtual-namebox-rules.json`；第零轮导入规则后需要重新准备工作区，让第一轮术语文件按已保存规则生成。
 - `export-event-commands-json` 未显式传入 `--code` 时，会读取 `setting.toml` 的 `[event_command_text.default_command_codes_by_engine]`；配置模板默认 MV 使用 `356`，MZ 使用 `357`。
 - Skill 只要求 Agent 读取 CLI 输出和工作区文件，不要求也不允许 Agent 直接读取或修改数据库表。
 

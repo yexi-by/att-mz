@@ -163,8 +163,8 @@ def test_import_event_command_parser_accepts_code_array() -> None:
     assert read_int_set_arg(args, "codes") == {357, 999}
 
 
-def test_write_back_parser_accepts_json_output() -> None:
-    """write-back 支持输出机器可读摘要和显式字体覆盖确认。"""
+def test_write_back_parser_accepts_font_overwrite_confirmation() -> None:
+    """write-back 支持显式字体覆盖确认。"""
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -172,16 +172,14 @@ def test_write_back_parser_accepts_json_output() -> None:
             "--game",
             "テストゲーム",
             "--confirm-font-overwrite",
-            "--json",
         ]
     )
 
-    assert read_bool_arg(args, "json_output") is True
     assert read_bool_arg(args, "confirm_font_overwrite") is True
 
 
-def test_restore_font_parser_accepts_json_output() -> None:
-    """restore-font 支持输出机器可读摘要。"""
+def test_restore_font_parser_accepts_replacement_font_path() -> None:
+    """restore-font 支持字体路径配置覆盖。"""
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -190,11 +188,9 @@ def test_restore_font_parser_accepts_json_output() -> None:
             "テストゲーム",
             "--replacement-font-path",
             "fonts/NotoSansSC-Regular.ttf",
-            "--json",
         ]
     )
 
-    assert read_bool_arg(args, "json_output") is True
     assert read_optional_str_arg(args, "replacement_font_path") == "fonts/NotoSansSC-Regular.ttf"
 
 

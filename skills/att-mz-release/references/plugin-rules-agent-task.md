@@ -7,7 +7,7 @@
 - 只读文件：`<工作区>/plugins.json`。
 - 只读文件：`<工作区>/plugin-json-string-leaf-candidates.json`，只用于查看插件参数 JSON 字符串内部有哪些字符串叶子候选，不代表候选一定玩家可见。
 - 任务参数：`<发行版目录>`、`<工作区>`、`<游戏标题>`、`<游戏目录>`。
-- 可参考信息：主代理可说明 `export-plugins-json` 已成功生成 `<工作区>/plugins.json`；该导出命令不提供 `--json` 摘要。
+- 可参考信息：主代理可说明 `export-plugins-json` 已成功生成 `<工作区>/plugins.json`，并读取 stdout JSON 摘要。
 - 需要确认参数语义时，允许只读 `<游戏目录>/js/plugins/<插件名>.js` 直接文件中的插件头注释和参数说明；不要读取其他目录、不要递归、不要修改 JS。
 
 ## 逻辑
@@ -51,7 +51,7 @@
 写完后建议主代理运行：
 
 ```powershell
-.\att-mz.exe --agent-mode validate-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json --json
+.\att-mz.exe validate-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json
 ```
 
 如果校验失败，只修 `<工作区>/plugin-rules.json` 后重跑同一校验命令；不要绕过 CLI 导入。

@@ -4,7 +4,7 @@
 
 ## 续跑判断
 
-- 每轮 `translate` 后运行 `translation-status --game <游戏标题> --json` 和 `quality-report --game <游戏标题> --json`。
+- 每轮 `translate` 后运行 `translation-status --game <游戏标题>` 和 `quality-report --game <游戏标题>`。
 - 记录本轮开始数量、当前剩余数量、检查没通过的译文数量和主要错误类型。
 - 只要剩余数量明显下降，且没有新的规则性事故，就继续下一轮。
 - 连续多轮同类失败不下降时，停止盲目重跑，说明剩余数量、主要错误类型、最近几轮下降情况、是否可换模型、是否需要改规则、是否适合手动填写译文表。
@@ -18,26 +18,26 @@
 - `overwide_line_items`：某一行太长，游戏窗口放不下。
 - `source_residual_items`：中文译文里还有疑似没翻的源语言文本。
 
-存在 `quality-report --json` error 时禁止写进游戏文件。
+存在 `quality-report` error 时禁止写进游戏文件。
 
 ## 手动修复
 
 质量报告有可修复明细时，优先运行：
 
 ```powershell
-.\att-mz.exe --agent-mode export-quality-fix-template --game <游戏标题> --output <工作区>/quality-fix-template.json --json
+.\att-mz.exe export-quality-fix-template --game <游戏标题> --output <工作区>/quality-fix-template.json
 ```
 
 修复表里只改 `translation_lines`。改完后运行：
 
 ```powershell
-.\att-mz.exe --agent-mode import-manual-translations --game <游戏标题> --input <工作区>/quality-fix-template.json --json
+.\att-mz.exe import-manual-translations --game <游戏标题> --input <工作区>/quality-fix-template.json
 ```
 
 如果只剩还没成功保存译文的文本，且剩余量适合手动处理，使用：
 
 ```powershell
-.\att-mz.exe --agent-mode export-pending-translations --game <游戏标题> --output <工作区>/pending-translations.json --json
+.\att-mz.exe export-pending-translations --game <游戏标题> --output <工作区>/pending-translations.json
 ```
 
 需要抽样或分批时追加 `--limit N`。不传 `--limit` 时导出全部剩余文本，但全量导出必须满足“已经降到适合手动处理或多轮不下降”的前置条件。
@@ -47,8 +47,8 @@
 发现源文残留时先判断是不是漏翻。漏翻就修中文译文行后导入。只有致谢名单、Staff 名、作品名、品牌名、游戏内专有名词等确实无需翻译的片段，才写入 `source-residual-rules.json` 并运行：
 
 ```powershell
-.\att-mz.exe --agent-mode validate-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json --json
-.\att-mz.exe --agent-mode import-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json --json
+.\att-mz.exe validate-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json
+.\att-mz.exe import-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json
 ```
 
 源文保留例外必须限制到具体文本内部位置或明确结构性片段，并填写原因。禁止用它掩盖整句漏翻，禁止关闭全局源文残留检测。
@@ -66,13 +66,13 @@
 运行：
 
 ```powershell
-.\att-mz.exe --agent-mode reset-translations --game <游戏标题> --input <工作区>/reset-translations.json --json
+.\att-mz.exe reset-translations --game <游戏标题> --input <工作区>/reset-translations.json
 ```
 
 用户明确要求完整重译已完成游戏时，使用：
 
 ```powershell
-.\att-mz.exe --agent-mode reset-translations --game <游戏标题> --all --json
+.\att-mz.exe reset-translations --game <游戏标题> --all
 ```
 
 不要手工拼当前提取范围全集路径，不要把 `translation_lines` 写成空数组来绕过导入校验。

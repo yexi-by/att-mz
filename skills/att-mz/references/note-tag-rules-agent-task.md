@@ -38,7 +38,7 @@
 写完后建议主代理运行：
 
 ```powershell
-uv run python main.py --agent-mode validate-note-tag-rules --game <游戏标题> --input <工作区>/note-tag-rules.json --json
+uv run python main.py validate-note-tag-rules --game <游戏标题> --input <工作区>/note-tag-rules.json
 ```
 
 如果校验失败，只修 `<工作区>/note-tag-rules.json` 后重跑同一校验命令；不要绕过 CLI 导入，不要直接改游戏 `data/*.json` 的 `note` 字段。

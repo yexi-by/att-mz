@@ -71,7 +71,7 @@
 主代理审查通过后运行：
 
 ```powershell
-.\att-mz.exe --agent-mode import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json --json
+.\att-mz.exe import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json
 ```
 
 字段译名表 key 不能改，正文术语表只能包含 `terms`。导入校验会检查字段译名表完整性、空译名、正文术语表空值、字段译名表内部同名冲突，以及正文术语表和字段译名表同名条目的译名一致性；它不会要求字段译名表的每个原文都原样进入正文术语表。任一术语候选质量明显不合格时，退回对应候选子代理重做或主代理亲自重译对应字段，不能把坏候选保存为当前游戏术语表。

@@ -202,11 +202,9 @@ def audit_active_runtime_command(game_title: str) -> list[str]:
         "run",
         "python",
         "main.py",
-        "--agent-mode",
         "audit-active-runtime",
         "--game",
         game_title,
-        "--json",
     ]
 
 
@@ -428,13 +426,11 @@ def prepare_registered_benchmark(options: ActiveRuntimeAuditBenchmarkOptions) ->
                 "run",
                 "python",
                 "main.py",
-                "--agent-mode",
                 "add-game",
                 "--path",
                 str(game_path),
                 "--source-language",
                 options.source_language,
-                "--json",
             ],
             cwd=ROOT,
             env=build_cli_env(app_home=app_home, rust_threads=options.rust_threads),

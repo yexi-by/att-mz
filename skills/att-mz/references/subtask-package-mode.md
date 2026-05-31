@@ -7,13 +7,13 @@
 主代理完成以下命令后，才能询问用户是否使用外部协作任务包：
 
 ```powershell
-uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json
+uv run python main.py prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
 ```
 
 发行版使用：
 
 ```powershell
-.\att-mz.exe --agent-mode prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json
+.\att-mz.exe prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
 ```
 
 用户可选择当前会话完成、外部协作任务包或混合处理。多项候选分析会消耗较多上下文和模型额度；额度有限时，建议主代理把任务包文件夹交给用户带走处理。
@@ -91,7 +91,7 @@ uv run python main.py --agent-mode prepare-agent-workspace --game <游戏标题>
 - `round`：第一轮术语候选写 `1`，第二轮三类规则写 `2`。
 - `context_files`：包内相对路径数组，必须指向 `context/` 里的结构化数据。
 - `workspace_target`：主代理回收答案后写回 `<工作区>` 的相对目标，例如 `terminology/subtasks/candidates/item_terms.json` 或 `plugin-rules.json`。
-- `validation_command`：主代理回收后运行的命令模板；术语候选可写最终导入命令，规则类写对应 `validate-* --json`。
+- `validation_command`：主代理回收后运行的命令模板；术语候选可写最终导入命令，规则类写对应 `validate-*`。
 
 ## 术语候选任务包示例
 
@@ -153,7 +153,7 @@ terminology-item/
     "context/database_terms.json"
   ],
   "workspace_target": "terminology/subtasks/candidates/item_terms.json",
-  "validation_command": "import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json --json"
+  "validation_command": "import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json"
 }
 ```
 
@@ -222,7 +222,7 @@ plugin-rules/
     "context/plugins.json"
   ],
   "workspace_target": "plugin-rules.json",
-  "validation_command": "validate-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json --json"
+  "validation_command": "validate-plugin-rules --game <游戏标题> --input <工作区>/plugin-rules.json"
 }
 ```
 
@@ -249,7 +249,7 @@ plugin-rules/
 6. 对术语候选进行主观质量审核：忠实、自然、简体中文、风格统一、专名一致、无空值、无源文残留、无机械音译。
 7. 对规则类答案抽查选中项、重点排除项和空结果依据；证据不足时要求补充或重做。
 8. 把通过审核的 `answer.json` 写回 `<工作区>` 中 `manifest.json` 指定的 `workspace_target`。
-9. 对规则类结果运行对应 `validate-* --json`；通过后才运行对应 `import-* --json`。
+9. 对规则类结果运行对应 `validate-*`；通过后才运行对应 `import-*`。
 10. 小范围格式问题可由主代理修正；大面积错误必须要求重做或改由主代理完成。
 
 任务包答案通过验收前，不能导入规则，不能启动正文翻译，不能写进游戏文件。

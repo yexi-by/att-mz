@@ -34,7 +34,7 @@
 判断一条混合文本能否继续翻译时：
 
 1. 确认该来源已经被内置提取或对应外部规则纳入正文翻译集合。
-2. 使用 `validate-placeholder-rules --sample <原文片段> --input <规则文件> --json` 查看预览。
+2. 使用 `validate-placeholder-rules --sample <原文片段> --input <规则文件>` 查看预览。
 3. 去掉 `[CUSTOM_...]` 后仍应保留需要翻译的玩家可见文本。
 4. 命令名、参数名、资源名、脚本、分隔符、标签壳和触发前后缀等协议片段应被保护或本身不进入翻译。
 
@@ -47,22 +47,22 @@
 3. 运行：
 
 ```powershell
-uv run python main.py --agent-mode build-placeholder-rules --game <游戏标题> --output <工作区>/placeholder-rules.json --json
+uv run python main.py build-placeholder-rules --game <游戏标题> --output <工作区>/placeholder-rules.json
 ```
 
 4. 审查 `<工作区>/placeholder-rules.json`。
 5. 运行：
 
 ```powershell
-uv run python main.py --agent-mode validate-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json --json
-uv run python main.py --agent-mode scan-placeholder-candidates --game <游戏标题> --input <工作区>/placeholder-rules.json --json
+uv run python main.py validate-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json
+uv run python main.py scan-placeholder-candidates --game <游戏标题> --input <工作区>/placeholder-rules.json
 ```
 
 6. `summary.uncovered_count` 必须等于 0；未覆盖时修规则后重新 validate 和 scan。
 7. 覆盖扫描通过后运行：
 
 ```powershell
-uv run python main.py --agent-mode import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json --json
+uv run python main.py import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json
 ```
 
 空规则只有在当前候选确实为空时才允许加 `--confirm-empty` 导入。

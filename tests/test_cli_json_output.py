@@ -61,9 +61,9 @@ def test_add_game_requires_explicit_source_language() -> None:
     parser = build_parser()
 
     with pytest.raises(CliArgumentError, match="--source-language"):
-        _ = parser.parse_args(["add-game", "--path", "demo", "--json"])
+        _ = parser.parse_args(["add-game", "--path", "demo"])
 
-    args = parser.parse_args(["add-game", "--path", "demo", "--source-language", "ja", "--json"])
+    args = parser.parse_args(["add-game", "--path", "demo", "--source-language", "ja"])
 
     assert namespace_optional_str(args, "source_language") == "ja"
 
@@ -111,7 +111,6 @@ def test_add_game_existing_source_snapshot_reports_business_error(
             str(tmp_path),
             "--source-language",
             "ja",
-            "--json",
         ]
     )
 
@@ -135,7 +134,7 @@ async def test_list_json_includes_engine_layout_metadata(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`list --json` 必须公开数据库保存的引擎和布局元数据。"""
+    """`list` 默认 JSON 必须公开数据库保存的引擎和布局元数据。"""
 
     class FakeRegistry:
         """替代真实注册表，避免测试依赖全局数据库目录。"""
@@ -157,7 +156,7 @@ async def test_list_json_includes_engine_layout_metadata(
 
     monkeypatch.setattr("app.cli.commands.registry.GameRegistry", FakeRegistry)
 
-    exit_code = await run_list_command(Namespace(json_output=True))
+    exit_code = await run_list_command(Namespace())
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -186,7 +185,7 @@ def test_parser_commands_have_dispatch_handlers() -> None:
 def test_json_command_reports_unexpected_error_as_parseable_json(
     capsys: CaptureFixture[str],
 ) -> None:
-    """`--json` 命令遇到异常时仍只向 stdout 输出 JSON。"""
+    """命令遇到异常时仍只向 stdout 输出 JSON。"""
     exit_code = main(
         [
             "scan-placeholder-candidates",
@@ -194,7 +193,6 @@ def test_json_command_reports_unexpected_error_as_parseable_json(
             "missing-game",
             "--placeholder-rules",
             r'{"\\N":"[CUSTOM_NAME_OVERRIDE_1]"}',
-            "--json",
         ]
     )
 
@@ -216,7 +214,7 @@ def test_json_import_command_reports_business_error_as_parseable_json(
     tmp_path: Path,
     capsys: CaptureFixture[str],
 ) -> None:
-    """规则导入命令的 `--json` 失败输出保持机器可读。"""
+    """规则导入命令的失败输出保持机器可读。"""
     rules_path = tmp_path / "placeholder-rules.json"
     _ = rules_path.write_text("{}\n", encoding="utf-8")
 
@@ -227,7 +225,6 @@ def test_json_import_command_reports_business_error_as_parseable_json(
             "missing-game",
             "--input",
             str(rules_path),
-            "--json",
         ]
     )
 
@@ -258,7 +255,7 @@ def test_json_command_reports_application_gate_error_as_business_error(
 
     monkeypatch.setattr("app.cli_main.dispatch_command", fake_dispatch_command)
 
-    exit_code = main(["translate", "--game", "demo", "--json"])
+    exit_code = main(["translate", "--game", "demo"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -339,7 +336,7 @@ def test_write_back_json_summary_reports_handler_timing_fields(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`write-back --json` 必须输出 handler 返回的写回阶段耗时字段。"""
+    """`write-back` 必须输出 handler 返回的写回阶段耗时字段。"""
 
     class FakeHandler:
         """返回固定写回摘要。"""
@@ -386,7 +383,7 @@ def test_write_back_json_summary_reports_handler_timing_fields(
 
     monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
 
-    exit_code = main(["write-back", "--game", "demo", "--json"])
+    exit_code = main(["write-back", "--game", "demo"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -407,7 +404,7 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`rebuild-active-runtime --json` 必须输出 handler 返回的写回阶段耗时字段。"""
+    """`rebuild-active-runtime` 必须输出 handler 返回的写回阶段耗时字段。"""
 
     class FakeHandler:
         """返回固定重建摘要。"""
@@ -454,7 +451,7 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
 
     monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
 
-    exit_code = main(["rebuild-active-runtime", "--game", "demo", "--json"])
+    exit_code = main(["rebuild-active-runtime", "--game", "demo"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -475,7 +472,7 @@ def test_write_terminology_json_summary_reports_handler_fields(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`write-terminology --json` 必须输出术语专用写入摘要。"""
+    """`write-terminology` 必须输出术语专用写入摘要。"""
 
     class FakeHandler:
         """返回固定术语写入摘要。"""
@@ -508,7 +505,7 @@ def test_write_terminology_json_summary_reports_handler_fields(
 
     monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
 
-    exit_code = main(["write-terminology", "--game", "demo", "--json"])
+    exit_code = main(["write-terminology", "--game", "demo"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -524,7 +521,7 @@ def test_run_all_json_summary_reports_translation_and_write_back(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`run-all --json` 必须输出翻译和写文件两个阶段的摘要。"""
+    """`run-all` 必须输出翻译和写文件两个阶段的摘要。"""
 
     class FakeHandler:
         """返回固定写回摘要。"""
@@ -579,7 +576,7 @@ def test_run_all_json_summary_reports_translation_and_write_back(
     monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
     monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
 
-    exit_code = main(["run-all", "--game", "demo", "--json"])
+    exit_code = main(["run-all", "--game", "demo"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -600,7 +597,7 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`run-all --skip-write-back --json` 必须说明写文件阶段已跳过。"""
+    """`run-all --skip-write-back` 必须说明写文件阶段已跳过。"""
 
     class FakeHandler:
         """不应执行写回。"""
@@ -644,7 +641,7 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
     monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
     monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
 
-    exit_code = main(["run-all", "--game", "demo", "--skip-write-back", "--json"])
+    exit_code = main(["run-all", "--game", "demo", "--skip-write-back"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -662,8 +659,8 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
 def test_unknown_command_reports_json_argument_error(
     capsys: CaptureFixture[str],
 ) -> None:
-    """未知命令在 JSON 模式下只报告参数错误。"""
-    exit_code = main(["unknown-command", "--json"])
+    """未知命令只向 stdout 报告 JSON 参数错误。"""
+    exit_code = main(["unknown-command"])
 
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
@@ -679,6 +676,37 @@ def test_unknown_command_reports_json_argument_error(
     assert "可能想用" not in message
 
 
+def test_removed_output_mode_flags_report_argument_error(
+    capsys: CaptureFixture[str],
+) -> None:
+    """旧输出模式参数已删除，传入时返回 JSON 参数错误。"""
+    exit_code = main(["list", "--json"])
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
+    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
+    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
+    message = first_error["message"]
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    assert isinstance(message, str)
+    assert "--json" in message
+    assert "CLI 运行开始" not in captured.out
+
+    exit_code = main(["--agent-mode", "list"])
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
+    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
+    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
+    message = first_error["message"]
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    assert isinstance(message, str)
+    assert "--agent-mode" in message
+
+
 def test_placeholder_rule_commands_accept_input_files() -> None:
     """占位符导入与校验命令支持文件输入，避免 Agent 手写长 JSON 参数。"""
     parser = build_parser()
@@ -690,7 +718,6 @@ def test_placeholder_rule_commands_accept_input_files() -> None:
             "demo",
             "--input",
             "placeholder-rules.json",
-            "--json",
         ]
     )
     validate_args = parser.parse_args(
@@ -700,13 +727,11 @@ def test_placeholder_rule_commands_accept_input_files() -> None:
             "demo",
             "--input",
             "placeholder-rules.json",
-            "--json",
         ]
     )
 
     assert namespace_optional_str(import_args, "input") == "placeholder-rules.json"
     assert namespace_optional_str(import_args, "rules") is None
-    assert getattr(import_args, "json_output") is True
     assert namespace_optional_str(validate_args, "input") == "placeholder-rules.json"
     assert namespace_optional_str(validate_args, "placeholder_rules") is None
 
@@ -722,7 +747,6 @@ def test_structured_placeholder_rule_commands_accept_input_files() -> None:
             "demo",
             "--input",
             "structured-placeholder-rules.json",
-            "--json",
         ]
     )
     scan_args = parser.parse_args(
@@ -732,7 +756,6 @@ def test_structured_placeholder_rule_commands_accept_input_files() -> None:
             "demo",
             "--input",
             "structured-placeholder-rules.json",
-            "--json",
         ]
     )
     import_args = parser.parse_args(
@@ -742,20 +765,16 @@ def test_structured_placeholder_rule_commands_accept_input_files() -> None:
             "demo",
             "--input",
             "structured-placeholder-rules.json",
-            "--json",
         ]
     )
 
     assert namespace_optional_str(validate_args, "input") == "structured-placeholder-rules.json"
     assert namespace_optional_str(scan_args, "input") == "structured-placeholder-rules.json"
     assert namespace_optional_str(import_args, "input") == "structured-placeholder-rules.json"
-    assert getattr(validate_args, "json_output") is True
-    assert getattr(scan_args, "json_output") is True
-    assert getattr(import_args, "json_output") is True
 
 
-def test_rule_commands_accept_input_files_and_json_output() -> None:
-    """规则扫描、验收与导入命令支持文件输入和机器可读输出。"""
+def test_rule_commands_accept_input_files() -> None:
+    """规则扫描、验收与导入命令支持文件输入。"""
     parser = build_parser()
 
     scan_args = parser.parse_args(
@@ -765,7 +784,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "placeholder-rules.json",
-            "--json",
         ]
     )
     plugin_args = parser.parse_args(
@@ -775,7 +793,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "plugin-rules.json",
-            "--json",
         ]
     )
     plugin_import_args = parser.parse_args(
@@ -785,7 +802,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "plugin-rules.json",
-            "--json",
         ]
     )
     event_args = parser.parse_args(
@@ -795,7 +811,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "event-command-rules.json",
-            "--json",
         ]
     )
     event_import_args = parser.parse_args(
@@ -805,7 +820,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "event-command-rules.json",
-            "--json",
         ]
     )
     note_export_args = parser.parse_args(
@@ -815,7 +829,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--output",
             "note-tag-candidates.json",
-            "--json",
         ]
     )
     note_validate_args = parser.parse_args(
@@ -825,7 +838,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "note-tag-rules.json",
-            "--json",
         ]
     )
     note_import_args = parser.parse_args(
@@ -835,7 +847,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "note-tag-rules.json",
-            "--json",
         ]
     )
     residual_args = parser.parse_args(
@@ -845,7 +856,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "source-residual-rules.json",
-            "--json",
         ]
     )
     residual_import_args = parser.parse_args(
@@ -855,7 +865,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--input",
             "source-residual-rules.json",
-            "--json",
         ]
     )
     mv_namebox_export_args = parser.parse_args(
@@ -865,7 +874,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "demo",
             "--output",
             "mv-virtual-namebox-candidates.json",
-            "--json",
         ]
     )
     mv_namebox_validate_args = parser.parse_args(
@@ -877,7 +885,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "mv-virtual-namebox-rules.json",
             "--output",
             "mv-virtual-namebox-report.json",
-            "--json",
         ]
     )
     mv_namebox_import_args = parser.parse_args(
@@ -888,7 +895,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "--input",
             "mv-virtual-namebox-rules.json",
             "--confirm-empty",
-            "--json",
         ]
     )
     terminology_import_args = parser.parse_args(
@@ -900,7 +906,6 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
             "terminology/field-terms.json",
             "--glossary-input",
             "terminology/glossary.json",
-            "--json",
         ]
     )
 
@@ -909,29 +914,22 @@ def test_rule_commands_accept_input_files_and_json_output() -> None:
     assert namespace_optional_str(plugin_args, "input") == "plugin-rules.json"
     assert namespace_optional_str(plugin_args, "rules") is None
     assert namespace_optional_str(plugin_import_args, "input") == "plugin-rules.json"
-    assert getattr(plugin_import_args, "json_output") is True
     assert namespace_optional_str(event_args, "input") == "event-command-rules.json"
     assert namespace_optional_str(event_args, "rules") is None
     assert namespace_optional_str(event_import_args, "input") == "event-command-rules.json"
-    assert getattr(event_import_args, "json_output") is True
     assert namespace_optional_str(note_export_args, "output") == "note-tag-candidates.json"
     assert namespace_optional_str(note_validate_args, "input") == "note-tag-rules.json"
-    assert getattr(note_validate_args, "json_output") is True
     assert namespace_optional_str(note_import_args, "input") == "note-tag-rules.json"
-    assert getattr(note_import_args, "json_output") is True
     assert namespace_optional_str(residual_args, "input") == "source-residual-rules.json"
     assert namespace_optional_str(residual_args, "rules") is None
     assert namespace_optional_str(residual_import_args, "input") == "source-residual-rules.json"
-    assert getattr(residual_import_args, "json_output") is True
     assert namespace_optional_str(mv_namebox_export_args, "output") == "mv-virtual-namebox-candidates.json"
     assert namespace_optional_str(mv_namebox_validate_args, "input") == "mv-virtual-namebox-rules.json"
     assert namespace_optional_str(mv_namebox_validate_args, "output") == "mv-virtual-namebox-report.json"
     assert namespace_optional_str(mv_namebox_import_args, "input") == "mv-virtual-namebox-rules.json"
     assert getattr(mv_namebox_import_args, "confirm_empty") is True
-    assert getattr(mv_namebox_import_args, "json_output") is True
     assert namespace_optional_str(terminology_import_args, "input") == "terminology/field-terms.json"
     assert namespace_optional_str(terminology_import_args, "glossary_input") == "terminology/glossary.json"
-    assert getattr(terminology_import_args, "json_output") is True
 
 
 def test_validate_agent_workspace_command_accepts_output_file() -> None:
@@ -947,13 +945,11 @@ def test_validate_agent_workspace_command_accepts_output_file() -> None:
             "workspace",
             "--output",
             "validate-agent-workspace-report.json",
-            "--json",
         ]
     )
 
     assert namespace_optional_str(args, "workspace") == "workspace"
     assert namespace_optional_str(args, "output") == "validate-agent-workspace-report.json"
-    assert getattr(args, "json_output") is True
 
 
 def test_translate_quality_errors_do_not_fail_process() -> None:
@@ -1030,25 +1026,24 @@ def test_write_back_summary_report_keeps_timing_fields_separate() -> None:
     assert report.summary["plugin_source_runtime_map_count"] == 10
 
 
-def test_translate_command_accepts_json_summary_flag() -> None:
-    """translate 支持 JSON 摘要，方便 Agent 区分命令状态和条目状态。"""
+def test_translate_command_accepts_default_json_summary() -> None:
+    """translate 默认输出 JSON 摘要，方便 Agent 区分命令状态和条目状态。"""
     parser = build_parser()
 
-    args = parser.parse_args(["translate", "--game", "demo", "--json"])
+    args = parser.parse_args(["translate", "--game", "demo"])
 
     assert namespace_optional_str(args, "game") == "demo"
-    assert getattr(args, "json_output") is True
 
 
-def test_pipeline_and_terminology_write_commands_accept_json_summary_flag() -> None:
-    """run-all 和 write-terminology 支持机器可读摘要。"""
+def test_pipeline_and_terminology_write_commands_accept_default_json_summary() -> None:
+    """run-all 和 write-terminology 默认支持机器可读摘要。"""
     parser = build_parser()
 
-    run_all_args = parser.parse_args(["run-all", "--game", "demo", "--json"])
-    terminology_args = parser.parse_args(["write-terminology", "--game", "demo", "--json"])
+    run_all_args = parser.parse_args(["run-all", "--game", "demo"])
+    terminology_args = parser.parse_args(["write-terminology", "--game", "demo"])
 
-    assert getattr(run_all_args, "json_output") is True
-    assert getattr(terminology_args, "json_output") is True
+    assert namespace_optional_str(run_all_args, "game") == "demo"
+    assert namespace_optional_str(terminology_args, "game") == "demo"
 
 
 def test_translate_command_accepts_source_residual_override_names() -> None:
@@ -1153,13 +1148,11 @@ def test_translate_source_lines_output_flags_are_mutually_exclusive() -> None:
         )
 
 
-def test_json_progress_reports_to_stderr_without_polluting_stdout(
+def test_progress_reports_to_stderr_without_polluting_stdout(
     capsys: CaptureFixture[str],
 ) -> None:
-    """JSON 模式下长任务进度走 stderr，stdout 保持给最终 JSON。"""
-    args = Namespace(agent_mode=True, json_output=True)
-
-    with build_progress_reporter("正文翻译", args) as progress:
+    """长任务进度走 stderr，stdout 保持给最终 JSON。"""
+    with build_progress_reporter("正文翻译") as progress:
         set_progress, advance_progress, set_status = progress.status_callbacks()
         set_progress(0, 10)
         set_status("还没成功保存译文 10 条，相同原文合并后 8 条，批次 2 个")
@@ -1186,7 +1179,6 @@ def test_manual_translation_export_commands_are_black_box_friendly() -> None:
             "demo",
             "--output",
             "pending-translations.json",
-            "--json",
         ]
     )
     limited_args = parser.parse_args(
@@ -1198,14 +1190,12 @@ def test_manual_translation_export_commands_are_black_box_friendly() -> None:
             "20",
             "--output",
             "pending-translations.json",
-            "--json",
         ]
     )
 
     assert namespace_optional_str(all_args, "game") == "demo"
     assert namespace_optional_str(all_args, "output") == "pending-translations.json"
     assert getattr(all_args, "limit") is None
-    assert getattr(all_args, "json_output") is True
     assert namespace_optional_str(limited_args, "game") == "demo"
     assert getattr(limited_args, "limit") == 20
 
@@ -1221,7 +1211,6 @@ def test_quality_fix_and_reset_commands_are_black_box_friendly() -> None:
             "demo",
             "--output",
             "quality-fix-template.json",
-            "--json",
         ]
     )
     reset_args = parser.parse_args(
@@ -1231,7 +1220,6 @@ def test_quality_fix_and_reset_commands_are_black_box_friendly() -> None:
             "demo",
             "--input",
             "reset-translations.json",
-            "--json",
         ]
     )
     reset_all_args = parser.parse_args(
@@ -1240,17 +1228,13 @@ def test_quality_fix_and_reset_commands_are_black_box_friendly() -> None:
             "--game",
             "demo",
             "--all",
-            "--json",
         ]
     )
 
     assert namespace_optional_str(quality_fix_args, "output") == "quality-fix-template.json"
-    assert getattr(quality_fix_args, "json_output") is True
     assert namespace_optional_str(reset_args, "input") == "reset-translations.json"
-    assert getattr(reset_args, "json_output") is True
     assert namespace_optional_str(reset_all_args, "input") is None
     assert getattr(reset_all_args, "reset_all") is True
-    assert getattr(reset_all_args, "json_output") is True
 
 
 def test_reset_translations_invalid_input_returns_json_error(
@@ -1268,7 +1252,6 @@ def test_reset_translations_invalid_input_returns_json_error(
             "demo",
             "--input",
             str(input_path),
-            "--json",
         ]
     )
 
@@ -1295,7 +1278,7 @@ def test_report_output_can_leave_data_output_file_untouched(
 
     write_report_outputs(
         report=report,
-        args=Namespace(output=str(output_path), json_output=True),
+        args=Namespace(output=str(output_path)),
         title="手动填写译文表导出报告",
         write_output_file=False,
     )
@@ -1330,7 +1313,7 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
     write_report_outputs(
         report=report,
         stdout_report=build_sampled_stdout_report(report),
-        args=Namespace(output=str(output_path), json_output=True),
+        args=Namespace(output=str(output_path)),
         title="校验报告",
     )
 
@@ -1367,7 +1350,7 @@ def test_placeholder_rule_build_report_can_leave_rule_file_untouched(
 
     write_report_outputs(
         report=report,
-        args=Namespace(output=str(output_path), json_output=True),
+        args=Namespace(output=str(output_path)),
         title="占位符规则草稿报告",
         write_output_file=False,
     )

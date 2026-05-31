@@ -37,11 +37,10 @@ async def run_write_back_command(args: argparse.Namespace) -> int:
             handler=handler,
             game_title=game_title,
             setting_overrides=setting_overrides,
-            args=args,
+            confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
         )
-    if read_bool_arg(args, "json_output"):
-        report = build_write_back_summary_report(summary)
-        print(report.to_json_text())
+    report = build_write_back_summary_report(summary)
+    print(report.to_json_text())
     return 0
 
 
@@ -50,16 +49,15 @@ async def run_rebuild_active_runtime_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     setting_overrides = build_setting_overrides(args)
     async with HandlerSession() as handler:
-        with build_progress_reporter("重建运行文件", args) as progress:
+        with build_progress_reporter("重建运行文件") as progress:
             summary = await handler.rebuild_active_runtime(
                 game_title=game_title,
                 callbacks=progress.status_callbacks(),
                 setting_overrides=setting_overrides,
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
-    if read_bool_arg(args, "json_output"):
-        report = build_write_back_summary_report(summary)
-        print(report.to_json_text())
+    report = build_write_back_summary_report(summary)
+    print(report.to_json_text())
     return 0
 
 
@@ -72,9 +70,8 @@ async def run_restore_font_command(args: argparse.Namespace) -> int:
             game_title=game_title,
             setting_overrides=setting_overrides,
         )
-    if read_bool_arg(args, "json_output"):
-        report = build_font_restore_summary_report(summary)
-        print(report.to_json_text())
+    report = build_font_restore_summary_report(summary)
+    print(report.to_json_text())
     return 0
 
 
@@ -83,16 +80,15 @@ async def run_write_terminology_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     setting_overrides = build_setting_overrides(args)
     async with HandlerSession() as handler:
-        with build_progress_reporter("术语写回", args) as progress:
+        with build_progress_reporter("术语写回") as progress:
             summary = await handler.write_terminology(
                 game_title=game_title,
                 callbacks=progress.status_callbacks(),
                 setting_overrides=setting_overrides,
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
-    if read_bool_arg(args, "json_output"):
-        report = build_terminology_write_summary_report(summary)
-        print(report.to_json_text())
+    report = build_terminology_write_summary_report(summary)
+    print(report.to_json_text())
     return 0
 
 
@@ -111,7 +107,6 @@ async def run_all_command(args: argparse.Namespace) -> int:
             setting_overrides=setting_overrides,
             placeholder_rules_text=placeholder_rules_text,
             run_limits=build_translation_run_limits(args),
-            args=args,
         )
         ensure_text_translation_success(text_summary)
 
@@ -123,13 +118,12 @@ async def run_all_command(args: argparse.Namespace) -> int:
                 handler=handler,
                 game_title=game_title,
                 setting_overrides=setting_overrides,
-                args=args,
+                confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
         logger.success(f"[tag.success]run-all 完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count]")
-    if read_bool_arg(args, "json_output"):
-        report = build_run_all_summary_report(
-            text_summary=text_summary,
-            write_back_summary=write_back_summary,
-        )
-        print(report.to_json_text())
+    report = build_run_all_summary_report(
+        text_summary=text_summary,
+        write_back_summary=write_back_summary,
+    )
+    print(report.to_json_text())
     return 0

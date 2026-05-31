@@ -1,11 +1,10 @@
 """命令行进度展示适配器。
 
-本模块负责把业务进度回调渲染为 Rich 进度条或 Agent 可读的 stderr 单行进度。
+本模块负责把业务进度回调渲染为 Agent 可读的 stderr 单行进度。
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
 import threading
 import time
@@ -14,69 +13,7 @@ from collections.abc import Callable
 from types import TracebackType
 from typing import Self
 
-from rich.progress import Progress, TaskID
-
-from app.cli.arguments import read_bool_arg, read_optional_bool_arg
-from app.observability import get_progress, logger
-
-
-class CliProgressReporter:
-    """将编排器进度回调适配为 Rich 进度条。"""
-
-    def __init__(self, description: str) -> None:
-        """初始化进度条适配器。"""
-        self.description: str = description
-        self._progress: Progress | None = None
-        self._task_id: TaskID | None = None
-
-    def __enter__(self) -> Self:
-        """启动 Rich 进度条。"""
-        self._progress = get_progress()
-        self._progress.start()
-        self._task_id = self._progress.add_task(self.description, total=1)
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """停止 Rich 进度条。"""
-        if self._progress is not None:
-            self._progress.stop()
-        self._progress = None
-        self._task_id = None
-
-    def progress_callbacks(self) -> tuple[Callable[[int, int], None], Callable[[int], None]]:
-        """返回基础进度回调。"""
-        return (self.set_progress, self.advance_progress)
-
-    def status_callbacks(
-        self,
-    ) -> tuple[Callable[[int, int], None], Callable[[int], None], Callable[[str], None]]:
-        """返回带状态文本的进度回调。"""
-        return (self.set_progress, self.advance_progress, self.set_status)
-
-    def set_progress(self, current: int, total: int) -> None:
-        """设置当前任务的绝对进度。"""
-        if self._progress is None or self._task_id is None:
-            return
-        visible_total = max(total, 1)
-        visible_current = min(max(current, 0), visible_total)
-        self._progress.update(self._task_id, completed=visible_current, total=visible_total)
-
-    def advance_progress(self, count: int) -> None:
-        """推进当前任务进度。"""
-        if self._progress is None or self._task_id is None:
-            return
-        self._progress.advance(self._task_id, max(count, 0))
-
-    def set_status(self, status: str) -> None:
-        """更新当前任务状态文本。"""
-        if self._progress is not None and self._task_id is not None:
-            self._progress.update(self._task_id, description=f"{self.description}：{status}")
-        logger.debug(f"[tag.phase]任务状态[/tag.phase] {status}")
+from app.observability import logger
 
 
 class AgentProgressReporter:
@@ -214,10 +151,8 @@ def _format_eta(*, elapsed_seconds: float, current: int, total: int) -> str:
     return _format_duration(remaining_seconds)
 
 
-def build_progress_reporter(description: str, args: argparse.Namespace) -> CliProgressReporter | AgentProgressReporter:
-    """根据运行模式创建进度回调适配器。"""
-    if read_bool_arg(args, "agent_mode") or read_optional_bool_arg(args, "json_output") is True:
-        return AgentProgressReporter(description)
-    return CliProgressReporter(description)
+def build_progress_reporter(description: str) -> AgentProgressReporter:
+    """创建固定的 Agent 文本进度回调适配器。"""
+    return AgentProgressReporter(description)
 
-__all__ = ["AgentProgressReporter", "CliProgressReporter", "build_progress_reporter"]
+__all__ = ["AgentProgressReporter", "build_progress_reporter"]

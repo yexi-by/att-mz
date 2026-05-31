@@ -182,7 +182,7 @@ def test_release_skill_uses_packaged_cli_boundary() -> None:
     """发行版 Skill 使用 exe 入口，并把源码排障导回源码仓库。"""
     text = read(RELEASE_SKILL)
     for phrase in [
-        ".\\att-mz.exe --agent-mode <命令> ...",
+        ".\\att-mz.exe <命令> ...",
         "不要运行 `uv run python main.py`",
         "不要安装 Python、Rust、uv 或 maturin",
         "不要读取项目源码",
@@ -219,35 +219,36 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
     text = read(DEV_REFERENCES / "cli-command-contract.md")
     for phrase in [
         "默认前缀",
-        "uv run python main.py --agent-mode <命令> ...",
-        "`validate-agent-workspace` 和 `validate-mv-virtual-namebox-rules` 的 `--json` stdout 是摘要报告",
+        "uv run python main.py <命令> ...",
+        "所有命令 stdout 默认输出机器可读 JSON",
+        "`validate-agent-workspace` 和 `validate-mv-virtual-namebox-rules` 的 stdout 是摘要报告",
         "文件型规则一律用 `--input <文件>`",
         "不要用 `--rules \"$(cat ...)\"`",
         "不要把大 JSON 塞进命令行",
         "注册游戏必须显式传 `--source-language ja` 或 `--source-language en`",
-        "`doctor --no-check-llm --json`",
-        "`list --json`",
-        "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --json`",
-        "`validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告> --json`",
+        "`doctor --no-check-llm`",
+        "`list`",
+        "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`",
+        "`validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`",
         "`export-plugins-json --game <游戏标题> --output <plugins.json>`",
         "`export-event-commands-json --game <游戏标题> --output <候选文件>`",
-        "`validate-plugin-rules --game <游戏标题> --input <规则文件> --json`",
-        "`validate-plugin-source-rules --game <游戏标题> --input <规则文件> --json`",
-        "`export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件> --json`",
-        "`import-event-command-rules --game <游戏标题> --input <规则文件> --json`",
-        "`validate-note-tag-rules --game <游戏标题> --input <规则文件> --json`",
+        "`validate-plugin-rules --game <游戏标题> --input <规则文件>`",
+        "`validate-plugin-source-rules --game <游戏标题> --input <规则文件>`",
+        "`export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件>`",
+        "`import-event-command-rules --game <游戏标题> --input <规则文件>`",
+        "`validate-note-tag-rules --game <游戏标题> --input <规则文件>`",
         "`export-terminology --game <游戏标题> --output-dir <术语工作目录>`",
-        "`scan-placeholder-candidates --game <游戏标题> --input <规则文件> --json`",
-        "`validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --output <完整报告> --json`",
-        "`run-all --game <游戏标题> --skip-write-back --json`",
-        "`translation-status --game <游戏标题> --json`",
-        "`audit-coverage --game <游戏标题> --json`",
-        "`audit-active-runtime --game <游戏标题> --json`",
-        "`diagnose-active-runtime --game <游戏标题> --output <诊断文件> --json`",
-        "`quality-report --game <游戏标题> --json`",
-        "`verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json`",
-        "`write-back --game <游戏标题> --json`",
-        "`write-terminology --game <游戏标题> --json`",
+        "`scan-placeholder-candidates --game <游戏标题> --input <规则文件>`",
+        "`validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --output <完整报告>`",
+        "`run-all --game <游戏标题> --skip-write-back`",
+        "`translation-status --game <游戏标题>`",
+        "`audit-coverage --game <游戏标题>`",
+        "`audit-active-runtime --game <游戏标题>`",
+        "`diagnose-active-runtime --game <游戏标题> --output <诊断文件>`",
+        "`quality-report --game <游戏标题>`",
+        "`verify-feedback-text --game <游戏标题> --input <反馈原文清单>`",
+        "`write-back --game <游戏标题>`",
+        "`write-terminology --game <游戏标题>`",
         "空规则需 `--confirm-empty`",
         "空规则导入也传同一组 `--code CODE`",
         "术语专用写入，允许正文仍有还没成功保存译文的文本",
@@ -520,7 +521,7 @@ def test_failure_and_feedback_references_define_recovery_loops() -> None:
         "反馈清单 -> 定位 -> 补规则或补译文 -> audit-coverage -> quality-report -> 用户确认是否再次写进游戏文件 -> write-back 或 rebuild-active-runtime -> audit-active-runtime",
         "只有用户明确选择完整重译时",
         "用户确认本轮试玩反馈已经处理完成",
-        "cleanup-agent-workspace --workspace <工作区> --json",
+        "cleanup-agent-workspace --workspace <工作区>",
     ]:
         assert phrase in feedback_text
 
@@ -574,7 +575,7 @@ def test_public_readmes_keep_command_contracts_out_of_quick_start() -> None:
         assert "所有命令使用 .\\att-mz.exe --agent-mode ... --json" not in text
 
     advanced_usage = read(ROOT / "docs" / "advanced-usage.md")
-    assert "支持 `--json` 的命令会输出机器可读报告" in advanced_usage
+    assert "CLI 的 stdout 固定输出机器可读 JSON" in advanced_usage
     assert "uv run python main.py --agent-mode <命令> ... --json" not in advanced_usage
     assert "源码运行时所有命令都使用：" not in advanced_usage
 
@@ -586,9 +587,9 @@ def test_advanced_usage_describes_plugin_source_side_branch_commands() -> None:
         "插件源码文本属于少见支线",
         "只有插件源码高风险或支线已有规则时",
         "高风险时，`translate`、`run-all` 等正文入口会停止并要求用户确认",
-        "export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json",
-        "validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json",
-        "import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json",
+        "export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json",
+        "validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json",
+        "import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json",
         "`mapped_excluded` 表示该字符串已审查但不翻译",
     ]:
         assert phrase in text
@@ -687,7 +688,7 @@ def test_release_packaging_script_runs_packaged_smoke_tests() -> None:
     for phrase in [
         "def run_smoke_tests(release_dir: Path) -> None:",
         '[str(exe_path), "--help"]',
-        '[str(exe_path), "list", "--json"]',
+        '[str(exe_path), "list"]',
         "run_smoke_tests(release_dir)",
         "create_release_zip(release_dir, zip_path)",
     ]:

@@ -323,12 +323,10 @@ def rebuild_active_runtime_command(game_title: str) -> list[str]:
         "run",
         "python",
         "main.py",
-        "--agent-mode",
         "rebuild-active-runtime",
         "--game",
         game_title,
         "--confirm-font-overwrite",
-        "--json",
     ]
 
 

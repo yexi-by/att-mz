@@ -103,7 +103,7 @@
 当前 CLI 命令：
 
 ```powershell
-uv run python main.py --agent-mode audit-coverage --game <游戏标题> --json
+uv run python main.py audit-coverage --game <游戏标题>
 ```
 
 该命令用于比较：
@@ -179,7 +179,7 @@ schema 示例：
 当前 CLI 命令：
 
 ```powershell
-uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json
+uv run python main.py verify-feedback-text --game <游戏标题> --input <反馈原文清单>
 ```
 
 输入为用户反馈中出现过的源语言片段或定位表。命令应检查：
@@ -201,7 +201,7 @@ uv run python main.py --agent-mode verify-feedback-text --game <游戏标题> --
 当前插件源码扫描命令：
 
 ```powershell
-uv run python main.py --agent-mode scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-risk-report.json --json
+uv run python main.py scan-plugin-source-text --game <游戏标题> --output <工作区>/plugin-source-risk-report.json
 ```
 
 扫描目标：

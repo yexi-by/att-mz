@@ -1,8 +1,8 @@
 """
-日志与进度条工具模块。
+日志工具模块。
 
-本模块统一封装 Loguru、Rich 与标准库 logging 的桥接逻辑，
-为项目提供可重配的控制台输出、文件日志和进度条能力。
+本模块统一封装 Loguru 与标准库 logging 的桥接逻辑，
+为项目提供固定的 Agent stderr 日志和文件日志能力。
 """
 
 from __future__ import annotations
@@ -14,18 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
 
 from loguru import logger
-from rich.console import Console
-from rich.logging import RichHandler
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
-from rich.text import Text
-from rich.theme import Theme
 
 from app.runtime_paths import resolve_app_home_path
 
@@ -41,8 +29,7 @@ FILE_LOG_FORMAT = (
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
     "<level>{message}</level>"
 )
-CONSOLE_LOG_FORMAT = "{message}"
-RICH_TAG_PATTERN = re.compile(r"\[/?[A-Za-z0-9_.# =:/-]+\]")
+LOG_MARKUP_TAG_PATTERN = re.compile(r"\[/?[A-Za-z0-9_.# =:/-]+\]")
 
 # --- 文件日志配置 ---
 ENABLE_FILE_LOG = True
@@ -52,31 +39,6 @@ LOG_ROTATION = "10 MB"
 LOG_RETENTION = "1 week"
 LOG_COMPRESSION = "zip"
 
-CUSTOM_THEME = Theme(
-    {
-        "logging.level.debug": "dim",
-        "logging.level.info": "cyan",
-        "logging.level.warning": "bold yellow",
-        "logging.level.error": "bold red",
-        "logging.level.critical": "bold white on red",
-        "logging.level.success": "bold green",
-        "logging.keyword": "bold cyan",
-        "log.time": "dim",
-        "log.path": "blue",
-        "tag.phase": "bold cyan",
-        "tag.count": "bold magenta",
-        "tag.path": "bold blue",
-        "tag.skip": "yellow",
-        "tag.success": "bold green",
-        "tag.warning": "bold yellow",
-        "tag.failure": "bold red",
-        "tag.exception": "bold white on red",
-        "tag.menu.title": "bold cyan",
-        "tag.menu.index": "bold magenta",
-        "tag.menu.prompt": "bold green",
-    }
-)
-
 NOISY_MODULES = [
     "httpcore",
     "httpx",
@@ -84,24 +46,6 @@ NOISY_MODULES = [
     "urllib3",
     "aiosqlite",
 ]
-
-console = Console(theme=CUSTOM_THEME)
-
-
-class ProjectRichHandler(RichHandler):
-    """解析项目 Rich markup，并避免默认高亮覆盖自定义样式。"""
-
-    @override
-    def render_message(self, record: logging.LogRecord, message: str) -> Text:
-        """只按显式 markup 着色消息体，不根据日志级别自动染色正文。"""
-        use_markup = getattr(record, "markup", self.markup)
-        message_text = Text.from_markup(message) if use_markup else Text(message)
-
-        keywords = self.keywords or self.KEYWORDS
-        if keywords:
-            _ = message_text.highlight_words(keywords, "logging.keyword")
-
-        return message_text
 
 
 class InterceptHandler(logging.Handler):
@@ -142,15 +86,13 @@ def should_show_in_console(record: Record) -> bool:
     return not bool(extra.get("file_only", False))
 
 
-def build_console_sink_format(_record: Record) -> str:
-    """为终端 sink 构造轻量格式，避免默认视图暴露模块路径噪音。"""
-    return CONSOLE_LOG_FORMAT
-
-
 def agent_console_sink(message: object) -> None:
-    """用无 ANSI 单行文本输出 Agent 模式日志。"""
+    """用无 ANSI 单行文本输出 Agent 日志。"""
     text = str(message).rstrip()
-    text = RICH_TAG_PATTERN.sub("", text)
+    text = LOG_MARKUP_TAG_PATTERN.sub("", text)
+    text = " | ".join(part.strip() for part in text.splitlines() if part.strip())
+    if not text:
+        return
     _ = sys.stderr.write(f"{text}\n")
     _ = sys.stderr.flush()
 
@@ -185,54 +127,27 @@ def setup_logger(
     level: str = LOG_LEVEL,
     *,
     use_console: bool = True,
-    agent_mode: bool = False,
     file_path: str | Path | None = None,
     enqueue_file_log: bool = True,
 ) -> None:
     """
     配置并初始化全局日志系统。
 
-    CLI 默认启用 Rich 控制台输出，同时始终保留文件日志。
+    CLI 默认启用 stderr 单行日志，同时始终保留文件日志。
 
     Args:
         level: 控制台 sink 的最低日志级别。
-        use_console: 是否启用 Rich 控制台输出。
-        agent_mode: 是否使用无 ANSI 单行日志。
+        use_console: 是否启用 stderr 日志输出，测试可关闭。
         file_path: 文件日志路径，测试可传入临时路径避免污染真实日志。
         enqueue_file_log: 是否启用异步文件写入队列。
     """
     _ = logger.remove()
 
-    if use_console and agent_mode:
+    if use_console:
         _ = logger.add(
             agent_console_sink,
             level=level,
             format="{level} {message}",
-            filter=should_show_in_console,
-            catch=True,
-        )
-    elif use_console:
-        _ = logger.add(
-            ProjectRichHandler(
-                console=console,
-                show_time=True,
-                show_path=False,
-                omit_repeated_times=False,
-                rich_tracebacks=True,
-                tracebacks_show_locals=True,
-                markup=True,
-                keywords=[
-                    "GET",
-                    "POST",
-                    "HEAD",
-                    "PUT",
-                    "DELETE",
-                    "OPTIONS",
-                    "PATCH",
-                ],
-            ),
-            level=level,
-            format=build_console_sink_format,
             filter=should_show_in_console,
             catch=True,
         )
@@ -257,40 +172,11 @@ def setup_logger(
 
     for module_name in NOISY_MODULES:
         logging.getLogger(module_name).setLevel(logging.WARNING)
-
-
-def get_progress(transient: bool = False, indeterminate: bool = False) -> Progress:
-    """
-    获取一个绑定了全局 console 的进度条实例。
-
-    Args:
-        transient: 完成后是否自动清除进度条。
-        indeterminate: 是否使用不确定进度样式。
-    """
-    if indeterminate:
-        status_column = MofNCompleteColumn()
-    else:
-        status_column = TextColumn("[progress.percentage]{task.percentage:>3.0f}%")
-
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(bar_width=40),
-        status_column,
-        TimeElapsedColumn(),
-        console=console,
-        transient=transient,
-    )
-
-
 setup_logger()
 
 __all__ = [
     "LOG_FILE_PATH",
-    "build_console_sink_format",
     "build_file_sink_format",
-    "console",
-    "get_progress",
     "logger",
     "resolve_log_file_path",
     "setup_logger",

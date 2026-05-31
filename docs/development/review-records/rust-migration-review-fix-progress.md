@@ -8,7 +8,7 @@
 
 ## 保留的必要修复
 
-- P1 功能与契约阻断：恢复写入后当前运行文件审计，修正 `post_write_audit_ms` 语义，release workflow 增加 Rust fmt、clippy、test，Rust 写回计划缺少 `allowed_translation_paths` 时 fail-fast，`add-game --json` 可信源快照冲突归类为 `business_error`。
+- P1 功能与契约阻断：恢复写入后当前运行文件审计，修正 `post_write_audit_ms` 语义，release workflow 增加 Rust fmt、clippy、test，Rust 写回计划缺少 `allowed_translation_paths` 时 fail-fast，`add-game` 可信源快照冲突归类为 `business_error`。
 - 写入路径等价：清理旧 Python 写回路径，统一走 handler/native plan，补 `write-back`、`rebuild-active-runtime`、`run-all` 真实路径测试，插件源码 runtime map 保存前做最终 AST 验证。
 - 文本协议与 fail-fast：结构化字段按插件配置、事件参数、Note 标签原字段语义检查；关键布局字段、事件排序路径、启用插件名称、译文行缺失或空白均显式报错。
 - 性能与并发：批量 JS AST 扫描、Rayon 并发、只读文本范围默认不跑写回探针、状态查询快速路径、工作区验收上下文复用、当前运行审计缓存、JSON/deepcopy 减重、sidecar 大文件内容。

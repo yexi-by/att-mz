@@ -34,7 +34,7 @@ async def run_validate_agent_workspace_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     workspace = read_required_path_arg(args, "workspace")
     service = AgentToolkitService()
-    with build_progress_reporter("Agent 工作区校验", args) as progress:
+    with build_progress_reporter("Agent 工作区校验") as progress:
         report = await service.validate_agent_workspace(
             game_title=game_title,
             workspace=workspace,

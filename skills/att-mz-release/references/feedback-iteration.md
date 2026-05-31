@@ -29,7 +29,7 @@
 用户提供原文清单后，运行：
 
 ```powershell
-.\att-mz.exe --agent-mode verify-feedback-text --game <游戏标题> --input <反馈原文清单> --json
+.\att-mz.exe verify-feedback-text --game <游戏标题> --input <反馈原文清单>
 ```
 
 反查仍存在的文本按分类处理：
@@ -51,6 +51,6 @@
 
 每轮再次写进游戏文件后，说明这一轮反馈已处理，请用户继续试玩确认。直到用户确认主要流程已玩过、关键问题已处理，或明确接受剩余问题。
 
-用户确认本轮试玩反馈已经处理完成，或明确表示暂不继续修复后，才清理 `<工作区>`；如果工作区由 `prepare-agent-workspace` 生成，优先用 `cleanup-agent-workspace --workspace <工作区> --json`。
+用户确认本轮试玩反馈已经处理完成，或明确表示暂不继续修复后，才清理 `<工作区>`；如果工作区由 `prepare-agent-workspace` 生成，优先用 `cleanup-agent-workspace --workspace <工作区>`。
 
 

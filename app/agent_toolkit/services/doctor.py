@@ -337,7 +337,7 @@ class DoctorAgentMixin:
             details["stdout_encoding"] = encoding
             _append_check(details, "stdout_encoding", "ok" if "utf" in encoding.lower() else "warning")
             if "utf" not in encoding.lower():
-                warnings.append(issue("stdout_encoding", "当前 stdout 不是 UTF-8，建议使用 --agent-mode 或 --json"))
+                warnings.append(issue("stdout_encoding", "当前 stdout 不是 UTF-8，可能影响 Agent 解析 JSON 输出"))
         except Exception as error:
             warnings.append(issue("stdout_encoding", f"终端编码检查失败: {type(error).__name__}: {error}"))
 

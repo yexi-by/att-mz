@@ -18,19 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="在终端显示 DEBUG 级别日志，默认仅写入文件日志",
     )
-    _ = parser.add_argument(
-        "--agent-mode",
-        action="store_true",
-        help="使用适合外部 Agent 读取的简洁日志，不输出 Rich 进度条和 ANSI 样式",
-    )
     subparsers = parser.add_subparsers(dest="command", metavar="<命令>", required=True, parser_class=CliArgumentParser)
 
-    list_parser = subparsers.add_parser("list", help="列出当前已注册游戏")
-    _ = list_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
+    _ = subparsers.add_parser("list", help="列出当前已注册游戏")
 
     doctor_parser = subparsers.add_parser("doctor", help="检查项目配置、模型连接和目标游戏状态")
     add_optional_target_arguments(doctor_parser, required=False)
-    _ = doctor_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     _ = doctor_parser.add_argument("--no-check-llm", action="store_true", help="跳过模型连通性检查")
 
     add_game_parser = subparsers.add_parser("add-game", help="注册干净原始 RPG Maker 游戏目录")
@@ -41,7 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="游戏原文语言，必须显式指定；ja 表示日文，en 表示英文",
     )
-    _ = add_game_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_plugins_parser = subparsers.add_parser(
         "export-plugins-json",
@@ -57,7 +49,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_plugin_parser)
     _ = import_plugin_parser.add_argument("--input", required=True, help="外部插件规则 JSON 文件")
     _ = import_plugin_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有插件规则候选，允许导入空规则")
-    _ = import_plugin_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_event_commands_parser = subparsers.add_parser(
         "export-event-commands-json",
@@ -91,7 +82,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CODE",
         help="导入空事件指令规则时对应的事件指令编码数组；传入后覆盖配置文件默认编码数组",
     )
-    _ = import_event_command_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_note_tag_parser = subparsers.add_parser(
         "export-note-tag-candidates",
@@ -99,7 +89,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(export_note_tag_parser)
     _ = export_note_tag_parser.add_argument("--output", required=True, help="Note 标签候选 JSON 输出文件")
-    _ = export_note_tag_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_note_tag_parser = subparsers.add_parser(
         "validate-note-tag-rules",
@@ -107,7 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(validate_note_tag_parser)
     _ = validate_note_tag_parser.add_argument("--input", required=True, help="Note 标签规则 JSON 文件")
-    _ = validate_note_tag_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_note_tag_parser = subparsers.add_parser(
         "import-note-tag-rules",
@@ -116,7 +104,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_note_tag_parser)
     _ = import_note_tag_parser.add_argument("--input", required=True, help="Note 标签规则 JSON 文件")
     _ = import_note_tag_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有 Note 标签规则候选，允许导入空规则")
-    _ = import_note_tag_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     scan_placeholder_parser = subparsers.add_parser(
         "scan-placeholder-candidates",
@@ -124,7 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(scan_placeholder_parser)
     _ = scan_placeholder_parser.add_argument("--output", help="写出 JSON 报告文件")
-    _ = scan_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     scan_placeholder_source_group = scan_placeholder_parser.add_mutually_exclusive_group()
     _ = scan_placeholder_source_group.add_argument(
         "--placeholder-rules",
@@ -141,7 +127,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(validate_placeholder_parser, required=False)
     _ = validate_placeholder_parser.add_argument("--output", help="写出 JSON 报告文件")
-    _ = validate_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     validate_placeholder_source_group = validate_placeholder_parser.add_mutually_exclusive_group()
     _ = validate_placeholder_source_group.add_argument(
         "--placeholder-rules",
@@ -169,7 +154,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="额外执行写入可行性探针；大游戏只读报告默认不启用",
     )
-    _ = quality_report_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     text_scope_parser = subparsers.add_parser(
         "text-scope",
@@ -182,7 +166,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="额外执行写入可行性探针；大游戏只读清单默认不启用",
     )
-    _ = text_scope_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     audit_coverage_parser = subparsers.add_parser(
         "audit-coverage",
@@ -195,7 +178,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="额外执行写入可行性探针；大游戏覆盖审计默认不启用",
     )
-    _ = audit_coverage_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     audit_active_runtime_parser = subparsers.add_parser(
         "audit-active-runtime",
@@ -203,7 +185,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(audit_active_runtime_parser)
     _ = audit_active_runtime_parser.add_argument("--output", help="写出 JSON 报告文件")
-    _ = audit_active_runtime_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     diagnose_active_runtime_parser = subparsers.add_parser(
         "diagnose-active-runtime",
@@ -211,7 +192,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(diagnose_active_runtime_parser)
     _ = diagnose_active_runtime_parser.add_argument("--output", required=True, help="当前运行文件诊断 JSON 输出文件")
-    _ = diagnose_active_runtime_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     verify_feedback_parser = subparsers.add_parser(
         "verify-feedback-text",
@@ -220,7 +200,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(verify_feedback_parser)
     _ = verify_feedback_parser.add_argument("--input", required=True, help="反馈原文清单 JSON 文件")
     _ = verify_feedback_parser.add_argument("--output", help="写出 JSON 报告文件")
-    _ = verify_feedback_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     scan_plugin_source_parser = subparsers.add_parser(
         "scan-plugin-source-text",
@@ -234,7 +213,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="translation-source",
         help="插件源码读取视图：translation-source 用于规则抽取，active-runtime 用于当前运行文件审计",
     )
-    _ = scan_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_plugin_source_ast_parser = subparsers.add_parser(
         "export-plugin-source-ast-map",
@@ -248,7 +226,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="translation-source",
         help="插件源码读取视图：translation-source 用于规则抽取，active-runtime 用于当前运行文件审计",
     )
-    _ = export_plugin_source_ast_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_plugin_source_parser = subparsers.add_parser(
         "validate-plugin-source-rules",
@@ -256,7 +233,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(validate_plugin_source_parser)
     _ = validate_plugin_source_parser.add_argument("--input", required=True, help="插件源码规则 JSON 文件")
-    _ = validate_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_plugin_source_parser = subparsers.add_parser(
         "import-plugin-source-rules",
@@ -269,7 +245,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="确认低风险项目未启动插件源码支线，允许导入空规则",
     )
-    _ = import_plugin_source_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_pending_parser = subparsers.add_parser(
         "export-pending-translations",
@@ -283,7 +258,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="额外执行写入可行性探针；默认只按当前文本范围导出",
     )
-    _ = export_pending_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_quality_fix_parser = subparsers.add_parser(
         "export-quality-fix-template",
@@ -296,7 +270,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="额外执行写入可行性探针；默认只按质量问题导出修复表",
     )
-    _ = export_quality_fix_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_manual_parser = subparsers.add_parser(
         "import-manual-translations",
@@ -304,7 +277,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_manual_parser)
     _ = import_manual_parser.add_argument("--input", required=True, help="已填写的译文表文件")
-    _ = import_manual_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     reset_translations_parser = subparsers.add_parser(
         "reset-translations",
@@ -319,7 +291,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="reset_all",
         help="重置当前提取范围内的全部已保存译文，用于完整重译",
     )
-    _ = reset_translations_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_source_residual_parser = subparsers.add_parser(
         "validate-source-residual-rules",
@@ -329,7 +300,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_source_residual_source_group = validate_source_residual_parser.add_mutually_exclusive_group(required=True)
     _ = validate_source_residual_source_group.add_argument("--rules", help="源文残留例外规则 JSON 字符串")
     _ = validate_source_residual_source_group.add_argument("--input", help="源文残留例外规则 JSON 文件")
-    _ = validate_source_residual_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_source_residual_parser = subparsers.add_parser(
         "import-source-residual-rules",
@@ -339,7 +309,6 @@ def build_parser() -> argparse.ArgumentParser:
     import_source_residual_source_group = import_source_residual_parser.add_mutually_exclusive_group(required=True)
     _ = import_source_residual_source_group.add_argument("--rules", help="源文残留例外规则 JSON 字符串")
     _ = import_source_residual_source_group.add_argument("--input", help="源文残留例外规则 JSON 文件")
-    _ = import_source_residual_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     export_mv_namebox_parser = subparsers.add_parser(
         "export-mv-virtual-namebox-candidates",
@@ -347,7 +316,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(export_mv_namebox_parser)
     _ = export_mv_namebox_parser.add_argument("--output", required=True, help="写出的候选 JSON 文件")
-    _ = export_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_mv_namebox_parser = subparsers.add_parser(
         "validate-mv-virtual-namebox-rules",
@@ -356,7 +324,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(validate_mv_namebox_parser)
     _ = validate_mv_namebox_parser.add_argument("--input", required=True, help="MV 虚拟名字框规则 JSON 文件")
     _ = validate_mv_namebox_parser.add_argument("--output", help="写出完整 JSON 报告文件")
-    _ = validate_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_mv_namebox_parser = subparsers.add_parser(
         "import-mv-virtual-namebox-rules",
@@ -365,7 +332,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_mv_namebox_parser)
     _ = import_mv_namebox_parser.add_argument("--input", required=True, help="MV 虚拟名字框规则 JSON 文件")
     _ = import_mv_namebox_parser.add_argument("--confirm-empty", action="store_true", help="确认当前 MV 游戏不需要虚拟名字框规则，允许导入空规则")
-    _ = import_mv_namebox_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     translate_parser = subparsers.add_parser("translate", help="翻译指定游戏的正文")
     add_optional_target_arguments(translate_parser)
@@ -373,13 +339,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--placeholder-rules",
         help="本次翻译使用的自定义占位符规则 JSON 字符串；传入后不会读取当前游戏数据库规则",
     )
-    _ = translate_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮翻译摘要 JSON")
     add_translation_limit_arguments(translate_parser)
     add_setting_override_arguments(translate_parser, include_source_lines_output=True)
 
     write_back_parser = subparsers.add_parser("write-back", help="把译文回写到游戏目录")
     add_optional_target_arguments(write_back_parser)
-    _ = write_back_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮回写摘要 JSON")
     _ = write_back_parser.add_argument(
         "--confirm-font-overwrite",
         action="store_true",
@@ -392,7 +356,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="从可信源快照和已保存译文重建当前游戏运行文件",
     )
     add_optional_target_arguments(rebuild_active_runtime_parser)
-    _ = rebuild_active_runtime_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮重建摘要 JSON")
     _ = rebuild_active_runtime_parser.add_argument(
         "--confirm-font-overwrite",
         action="store_true",
@@ -405,7 +368,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="按原始备份对比还原游戏数据中的字体引用",
     )
     add_optional_target_arguments(restore_font_parser)
-    _ = restore_font_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     add_setting_override_arguments(
         restore_font_parser,
         include_translation=False,
@@ -430,7 +392,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_terminology_parser)
     _ = import_terminology_parser.add_argument("--input", required=True, help="已填写的字段译名表 JSON 路径")
     _ = import_terminology_parser.add_argument("--glossary-input", required=True, help="已填写的正文术语表 JSON 路径")
-    _ = import_terminology_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     write_terminology_parser = subparsers.add_parser(
         "write-terminology",
@@ -442,7 +403,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="明确允许本次写回用配置字体覆盖游戏字体引用",
     )
-    _ = write_terminology_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮术语写入摘要 JSON")
     add_setting_override_arguments(write_terminology_parser, include_translation=False)
 
     run_all_parser = subparsers.add_parser("run-all", help="按固定顺序执行正文翻译和回写")
@@ -453,7 +413,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_translation_limit_arguments(run_all_parser)
     _ = run_all_parser.add_argument("--skip-write-back", action="store_true", help="跳过最终回写阶段")
-    _ = run_all_parser.add_argument("--json", action="store_true", dest="json_output", help="输出本轮流水线摘要 JSON")
     _ = run_all_parser.add_argument(
         "--confirm-font-overwrite",
         action="store_true",
@@ -467,7 +426,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(build_placeholder_parser)
     _ = build_placeholder_parser.add_argument("--output", required=True, help="写出的规则草稿 JSON 文件")
-    _ = build_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_placeholder_parser = subparsers.add_parser(
         "import-placeholder-rules",
@@ -478,7 +436,6 @@ def build_parser() -> argparse.ArgumentParser:
     _ = import_placeholder_source_group.add_argument("--rules", help="占位符规则 JSON 字符串")
     _ = import_placeholder_source_group.add_argument("--input", help="占位符规则 JSON 文件")
     _ = import_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有普通占位符候选，允许导入空规则")
-    _ = import_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_structured_placeholder_parser = subparsers.add_parser(
         "validate-structured-placeholder-rules",
@@ -487,7 +444,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(validate_structured_placeholder_parser)
     _ = validate_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
     _ = validate_structured_placeholder_parser.add_argument("--output", help="写出 JSON 报告文件")
-    _ = validate_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     _ = validate_structured_placeholder_parser.add_argument(
         "--sample",
         action="append",
@@ -502,7 +458,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(scan_structured_placeholder_parser)
     _ = scan_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
     _ = scan_structured_placeholder_parser.add_argument("--output", help="写出 JSON 报告文件")
-    _ = scan_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     import_structured_placeholder_parser = subparsers.add_parser(
         "import-structured-placeholder-rules",
@@ -511,7 +466,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_structured_placeholder_parser)
     _ = import_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
     _ = import_structured_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有结构化占位符候选，允许导入空规则")
-    _ = import_structured_placeholder_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_plugin_parser = subparsers.add_parser(
         "validate-plugin-rules",
@@ -521,7 +475,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_plugin_source_group = validate_plugin_parser.add_mutually_exclusive_group(required=True)
     _ = validate_plugin_source_group.add_argument("--rules", help="插件规则 JSON 字符串")
     _ = validate_plugin_source_group.add_argument("--input", help="插件规则 JSON 文件")
-    _ = validate_plugin_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_event_parser = subparsers.add_parser(
         "validate-event-command-rules",
@@ -531,7 +484,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_event_source_group = validate_event_parser.add_mutually_exclusive_group(required=True)
     _ = validate_event_source_group.add_argument("--rules", help="事件指令规则 JSON 字符串")
     _ = validate_event_source_group.add_argument("--input", help="事件指令规则 JSON 文件")
-    _ = validate_event_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     prepare_workspace_parser = subparsers.add_parser(
         "prepare-agent-workspace",
@@ -548,7 +500,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CODE",
         help="需要导出的事件指令编码数组；传入后覆盖配置文件默认编码数组",
     )
-    _ = prepare_workspace_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     validate_workspace_parser = subparsers.add_parser(
         "validate-agent-workspace",
@@ -557,14 +508,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(validate_workspace_parser)
     _ = validate_workspace_parser.add_argument("--workspace", required=True, help="Agent 临时工作区目录")
     _ = validate_workspace_parser.add_argument("--output", help="写出完整 JSON 报告文件")
-    _ = validate_workspace_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     cleanup_workspace_parser = subparsers.add_parser(
         "cleanup-agent-workspace",
         help="按 manifest 清理 Agent 临时工作区文件",
     )
     _ = cleanup_workspace_parser.add_argument("--workspace", required=True, help="Agent 临时工作区目录")
-    _ = cleanup_workspace_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
 
     status_parser = subparsers.add_parser("translation-status", help="查看最新正文翻译运行状态")
     add_optional_target_arguments(status_parser)
@@ -573,7 +522,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="重新扫描当前文本范围计算实时待翻数量；大游戏默认使用数据库快速路径",
     )
-    _ = status_parser.add_argument("--json", action="store_true", dest="json_output", help="输出机器可读 JSON")
     setattr(parser, "_att_mz_command_names", frozenset(subparsers.choices))
     return parser
 

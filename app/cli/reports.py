@@ -1,13 +1,11 @@
 """命令行报告输出工具。
 
-本模块负责把业务摘要转换为稳定 JSON 报告，并按终端模式渲染用户可扫读表格。
+本模块负责把业务摘要转换为稳定 JSON 报告。
 """
 
 from __future__ import annotations
 
 import argparse
-
-from rich.table import Table
 
 from app.agent_toolkit import AgentIssue, AgentReport
 from app.agent_toolkit.reports import issue
@@ -17,8 +15,8 @@ from app.application.handler import (
     TextTranslationSummary,
     WriteBackSummary,
 )
-from app.cli.arguments import read_bool_arg, read_optional_path_arg
-from app.observability import console, logger
+from app.cli.arguments import read_optional_path_arg
+from app.observability import logger
 from app.rmmz.json_types import JsonArray, JsonObject, JsonValue
 
 
@@ -191,7 +189,8 @@ def write_report_outputs(
     write_output_file: bool = True,
     stdout_report: AgentReport | None = None,
 ) -> None:
-    """按用户参数输出 Agent 工具包报告。"""
+    """输出 Agent 工具包报告。"""
+    _ = title
     output_path = read_optional_path_arg(args, "output") if write_output_file else None
     json_text = report.to_json_text()
     display_report = stdout_report or report
@@ -200,40 +199,9 @@ def write_report_outputs(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         _ = output_path.write_text(f"{json_text}\n", encoding="utf-8")
 
-    if read_bool_arg(args, "json_output"):
-        print(display_json_text)
-        return
-
-    render_agent_report(report=display_report, title=title)
+    print(display_json_text)
     if output_path is not None:
         logger.success(f"[tag.success]JSON 报告已写出[/tag.success] 文件 [tag.path]{output_path}[/tag.path]")
-
-
-def render_agent_report(*, report: AgentReport, title: str) -> None:
-    """用 Rich 表格展示报告摘要和问题列表。"""
-    summary_table = Table(title=title)
-    summary_table.add_column("字段", style="cyan")
-    summary_table.add_column("值", style="magenta")
-    summary_table.add_row("状态", report.status)
-    for key, value in report.summary.items():
-        summary_table.add_row(key, str(value))
-    console.print(summary_table)
-
-    if report.errors:
-        error_table = Table(title="必须先处理的错误")
-        error_table.add_column("代码", style="red")
-        error_table.add_column("说明", style="white")
-        for item in report.errors:
-            error_table.add_row(item.code, item.message)
-        console.print(error_table)
-
-    if report.warnings:
-        warning_table = Table(title="告警")
-        warning_table.add_column("代码", style="yellow")
-        warning_table.add_column("说明", style="white")
-        for item in report.warnings:
-            warning_table.add_row(item.code, item.message)
-        console.print(warning_table)
 
 
 def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonObject:
@@ -279,6 +247,5 @@ __all__ = [
     "build_translate_summary_report",
     "build_write_back_summary_report",
     "REPORT_STDOUT_SAMPLE_LIMIT",
-    "render_agent_report",
     "write_report_outputs",
 ]

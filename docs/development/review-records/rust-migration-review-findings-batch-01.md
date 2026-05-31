@@ -25,7 +25,7 @@
 | R2-4 | 已修复 | 插件配置和 Note 标签写入复用可见文本协议外壳校验，破坏控制符或 JSON 字符串外壳时直接失败。 |
 | R3-1 | 已修复 | 写回计划热路径纳入 `ATT_MZ_RUST_THREADS` 线程池包装，非法线程数在 write plan 路径可触发测试。 |
 | R3-2 | 已修复 | Python native adapter 校验 `target_path` 必须位于游戏内容目录内，并拒绝绝对 `relative_path`、`..` 和目标不一致。 |
-| R3-3、R4-3、R6-3 | 已修复 | native `status=error` 会保留错误消息；应用层硬检查在 `--json` 下返回 `business_error`；Rust 用户文案使用“文本在游戏里的内部位置”。 |
+| R3-3、R4-3、R6-3 | 已修复 | native `status=error` 会保留错误消息；应用层硬检查在 JSON 输出下返回 `business_error`；Rust 用户文案使用“文本在游戏里的内部位置”。 |
 | R5-3 | 已修复 | Rust/Python 边界补齐非标准 data、线程配置、路径越界、native error payload 和等价写回样例测试。 |
 | R6-4、R6-5 | 已记录为动态验证限制 | 未导入规则的样本仍不能触发真实模型调用；非 MV/MZ 样本继续跳过，不作为修复缺陷。 |
 
@@ -52,7 +52,7 @@ uv run pytest
 - 样本源：`D:\h-game\测试样本\已汉化\頽廃のシスター`。
 - 临时副本：`C:\Users\夜袭\AppData\Local\Temp\att-mz-dynamic-fix-74a4173ae66d4c83b8b50cbe0f50529c\game`。
 - 临时 `ATT_MZ_HOME`：同一临时目录下的 `home`。
-- 执行命令：`add-game`、`doctor --no-check-llm`、`scan-placeholder-candidates`、`text-scope`、`quality-report`、`write-back`、`rebuild-active-runtime`、`translate --json --max-items 3 --max-batches 1 --time-limit-seconds 300 --translation-worker-count 1`。
+- 执行命令：`add-game`、`doctor --no-check-llm`、`scan-placeholder-candidates`、`text-scope`、`quality-report`、`write-back`、`rebuild-active-runtime`、`translate --max-items 3 --max-batches 1 --time-limit-seconds 300 --translation-worker-count 1`。
 - 结果：`quality-report` 退出码 1，`status=error`，`code=coverage_missing_translation`，报告 12577 条当前可写文本还没成功保存译文；`write-back`、`rebuild-active-runtime`、`translate` 均退出码 1，`status=error`，`code=business_error`，在模型调用和写文件前停止。
 - 写入校验：`data/System.json` 和 `js/plugins.js` 哈希未变化。
 - 清理校验：临时目录已删除，`Exists=false`。
@@ -227,7 +227,7 @@ uv run pytest
 - 当前 `app/cli/commands/write_back.py:43` 的 `run_rebuild_active_runtime_command()` 直接进入 `handler.rebuild_active_runtime()`。
 - `main:app/cli/runtime.py` 和 `main:app/cli/commands/write_back.py` 先调用 `ensure_write_back_gate(... require_complete_translation=True)`。
 
-影响：`write-back --json` 和 `rebuild-active-runtime --json` 的外部失败边界不再等价于 `quality-report`，可能漏掉规则缺失、过期规则、不可写范围和术语包错误。
+影响：`write-back` 和 `rebuild-active-runtime` 的外部失败边界不再等价于 `quality-report`，可能漏掉规则缺失、过期规则、不可写范围和术语包错误。
 
 建议验证/修复方向：恢复 CLI gate，或保证 handler/native 层等价执行 `quality-report` 的阻断集合。
 
@@ -301,13 +301,13 @@ uv run pytest
 
 ### R6-1 [P0] 真实样本复现 gate 退化
 
-发现：同一个临时样本中，`quality-report` 返回 `error`，但 `write-back --json` 返回 `ok`。
+发现：同一个临时样本中，`quality-report` 返回 `error`，但 `write-back` 返回 `ok`。
 
 证据：
 - 样本源：`D:\h-game\测试样本\已汉化\テイルズ・テイルス`。
 - 样本只复制到临时目录运行，临时目录已删除。
 - `quality-report` 退出码 1，`status=error`，`pending_count=4321`，并报告术语、插件规则、事件指令规则、Note 标签规则、占位符规则缺失。
-- 同一状态下 `write-back --json` 退出码 0，`status=ok`，写入计数为 0。
+- 同一状态下 `write-back` 退出码 0，`status=ok`，写入计数为 0。
 
 影响：自动化只看 `write-back` JSON 时会误判可以继续。
 
@@ -315,22 +315,22 @@ uv run pytest
 
 ### R6-2 [P1] `rebuild-active-runtime` 在阻断状态下仍计划并替换文件
 
-发现：同一动态样本中，规则缺失、无译文、质量报告失败，但 `rebuild-active-runtime --json` 返回成功并计划写 77 个文件。
+发现：同一动态样本中，规则缺失、无译文、质量报告失败，但 `rebuild-active-runtime` 返回成功并计划写 77 个文件。
 
 证据：
-- `rebuild-active-runtime --json` 退出码 0，`status=ok`。
+- `rebuild-active-runtime` 退出码 0，`status=ok`。
 - 返回 `planned_file_count=77`、`skipped_file_count=18`、`rust_plan_ms=335`、`file_replacement_ms=180`、`post_write_audit_ms=62`。
 
 影响：重建命令会在不满足流程前置条件时实际改写运行文件，风险高于只返回错误状态不一致。
 
 建议验证/修复方向：`rebuild-active-runtime` 必须执行与 `quality-report` 等价的前置阻断，或明确限制为独立的恢复命令并重写外部契约。
 
-### R6-3 [P2] `translate --json` gate 失败被包装为 `unexpected_error`
+### R6-3 [P2] `translate` gate 失败被包装为 `unexpected_error`
 
 发现：动态样本存在规则缺失和未覆盖占位符时，`translate` 能在模型调用前停止，但 JSON 错误码为 `unexpected_error`。
 
 证据：
-- `translate --json --max-items 3 --max-batches 1 --time-limit-seconds 300` 退出码 1。
+- `translate --max-items 3 --max-batches 1 --time-limit-seconds 300` 退出码 1。
 - 输出 `code=unexpected_error`，message 包含 workflow gate 的业务错误列表。
 - 没有发生真实模型调用。
 
@@ -343,7 +343,7 @@ uv run pytest
 发现：样本中存在 73 个疑似控制符候选，其中 64 个未覆盖。
 
 证据：
-- `doctor --no-check-llm --json` 返回 warning，`uncovered_placeholder_count=64`。
+- `doctor --no-check-llm` 返回 warning，`uncovered_placeholder_count=64`。
 - `scan-placeholder-candidates` 返回 `candidate_count=73`、`uncovered_count=64`。
 
 影响：该样本不能直接执行真实正文翻译，否则可能破坏游戏控制符。
@@ -378,17 +378,17 @@ cargo test --manifest-path rust/Cargo.toml
 动态样本已执行：
 
 ```powershell
-uv run python main.py --agent-mode add-game --path <临时游戏副本> --source-language ja --json
-uv run python main.py --agent-mode doctor --game-path <临时游戏副本> --no-check-llm --json
-uv run python main.py --agent-mode scan-placeholder-candidates --game-path <临时游戏副本> --output <临时报告> --json
-uv run python main.py --agent-mode export-plugins-json --game-path <临时游戏副本> --output <临时报告>
-uv run python main.py --agent-mode export-event-commands-json --game-path <临时游戏副本> --output <临时报告>
-uv run python main.py --agent-mode text-scope --game-path <临时游戏副本> --output <临时报告> --json
-uv run python main.py --agent-mode quality-report --game-path <临时游戏副本> --output <临时报告>
-uv run python main.py --agent-mode audit-active-runtime --game-path <临时游戏副本> --output <临时报告>
-uv run python main.py --agent-mode write-back --game-path <临时游戏副本> --json
-uv run python main.py --agent-mode rebuild-active-runtime --game-path <临时游戏副本> --json
-uv run python main.py --agent-mode translate --game-path <临时游戏副本> --max-items 3 --max-batches 1 --time-limit-seconds 300 --json
+uv run python main.py add-game --path <临时游戏副本> --source-language ja
+uv run python main.py doctor --game-path <临时游戏副本> --no-check-llm
+uv run python main.py scan-placeholder-candidates --game-path <临时游戏副本> --output <临时报告>
+uv run python main.py export-plugins-json --game-path <临时游戏副本> --output <临时报告>
+uv run python main.py export-event-commands-json --game-path <临时游戏副本> --output <临时报告>
+uv run python main.py text-scope --game-path <临时游戏副本> --output <临时报告>
+uv run python main.py quality-report --game-path <临时游戏副本> --output <临时报告>
+uv run python main.py audit-active-runtime --game-path <临时游戏副本> --output <临时报告>
+uv run python main.py write-back --game-path <临时游戏副本>
+uv run python main.py rebuild-active-runtime --game-path <临时游戏副本>
+uv run python main.py translate --game-path <临时游戏副本> --max-items 3 --max-batches 1 --time-limit-seconds 300
 ```
 
 动态样本清理：

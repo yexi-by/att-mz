@@ -6,7 +6,7 @@
 
 - 默认先读取 `plugin-source-risk-report.json`。低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务。
 - 高风险时必须先问用户是否处理插件源码文本；用户没有肯定回复时，停止正文翻译。
-- 用户确认启动本任务后，运行 `export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json --json`。本命令默认使用 `--view translation-source`，用于规则抽取和后续写回定位。
+- 用户确认启动本任务后，运行 `export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json`。本命令默认使用 `--view translation-source`，用于规则抽取和后续写回定位。
 
 ## 输入
 
@@ -55,8 +55,8 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 - 同一显示文本有多个 selector 时，只保留真实写回位置；无法判断时不要编造规则。
 - selector 必须来自 AST 地图原样复制，禁止手写字节范围或改写 selector。
 - `validate-plugin-source-rules` 会报告翻译 selector 数、排除 selector 数和未审查 selector 数；未审查数量不为 0 时，补全 `plugin-source-rules.json` 后重新校验。
-- `plugin-source-rules.json` 完成后运行 `validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json`。
-- validate 通过后运行 `import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json --json`。
+- `plugin-source-rules.json` 完成后运行 `validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json`。
+- validate 通过后运行 `import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json`。
 - `quality-report` 检查已保存译文记录和规则质量；`audit-active-runtime` 审计当前运行文件。默认审计不是补译清单；只有插件源码规则或写回映射已存在时，当前运行源码文本问题才作为支线诊断处理；不要把当前运行审计结果当作规则 selector 来源。
 
 ## 停止条件

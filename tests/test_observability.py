@@ -2,7 +2,28 @@
 
 from pathlib import Path
 
+from pytest import CaptureFixture
+
 from app.observability import logger, setup_logger
+from app.observability.logging import agent_console_sink
+
+
+def test_console_sink_outputs_single_plain_line(capsys: CaptureFixture[str]) -> None:
+    """stderr 日志 sink 去掉标记并把多行消息折叠成单行。"""
+    message = "\n".join(
+        [
+            "INFO [tag.phase]CLI 运行开始[/tag.phase]",
+            "命令参数: list",
+            "日志文件: logs/app.log",
+        ]
+    )
+    agent_console_sink(message)
+
+    captured = capsys.readouterr()
+
+    assert captured.err == "INFO CLI 运行开始 | 命令参数: list | 日志文件: logs/app.log\n"
+    assert "[tag.phase]" not in captured.err
+    assert "\x1b" not in captured.err
 
 
 def test_file_log_keeps_debug_and_exception_traceback(tmp_path: Path) -> None:
