@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from typing import Literal
 
 from app.agent_toolkit.placeholder_scan import (
     count_uncovered_candidates,
@@ -40,6 +38,15 @@ from app.rmmz.game_file_view import GameFileView
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 from app.rmmz.schema import GameData, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonValue, TextRules
+from app.rule_review_decision import (
+    RuleCoverageResult,
+    RuleReviewDecision as CandidateReviewDecision,
+    RuleReviewSeverity as CandidateReviewSeverity,
+    RuleReviewStage as CandidateReviewStage,
+    WorkflowGateIssue,
+    build_empty_rule_review_decision,
+    build_rule_review_decision,
+)
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
@@ -57,48 +64,6 @@ from app.rule_review import (
 )
 from app.terminology import collect_terminology_bundle_errors
 from app.text_scope import TextScopeResult, TextScopeService, read_fresh_plugin_text_rules
-
-
-@dataclass(frozen=True, slots=True)
-class WorkflowGateIssue:
-    """单个会阻断翻译或写入的流程前置错误。"""
-
-    code: str
-    message: str
-
-
-type CandidateReviewStage = Literal[
-    "workspace_validate",
-    "rule_import",
-    "workflow_gate",
-    "manual_import",
-    "text_scope",
-    "audit_coverage",
-    "quality_report",
-    "write_back",
-]
-type CandidateReviewSeverity = Literal["none", "warning", "error"]
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateReviewDecision:
-    """候选扫描在指定阶段的统一审查决策。"""
-
-    rule_domain: RuleReviewDomain
-    stage: CandidateReviewStage
-    severity: CandidateReviewSeverity
-    code: str
-    message: str
-    scope_hash: str
-    uncovered_count: int
-    rule_count: int
-    reviewed: bool
-    reviewed_empty: bool | None
-    details: JsonArray
-
-    def to_issue(self) -> WorkflowGateIssue:
-        """转换成现有流程门禁问题对象。"""
-        return WorkflowGateIssue(code=self.code, message=self.message)
 
 
 async def collect_workflow_gate_errors(
@@ -316,8 +281,12 @@ def normal_placeholder_scope_hash(
     text_rules: TextRules,
 ) -> str:
     """计算普通占位符空规则确认依赖的当前候选哈希。"""
-    candidates = scan_placeholder_candidates(translation_data_map, text_rules)
-    return placeholder_rule_scope_hash(placeholder_candidates_to_details(candidates))
+    coverage = build_normal_placeholder_coverage_result(
+        translation_data_map=translation_data_map,
+        text_rules=text_rules,
+        rule_count=len(text_rules.custom_placeholder_rules),
+    )
+    return coverage.scope_hash
 
 
 def structured_placeholder_scope_hash(
@@ -326,11 +295,56 @@ def structured_placeholder_scope_hash(
     structured_rules: tuple[StructuredPlaceholderRule, ...],
 ) -> str:
     """计算结构化占位符空规则确认依赖的当前候选哈希。"""
+    coverage = build_structured_placeholder_coverage_result(
+        translation_data_map=translation_data_map,
+        structured_rules=structured_rules,
+        rule_count=len(structured_rules),
+    )
+    return coverage.scope_hash
+
+
+def build_normal_placeholder_coverage_result(
+    *,
+    translation_data_map: dict[str, TranslationData],
+    text_rules: TextRules,
+    rule_count: int,
+) -> RuleCoverageResult:
+    """构建普通占位符候选覆盖的完整内部结果。"""
+    candidates = scan_placeholder_candidates(translation_data_map, text_rules)
+    candidate_details = placeholder_candidates_to_details(candidates)
+    uncovered_count = count_uncovered_candidates(candidates)
+    return RuleCoverageResult(
+        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        rule_count=rule_count,
+        candidate_count=len(candidate_details),
+        covered_count=len(candidate_details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
+
+
+def build_structured_placeholder_coverage_result(
+    *,
+    translation_data_map: dict[str, TranslationData],
+    structured_rules: tuple[StructuredPlaceholderRule, ...],
+    rule_count: int,
+) -> RuleCoverageResult:
+    """构建结构化占位符候选覆盖的完整内部结果。"""
     details = collect_structured_placeholder_candidate_details(
         translation_data_map=translation_data_map,
         structured_rules=structured_rules,
     )
-    return structured_placeholder_rule_scope_hash(details)
+    uncovered_count = _count_uncovered_structured_details(details)
+    return RuleCoverageResult(
+        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=structured_placeholder_rule_scope_hash(details),
+        rule_count=rule_count,
+        candidate_count=len(details),
+        covered_count=len(details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=details,
+    )
 
 
 def count_uncovered_structured_placeholder_candidates(
@@ -597,30 +611,28 @@ async def collect_placeholder_candidate_review_decisions(
     stage: CandidateReviewStage,
 ) -> list[CandidateReviewDecision]:
     """收集普通/结构化占位符候选在指定阶段的统一审查决策。"""
-    candidates = scan_placeholder_candidates(scope.translation_data_map, text_rules)
-    candidate_details = placeholder_candidates_to_details(candidates)
+    placeholder_rule_count = len(await session.read_placeholder_rules())
+    placeholder_coverage = build_normal_placeholder_coverage_result(
+        translation_data_map=scope.translation_data_map,
+        text_rules=text_rules,
+        rule_count=placeholder_rule_count,
+    )
     placeholder_decision = await _build_candidate_review_decision(
         session=session,
-        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        coverage=placeholder_coverage,
         stage=stage,
-        scope_hash=placeholder_rule_scope_hash(candidate_details),
-        uncovered_count=count_uncovered_candidates(candidates),
-        rule_count=len(await session.read_placeholder_rules()),
-        details=candidate_details,
         custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
     )
-    structured_details = collect_structured_placeholder_candidate_details(
+    structured_rule_count = len(await session.read_structured_placeholder_rules())
+    structured_coverage = build_structured_placeholder_coverage_result(
         translation_data_map=scope.translation_data_map,
         structured_rules=text_rules.structured_placeholder_rules,
+        rule_count=structured_rule_count,
     )
     structured_decision = await _build_candidate_review_decision(
         session=session,
-        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        coverage=structured_coverage,
         stage=stage,
-        scope_hash=structured_placeholder_rule_scope_hash(structured_details),
-        uncovered_count=_count_uncovered_structured_details(structured_details),
-        rule_count=len(await session.read_structured_placeholder_rules()),
-        details=structured_details,
         custom_placeholder_rules_supplied=False,
     )
     return [placeholder_decision, structured_decision]
@@ -652,83 +664,46 @@ async def collect_placeholder_candidate_review_warnings(
 async def _build_candidate_review_decision(
     *,
     session: TargetGameSession,
-    rule_domain: RuleReviewDomain,
+    coverage: RuleCoverageResult,
     stage: CandidateReviewStage,
-    scope_hash: str,
-    uncovered_count: int,
-    rule_count: int,
-    details: JsonArray,
     custom_placeholder_rules_supplied: bool,
 ) -> CandidateReviewDecision:
     """按统一阶段契约生成单个候选域的审查决策。"""
-    state = await session.read_rule_review_state(rule_domain=rule_domain)
-    reviewed = state is not None and state.scope_hash == scope_hash
-    reviewed_empty = state.reviewed_empty if state is not None else None
-    if uncovered_count <= 0:
-        return CandidateReviewDecision(
-            rule_domain=rule_domain,
-            stage=stage,
-            severity="none",
-            code="",
-            message="",
-            scope_hash=scope_hash,
-            uncovered_count=uncovered_count,
-            rule_count=rule_count,
-            reviewed=reviewed,
-            reviewed_empty=reviewed_empty,
-            details=details,
-        )
-    if rule_domain == PLACEHOLDER_RULE_DOMAIN:
+    if coverage.rule_domain == PLACEHOLDER_RULE_DOMAIN:
         unreviewed_code = "placeholder_uncovered"
         reviewed_code = "placeholder_uncovered_reviewed"
         unreviewed_message = (
-            f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符，"
+            f"发现 {coverage.uncovered_count} 个未覆盖的疑似自定义控制符，"
             "请先导入普通占位符规则或确认当前候选风险"
         )
         reviewed_message = (
-            f"仍有 {uncovered_count} 个未覆盖的疑似自定义控制符；"
+            f"仍有 {coverage.uncovered_count} 个未覆盖的疑似自定义控制符；"
             "当前候选已通过导入命令确认风险"
         )
-    elif rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
+    elif coverage.rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
         unreviewed_code = "structured_placeholder_uncovered"
         reviewed_code = "structured_placeholder_uncovered_reviewed"
         unreviewed_message = (
-            f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选，"
+            f"发现 {coverage.uncovered_count} 个未被结构化规则覆盖的协议外壳候选，"
             "请先导入结构化占位符规则或确认当前候选风险"
         )
         reviewed_message = (
-            f"仍有 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选；"
+            f"仍有 {coverage.uncovered_count} 个未被结构化规则覆盖的协议外壳候选；"
             "当前候选已通过导入命令确认风险"
         )
     else:
-        raise ValueError(f"不支持的候选审查域: {rule_domain}")
+        raise ValueError(f"不支持的候选审查域: {coverage.rule_domain}")
 
-    if reviewed and not custom_placeholder_rules_supplied:
-        return CandidateReviewDecision(
-            rule_domain=rule_domain,
-            stage=stage,
-            severity="warning",
-            code=reviewed_code,
-            message=reviewed_message,
-            scope_hash=scope_hash,
-            uncovered_count=uncovered_count,
-            rule_count=rule_count,
-            reviewed=reviewed,
-            reviewed_empty=reviewed_empty,
-            details=details,
-        )
-    return CandidateReviewDecision(
-        rule_domain=rule_domain,
+    return await build_rule_review_decision(
+        session=session,
+        coverage=coverage,
         stage=stage,
-        severity="error",
-        code=unreviewed_code,
-        message=unreviewed_message,
-        scope_hash=scope_hash,
-        uncovered_count=uncovered_count,
-        rule_count=rule_count,
-        reviewed=reviewed,
-        reviewed_empty=reviewed_empty,
-        details=details,
+        unreviewed_code=unreviewed_code,
+        unreviewed_message=unreviewed_message,
+        reviewed_code=reviewed_code,
+        reviewed_message=reviewed_message,
+        custom_rules_supplied=custom_placeholder_rules_supplied,
+        legacy_scope_hashes=_legacy_placeholder_scope_hashes(coverage),
     )
 
 
@@ -776,22 +751,18 @@ async def _empty_rule_review_errors(
     label: str,
 ) -> list[WorkflowGateIssue]:
     """检查空规则是否经过显式确认且确认范围仍然有效。"""
-    state = await session.read_rule_review_state(rule_domain=rule_domain)
-    if state is None or not state.reviewed_empty:
-        return [
-            WorkflowGateIssue(
-                code=f"{rule_domain}_missing",
-                message=f"{label}为空且没有显式确认当前游戏没有对应规则，检查没通过，不能继续",
-            )
-        ]
-    if state.scope_hash != current_scope_hash:
-        return [
-            WorkflowGateIssue(
-                code=f"{rule_domain}_stale_empty_confirmation",
-                message=f"{label}曾确认为空，但当前游戏内容已经变化，请重新扫描并导入规则",
-            )
-        ]
-    return []
+    decision = await build_empty_rule_review_decision(
+        session=session,
+        rule_domain=rule_domain,
+        stage="workflow_gate",
+        scope_hash=current_scope_hash,
+        label=label,
+        missing_code=f"{rule_domain}_missing",
+        stale_code=f"{rule_domain}_stale_empty_confirmation",
+        missing_severity="error",
+        stale_severity="error",
+    )
+    return [decision.to_issue()] if decision.severity == "error" else []
 
 
 def _candidate_int_sum(candidates: JsonArray, key: str) -> int:
@@ -814,6 +785,18 @@ def _count_uncovered_structured_details(details: JsonArray) -> int:
         for detail in details
         if isinstance(detail, dict) and detail.get("covered") is not True
     )
+
+
+def _legacy_placeholder_scope_hashes(coverage: RuleCoverageResult) -> tuple[str, ...]:
+    """兼容旧版从截断报告明细计算出的占位符确认 hash。"""
+    if len(coverage.candidates) <= coverage.sample_limit:
+        return ()
+    sampled_candidates = coverage.candidates[: coverage.sample_limit]
+    if coverage.rule_domain == PLACEHOLDER_RULE_DOMAIN:
+        return (placeholder_rule_scope_hash(sampled_candidates),)
+    if coverage.rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
+        return (structured_placeholder_rule_scope_hash(sampled_candidates),)
+    return ()
 
 
 STRUCTURED_SHELL_CANDIDATE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -868,6 +851,8 @@ __all__: list[str] = [
     "CandidateReviewStage",
     "WorkflowGateIssue",
     "collect_external_text_rule_gate_errors",
+    "build_normal_placeholder_coverage_result",
+    "build_structured_placeholder_coverage_result",
     "collect_placeholder_candidate_review_decisions",
     "collect_placeholder_candidate_review_warnings",
     "assert_workflow_gate_passed",

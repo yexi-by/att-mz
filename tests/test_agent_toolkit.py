@@ -15,6 +15,9 @@ from app.agent_toolkit.placeholder_scan import (
 )
 from app.agent_toolkit.reports import AgentReport
 from app.application.flow_gate import (
+    build_normal_placeholder_coverage_result,
+    build_structured_placeholder_coverage_result,
+    collect_placeholder_candidate_review_decisions,
     collect_workflow_gate_errors,
     event_command_rule_scope_hash_for_command_codes,
     event_command_rule_scope_hash_for_setting,
@@ -71,8 +74,10 @@ from app.rule_review import (
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     mv_virtual_namebox_rule_scope_hash,
+    placeholder_rule_scope_hash,
     plugin_source_rule_scope_hash,
     plugin_rule_scope_hash,
+    structured_placeholder_rule_scope_hash,
 )
 from app.text_scope import TextScopeEntry, TextScopeResult, TextScopeService
 from app.text_scope.write_probe import collect_write_back_probe_reasons
@@ -311,6 +316,17 @@ def _replace_first_common_event_text(game_dir: Path, text: str) -> None:
     text_command = ensure_json_object(commands[1], "CommonEvents.json[1].list[1]")
     parameters = ensure_json_array(text_command["parameters"], "CommonEvents.json[1].list[1].parameters")
     parameters[0] = text
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _insert_common_event_texts(game_dir: Path, texts: Sequence[str]) -> None:
+    """向 fixture 公共事件插入一组正文指令。"""
+    common_events_path = game_dir / "data" / "CommonEvents.json"
+    raw_value = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_value), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands[1:1] = [{"code": 401, "parameters": [text]} for text in texts]
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -2552,6 +2568,11 @@ async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+        coverage = build_normal_placeholder_coverage_result(
+            translation_data_map=scope.translation_data_map,
+            text_rules=text_rules,
+            rule_count=0,
+        )
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
@@ -2569,7 +2590,57 @@ async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
     assert "placeholder_uncovered_reviewed" in {warning.code for warning in doctor_report.warnings}
     assert state is not None
     assert state.reviewed_empty is True
+    assert state.scope_hash == coverage.scope_hash
     assert "placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_import_empty_placeholder_rules_uses_full_candidate_hash(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """普通占位符导入确认必须用完整候选集合计算 hash，不能只用 stdout 样本。"""
+    _insert_common_event_texts(
+        minimal_english_game_dir,
+        [fr"\ZZCustom{index}[Face{index}] Line {index}" for index in range(120)],
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.import_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+
+    game_data = await load_game_data(minimal_english_game_dir)
+    async with await registry.open_game("English Fixture Game") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+    coverage = build_normal_placeholder_coverage_result(
+        translation_data_map=scope.translation_data_map,
+        text_rules=text_rules,
+        rule_count=0,
+    )
+    legacy_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
+
+    assert report.status == "warning"
+    assert coverage.candidate_count > 100
+    assert state is not None
+    assert state.scope_hash == coverage.scope_hash
+    assert state.scope_hash != legacy_hash
 
 
 @pytest.mark.asyncio
@@ -2686,6 +2757,11 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+        coverage = build_normal_placeholder_coverage_result(
+            translation_data_map=scope.translation_data_map,
+            text_rules=text_rules,
+            rule_count=1,
+        )
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
@@ -2701,6 +2777,7 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
     assert report.summary["uncovered_count"] != 0
     assert state is not None
     assert state.reviewed_empty is False
+    assert state.scope_hash == coverage.scope_hash
     assert "placeholder_uncovered" not in {error.code for error in errors}
 
 
@@ -2740,6 +2817,11 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+        coverage = build_structured_placeholder_coverage_result(
+            translation_data_map=scope.translation_data_map,
+            structured_rules=text_rules.structured_placeholder_rules,
+            rule_count=0,
+        )
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
@@ -2760,7 +2842,57 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
     assert "structured_placeholder_uncovered_reviewed" in {warning.code for warning in doctor_report.warnings}
     assert state is not None
     assert state.reviewed_empty is True
+    assert state.scope_hash == coverage.scope_hash
     assert "structured_placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_import_empty_structured_placeholder_rules_uses_full_candidate_hash(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """结构化占位符导入确认必须用完整候选集合计算 hash，不能只用前 100 个样本。"""
+    _insert_common_event_texts(
+        minimal_english_game_dir,
+        [f"<Name{index}: Alice{index}>" for index in range(120)],
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.import_structured_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text='{"paired_shell_rules": []}',
+        confirm_empty=True,
+    )
+
+    game_data = await load_game_data(minimal_english_game_dir)
+    async with await registry.open_game("English Fixture Game") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+    coverage = build_structured_placeholder_coverage_result(
+        translation_data_map=scope.translation_data_map,
+        structured_rules=text_rules.structured_placeholder_rules,
+        rule_count=0,
+    )
+    legacy_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
+
+    assert report.status == "warning"
+    assert coverage.candidate_count > 100
+    assert state is not None
+    assert state.scope_hash == coverage.scope_hash
+    assert state.scope_hash != legacy_hash
 
 
 @pytest.mark.asyncio
@@ -2809,6 +2941,11 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+        coverage = build_structured_placeholder_coverage_result(
+            translation_data_map=scope.translation_data_map,
+            structured_rules=text_rules.structured_placeholder_rules,
+            rule_count=1,
+        )
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
@@ -2824,6 +2961,133 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
     assert report.summary["uncovered_count"] == 1
     assert state is not None
     assert state.reviewed_empty is False
+    assert state.scope_hash == coverage.scope_hash
+    assert "structured_placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_placeholder_candidate_review_accepts_legacy_sampled_hash(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧版前 100 候选 hash 只兼容放行，不再被当成当前完整 hash。"""
+    _insert_common_event_texts(
+        minimal_english_game_dir,
+        [fr"\ZZLegacy{index}[Face{index}] Line {index}" for index in range(120)],
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    game_data = await load_game_data(minimal_english_game_dir)
+    async with await registry.open_game("English Fixture Game") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        coverage = build_normal_placeholder_coverage_result(
+            translation_data_map=scope.translation_data_map,
+            text_rules=text_rules,
+            rule_count=0,
+        )
+        legacy_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
+        await session.replace_rule_review_state(
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=legacy_hash,
+            reviewed_empty=True,
+        )
+        decisions = await collect_placeholder_candidate_review_decisions(
+            session=session,
+            scope=scope,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            stage="workflow_gate",
+        )
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    placeholder_decision = next(decision for decision in decisions if decision.rule_domain == PLACEHOLDER_RULE_DOMAIN)
+    assert coverage.candidate_count > 100
+    assert placeholder_decision.confirmation_status == "confirmed_legacy_hash"
+    assert placeholder_decision.severity == "warning"
+    assert placeholder_decision.code == "placeholder_uncovered_reviewed_legacy_hash"
+    assert "placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_structured_placeholder_candidate_review_accepts_legacy_sampled_hash(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """结构化占位符旧版前 100 候选 hash 兼容放行，并提示重新导入升级。"""
+    _insert_common_event_texts(
+        minimal_english_game_dir,
+        [f"<Legacy{index}: Alice{index}>" for index in range(120)],
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    game_data = await load_game_data(minimal_english_game_dir)
+    async with await registry.open_game("English Fixture Game") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        coverage = build_structured_placeholder_coverage_result(
+            translation_data_map=scope.translation_data_map,
+            structured_rules=text_rules.structured_placeholder_rules,
+            rule_count=0,
+        )
+        legacy_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=legacy_hash,
+            reviewed_empty=True,
+        )
+        decisions = await collect_placeholder_candidate_review_decisions(
+            session=session,
+            scope=scope,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            stage="workflow_gate",
+        )
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    structured_decision = next(
+        decision
+        for decision in decisions
+        if decision.rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN
+    )
+    assert coverage.candidate_count > 100
+    assert structured_decision.confirmation_status == "confirmed_legacy_hash"
+    assert structured_decision.severity == "warning"
+    assert structured_decision.code == "structured_placeholder_uncovered_reviewed_legacy_hash"
     assert "structured_placeholder_uncovered" not in {error.code for error in errors}
 
 
@@ -3331,7 +3595,14 @@ async def test_validate_agent_workspace_warns_uncovered_structured_candidates(
     assert coverage_details == standalone_coverage_report.details
     assert "structured_placeholder_uncovered" in warning_codes
     assert coverage_summary["uncovered_count"] == 1
-    candidates = ensure_json_array(coverage_details["candidates"], "structured_placeholder_coverage.details.candidates")
+    candidates_node = ensure_json_object(
+        coverage_details["candidates"],
+        "structured_placeholder_coverage.details.candidates",
+    )
+    candidates = ensure_json_array(
+        candidates_node["items"],
+        "structured_placeholder_coverage.details.candidates.items",
+    )
     assert any(
         ensure_json_object(candidate, "candidate")["candidate"] == expected_candidate
         for candidate in candidates
@@ -4130,17 +4401,17 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
 
     before_warning_codes = {warning.code for warning in before_report.warnings}
     after_error_codes = {error.code for error in after_report.errors}
-    empty_rule_error_codes = {
-        "plugin_rules_empty_unconfirmed",
-        "event_command_rules_empty_unconfirmed",
-        "note_tag_rules_empty_unconfirmed",
-        "placeholder_rules_empty_unconfirmed",
-        "structured_placeholder_rules_empty_unconfirmed",
+    empty_rule_warning_codes = {
+        "plugin_rules_empty_needs_import_confirmation",
+        "event_command_rules_empty_needs_import_confirmation",
+        "note_tag_rules_empty_needs_import_confirmation",
+        "placeholder_rules_empty_needs_import_confirmation",
+        "structured_placeholder_rules_empty_needs_import_confirmation",
     }
-    assert empty_rule_error_codes <= before_warning_codes
+    assert empty_rule_warning_codes <= before_warning_codes
     assert note_import_report.status == "warning"
     assert {warning.code for warning in note_import_report.warnings} == {"note_tag_rules_empty"}
-    assert empty_rule_error_codes.isdisjoint(after_error_codes)
+    assert empty_rule_warning_codes.isdisjoint(after_error_codes)
 
 
 @pytest.mark.asyncio

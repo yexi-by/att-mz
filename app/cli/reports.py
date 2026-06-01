@@ -141,12 +141,27 @@ def build_sampled_stdout_report(
     sample_limit: int = REPORT_STDOUT_SAMPLE_LIMIT,
 ) -> AgentReport:
     """把大报告明细裁剪为适合 stdout 的摘要报告。"""
+    summary = dict(report.summary)
+    summary["report_detail_mode"] = "sampled"
     return AgentReport(
         status=report.status,
         errors=list(report.errors),
         warnings=list(report.warnings),
-        summary=dict(report.summary),
+        summary=summary,
         details=_summarize_json_object(report.details, sample_limit=sample_limit),
+    )
+
+
+def build_full_output_report(report: AgentReport) -> AgentReport:
+    """给写入文件的完整报告显式标记明细模式。"""
+    summary = dict(report.summary)
+    summary["report_detail_mode"] = "full"
+    return AgentReport(
+        status=report.status,
+        errors=list(report.errors),
+        warnings=list(report.warnings),
+        summary=summary,
+        details=report.details,
     )
 
 
@@ -192,7 +207,8 @@ def write_report_outputs(
     """输出 Agent 工具包报告。"""
     _ = title
     output_path = read_optional_path_arg(args, "output") if write_output_file else None
-    json_text = report.to_json_text()
+    output_report = build_full_output_report(report) if output_path is not None else report
+    json_text = output_report.to_json_text()
     display_report = stdout_report or report
     display_json_text = display_report.to_json_text()
     if output_path is not None:
@@ -241,6 +257,7 @@ def _build_write_back_summary_object(summary: WriteBackSummary) -> JsonObject:
 
 __all__ = [
     "build_font_restore_summary_report",
+    "build_full_output_report",
     "build_run_all_summary_report",
     "build_sampled_stdout_report",
     "build_terminology_write_summary_report",

@@ -1411,6 +1411,8 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
     first_sample = ensure_json_object(stdout_samples[0], "stdout matched_candidates.samples[0]")
     first_sample_matches = ensure_json_object(first_sample["matches"], "stdout sample matches")
 
+    assert ensure_json_object(stdout_payload["summary"], "stdout summary")["report_detail_mode"] == "sampled"
+    assert ensure_json_object(output_payload["summary"], "output summary")["report_detail_mode"] == "full"
     assert stdout_matches["count"] == 25
     assert len(stdout_samples) == 20
     assert stdout_matches["omitted_count"] == 5

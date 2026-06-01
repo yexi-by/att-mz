@@ -58,7 +58,7 @@
 .\att-mz.exe scan-placeholder-candidates --game <游戏标题> --input <工作区>/placeholder-rules.json
 ```
 
-6. 审查 `summary.uncovered_count` 和候选详情；确实需要保护的协议片段必须修规则后重新 validate 和 scan，确认无需写规则的误报或特殊候选可以在导入时确认风险。
+6. 审查 `summary.uncovered_count` 和候选详情；如果报告是 `summary.report_detail_mode=sampled`，只把 `samples` 当样本，完整候选必须看 `--output` 写出的 full 报告。确实需要保护的协议片段必须修规则后重新 validate 和 scan，确认无需写规则的误报或特殊候选可以在导入时确认风险。
 7. 覆盖风险已处理或已确认后运行：
 
 ```powershell
@@ -67,7 +67,7 @@
 
 空规则必须加 `--confirm-empty` 才能导入；即使当前仍有未覆盖候选，也允许在主代理审查后保存“已审查但不写规则”的确认状态。非空规则导入后如果仍有未覆盖候选，导入报告会返回 warning 并保存“剩余风险已确认”的状态。扫描命中不等于规则一定正确，禁止为了消除计数而编造会吞文本或误保护的规则。
 
-确认风险后的未覆盖候选仍会在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中作为 warning 可见，但不会阻止正文翻译或写进游戏文件。确认风险不是允许翻坏协议片段；如果模型或人工译文删除、改写未覆盖疑似控制符，保存前校验、质量检查或写文件前检查必须报 error。
+确认风险后的未覆盖候选仍会在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中作为 warning 可见，但不会阻止正文翻译或写进游戏文件。旧版前 100 个候选样本 hash 只由工具自动兼容并提示 `*_legacy_hash` warning；重新导入规则后会写入完整候选 hash。确认风险不是允许翻坏协议片段；如果模型或人工译文删除、改写未覆盖疑似控制符，保存前校验、质量检查或写文件前检查必须报 error。
 
 ## 字符级保留
 

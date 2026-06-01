@@ -32,6 +32,10 @@
 
 `prepare-agent-workspace` 会优先把 CLI 已保存到当前游戏状态里的字段译名表、正文术语表、MV 虚拟名字框规则、插件规则、事件指令规则、Note 标签规则、非标准 data 规则、普通占位符规则和结构化占位符规则回填到工作区。插件源码规则和非标准 data 规则只在高风险或支线已启动时回填。
 
+## 报告明细模式
+
+工作区校验和候选扫描报告会用 `summary.report_detail_mode` 标记明细模式。`full` 表示候选数组是完整 `{count, items}`；`sampled` 表示 stdout 只保留 `{count, samples, omitted_count}`。外部 Agent 可以用 `sampled` 快速判断风险，但不能用样本计算确认范围、删除候选或补规则；需要审查全部候选时必须读取 `--output <完整报告>` 写出的 full 明细。
+
 ## 规则文件结构
 
 ### MV 虚拟名字框规则

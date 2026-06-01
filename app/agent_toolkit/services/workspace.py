@@ -12,7 +12,6 @@ from .common import (
     Path,
     QualityProgressCallbacks,
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
-    TargetGameSession,
     TERMINOLOGY_SUBTASK_GROUPS,
     TerminologyExtraction,
     TerminologyGlossary,
@@ -22,8 +21,6 @@ from .common import (
     TextRules,
     TranslationData,
     _agent_workflow_manifest,
-    _build_placeholder_coverage_report_with_context,
-    _build_structured_placeholder_coverage_report_with_context,
     _build_custom_placeholder_rule_draft,
     _collect_terminology_duplicate_translation_samples,
     _collect_plugin_json_string_leaf_candidate_details,
@@ -60,6 +57,7 @@ from .common import (
     issue,
     json,
     load_custom_placeholder_rules_text,
+    load_structured_placeholder_rules_text,
     load_setting,
     load_terminology_glossary,
     load_terminology_registry,
@@ -78,36 +76,19 @@ from app.nonstandard_data import (
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
 )
+from app.application.flow_gate import (
+    build_normal_placeholder_coverage_result,
+    build_structured_placeholder_coverage_result,
+)
 from app.plugin_source_text import (
     PluginSourceScan,
     build_plugin_source_scan,
     collect_plugin_source_review_coverage,
     plugin_source_rule_records_to_import_json,
 )
-from app.rule_review import (
-    EVENT_COMMAND_TEXT_RULE_DOMAIN,
-    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-    NOTE_TAG_TEXT_RULE_DOMAIN,
-    PLACEHOLDER_RULE_DOMAIN,
-    PLUGIN_TEXT_RULE_DOMAIN,
-    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
-    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    RuleReviewDomain,
-    mv_virtual_namebox_rule_scope_hash,
-    plugin_rule_scope_hash,
-    plugin_source_rule_scope_hash,
-)
-from app.application.flow_gate import (
-    event_command_rule_scope_hash_for_setting,
-    event_command_rule_scope_hash_for_command_codes,
-    normal_placeholder_scope_hash,
-    note_tag_rule_scope_hash_for_text_rules,
-    structured_placeholder_scope_hash,
-)
 from app.rmmz.mv_namebox import (
     MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
     MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME,
-    mv_virtual_namebox_candidate_details,
     mv_virtual_namebox_candidates_payload,
     mv_virtual_namebox_rule_records_to_import_json,
 )
@@ -518,7 +499,7 @@ class WorkspaceAgentMixin:
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
-        event_command_codes, event_command_codes_issue = await _read_workspace_event_command_codes(workspace)
+        _event_command_codes, event_command_codes_issue = await _read_workspace_event_command_codes(workspace)
         if event_command_codes_issue is not None:
             errors.append(event_command_codes_issue)
         advance_progress(1)
@@ -568,40 +549,13 @@ class WorkspaceAgentMixin:
                 nonstandard_data_scan = None
                 nonstandard_data_scan_error = error
             advance_progress(1)
-            set_status("读取已保存译文和空规则复核状态")
+            set_status("读取已保存译文和支线状态")
             stored_plugin_source_rules = await session.read_plugin_source_text_rules()
             plugin_source_started = bool(stored_plugin_source_rules)
             stored_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
             nonstandard_data_started = bool(stored_nonstandard_data_rules)
             translated_paths = await session.read_translation_location_paths()
-            empty_rule_issues = await _read_empty_rule_review_issues(
-                session=session,
-                game_data=game_data,
-                event_command_scope_hash=(
-                    event_command_rule_scope_hash_for_setting(
-                        game_data=game_data,
-                        setting=setting,
-                    )
-                    if event_command_codes is None
-                    else event_command_rule_scope_hash_for_command_codes(
-                        game_data=game_data,
-                        command_codes=event_command_codes,
-                    )
-                ),
-                note_tag_scope_hash=note_tag_rule_scope_hash_for_text_rules(
-                    game_data=game_data,
-                    text_rules=text_rules,
-                ),
-                plugin_source_scope_hash=plugin_source_rule_scope_hash(game_data),
-                placeholder_scope_hash=normal_placeholder_scope_hash(
-                    translation_data_map=translation_data_map,
-                    text_rules=text_rules,
-                ),
-                structured_placeholder_scope_hash_value=structured_placeholder_scope_hash(
-                    translation_data_map=translation_data_map,
-                    structured_rules=text_rules.structured_placeholder_rules,
-                ),
-            )
+            empty_rule_issues = _workspace_empty_rule_warnings(game_data=game_data)
             advance_progress(1)
         set_status("校验术语文件")
         if field_terms_path.exists():
@@ -833,21 +787,31 @@ class WorkspaceAgentMixin:
                 if placeholder_empty_issue is not None:
                     warnings.append(placeholder_empty_issue)
             try:
-                placeholder_coverage_report = _build_workspace_placeholder_coverage_report(
-                    rules_text=placeholder_rules_text,
-                    setting_text_rules=setting.text_rules,
-                    structured_rules=text_rules.structured_placeholder_rules,
-                    translation_data_map=translation_data_map,
+                workspace_custom_rules = load_custom_placeholder_rules_text(placeholder_rules_text)
+                workspace_text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=workspace_custom_rules,
+                    structured_placeholder_rules=text_rules.structured_placeholder_rules,
                 )
-                errors.extend(placeholder_coverage_report.errors)
-                warnings.extend(placeholder_coverage_report.warnings)
+                placeholder_coverage = build_normal_placeholder_coverage_result(
+                    translation_data_map=translation_data_map,
+                    text_rules=workspace_text_rules,
+                    rule_count=len(workspace_custom_rules),
+                )
+                if placeholder_coverage.uncovered_count:
+                    warnings.append(
+                        issue(
+                            "placeholder_uncovered",
+                            f"发现 {placeholder_coverage.uncovered_count} 个未覆盖的疑似自定义控制符",
+                        )
+                    )
                 details["placeholder_coverage"] = {
-                    "summary": placeholder_coverage_report.summary,
-                    "details": placeholder_coverage_report.details,
+                    "summary": {
+                        **placeholder_coverage.summary(detail_mode="full"),
+                        "custom_rule_count": len(workspace_custom_rules),
+                    },
+                    "details": placeholder_coverage.full_details(),
                 }
-                uncovered_value = placeholder_coverage_report.summary.get("uncovered_count")
-                if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
-                    errors.append(issue("placeholder_coverage_invalid", "占位符候选扫描缺少有效的 uncovered_count"))
             except Exception as error:
                 errors.append(
                     issue(
@@ -881,20 +845,26 @@ class WorkspaceAgentMixin:
                 if structured_placeholder_empty_issue is not None:
                     warnings.append(structured_placeholder_empty_issue)
             try:
-                structured_placeholder_coverage_report = _build_workspace_structured_placeholder_coverage_report(
-                    game_title=game_title,
-                    rules_text=structured_placeholder_rules_text,
+                workspace_structured_rules = load_structured_placeholder_rules_text(structured_placeholder_rules_text)
+                structured_placeholder_coverage = build_structured_placeholder_coverage_result(
                     translation_data_map=translation_data_map,
+                    structured_rules=workspace_structured_rules,
+                    rule_count=len(workspace_structured_rules),
                 )
-                errors.extend(structured_placeholder_coverage_report.errors)
-                warnings.extend(structured_placeholder_coverage_report.warnings)
+                if structured_placeholder_coverage.uncovered_count:
+                    warnings.append(
+                        issue(
+                            "structured_placeholder_uncovered",
+                            f"发现 {structured_placeholder_coverage.uncovered_count} 个未被结构化规则覆盖的协议外壳候选",
+                        )
+                    )
                 details["structured_placeholder_coverage"] = {
-                    "summary": structured_placeholder_coverage_report.summary,
-                    "details": structured_placeholder_coverage_report.details,
+                    "summary": {
+                        "game": game_title,
+                        **structured_placeholder_coverage.summary(detail_mode="full"),
+                    },
+                    "details": structured_placeholder_coverage.full_details(),
                 }
-                uncovered_value = structured_placeholder_coverage_report.summary.get("uncovered_count")
-                if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
-                    errors.append(issue("structured_placeholder_coverage_invalid", "结构化占位符候选扫描缺少有效的 uncovered_count"))
             except Exception as error:
                 errors.append(
                     issue(
@@ -1036,23 +1006,6 @@ def _validate_workspace_event_command_rules(
     )
 
 
-def _build_workspace_placeholder_coverage_report(
-    *,
-    rules_text: str,
-    setting_text_rules: TextRulesSetting,
-    structured_rules: tuple[StructuredPlaceholderRule, ...],
-    translation_data_map: dict[str, TranslationData],
-) -> AgentReport:
-    """复用已抽取文本扫描普通占位符覆盖情况。"""
-    custom_rules = load_custom_placeholder_rules_text(rules_text)
-    return _build_placeholder_coverage_report_with_context(
-        setting_text_rules=setting_text_rules,
-        custom_rules=custom_rules,
-        structured_rules=structured_rules,
-        translation_data_map=translation_data_map,
-    )
-
-
 def _validate_workspace_placeholder_rules(
     *,
     rules_text: str,
@@ -1108,20 +1061,6 @@ def _validate_workspace_structured_placeholder_rules(
     )
 
 
-def _build_workspace_structured_placeholder_coverage_report(
-    *,
-    game_title: str,
-    rules_text: str,
-    translation_data_map: dict[str, TranslationData],
-) -> AgentReport:
-    """复用已抽取正文扫描结构化占位符覆盖情况。"""
-    return _build_structured_placeholder_coverage_report_with_context(
-        game_title=game_title,
-        rules_text=rules_text,
-        translation_data_map=translation_data_map,
-    )
-
-
 def _summary_int(summary: JsonObject, key: str) -> int:
     """从 Agent 报告摘要中读取整数计数字段。"""
     raw_value = summary.get(key)
@@ -1130,99 +1069,22 @@ def _summary_int(summary: JsonObject, key: str) -> int:
     return raw_value
 
 
-async def _read_empty_rule_review_issues(
-    *,
-    session: TargetGameSession,
-    game_data: GameData,
-    event_command_scope_hash: str,
-    note_tag_scope_hash: str,
-    plugin_source_scope_hash: str,
-    placeholder_scope_hash: str,
-    structured_placeholder_scope_hash_value: str,
-) -> dict[str, AgentIssue | None]:
-    """读取工作区空规则文件对应的显式确认状态。"""
-    return {
-        "plugin_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            current_scope_hash=plugin_rule_scope_hash(game_data),
-            unconfirmed_code="plugin_rules_empty_unconfirmed",
-            stale_code="plugin_rules_empty_confirmation_stale",
-            label="插件规则",
-        ),
-        "plugin_source_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
-            current_scope_hash=plugin_source_scope_hash,
-            unconfirmed_code="plugin_source_rules_empty_unconfirmed",
-            stale_code="plugin_source_rules_empty_confirmation_stale",
-            label="插件源码规则",
-        ),
-        "event_command_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-            current_scope_hash=event_command_scope_hash,
-            unconfirmed_code="event_command_rules_empty_unconfirmed",
-            stale_code="event_command_rules_empty_confirmation_stale",
-            label="事件指令规则",
-        ),
-        "mv_virtual_namebox_rules": (
-            await _empty_rule_review_issue(
-                session=session,
-                rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-                current_scope_hash=mv_virtual_namebox_rule_scope_hash(
-                    mv_virtual_namebox_candidate_details(game_data)
-                ),
-                unconfirmed_code="mv_virtual_namebox_rules_empty_unconfirmed",
-                stale_code="mv_virtual_namebox_rules_empty_confirmation_stale",
-                label="MV 虚拟名字框规则",
-            )
-            if game_data.layout.engine_kind == "mv"
-            else None
-        ),
-        "note_tag_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-            current_scope_hash=note_tag_scope_hash,
-            unconfirmed_code="note_tag_rules_empty_unconfirmed",
-            stale_code="note_tag_rules_empty_confirmation_stale",
-            label="Note 标签规则",
-        ),
-        "placeholder_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=placeholder_scope_hash,
-            unconfirmed_code="placeholder_rules_empty_unconfirmed",
-            stale_code="placeholder_rules_empty_confirmation_stale",
-            label="普通占位符规则",
-        ),
-        "structured_placeholder_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=structured_placeholder_scope_hash_value,
-            unconfirmed_code="structured_placeholder_rules_empty_unconfirmed",
-            stale_code="structured_placeholder_rules_empty_confirmation_stale",
-            label="结构化占位符规则",
-        ),
+def _workspace_empty_rule_warnings(*, game_data: GameData) -> dict[str, AgentIssue | None]:
+    """工作区空规则文件只提示导入阶段需要确认，不读取数据库确认状态。"""
+    warnings_by_file: dict[str, AgentIssue | None] = {
+        "plugin_rules": issue("plugin_rules_empty_needs_import_confirmation", "插件规则为空；导入时需要传 --confirm-empty 确认当前范围无需插件规则"),
+        "plugin_source_rules": issue("plugin_source_rules_empty_needs_import_confirmation", "插件源码规则为空；导入时需要传 --confirm-empty 或完成插件源码翻译/排除审查"),
+        "event_command_rules": issue("event_command_rules_empty_needs_import_confirmation", "事件指令规则为空；导入时需要传 --confirm-empty 确认当前事件指令范围无需规则"),
+        "note_tag_rules": issue("note_tag_rules_empty_needs_import_confirmation", "Note 标签规则为空；导入时需要传 --confirm-empty 确认当前 Note 候选无需规则"),
+        "placeholder_rules": issue("placeholder_rules_empty_needs_import_confirmation", "普通占位符规则为空；导入时需要传 --confirm-empty 确认当前候选风险"),
+        "structured_placeholder_rules": issue("structured_placeholder_rules_empty_needs_import_confirmation", "结构化占位符规则为空；导入时需要传 --confirm-empty 确认当前候选风险"),
     }
-
-
-async def _empty_rule_review_issue(
-    *,
-    session: TargetGameSession,
-    rule_domain: RuleReviewDomain,
-    current_scope_hash: str,
-    unconfirmed_code: str,
-    stale_code: str,
-    label: str,
-) -> AgentIssue | None:
-    """判断空规则文件是否有仍然有效的显式确认。"""
-    state = await session.read_rule_review_state(rule_domain=rule_domain)
-    if state is None or not state.reviewed_empty:
-        return issue(unconfirmed_code, f"{label}为空，必须先用对应导入命令传 --confirm-empty 保存当前范围的空结果确认")
-    if state.scope_hash != current_scope_hash:
-        return issue(stale_code, f"{label}曾确认为空，但当前游戏内容已经变化，请重新导出并检查规则")
-    return None
+    warnings_by_file["mv_virtual_namebox_rules"] = (
+        issue("mv_virtual_namebox_rules_empty_needs_import_confirmation", "MV 虚拟名字框规则为空；导入时需要传 --confirm-empty 确认当前候选无需规则")
+        if game_data.layout.engine_kind == "mv"
+        else None
+    )
+    return warnings_by_file
 
 
 async def _read_workspace_event_command_codes(workspace: Path) -> tuple[frozenset[int] | None, AgentIssue | None]:

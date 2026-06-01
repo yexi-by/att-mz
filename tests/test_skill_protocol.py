@@ -270,10 +270,15 @@ def test_cli_command_contract_defines_candidate_gate_stage_codes() -> None:
     for references in (DEV_REFERENCES, RELEASE_REFERENCES):
         text = read(references / "cli-command-contract.md")
         for phrase in [
+            "`summary.report_detail_mode`",
+            "`sampled` 表示 stdout 只含 `{count, samples, omitted_count}` 样本",
+            "`full` 表示报告含完整 `{count, items}`",
             "`placeholder_uncovered` error",
             "`placeholder_uncovered_reviewed` warning",
             "`structured_placeholder_uncovered` error",
             "`structured_placeholder_uncovered_reviewed` warning",
+            "`*_legacy_hash` warning",
+            "重新导入对应规则后会升级为完整候选 hash",
             "warning 只表示流程可继续",
             "坏控制符仍会在保存或写文件前成为质量 error",
         ]:
@@ -342,6 +347,10 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
         "quality-fix-template.json",
         "reset-translations.json",
         "source-residual-rules.json",
+        "## 报告明细模式",
+        "`summary.report_detail_mode`",
+        "`sampled` 快速判断风险",
+        "不能用样本计算确认范围",
         "MV 的 `speaker_names` 是虚拟名字框说话人术语",
         "allowed_terms",
         "check_group",
@@ -513,8 +522,11 @@ def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> No
         "不要因为它混有协议语法就一概排除",
         "去掉 `[CUSTOM_...]` 后仍应保留需要翻译的玩家可见文本",
         "确认无需写规则的误报或特殊候选可以在导入时确认风险",
+        "`summary.report_detail_mode=sampled`",
+        "完整候选必须看 `--output` 写出的 full 报告",
         "已审查但不写规则",
         "剩余风险已确认",
+        "旧版前 100 个候选样本 hash",
         "禁止为了消除计数而编造会吞文本或误保护的规则",
         "确认风险不是允许翻坏协议片段",
         "质量检查或写文件前检查必须报 error",
@@ -539,8 +551,12 @@ def test_structured_placeholder_reference_defines_contract() -> None:
         "validate-structured-placeholder-rules",
         "scan-structured-placeholder-candidates",
         "import-structured-placeholder-rules",
+        "`summary.report_detail_mode=sampled`",
+        "完整候选必须看 `--output` 写出的 full 报告",
         "覆盖风险已处理或已确认",
         "已审查但不写结构化规则",
+        "旧版前 100 个候选样本 hash",
+        "structured_placeholder_uncovered_reviewed_legacy_hash",
         "不要为了通过扫描而编造结构化规则",
         "确认结构化候选风险只允许流程继续",
         "不允许译文改坏协议外壳",
@@ -562,9 +578,39 @@ def test_agent_rules_forbid_unconditional_candidate_hard_blocks() -> None:
         "任何前置放行都必须覆盖后置成功路径",
         "禁止只让 validate/import 通过而 translate/write-back 无路可走",
         "协议片段被翻坏时在保存或写回前被拦截",
+        "`AgentReport` 只属于渲染层和外部 JSON 契约",
+        "候选事实、覆盖统计、确认状态和阶段决策必须有单一事实来源",
+        "`summary.report_detail_mode` 为 `full` 或 `sampled`",
+        "`sampled` 只能用于展示样本",
         "不表示允许模型或人工译文改坏协议片段",
     ]:
         assert phrase in text
+
+
+def test_rule_review_source_contract_forbids_report_driven_state() -> None:
+    """候选审查源码不得从渲染报告反推业务状态。"""
+    critical_sources = [
+        ROOT / "app" / "agent_toolkit" / "services" / "placeholder_rules.py",
+        ROOT / "app" / "application" / "flow_gate.py",
+        ROOT / "app" / "rule_review_decision.py",
+    ]
+    forbidden_phrases = [
+        "coverage_report.summary",
+        "coverage_report.details",
+        "_json_array_detail",
+        "candidate_details[:100]",
+    ]
+    for source_path in critical_sources:
+        text = read(source_path)
+        for phrase in forbidden_phrases:
+            assert phrase not in text
+
+    common_text = read(ROOT / "app" / "agent_toolkit" / "services" / "common.py")
+    assert "candidate_details[:100]" not in common_text
+    decision_text = read(ROOT / "app" / "rule_review_decision.py")
+    assert "RuleCoverageResult" in decision_text
+    assert "full_details" in decision_text
+    assert "sampled_details" in decision_text
 
 
 def test_failure_and_feedback_references_define_recovery_loops() -> None:

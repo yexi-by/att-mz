@@ -100,6 +100,13 @@ from app.rmmz.text_layout import (
     normalize_translated_wrapping_punctuation,
     split_overwide_lines,
 )
+from app.rule_review import (
+    PLACEHOLDER_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    placeholder_rule_scope_hash,
+    structured_placeholder_rule_scope_hash,
+)
+from app.rule_review_decision import RuleCoverageResult
 from app.translation.text_structure import (
     count_literal_line_breaks,
     count_real_line_breaks,
@@ -2318,19 +2325,23 @@ def _build_structured_placeholder_coverage_report_with_context(
     warnings: list[AgentIssue] = []
     if uncovered_count:
         warnings.append(issue("structured_placeholder_uncovered", f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选"))
+    coverage = RuleCoverageResult(
+        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=structured_placeholder_rule_scope_hash(candidate_details),
+        rule_count=len(active_structured_rules),
+        candidate_count=len(candidate_details),
+        covered_count=covered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
     return AgentReport.from_parts(
         errors=[],
         warnings=warnings,
         summary={
             "game": game_title,
-            "rule_count": len(active_structured_rules),
-            "candidate_count": len(candidate_details),
-            "covered_count": covered_count,
-            "uncovered_count": uncovered_count,
+            **coverage.summary(detail_mode="full"),
         },
-        details={
-            "candidates": candidate_details[:100],
-        },
+        details=coverage.full_details(),
     )
 
 
@@ -2446,21 +2457,28 @@ def _build_placeholder_coverage_report_with_context(
         structured_placeholder_rules=structured_rules,
     )
     candidates = scan_placeholder_candidates(translation_data_map, text_rules)
+    candidate_details = placeholder_candidates_to_details(candidates)
     uncovered_count = count_uncovered_candidates(candidates)
     warnings: list[AgentIssue] = []
     if uncovered_count:
         warnings.append(issue("placeholder_uncovered", f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符"))
+    coverage = RuleCoverageResult(
+        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        rule_count=len(custom_rules),
+        candidate_count=len(candidate_details),
+        covered_count=len(candidate_details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
     return AgentReport.from_parts(
         errors=[],
         warnings=warnings,
         summary={
-            "candidate_count": len(candidates),
-            "uncovered_count": uncovered_count,
+            **coverage.summary(detail_mode="full"),
             "custom_rule_count": len(custom_rules),
         },
-        details={
-            "candidates": placeholder_candidates_to_details(candidates),
-        },
+        details=coverage.full_details(),
     )
 
 

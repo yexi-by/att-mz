@@ -5,8 +5,6 @@
 from .common import (
     AgentReport,
     AgentServiceContext,
-    JsonArray,
-    JsonObject,
     Path,
     PlaceholderRuleRecord,
     Sequence,
@@ -31,12 +29,15 @@ from .common import (
     load_setting,
     scan_placeholder_candidates,
 )
-from app.application.flow_gate import collect_external_text_rule_gate_errors, ensure_empty_rule_import_allowed
+from app.application.flow_gate import (
+    build_normal_placeholder_coverage_result,
+    build_structured_placeholder_coverage_result,
+    collect_external_text_rule_gate_errors,
+    ensure_empty_rule_import_allowed,
+)
 from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    placeholder_rule_scope_hash,
-    structured_placeholder_rule_scope_hash,
 )
 
 
@@ -187,11 +188,26 @@ class PlaceholderRuleAgentMixin:
             )
             for rule in custom_rules
         ]
-        coverage_report = await self.scan_placeholder_candidates(
-            game_title=game_title,
-            custom_placeholder_rules_text=rules_text,
-        )
-        uncovered_count = _summary_int(coverage_report.summary, "uncovered_count")
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            structured_rules = await self._resolve_structured_rules(session=session)
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
+            game_data = await self._load_translation_source_game_data(session)
+            translation_data_map = await self._extract_active_translation_data_map(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+            coverage = build_normal_placeholder_coverage_result(
+                translation_data_map=translation_data_map,
+                text_rules=text_rules,
+                rule_count=len(rule_records),
+            )
+        uncovered_count = coverage.uncovered_count
         if not rule_records:
             try:
                 ensure_empty_rule_import_allowed(
@@ -215,19 +231,17 @@ class PlaceholderRuleAgentMixin:
                             "details": validation_report.details,
                         },
                         "coverage": {
-                            "summary": coverage_report.summary,
-                            "details": coverage_report.details,
+                            "summary": coverage.summary(detail_mode="full"),
+                            "details": coverage.full_details(),
                         },
                     },
                 )
-        candidate_details = _json_array_detail(coverage_report.details, "candidates")
-        scope_hash = placeholder_rule_scope_hash(candidate_details)
         async with await self.game_registry.open_game(game_title) as session:
             await session.replace_placeholder_rules(rule_records)
             if uncovered_count:
                 await session.replace_rule_review_state(
                     rule_domain=PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=scope_hash,
+                    scope_hash=coverage.scope_hash,
                     reviewed_empty=not rule_records,
                 )
             elif rule_records:
@@ -235,7 +249,7 @@ class PlaceholderRuleAgentMixin:
             else:
                 await session.replace_rule_review_state(
                     rule_domain=PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=scope_hash,
+                    scope_hash=coverage.scope_hash,
                     reviewed_empty=True,
                 )
         warnings = [*validation_report.warnings]
@@ -253,6 +267,7 @@ class PlaceholderRuleAgentMixin:
             warnings=warnings,
             summary={
                 "game": game_title,
+                "report_detail_mode": "full",
                 "imported_rule_count": len(rule_records),
                 "validated_rule_count": validation_report.summary.get("rule_count", len(rule_records)),
                 "sample_count": validation_report.summary.get("sample_count", 0),
@@ -264,8 +279,8 @@ class PlaceholderRuleAgentMixin:
                     "details": validation_report.details,
                 },
                 "coverage": {
-                    "summary": coverage_report.summary,
-                    "details": coverage_report.details,
+                    "summary": coverage.summary(detail_mode="full"),
+                    "details": coverage.full_details(),
                 }
             },
         )
@@ -410,11 +425,29 @@ class PlaceholderRuleAgentMixin:
 
         structured_rules = load_structured_placeholder_rules_text(rules_text)
         rule_records = _structured_placeholder_rule_records_from_runtime(structured_rules)
-        coverage_report = await self.scan_structured_placeholder_candidates(
-            game_title=game_title,
-            rules_text=rules_text,
-        )
-        uncovered_count = _summary_int(coverage_report.summary, "uncovered_count")
+        async with await self.game_registry.open_game(game_title) as session:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            custom_rules = await self._resolve_custom_rules(
+                session=session,
+                custom_placeholder_rules_text=None,
+            )
+            text_rules = TextRules.from_setting(
+                setting.text_rules,
+                custom_placeholder_rules=custom_rules,
+                structured_placeholder_rules=structured_rules,
+            )
+            game_data = await self._load_translation_source_game_data(session)
+            translation_data_map = await self._extract_active_translation_data_map(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+            coverage = build_structured_placeholder_coverage_result(
+                translation_data_map=translation_data_map,
+                structured_rules=structured_rules,
+                rule_count=len(rule_records),
+            )
+        uncovered_count = coverage.uncovered_count
         if not rule_records:
             try:
                 ensure_empty_rule_import_allowed(
@@ -438,19 +471,17 @@ class PlaceholderRuleAgentMixin:
                             "details": validation_report.details,
                         },
                         "coverage": {
-                            "summary": coverage_report.summary,
-                            "details": coverage_report.details,
+                            "summary": coverage.summary(detail_mode="full"),
+                            "details": coverage.full_details(),
                         },
                     },
                 )
-        candidate_details = _json_array_detail(coverage_report.details, "candidates")
-        scope_hash = structured_placeholder_rule_scope_hash(candidate_details)
         async with await self.game_registry.open_game(game_title) as session:
             await session.replace_structured_placeholder_rules(rule_records)
             if uncovered_count:
                 await session.replace_rule_review_state(
                     rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=scope_hash,
+                    scope_hash=coverage.scope_hash,
                     reviewed_empty=not rule_records,
                 )
             elif rule_records:
@@ -458,7 +489,7 @@ class PlaceholderRuleAgentMixin:
             else:
                 await session.replace_rule_review_state(
                     rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=scope_hash,
+                    scope_hash=coverage.scope_hash,
                     reviewed_empty=True,
                 )
         warnings = [*validation_report.warnings]
@@ -476,6 +507,7 @@ class PlaceholderRuleAgentMixin:
             warnings=warnings,
             summary={
                 "game": game_title,
+                "report_detail_mode": "full",
                 "imported_rule_count": len(rule_records),
                 "validated_rule_count": validation_report.summary.get("rule_count", len(rule_records)),
                 "sample_count": validation_report.summary.get("sample_count", 0),
@@ -487,8 +519,8 @@ class PlaceholderRuleAgentMixin:
                     "details": validation_report.details,
                 },
                 "coverage": {
-                    "summary": coverage_report.summary,
-                    "details": coverage_report.details,
+                    "summary": coverage.summary(detail_mode="full"),
+                    "details": coverage.full_details(),
                 }
             },
         )
@@ -589,19 +621,3 @@ def _structured_placeholder_rule_records_from_runtime(
         )
         for rule in rules
     ]
-
-
-def _summary_int(summary: JsonObject, key: str) -> int:
-    """从报告 summary 中读取整数计数字段。"""
-    raw_value = summary.get(key)
-    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
-        raise RuntimeError(f"报告缺少有效计数字段: {key}")
-    return raw_value
-
-
-def _json_array_detail(details: JsonObject, key: str) -> JsonArray:
-    """从报告 details 中读取 JSON 数组字段。"""
-    raw_value = details.get(key)
-    if not isinstance(raw_value, list):
-        raise RuntimeError(f"报告缺少有效数组字段: {key}")
-    return [item for item in raw_value]

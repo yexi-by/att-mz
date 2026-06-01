@@ -33,7 +33,7 @@
 | `placeholder_rules` | 保存当前游戏专用的自定义控制符保护规则 | `import-placeholder-rules` |
 | `structured_placeholder_rules` | 保存当前游戏专用结构化占位符规则主体 | `import-structured-placeholder-rules` |
 | `structured_placeholder_rule_groups` | 保存结构化占位符规则中的保护分组模板 | `import-structured-placeholder-rules` |
-| `rule_review_states` | 保存空插件规则、空插件源码规则、空事件指令规则、空 Note 规则、空 MV 虚拟名字框规则和空占位符规则的显式确认状态 | `import-* --confirm-empty` |
+| `rule_review_states` | 保存空规则确认状态，以及普通/结构化占位符“已审查但不写规则或仍有未覆盖候选”的完整候选范围确认状态 | `import-* --confirm-empty` 和占位符规则导入 |
 | `source_residual_rules` | 保存允许保留源语言片段的例外规则 | `import-source-residual-rules` |
 | `font_replacement_records` | 保存最近一次字体覆盖产生的可还原字体引用记录 | `write-back --confirm-font-overwrite`、`write-terminology --confirm-font-overwrite` |
 | `translation_runs` | 保存正文翻译运行状态和统计快照 | `translate` |
@@ -333,6 +333,17 @@
 
 - `import-placeholder-rules` 会整体替换此表内容。
 - 自定义规则必须先通过 `validate-placeholder-rules` 和覆盖扫描，避免把普通换行、正文或其他合法内容误判为游戏控制符。
+- 空规则或非空规则仍有未覆盖候选时，导入命令会把完整候选集合 hash 写入 `rule_review_states`，表示当前风险已审查；stdout 采样明细不得作为该 hash 的计算来源。
+
+### `structured_placeholder_rules` 与 `structured_placeholder_rule_groups`
+
+保存当前游戏专用的结构化占位符规则。规则主体记录完整正则、可翻译分组和规则名；保护分组表记录每个命名分组对应的自定义占位符模板。
+
+维护规则：
+
+- `import-structured-placeholder-rules` 会整体替换这两张表内容。
+- 结构化规则必须先通过 `validate-structured-placeholder-rules` 和覆盖扫描，确认固定协议外壳、可翻译分组和保护分组边界正确。
+- 空规则或非空规则仍有未覆盖候选时，导入命令会把完整结构化候选集合 hash 写入 `rule_review_states`，表示当前风险已审查；stdout 采样明细不得作为该 hash 的计算来源。
 
 ### `source_residual_rules`
 

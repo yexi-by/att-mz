@@ -45,7 +45,7 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 1. 确认目标文本已经进入正文翻译集合。结构化规则不会让未被提取的插件参数、事件指令参数或 Note 标签值自动进入翻译。
 2. 编写或修改 `<工作区>/structured-placeholder-rules.json`。
 3. 运行 `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
-4. 运行 `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>`，检查候选覆盖和未覆盖风险。
+4. 运行 `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>`，检查候选覆盖和未覆盖风险；如果报告是 `summary.report_detail_mode=sampled`，只把样本当提示，完整候选必须看 `--output` 写出的 full 报告。
 5. 校验通过且覆盖风险已处理或已确认后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
 6. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`，确保工作区整体可继续。
 
@@ -53,7 +53,7 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 
 覆盖扫描会主动寻找多类常见协议外壳候选，包括尖括号标签、带全角冒号的标签、含属性赋值的标签、`◆<...>ｔ` 这类触发前缀，以及 `【标签：文本】` 这类成对包裹格式。扫描命中不等于规则一定正确，只表示这段文本需要主代理人工判断是否应写结构化规则；扫描未命中也不能替代人工审查所有当前正文。
 
-空结构 `{ "paired_shell_rules": [] }` 必须加 `--confirm-empty` 才能导入；如果仍有未覆盖候选，导入会保存“已审查但不写结构化规则”的确认状态并返回 warning。非空规则导入后仍有未覆盖候选时，也会保存“剩余风险已确认”的状态并持续 warning。不要为了通过扫描而编造结构化规则；无法确认外壳和可翻译分组时，优先报告风险或补外部文本规则。
+空结构 `{ "paired_shell_rules": [] }` 必须加 `--confirm-empty` 才能导入；如果仍有未覆盖候选，导入会保存“已审查但不写结构化规则”的确认状态并返回 warning。非空规则导入后仍有未覆盖候选时，也会保存“剩余风险已确认”的状态并持续 warning。旧版前 100 个候选样本 hash 只由工具自动兼容并提示 `structured_placeholder_uncovered_reviewed_legacy_hash`，重新导入规则后会写入完整候选 hash。不要为了通过扫描而编造结构化规则；无法确认外壳和可翻译分组时，优先报告风险或补外部文本规则。
 
 确认结构化候选风险只允许流程继续，不允许译文改坏协议外壳；如果模型或人工译文删除、改写未覆盖结构化候选或已保护外壳，质量检查或写文件前检查必须报 error。
 

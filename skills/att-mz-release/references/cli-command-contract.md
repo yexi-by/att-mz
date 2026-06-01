@@ -10,6 +10,8 @@
 
 `validate-agent-workspace` 和 `validate-mv-virtual-namebox-rules` 的 stdout 是摘要报告；需要完整 `details` 明细时加 `--output <完整报告>`，stdout 仍只读摘要。
 
+规则候选、覆盖扫描和大数组报告会在 `summary.report_detail_mode` 标明明细模式：`sampled` 表示 stdout 只含 `{count, samples, omitted_count}` 样本，不能据此计算 hash、确认范围或补规则；`full` 表示报告含完整 `{count, items}` 或等价完整字段。需要审查全部候选、排查覆盖计数或派发外部 Agent 时，必须使用 `--output <完整报告>` 读取 full 明细。
+
 文件型规则一律用 `--input <文件>`，不要用 `--rules "$(cat ...)"`，不要把大 JSON 塞进命令行。
 
 ## 配置与参数选择
@@ -113,7 +115,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描结构化候选覆盖 | 规则命中可解释，覆盖风险已处理或已确认 | 未覆盖且无法确认时修规则，再 validate 和 scan |
 | `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存结构化规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
 
-普通占位符未确认风险时使用 `placeholder_uncovered` error，确认风险后在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中使用 `placeholder_uncovered_reviewed` warning。结构化占位符对应 `structured_placeholder_uncovered` error 和 `structured_placeholder_uncovered_reviewed` warning。warning 只表示流程可继续，不表示译文可以改坏协议片段；坏控制符仍会在保存或写文件前成为质量 error。
+普通占位符未确认风险时使用 `placeholder_uncovered` error，确认风险后在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中使用 `placeholder_uncovered_reviewed` warning。结构化占位符对应 `structured_placeholder_uncovered` error 和 `structured_placeholder_uncovered_reviewed` warning。旧版本若保存过前 100 个候选样本 hash，当前版本会以 `*_legacy_hash` warning 兼容放行；重新导入对应规则后会升级为完整候选 hash。warning 只表示流程可继续，不表示译文可以改坏协议片段；坏控制符仍会在保存或写文件前成为质量 error。
 
 ## 翻译、检查和手动修复
 
