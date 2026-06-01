@@ -47,6 +47,15 @@ def filter_fresh_plugin_source_text_rules(
     fresh_rules: list[PluginSourceTextRuleRecord] = []
     stale_rules: list[StalePluginSourceTextRule] = []
     for record in rule_records:
+        syntax_error = scan.syntax_errors.get(record.file_name)
+        if syntax_error is not None:
+            stale_rules.append(
+                StalePluginSourceTextRule(
+                    file_name=record.file_name,
+                    reason=f"插件源码无法通过 JS AST 解析: {syntax_error}",
+                )
+            )
+            continue
         file_scan = file_scans.get(record.file_name)
         if file_scan is None:
             stale_rules.append(

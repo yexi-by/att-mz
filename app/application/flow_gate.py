@@ -19,6 +19,12 @@ from app.application.errors import WorkflowGateError
 from app.config.schemas import Setting
 from app.event_command_text import resolve_event_command_codes
 from app.note_tag_text.exporter import collect_note_tag_candidates
+from app.nonstandard_data import (
+    build_nonstandard_data_file_hash,
+    build_nonstandard_data_scan,
+    nonstandard_data_rule_records_to_import_file,
+    validate_nonstandard_data_rules,
+)
 from app.persistence import TargetGameSession
 from app.plugin_text import collect_plugin_json_string_leaf_candidates, extract_plugin_name
 from app.plugin_source_text import (
@@ -29,6 +35,7 @@ from app.plugin_source_text import (
 )
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.control_codes import StructuredPlaceholderRule
+from app.rmmz.game_file_view import GameFileView
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 from app.rmmz.schema import GameData, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonValue, TextRules
@@ -85,6 +92,13 @@ async def collect_workflow_gate_errors(
             game_data=game_data,
             text_rules=text_rules,
             scan=plugin_source_scan,
+        )
+    )
+    errors.extend(
+        await _nonstandard_data_rule_gate_errors(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
         )
     )
     errors.extend(await _terminology_gate_errors(session))
@@ -162,12 +176,15 @@ def ensure_empty_rule_import_allowed(
     *,
     rule_label: str,
     confirm_empty: bool,
-    candidate_count: int,
+    candidate_count: int | None = None,
 ) -> None:
-    """校验空规则导入是否经过显式确认，且机器候选已经全部处理。"""
+    """校验空规则导入是否经过显式确认。
+
+    candidate_count 仅保留给旧调用点传入报告上下文；启发式候选可能需要人工确认风险，
+    不能再要求候选数量为 0 才允许保存空规则。
+    """
+    _ = candidate_count
     ensure_empty_rule_confirmed(rule_label=rule_label, confirm_empty=confirm_empty)
-    if candidate_count > 0:
-        raise RuntimeError(f"{rule_label}为空，但当前扫描仍有 {candidate_count} 个候选，不能保存为空规则")
 
 
 def ensure_empty_rule_confirmed(
@@ -464,6 +481,79 @@ async def _plugin_source_rule_gate_errors(
     ]
 
 
+async def _nonstandard_data_rule_gate_errors(
+    *,
+    session: TargetGameSession,
+    game_data: GameData,
+    text_rules: TextRules,
+) -> list[WorkflowGateIssue]:
+    """高风险非标准 data 文件文本必须先全量归类并导入规则。"""
+    records = await session.read_nonstandard_data_text_rules()
+    try:
+        scan = await build_nonstandard_data_scan(
+            layout=game_data.layout,
+            source_view=GameFileView.TRANSLATION_SOURCE,
+            text_rules=text_rules,
+        )
+    except Exception as error:
+        return [
+            WorkflowGateIssue(
+                code="nonstandard_data_scan_failed",
+                message=f"非标准 data 文件文本扫描失败，请先修复 data 文件后再继续: {type(error).__name__}: {error}",
+            )
+        ]
+
+    if not scan.high_risk and not records:
+        return []
+
+    current_hash_by_file = {
+        nonstandard_file.file_name: build_nonstandard_data_file_hash(nonstandard_file.raw_text)
+        for nonstandard_file in scan.files
+    }
+    stale_files = [
+        record.file_name
+        for record in records
+        if current_hash_by_file.get(record.file_name) != record.file_hash
+    ]
+    if stale_files:
+        return [
+            WorkflowGateIssue(
+                code="stale_nonstandard_data_rules",
+                message=f"存在 {len(stale_files)} 个过期非标准 data 文件文本规则，请重新导出并导入规则",
+            )
+        ]
+
+    if scan.high_risk and not records:
+        return [
+            WorkflowGateIssue(
+                code="nonstandard_data_high_risk",
+                message=(
+                    "发现非标准 data 文件里存在疑似源语言自然文本；"
+                    "正文翻译已暂停，请先导出候选并导入非标准 data 文件文本规则，或按文件确认跳过"
+                ),
+            )
+        ]
+
+    try:
+        import_file = nonstandard_data_rule_records_to_import_file(records)
+        validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+    except Exception as error:
+        return [
+            WorkflowGateIssue(
+                code="nonstandard_data_review_incomplete",
+                message=f"非标准 data 文件文本规则未覆盖当前候选，请重新导出并导入规则: {error}",
+            )
+        ]
+    if not validation.unreviewed_candidate_paths:
+        return []
+    return [
+        WorkflowGateIssue(
+            code="nonstandard_data_review_incomplete",
+            message=f"非标准 data 文件文本支线还有 {len(validation.unreviewed_candidate_paths)} 个候选未归类，请补全规则后再继续",
+        )
+    ]
+
+
 async def _placeholder_gate_errors(
     *,
     session: TargetGameSession,
@@ -475,19 +565,24 @@ async def _placeholder_gate_errors(
     candidates = scan_placeholder_candidates(scope.translation_data_map, text_rules)
     uncovered_count = count_uncovered_candidates(candidates)
     errors: list[WorkflowGateIssue] = []
-    if uncovered_count:
+    current_scope_hash = placeholder_rule_scope_hash(placeholder_candidates_to_details(candidates))
+    review_state_matches = await _rule_review_state_matches(
+        session=session,
+        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        current_scope_hash=current_scope_hash,
+    )
+    if uncovered_count and not review_state_matches:
         errors.append(
             WorkflowGateIssue(
                 code="placeholder_uncovered",
-                message=f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符，请先导入普通占位符规则",
+                message=f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符，请先导入普通占位符规则或确认当前候选风险",
             )
         )
     if custom_placeholder_rules_supplied:
         return errors
     placeholder_records = await session.read_placeholder_rules()
-    if placeholder_records:
+    if uncovered_count == 0 or placeholder_records or review_state_matches:
         return errors
-    current_scope_hash = placeholder_rule_scope_hash(placeholder_candidates_to_details(candidates))
     errors.extend(
         await _empty_rule_review_errors(
             session=session,
@@ -516,17 +611,22 @@ async def _structured_placeholder_gate_errors(
         if isinstance(detail, dict) and detail.get("covered") is not True
     )
     errors: list[WorkflowGateIssue] = []
-    if uncovered_count:
+    current_scope_hash = structured_placeholder_rule_scope_hash(structured_details)
+    review_state_matches = await _rule_review_state_matches(
+        session=session,
+        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        current_scope_hash=current_scope_hash,
+    )
+    if uncovered_count and not review_state_matches:
         errors.append(
             WorkflowGateIssue(
                 code="structured_placeholder_uncovered",
-                message=f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选，请先导入结构化占位符规则",
+                message=f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选，请先导入结构化占位符规则或确认当前候选风险",
             )
         )
     structured_records = await session.read_structured_placeholder_rules()
-    if structured_records:
+    if uncovered_count == 0 or structured_records or review_state_matches:
         return errors
-    current_scope_hash = structured_placeholder_rule_scope_hash(structured_details)
     errors.extend(
         await _empty_rule_review_errors(
             session=session,
@@ -536,6 +636,55 @@ async def _structured_placeholder_gate_errors(
         )
     )
     return errors
+
+
+async def collect_placeholder_candidate_review_warnings(
+    *,
+    session: TargetGameSession,
+    scope: TextScopeResult,
+    text_rules: TextRules,
+    custom_placeholder_rules_supplied: bool,
+) -> list[WorkflowGateIssue]:
+    """收集已审查但仍有未覆盖占位符候选的提示。"""
+    warnings: list[WorkflowGateIssue] = []
+    candidates = scan_placeholder_candidates(scope.translation_data_map, text_rules)
+    uncovered_count = count_uncovered_candidates(candidates)
+    if uncovered_count and not custom_placeholder_rules_supplied:
+        current_scope_hash = placeholder_rule_scope_hash(placeholder_candidates_to_details(candidates))
+        if await _rule_review_state_matches(
+            session=session,
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            current_scope_hash=current_scope_hash,
+        ):
+            warnings.append(
+                WorkflowGateIssue(
+                    code="placeholder_uncovered_reviewed",
+                    message=f"仍有 {uncovered_count} 个未覆盖的疑似自定义控制符；当前候选已通过导入命令确认风险",
+                )
+            )
+    structured_details = collect_structured_placeholder_candidate_details(
+        translation_data_map=scope.translation_data_map,
+        structured_rules=text_rules.structured_placeholder_rules,
+    )
+    structured_uncovered_count = sum(
+        1
+        for detail in structured_details
+        if isinstance(detail, dict) and detail.get("covered") is not True
+    )
+    if structured_uncovered_count:
+        current_scope_hash = structured_placeholder_rule_scope_hash(structured_details)
+        if await _rule_review_state_matches(
+            session=session,
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            current_scope_hash=current_scope_hash,
+        ):
+            warnings.append(
+                WorkflowGateIssue(
+                    code="structured_placeholder_uncovered_reviewed",
+                    message=f"仍有 {structured_uncovered_count} 个未被结构化规则覆盖的协议外壳候选；当前候选已通过导入命令确认风险",
+                )
+            )
+    return warnings
 
 
 def _text_scope_gate_errors(*, scope: TextScopeResult, text_rules: TextRules) -> list[WorkflowGateIssue]:
@@ -600,6 +749,17 @@ async def _empty_rule_review_errors(
     return []
 
 
+async def _rule_review_state_matches(
+    *,
+    session: TargetGameSession,
+    rule_domain: RuleReviewDomain,
+    current_scope_hash: str,
+) -> bool:
+    """判断当前候选范围是否已有持久化审查确认。"""
+    state = await session.read_rule_review_state(rule_domain=rule_domain)
+    return state is not None and state.scope_hash == current_scope_hash
+
+
 def _candidate_int_sum(candidates: JsonArray, key: str) -> int:
     """统计候选对象中的整数计数字段。"""
     total = 0
@@ -662,6 +822,7 @@ def _structured_rule_covered_ranges(
 __all__: list[str] = [
     "WorkflowGateIssue",
     "collect_external_text_rule_gate_errors",
+    "collect_placeholder_candidate_review_warnings",
     "assert_workflow_gate_passed",
     "collect_structured_placeholder_candidate_details",
     "collect_workflow_gate_errors",

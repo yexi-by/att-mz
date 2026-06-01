@@ -54,6 +54,9 @@ def build_plugin_source_rule_records_from_import(
     records: list[PluginSourceTextRuleRecord] = []
     for entry in import_file.rules:
         file_name = _validate_plugin_source_file_name(entry.file)
+        syntax_error = scan.syntax_errors.get(file_name)
+        if syntax_error is not None:
+            raise ValueError(f"插件源码无法通过 JS AST 解析，不能导入规则: {file_name}: {syntax_error}")
         file_scan = file_scans.get(file_name)
         if file_scan is None:
             raise ValueError(f"插件源码文件不存在或不是 js/plugins 直接文件: {file_name}")

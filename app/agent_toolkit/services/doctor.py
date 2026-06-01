@@ -71,6 +71,7 @@ class DoctorAgentMixin:
             setting = load_setting(self.setting_path)
             _append_check(details, "setting", "ok")
             summary["llm_model"] = setting.llm.model
+            summary["llm_check_performed"] = check_llm
             environment_overrides = load_environment_overrides()
             enabled_names: list[JsonValue] = list(environment_overrides.enabled_names())
             details["environment_overrides"] = enabled_names
@@ -88,9 +89,12 @@ class DoctorAgentMixin:
                     )
                     await self.llm_check(self.llm_handler, setting.llm.model)
                     _append_check(details, "llm", "ok")
+                    summary["llm_connection_status"] = "ok"
                 except Exception as error:
+                    summary["llm_connection_status"] = "failed"
                     errors.append(issue("llm", f"模型连通性检查失败: {type(error).__name__}: {error}"))
             else:
+                summary["llm_connection_status"] = "skipped"
                 warnings.append(issue("llm_skipped", "已跳过模型连通性检查"))
         except Exception as error:
             errors.append(issue("setting", f"配置加载失败: {type(error).__name__}: {error}"))
@@ -194,6 +198,22 @@ class DoctorAgentMixin:
                     for detail in structured_candidate_details
                     if isinstance(detail, dict) and detail.get("covered") is not True
                 )
+                placeholder_scope_hash = normal_placeholder_scope_hash(
+                    translation_data_map=translation_data_map,
+                    text_rules=text_rules,
+                )
+                structured_placeholder_scope_hash_value = structured_placeholder_scope_hash(
+                    translation_data_map=translation_data_map,
+                    structured_rules=text_rules.structured_placeholder_rules,
+                )
+                placeholder_candidate_reviewed = (
+                    placeholder_review_state is not None
+                    and placeholder_review_state.scope_hash == placeholder_scope_hash
+                )
+                structured_placeholder_candidate_reviewed = (
+                    structured_placeholder_review_state is not None
+                    and structured_placeholder_review_state.scope_hash == structured_placeholder_scope_hash_value
+                )
                 plugin_rules_reviewed_empty, plugin_rules_review_state_stale = _rule_review_empty_state(
                     state=plugin_review_state,
                     current_scope_hash=plugin_rule_scope_hash(game_data),
@@ -214,20 +234,14 @@ class DoctorAgentMixin:
                 )
                 placeholder_rules_reviewed_empty, placeholder_rules_review_state_stale = _rule_review_empty_state(
                     state=placeholder_review_state,
-                    current_scope_hash=normal_placeholder_scope_hash(
-                        translation_data_map=translation_data_map,
-                        text_rules=text_rules,
-                    ),
+                    current_scope_hash=placeholder_scope_hash,
                 )
                 (
                     structured_placeholder_rules_reviewed_empty,
                     structured_placeholder_rules_review_state_stale,
                 ) = _rule_review_empty_state(
                     state=structured_placeholder_review_state,
-                    current_scope_hash=structured_placeholder_scope_hash(
-                        translation_data_map=translation_data_map,
-                        structured_rules=text_rules.structured_placeholder_rules,
-                    ),
+                    current_scope_hash=structured_placeholder_scope_hash_value,
                 )
                 mv_virtual_namebox_rules_reviewed_empty, mv_virtual_namebox_rules_review_state_stale = (
                     _rule_review_empty_state(
@@ -307,9 +321,30 @@ class DoctorAgentMixin:
                 summary["uncovered_placeholder_count"] = uncovered_count
                 summary["uncovered_structured_placeholder_count"] = structured_uncovered_count
                 if uncovered_count:
-                    warnings.append(issue("uncovered_placeholder", f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符"))
+                    if placeholder_candidate_reviewed:
+                        warnings.append(
+                            issue(
+                                "uncovered_placeholder_reviewed",
+                                f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符；当前候选已通过导入命令确认风险",
+                            )
+                        )
+                    else:
+                        warnings.append(issue("uncovered_placeholder", f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符"))
                 if structured_uncovered_count:
-                    warnings.append(issue("uncovered_structured_placeholder", f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选"))
+                    if structured_placeholder_candidate_reviewed:
+                        warnings.append(
+                            issue(
+                                "uncovered_structured_placeholder_reviewed",
+                                f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选；当前候选已通过导入命令确认风险",
+                            )
+                        )
+                    else:
+                        warnings.append(
+                            issue(
+                                "uncovered_structured_placeholder",
+                                f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选",
+                            )
+                        )
         except Exception as error:
             errors.append(issue("game", f"目标游戏检查失败: {type(error).__name__}: {error}"))
 

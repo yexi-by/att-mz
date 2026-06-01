@@ -8,6 +8,7 @@ from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     MvVirtualNameboxRuleRecord,
     MvVirtualNameboxSpeakerPolicy,
+    NonstandardDataTextRuleRecord,
     NoteTagTextRuleRecord,
     PlaceholderRuleRecord,
     PluginSourceTextRuleRecord,
@@ -25,6 +26,7 @@ from .sql import (
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS,
     DELETE_ALL_EVENT_COMMAND_TEXT_RULE_PATHS,
     DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES,
+    DELETE_ALL_NONSTANDARD_DATA_TEXT_RULES,
     DELETE_ALL_NOTE_TAG_TEXT_RULES,
     DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS,
     DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES,
@@ -38,6 +40,7 @@ from .sql import (
     INSERT_EVENT_COMMAND_TEXT_RULE_GROUP,
     INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
     INSERT_MV_VIRTUAL_NAMEBOX_RULE,
+    INSERT_NONSTANDARD_DATA_TEXT_RULE,
     INSERT_NOTE_TAG_TEXT_RULE,
     INSERT_PLUGIN_SOURCE_TEXT_RULE,
     INSERT_PLACEHOLDER_RULE,
@@ -49,6 +52,7 @@ from .sql import (
     SELECT_EVENT_COMMAND_TEXT_RULE_GROUPS,
     SELECT_EVENT_COMMAND_TEXT_RULE_PATHS,
     SELECT_MV_VIRTUAL_NAMEBOX_RULES,
+    SELECT_NONSTANDARD_DATA_TEXT_RULES,
     SELECT_NOTE_TAG_TEXT_RULES,
     SELECT_PLUGIN_SOURCE_TEXT_RULES,
     SELECT_PLACEHOLDER_RULES,
@@ -155,6 +159,81 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         rule_record.file_name,
                         rule_record.file_hash,
                         selector,
+                        "excluded",
+                    ),
+                )
+        await self.connection.commit()
+
+    async def read_nonstandard_data_text_rules(self) -> list[NonstandardDataTextRuleRecord]:
+        """读取当前游戏保存的非标准 data 文件文本规则。"""
+        async with self.connection.execute(SELECT_NONSTANDARD_DATA_TEXT_RULES) as cursor:
+            rows = await cursor.fetchall()
+
+        grouped_records: dict[str, NonstandardDataTextRuleRecord] = {}
+        for row in rows:
+            file_name = row_str(row, "file_name", self.db_path)
+            file_hash = row_str(row, "file_hash", self.db_path)
+            record = grouped_records.get(file_name)
+            if record is None:
+                record = NonstandardDataTextRuleRecord(
+                    file_name=file_name,
+                    file_hash=file_hash,
+                    path_templates=[],
+                    excluded_path_templates=[],
+                    skipped=False,
+                )
+                grouped_records[file_name] = record
+            elif record.file_hash != file_hash:
+                raise RuntimeError(f"非标准 data 规则文件哈希不一致，请重新导入规则: {file_name}")
+            path_template = row_str(row, "path_template", self.db_path)
+            path_kind = row_str(row, "path_kind", self.db_path)
+            if path_kind == "translate":
+                record.path_templates.append(path_template)
+            elif path_kind == "excluded":
+                record.excluded_path_templates.append(path_template)
+            elif path_kind == "skipped":
+                if path_template:
+                    raise RuntimeError(f"非标准 data 跳过规则不应包含路径，请重新导入规则: {file_name}")
+                record.skipped = True
+            else:
+                raise RuntimeError(f"非标准 data 规则 path_kind 非法，请重新导入规则: {path_kind}")
+        return list(grouped_records.values())
+
+    async def replace_nonstandard_data_text_rules(
+        self,
+        rule_records: list[NonstandardDataTextRuleRecord],
+    ) -> None:
+        """用一次外部导入结果替换当前游戏的非标准 data 文件文本规则。"""
+        _ = await self.connection.execute(DELETE_ALL_NONSTANDARD_DATA_TEXT_RULES)
+        for rule_record in rule_records:
+            if rule_record.skipped:
+                _ = await self.connection.execute(
+                    INSERT_NONSTANDARD_DATA_TEXT_RULE,
+                    (
+                        rule_record.file_name,
+                        rule_record.file_hash,
+                        "",
+                        "skipped",
+                    ),
+                )
+                continue
+            for path_template in rule_record.path_templates:
+                _ = await self.connection.execute(
+                    INSERT_NONSTANDARD_DATA_TEXT_RULE,
+                    (
+                        rule_record.file_name,
+                        rule_record.file_hash,
+                        path_template,
+                        "translate",
+                    ),
+                )
+            for path_template in rule_record.excluded_path_templates:
+                _ = await self.connection.execute(
+                    INSERT_NONSTANDARD_DATA_TEXT_RULE,
+                    (
+                        rule_record.file_name,
+                        rule_record.file_hash,
+                        path_template,
                         "excluded",
                     ),
                 )

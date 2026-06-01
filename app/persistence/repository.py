@@ -27,7 +27,7 @@ from .font_records import FontRecordSessionMixin
 from .plugin_source_runtime_records import PluginSourceRuntimeRecordSessionMixin
 from .rows import row_str
 from .paths import DB_DIRECTORY, build_db_path, ensure_db_directory, resolve_default_db_directory
-from .records import GameMetadata, GameRecord, LanguageSettings, RuleReviewStateRecord
+from .records import GameMetadata, GameRecord, LanguageSettings, RegistryDatabaseIssue, RuleReviewStateRecord
 from .rule_records import RuleRecordSessionMixin
 from .run_records import RunRecordSessionMixin
 from .source_snapshot_records import SourceSnapshotRecordSessionMixin
@@ -43,6 +43,7 @@ from .sql import (
     CREATE_LLM_FAILURES_TABLE,
     CREATE_METADATA_TABLE,
     CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
+    CREATE_NONSTANDARD_DATA_TEXT_RULES_TABLE,
     CREATE_NOTE_TAG_TEXT_RULES_TABLE,
     CREATE_PLACEHOLDER_RULES_TABLE,
     CREATE_PLUGIN_TEXT_RULES_TABLE,
@@ -311,6 +312,7 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE)
+    _ = await connection.execute(CREATE_NONSTANDARD_DATA_TEXT_RULES_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE)
     _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE)
     _ = await connection.execute(CREATE_SOURCE_SNAPSHOT_FILES_TABLE)
@@ -495,12 +497,31 @@ class GameRegistry:
 
     async def list_games(self) -> list[GameRecord]:
         """扫描数据库目录并读取每个数据库的元数据。"""
+        records, issues = await self.list_games_with_issues()
+        if issues:
+            first_issue = issues[0]
+            raise RuntimeError(f"读取游戏数据库失败: {first_issue.db_path}；{first_issue.message}")
+        return records
+
+    async def list_games_with_issues(self) -> tuple[list[GameRecord], list[RegistryDatabaseIssue]]:
+        """扫描数据库目录，返回可用游戏和不可用数据库问题。"""
         _ = ensure_db_directory(self.db_directory)
         records: list[GameRecord] = []
+        issues: list[RegistryDatabaseIssue] = []
         for db_path in sorted(self.db_directory.glob("*.db")):
-            connection = await open_connection(db_path)
+            connection: aiosqlite.Connection | None = None
             try:
+                connection = await open_connection(db_path)
                 await check_connection_readable(connection=connection, db_path=db_path)
+                table_names = await read_table_names(connection)
+                if not _is_att_mz_database_candidate(table_names):
+                    issues.append(
+                        RegistryDatabaseIssue(
+                            db_path=db_path,
+                            message="不是 A.T.T MZ 游戏数据库，已跳过",
+                        )
+                    )
+                    continue
                 await ensure_schema_compatible(connection=connection, db_path=db_path)
                 metadata = await read_metadata(connection=connection, db_path=db_path)
                 language_settings = await read_language_settings(connection=connection, db_path=db_path)
@@ -516,9 +537,12 @@ class GameRegistry:
                         target_language=language_settings.target_language,
                     )
                 )
+            except Exception as error:
+                issues.append(RegistryDatabaseIssue(db_path=db_path, message=str(error)))
             finally:
-                await connection.close()
-        return sorted(records, key=lambda record: record.game_title)
+                if connection is not None:
+                    await connection.close()
+        return sorted(records, key=lambda record: record.game_title), issues
 
     async def register_game(
         self,
@@ -659,10 +683,28 @@ class GameRegistry:
     async def resolve_registered_title_by_path(self, game_path: str | Path) -> str:
         """根据已注册游戏目录解析数据库中的游戏标题。"""
         resolved_game_path = resolve_game_directory(game_path)
-        for record in await self.list_games():
-            if record.game_path == resolved_game_path:
-                return record.game_title
+        layout = resolve_game_layout(resolved_game_path)
         title = read_game_title(resolved_game_path)
+        title_db_path = build_db_path(title, self.db_directory)
+        if self.db_directory.is_dir():
+            for db_path in sorted(self.db_directory.glob("*.db")):
+                connection: aiosqlite.Connection | None = None
+                try:
+                    connection = await open_connection(db_path)
+                    await check_connection_readable(connection=connection, db_path=db_path)
+                    table_names = await read_table_names(connection)
+                    if not _is_att_mz_database_candidate(table_names):
+                        continue
+                    metadata = await read_metadata(connection=connection, db_path=db_path)
+                except Exception as error:
+                    if db_path == title_db_path:
+                        raise RuntimeError(f"疑似目标游戏数据库不可读取: {db_path}；{error}") from error
+                    continue
+                finally:
+                    if connection is not None:
+                        await connection.close()
+                if metadata.game_path == resolved_game_path or metadata.content_root == layout.content_root:
+                    return metadata.game_title
         raise ValueError(f"游戏目录尚未注册，请先执行 add-game: {title}")
 
 
@@ -758,6 +800,7 @@ __all__: list[str] = [
     "GameMetadata",
     "GameRecord",
     "GameRegistry",
+    "RegistryDatabaseIssue",
     "LanguageSettings",
     "RuleReviewStateRecord",
     "TargetGameSession",

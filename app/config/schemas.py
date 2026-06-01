@@ -10,7 +10,12 @@ from typing import Annotated, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage, SourceTextExclusionProfile
+from app.language import (
+    DEFAULT_SOURCE_LANGUAGE,
+    SUPPORTED_SOURCE_LANGUAGES,
+    SourceLanguage,
+    SourceTextExclusionProfile,
+)
 from app.llm_request_body_extra import LLMRequestBodyExtra, normalize_request_body_extra
 from app.rmmz.engine import EngineKind
 
@@ -57,8 +62,25 @@ class TextTranslationSetting(StrictBaseModel):
     retry_count: int = Field(ge=0, title="请求重试次数")
     retry_delay: int = Field(ge=0, title="请求重试间隔")
     include_source_lines: bool = Field(default=False, title="模型输出原文对照")
-    system_prompt_file: str = Field(title="提示词文件")
+    system_prompt_files: dict[SourceLanguage, str] = Field(title="按源语言选择的提示词文件")
+    selected_system_prompt_file: str = Field(title="本次选中的提示词文件")
     system_prompt: str = Field(title="提示词内容")
+
+    @field_validator("system_prompt_files")
+    @classmethod
+    def _validate_system_prompt_files(
+        cls,
+        value: dict[SourceLanguage, str],
+    ) -> dict[SourceLanguage, str]:
+        """日文和英文提示词文件必须在配置中显式声明。"""
+        missing_languages = SUPPORTED_SOURCE_LANGUAGES.difference(value)
+        if missing_languages:
+            missing_label = "、".join(sorted(missing_languages))
+            raise ValueError(f"text_translation.system_prompt_files 缺少源语言: {missing_label}")
+        for source_language, prompt_file in value.items():
+            if not prompt_file.strip():
+                raise ValueError(f"text_translation.system_prompt_files.{source_language} 不能为空")
+        return value
 
 
 type EventCommandCode = Annotated[int, Field(ge=0, strict=True)]

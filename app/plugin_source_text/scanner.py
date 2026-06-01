@@ -64,18 +64,15 @@ KEY_CONTEXT_PATTERN: re.Pattern[str] = re.compile(
 def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> PluginSourceScan:
     """扫描 `js/plugins` 直接源码文件并计算高风险摘要。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
-    spans_by_file = _collect_native_string_literal_spans_batch_required(game_data.plugin_source_files)
+    batch_scan = scan_plugin_source_files_text_strict(
+        files=game_data.plugin_source_files,
+        active_file_names=enabled_plugin_files,
+        text_rules=text_rules,
+    )
     file_scans: list[PluginSourceFileScan] = []
     candidates: list[PluginSourceCandidate] = []
-    for file_name, source in sorted(game_data.plugin_source_files.items()):
-        active = file_name in enabled_plugin_files
-        _literals, file_candidates = _build_literals_and_candidates_from_spans(
-            file_name=file_name,
-            source=source,
-            active=active,
-            text_rules=text_rules,
-            spans=spans_by_file[file_name],
-        )
+    for file_name, file_scan in sorted(batch_scan.file_scans.items()):
+        file_candidates = file_scan.candidate_index.candidates
         active_candidates = [candidate for candidate in file_candidates if candidate.active]
         strong_count = sum(1 for candidate in active_candidates if candidate.confidence == "strong")
         medium_count = sum(1 for candidate in active_candidates if candidate.confidence == "medium")
@@ -83,8 +80,8 @@ def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> P
         file_scans.append(
             PluginSourceFileScan(
                 file_name=file_name,
-                file_hash=build_plugin_source_file_hash(source),
-                active=active,
+                file_hash=file_scan.file_hash,
+                active=file_name in enabled_plugin_files,
                 candidates=file_candidates,
                 strong_context_text_count=strong_count,
                 medium_confidence_text_count=medium_count,
@@ -96,12 +93,14 @@ def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> P
     risk = _build_risk(
         file_scans,
         read_error_file_count=len(game_data.plugin_source_read_errors),
+        syntax_error_file_count=len(batch_scan.syntax_errors),
     )
     return PluginSourceScan(
         risk=risk,
         files=tuple(file_scans),
         candidates=tuple(candidates),
         enabled_plugin_files=enabled_plugin_files,
+        syntax_errors=dict(batch_scan.syntax_errors),
     )
 
 
@@ -480,20 +479,6 @@ def _collect_native_string_literal_spans_required(source: str) -> list[_StringLi
     return _native_scan_to_internal_spans(scan)
 
 
-def _collect_native_string_literal_spans_batch_required(
-    files: dict[str, str],
-) -> dict[str, list[_StringLiteralSpan]]:
-    """批量调用原生 AST 解析器，禁止在严格流程中退回轻量扫描。"""
-    scans = parse_native_javascript_string_spans_batch(files)
-    spans_by_file: dict[str, list[_StringLiteralSpan]] = {}
-    for file_name in sorted(files):
-        scan = scans[file_name]
-        if scan.has_error:
-            raise RuntimeError(f"{file_name} 原生 AST 解析报告 JS 语法错误")
-        spans_by_file[file_name] = _native_scan_to_internal_spans(scan)
-    return spans_by_file
-
-
 def _native_scan_to_internal_spans(scan: NativeJavaScriptStringScan) -> list[_StringLiteralSpan]:
     """把原生 AST 扫描结果转换为内部 span。"""
     return [
@@ -576,7 +561,12 @@ def _candidate_context(*, api: str, key: str) -> str:
     return "literal"
 
 
-def _build_risk(file_scans: list[PluginSourceFileScan], *, read_error_file_count: int) -> PluginSourceRisk:
+def _build_risk(
+    file_scans: list[PluginSourceFileScan],
+    *,
+    read_error_file_count: int,
+    syntax_error_file_count: int,
+) -> PluginSourceRisk:
     """按固定阈值生成风险摘要。"""
     active_files = [file_scan for file_scan in file_scans if file_scan.active]
     ignored_file_count = sum(1 for file_scan in file_scans if not file_scan.active)
@@ -602,6 +592,7 @@ def _build_risk(file_scans: list[PluginSourceFileScan], *, read_error_file_count
         scanned_file_count=len(file_scans),
         ignored_file_count=ignored_file_count,
         read_error_file_count=read_error_file_count,
+        syntax_error_file_count=syntax_error_file_count,
         files_score_ge_250=files_score_ge_250,
         max_file_score=max_file_score,
     )

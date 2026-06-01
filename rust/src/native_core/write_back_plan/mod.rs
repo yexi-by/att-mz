@@ -9,6 +9,7 @@ mod font;
 mod layout;
 mod models;
 mod mv_virtual_namebox;
+mod nonstandard_data_writer;
 mod note_writer;
 mod plugin_config_writer;
 mod plugin_source;
@@ -34,6 +35,9 @@ use self::models::{
     COMMON_EVENTS_FILE_NAME, FontPlanSummary, MvVirtualNameboxRule, MvVirtualSpeakerPolicy,
     PLUGINS_FILE_NAME, PlanSummary, PlannedFile, SYSTEM_FILE_NAME, SettingPayload,
     TROOPS_FILE_NAME, TextPlanRules, TranslationItem, WriteBackPlan, WritePlanMode,
+};
+use self::nonstandard_data_writer::{
+    is_nonstandard_data_item, nonstandard_data_file_name, write_nonstandard_data_item,
 };
 use self::note_writer::{is_note_tag_path, write_note_tag_item};
 use self::plugin_config_writer::write_plugin_config_item;
@@ -163,6 +167,11 @@ fn build_write_back_plan_inner(
         if item.location_path.starts_with("plugins.js/") {
             write_plugin_config_item(&mut plugins_js, item, &text_rules)?;
             plugin_item_count += 1;
+            continue;
+        }
+        if is_nonstandard_data_item(&item.location_path) {
+            write_nonstandard_data_item(&mut data_files, item, &text_rules)?;
+            data_item_count += 1;
             continue;
         }
         if is_note_tag_path(&item.location_path) {
@@ -394,7 +403,9 @@ fn data_file_names_for_load(
     font_replacement_requested: bool,
 ) -> BTreeSet<String> {
     if plan_mode == WritePlanMode::RebuildActiveRuntime || font_replacement_requested {
-        return available_data_file_names.clone();
+        let mut names = available_data_file_names.clone();
+        names.extend(data_file_names_for_translation_items(translated_items));
+        return names;
     }
     let mut names = data_file_names_for_translation_items(translated_items);
     add_terminology_data_file_names(&mut names, available_data_file_names, terminology);
@@ -436,6 +447,10 @@ fn data_file_names_for_translation_items(translated_items: &[TranslationItem]) -
         let Some(file_name) = item.location_path.split('/').next() else {
             continue;
         };
+        if let Some(nonstandard_file_name) = nonstandard_data_file_name(&item.location_path) {
+            names.insert(nonstandard_file_name.to_string());
+            continue;
+        }
         if file_name == PLUGINS_FILE_NAME || item.location_path.starts_with("js/plugins/") {
             continue;
         }

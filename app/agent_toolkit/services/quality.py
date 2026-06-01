@@ -28,6 +28,8 @@ from .common import (
     _count_protocol_sensitive_translation_items,
     _coverage_hard_stop_errors,
     current_timestamp_text,
+    _nonstandard_data_skipped_file_names,
+    _nonstandard_data_skipped_warnings,
     _noop_quality_progress_callbacks,
     _read_reset_translation_location_paths,
     _resolve_quality_fix_translation_lines,
@@ -42,7 +44,11 @@ from .common import (
     load_setting,
     native_thread_count,
 )
-from app.application.flow_gate import collect_workflow_gate_errors
+from app.application.flow_gate import collect_placeholder_candidate_review_warnings, collect_workflow_gate_errors
+from app.nonstandard_data import (
+    ActiveRuntimeNonstandardDataAudit,
+    audit_active_runtime_nonstandard_data,
+)
 from app.plugin_source_text import (
     ActiveRuntimePluginSourceAudit,
     ActiveRuntimePluginSourceIssue,
@@ -68,7 +74,7 @@ from app.rmmz.schema import (
 
 def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[AgentIssue]:
     """把当前运行源码审计结果转换为质量报告错误。"""
-    counts = audit.issue_counts
+    counts = Counter(issue.code for issue in audit.issues if issue.blocking)
     errors: list[AgentIssue] = []
     read_error_count = counts.get("active_runtime_read_error", 0)
     syntax_error_count = counts.get("active_runtime_syntax_error", 0)
@@ -100,6 +106,60 @@ def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[
             issue(
                 "active_runtime_source_residual",
                 f"当前游戏运行文件里发现 {residual_count} 处插件源码源文残留，不能继续视为完成",
+            )
+        )
+    return errors
+
+
+def _active_runtime_audit_warnings(audit: ActiveRuntimePluginSourceAudit) -> list[AgentIssue]:
+    """把不属于 ATT-MZ 写回责任的当前运行源码问题转换为告警。"""
+    counts = Counter(issue.code for issue in audit.issues if not issue.blocking)
+    warnings: list[AgentIssue] = []
+    syntax_error_count = counts.get("active_runtime_syntax_error", 0)
+    if syntax_error_count:
+        warnings.append(
+            issue(
+                "active_runtime_syntax_warning",
+                f"当前游戏运行文件里有 {syntax_error_count} 个插件源码文件不是合法 JS，已跳过这些文件的插件源码文本审计，不阻断主流程",
+            )
+        )
+    return warnings
+
+
+def _active_runtime_nonstandard_data_errors(audit: ActiveRuntimeNonstandardDataAudit) -> list[AgentIssue]:
+    """把当前运行非标准 data 审计结果转换为质量报告错误。"""
+    counts = audit.issue_counts
+    errors: list[AgentIssue] = []
+    read_error_count = counts.get("active_runtime_nonstandard_data_read_error", 0)
+    path_error_count = counts.get("active_runtime_nonstandard_data_path_error", 0)
+    placeholder_count = counts.get("active_runtime_nonstandard_data_placeholder_risk", 0)
+    residual_count = counts.get("active_runtime_nonstandard_data_source_residual", 0)
+    if read_error_count:
+        errors.append(
+            issue(
+                "active_runtime_nonstandard_data_read_error",
+                f"当前游戏运行文件里有 {read_error_count} 个非标准 data JSON 文件读取失败，不能确认已管理文本是否正确写入",
+            )
+        )
+    if path_error_count:
+        errors.append(
+            issue(
+                "active_runtime_nonstandard_data_path_error",
+                f"当前游戏运行文件里有 {path_error_count} 个非标准 data JSON 规则路径无法命中字符串叶子",
+            )
+        )
+    if placeholder_count:
+        errors.append(
+            issue(
+                "active_runtime_nonstandard_data_placeholder_risk",
+                f"当前游戏运行文件里发现 {placeholder_count} 处非标准 data 文本坏控制符风险",
+            )
+        )
+    if residual_count:
+        errors.append(
+            issue(
+                "active_runtime_nonstandard_data_source_residual",
+                f"当前游戏运行文件里发现 {residual_count} 处非标准 data 文本源文残留",
             )
         )
     return errors
@@ -417,6 +477,7 @@ class QualityAgentMixin:
             )
             plugin_source_rule_records = await session.read_plugin_source_text_rules()
             runtime_write_map_records = await session.read_plugin_source_runtime_write_maps()
+            nonstandard_data_records = await session.read_nonstandard_data_text_rules()
             audit_text_issues = _plugin_source_text_audit_enabled(
                 rule_records=plugin_source_rule_records,
                 runtime_write_map_records=runtime_write_map_records,
@@ -430,17 +491,34 @@ class QualityAgentMixin:
                 audit_text_issues=audit_text_issues,
             )
             await session.replace_plugin_source_runtime_scan_cache(refreshed_scan_cache)
-        errors = _active_runtime_audit_errors(active_runtime_audit)
+            nonstandard_data_audit = audit_active_runtime_nonstandard_data(
+                layout=active_runtime_game_data.layout,
+                rule_records=nonstandard_data_records,
+                text_rules=text_rules,
+            )
+        errors = [
+            *_active_runtime_audit_errors(active_runtime_audit),
+            *_active_runtime_nonstandard_data_errors(nonstandard_data_audit),
+        ]
+        warnings = [
+            *_active_runtime_audit_warnings(active_runtime_audit),
+            *_nonstandard_data_skipped_warnings(nonstandard_data_records),
+        ]
+        skipped_file_names = _nonstandard_data_skipped_file_names(nonstandard_data_records)
         return AgentReport.from_parts(
             errors=errors,
-            warnings=[],
+            warnings=warnings,
             summary={
                 "source_view": "active-runtime",
                 **active_runtime_audit.summary_json(),
+                **nonstandard_data_audit.summary_json(),
+                "nonstandard_data_skipped_file_count": len(skipped_file_names),
             },
             details={
                 "source_view": "active-runtime",
                 "active_runtime_plugin_source_items": active_runtime_audit.issues_json(),
+                "active_runtime_nonstandard_data_items": nonstandard_data_audit.issues_json(),
+                "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_file_names),
             },
         )
 
@@ -498,7 +576,7 @@ class QualityAgentMixin:
         reset_payload = _build_active_runtime_reset_payload(diagnosis_items)
         report = AgentReport.from_parts(
             errors=_active_runtime_audit_errors(active_runtime_audit),
-            warnings=[],
+            warnings=_active_runtime_audit_warnings(active_runtime_audit),
             summary={
                 "source_view": "active-runtime",
                 "output": str(output_path) if output_path is not None else "",
@@ -761,6 +839,7 @@ class QualityAgentMixin:
             source_residual_rules = await session.read_source_residual_rules()
             terminology_registry = await session.read_terminology_registry()
             plugin_source_records = await session.read_plugin_source_text_rules()
+            nonstandard_data_records = await session.read_nonstandard_data_text_rules()
             plugin_source_scan: PluginSourceScan | None = None
             plugin_source_review: PluginSourceReviewCoverage | None = None
             plugin_source_unreviewed_details: JsonArray | None = None
@@ -797,6 +876,12 @@ class QualityAgentMixin:
                 translated_items=translated_items,
                 scope=scope,
                 plugin_source_scan=plugin_source_scan,
+            )
+            placeholder_review_warnings = await collect_placeholder_candidate_review_warnings(
+                session=session,
+                scope=scope,
+                text_rules=text_rules,
+                custom_placeholder_rules_supplied=False,
             )
             active_paths = scope.active_paths
             writable_paths = scope.writable_paths
@@ -846,6 +931,9 @@ class QualityAgentMixin:
         ]
         plugin_source_summary = _plugin_source_quality_summary(plugin_source_review)
         plugin_source_details = _plugin_source_quality_details(plugin_source_unreviewed_details)
+        skipped_nonstandard_data_files = _nonstandard_data_skipped_file_names(nonstandard_data_records)
+        warnings.extend(_nonstandard_data_skipped_warnings(nonstandard_data_records))
+        warnings.extend(issue(warning.code, warning.message) for warning in placeholder_review_warnings)
         coverage_blocking_errors = _coverage_hard_stop_errors(coverage_report)
         if coverage_blocking_errors or source_residual_rule_errors:
             errors.extend(coverage_report.errors)
@@ -867,6 +955,7 @@ class QualityAgentMixin:
                     "stale_plugin_rule_count": stale_plugin_rule_count,
                     "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
                     "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
+                    "nonstandard_data_skipped_file_count": len(skipped_nonstandard_data_files),
                     **plugin_source_summary,
                     "source_language": session.source_language,
                     "target_language": session.target_language,
@@ -899,6 +988,7 @@ class QualityAgentMixin:
                     "overwide_line_items": [],
                     "write_back_protocol_items": [],
                     **plugin_source_details,
+                    "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_nonstandard_data_files),
                     "coverage": coverage_report.details,
                 },
             )
@@ -999,6 +1089,7 @@ class QualityAgentMixin:
                 "stale_plugin_rule_count": stale_plugin_rule_count,
                 "event_command_rule_count": sum(len(rule.path_templates) for rule in event_rules),
                 "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
+                "nonstandard_data_skipped_file_count": len(skipped_nonstandard_data_files),
                 **plugin_source_summary,
                 "source_language": session.source_language,
                 "target_language": session.target_language,
@@ -1031,6 +1122,7 @@ class QualityAgentMixin:
                 "overwide_line_items": overwide_line_items,
                 "write_back_protocol_items": write_back_protocol_items,
                 **plugin_source_details,
+                "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_nonstandard_data_files),
                 "coverage": coverage_report.details,
             },
         )

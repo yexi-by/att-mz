@@ -57,6 +57,7 @@ from app.rmmz.schema import (
     GameData,
     MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
+    NonstandardDataTextRuleRecord,
     PLUGINS_FILE_NAME,
     PlaceholderRuleRecord,
     PluginSourceRuntimeWriteMapRecord,
@@ -70,6 +71,25 @@ from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import reset_writable_copies, write_data_text, write_game_files
+
+
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+def _example_setting_text_with_absolute_prompt_files() -> str:
+    """读取示例配置，并把提示词相对路径改成当前仓库的绝对路径。"""
+    return (
+        EXAMPLE_SETTING_PATH.read_text(encoding="utf-8")
+        .replace(
+            'ja = "prompts/text_translation_ja_to_zh_system.md"',
+            f'ja = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+        )
+        .replace(
+            'en = "prompts/text_translation_en_to_zh_system.md"',
+            f'en = "{(ROOT / "prompts" / "text_translation_en_to_zh_system.md").as_posix()}"',
+        )
+    )
 
 
 def _rewrite_json(path: Path, value: JsonValue) -> None:
@@ -172,7 +192,7 @@ async def _prepare_write_gate_session(
 ) -> tuple[GameData, Setting, TextRules]:
     """让最小游戏通过写文件前置规则，便于测试特定写入风险。"""
     game_data = await load_game_data(game_dir)
-    setting = load_setting(source_language=session.source_language)
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
     placeholder_record = PlaceholderRuleRecord(
         pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
         placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
@@ -259,6 +279,10 @@ class _NativePlanSessionStub:
     async def replace_font_replacement_records(self, records: list[object]) -> None:
         """测试中不触发字体记录替换。"""
         _ = records
+
+    async def read_nonstandard_data_text_rules(self) -> list[NonstandardDataTextRuleRecord]:
+        """测试写回 helper 时没有非标准 data 规则。"""
+        return []
 
 
 def _empty_active_runtime_audit() -> ActiveRuntimePluginSourceAudit:
@@ -399,6 +423,20 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
     """写入后审计失败前先保存诊断映射，方便随后精确反推。"""
     session = _NativePlanSessionStub(tmp_path)
     events: list[str] = []
+    runtime_map = PluginSourceRuntimeWriteMapRecord(
+        location_path="js/plugins/Broken.js/ast:string:0:1:dummy",
+        source_file_name="Broken.js",
+        source_selector="ast:string:0:1:dummy",
+        source_file_hash="source-hash",
+        source_text_hash="source-text-hash",
+        translation_lines_hash="translation-hash",
+        runtime_file_name="Broken.js",
+        runtime_selector="ast:string:0:1:dummy",
+        runtime_file_hash="runtime-hash",
+        runtime_text_hash="runtime-text-hash",
+        runtime_line=1,
+        created_at="2026-01-01T00:00:00",
+    )
 
     def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
         """返回会触发写入后审计失败的最小计划。"""
@@ -414,7 +452,7 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
                     content="if (\n",
                 )
             ],
-            plugin_source_runtime_write_maps=[],
+            plugin_source_runtime_write_maps=[runtime_map],
             font_replacement_records=[],
             summary=NativeWriteBackSummary(
                 data_item_count=0,
@@ -459,9 +497,9 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
         """模拟当前运行文件审计发现 JS 语法错误。"""
         _ = game_data
         _ = text_rules
-        assert runtime_write_map_records == []
-        assert audit_text_issues is False
-        assert text_issue_scope_keys is None
+        assert runtime_write_map_records == [runtime_map]
+        assert audit_text_issues is True
+        assert text_issue_scope_keys == {("Broken.js", "ast:string:0:1:dummy")}
         events.append("audit")
         return ActiveRuntimePluginSourceAudit(
             issues=(
@@ -469,6 +507,7 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
                     code="active_runtime_syntax_error",
                     message="当前游戏运行文件里的插件源码无法完成 JS 语法检查",
                     file_name="Broken.js",
+                    blocking=True,
                     syntax_error="RuntimeError: 原生 AST 解析报告 JS 语法错误",
                 ),
             ),
@@ -513,7 +552,7 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
 
     assert events == ["write", "load", "audit"]
     assert session.runtime_map_replace_calls == 1
-    assert session.runtime_map_replace_count == 0
+    assert session.runtime_map_replace_count == 1
 
 
 @pytest.mark.asyncio
@@ -862,14 +901,7 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
 
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -988,14 +1020,7 @@ async def test_direct_write_back_rejects_latest_quality_errors(
     """直接调用业务写回也必须拦截模型翻了但项目检查没通过的译文。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1108,14 +1133,7 @@ async def test_direct_write_back_rejects_missing_workflow_rules(
     """直接写入游戏文件不能在外部规则未完成时静默成功。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1141,14 +1159,7 @@ async def test_direct_rebuild_active_runtime_rejects_missing_workflow_rules(
     """重建当前运行文件也是写文件操作，必须受同一前置规则约束。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1174,14 +1185,7 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
     """重建当前运行文件成功路径必须穿过真实 handler 和 Rust 写回计划。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1304,14 +1308,7 @@ async def test_direct_write_back_rejects_missing_source_snapshot_manifest(
     """native 快路径进入 Rust 前必须校验数据库可信源快照 manifest。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1341,14 +1338,7 @@ async def test_write_terminology_allows_pending_body_translation_run(
     """术语写回只要求术语和写入协议可用，不因正文译文未完成而失败。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1397,14 +1387,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
     """当前运行插件源码读取失败时，Rust 计划阶段直接失败且不写 data。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1535,14 +1518,7 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
     """Rust 计划检查不把已排除的插件源码内部字符串当正文漏翻。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1698,14 +1674,7 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
     """当前运行源码读取失败时，Rust 计划阶段直接失败且不改字体。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -1850,14 +1819,7 @@ async def test_direct_write_terminology_rejects_missing_workflow_rules(
     """直接调用术语写回也必须经过写入前流程检查。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 
@@ -2037,14 +1999,7 @@ async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
     """真实写回入口用 Rust 计划重建 MV 虚拟名字框运行文件。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "text_translation_ja_to_zh_system.md"
-    setting_text = (Path(__file__).resolve().parents[1] / "setting.example.toml").read_text(
-        encoding="utf-8"
-    )
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{prompt_path.as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
 

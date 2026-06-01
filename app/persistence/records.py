@@ -44,6 +44,14 @@ class GameRecord:
 
 
 @dataclass(slots=True)
+class RegistryDatabaseIssue:
+    """注册表扫描中单个不可用数据库的问题。"""
+
+    db_path: Path
+    message: str
+
+
+@dataclass(slots=True)
 class RuleReviewStateRecord:
     """数据库中保存的外部规则空结果审查状态。"""
 

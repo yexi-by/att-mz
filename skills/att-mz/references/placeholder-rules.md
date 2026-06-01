@@ -58,14 +58,14 @@ uv run python main.py validate-placeholder-rules --game <游戏标题> --input <
 uv run python main.py scan-placeholder-candidates --game <游戏标题> --input <工作区>/placeholder-rules.json
 ```
 
-6. `summary.uncovered_count` 必须等于 0；未覆盖时修规则后重新 validate 和 scan。
-7. 覆盖扫描通过后运行：
+6. 审查 `summary.uncovered_count` 和候选详情；确实需要保护的协议片段必须修规则后重新 validate 和 scan，确认无需写规则的误报或特殊候选可以在导入时确认风险。
+7. 覆盖风险已处理或已确认后运行：
 
 ```powershell
 uv run python main.py import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json
 ```
 
-空规则只有在当前候选确实为空时才允许加 `--confirm-empty` 导入。
+空规则必须加 `--confirm-empty` 才能导入；即使当前仍有未覆盖候选，也允许在主代理审查后保存“已审查但不写规则”的确认状态。非空规则导入后如果仍有未覆盖候选，导入报告会返回 warning 并保存“剩余风险已确认”的状态。扫描命中不等于规则一定正确，禁止为了消除计数而编造会吞文本或误保护的规则。
 
 ## 字符级保留
 

@@ -63,14 +63,15 @@ def resolve_setting_path(setting_path: str | Path | None = None) -> Path:
 def load_setting(
     setting_path: str | Path | None = None,
     overrides: SettingOverrides | None = None,
-    source_language: SourceLanguage = DEFAULT_SOURCE_LANGUAGE,
+    source_language: SourceLanguage | None = None,
 ) -> Setting:
     """加载并校验当前配置。"""
+    effective_source_language = source_language or DEFAULT_SOURCE_LANGUAGE
     resolved_setting_path = resolve_setting_path(setting_path)
     raw_config = _read_toml_data(resolved_setting_path)
     apply_language_profile_to_raw_config(
         raw_config=raw_config,
-        source_language=source_language,
+        source_language=effective_source_language,
     )
     apply_setting_overrides(raw_config=raw_config, overrides=overrides)
     environment_overrides = load_environment_overrides()
@@ -79,6 +80,7 @@ def load_setting(
         raw_config=raw_config,
         base_dir=resolved_setting_path.parent,
         overrides=overrides,
+        source_language=effective_source_language,
     )
     _append_text_translation_output_protocol(raw_config)
     raw_config_snapshot = copy.deepcopy(raw_config)
@@ -91,7 +93,8 @@ def load_setting(
             raw_config=raw_config_snapshot,
             overrides=overrides,
             environment_overrides=environment_overrides,
-            source_language=source_language,
+            configured_source_language=source_language,
+            effective_source_language=effective_source_language,
         )
     )
     return setting
@@ -113,12 +116,14 @@ def _inject_prompt_texts(
     raw_config: dict[str, object],
     base_dir: Path,
     overrides: SettingOverrides | None,
+    source_language: SourceLanguage,
 ) -> None:
     """把提示词文件内容注入配置字典。"""
     _inject_text_translation_prompt_text(
         raw_config=raw_config,
         base_dir=base_dir,
         overrides=overrides,
+        source_language=source_language,
     )
 
 
@@ -126,18 +131,27 @@ def _inject_text_translation_prompt_text(
     raw_config: dict[str, object],
     base_dir: Path,
     overrides: SettingOverrides | None,
+    source_language: SourceLanguage,
 ) -> None:
     """注入正文翻译提示词文本。"""
     text_translation = _read_config_section(raw_config, "text_translation")
+    if "system_prompt_file" in text_translation:
+        message = (
+            "配置项 text_translation.system_prompt_file 已废弃，请改用 "
+            "[text_translation.system_prompt_files] 下的 ja/en 显式提示词配置"
+        )
+        raise ValueError(message)
     if overrides is not None and overrides.text_translation_system_prompt is not None:
-        text_translation["system_prompt_file"] = "<cli>"
+        text_translation["selected_system_prompt_file"] = "<cli>"
         text_translation["system_prompt"] = overrides.text_translation_system_prompt
         return
 
-    prompt_file = text_translation.get("system_prompt_file")
-    if not isinstance(prompt_file, str) or not prompt_file.strip():
-        raise ValueError("配置文件中缺少 text_translation.system_prompt_file 配置项")
+    prompt_file = _read_prompt_file_for_source_language(
+        text_translation=text_translation,
+        source_language=source_language,
+    )
 
+    text_translation["selected_system_prompt_file"] = prompt_file
     text_translation["system_prompt"] = _read_prompt_text(base_dir, prompt_file)
 
 
@@ -210,6 +224,22 @@ def _read_config_section(raw_config: dict[str, object], section_name: str) -> di
     return cast(dict[str, object], section)
 
 
+def _read_prompt_file_for_source_language(
+    *,
+    text_translation: dict[str, object],
+    source_language: SourceLanguage,
+) -> str:
+    """读取当前源语言对应的正文提示词文件。"""
+    prompt_files = text_translation.get("system_prompt_files")
+    if not isinstance(prompt_files, dict):
+        raise ValueError("配置文件中缺少 text_translation.system_prompt_files 配置表")
+    prompt_file_map = cast(dict[str, object], prompt_files)
+    prompt_file = prompt_file_map.get(source_language)
+    if not isinstance(prompt_file, str) or not prompt_file.strip():
+        raise ValueError(f"配置文件中缺少 text_translation.system_prompt_files.{source_language} 配置项")
+    return prompt_file
+
+
 def _read_prompt_text(base_dir: Path, prompt_file: str) -> str:
     """读取提示词文件文本。"""
     prompt_path = Path(prompt_file)
@@ -229,11 +259,26 @@ def _build_setting_summary(
     raw_config: dict[str, object],
     overrides: SettingOverrides | None,
     environment_overrides: EnvironmentOverrides,
-    source_language: SourceLanguage,
+    configured_source_language: SourceLanguage | None,
+    effective_source_language: SourceLanguage,
 ) -> str:
     """构造适合直接输出到日志的配置摘要。"""
+    _ = raw_config
     text_service = setting.llm
-    text_prompt_file = _read_prompt_file_name(raw_config=raw_config, section_path=["text_translation"])
+    if configured_source_language is None:
+        language_line = (
+            f"语言档案: 默认 [tag.count]{effective_source_language}[/tag.count]"
+            "（未绑定游戏，不代表当前游戏源语言） / 目标语言 [tag.count]zh-Hans[/tag.count]"
+        )
+    else:
+        language_line = (
+            f"当前游戏源语言: [tag.count]{effective_source_language}[/tag.count]"
+            " / 目标语言 [tag.count]zh-Hans[/tag.count]"
+        )
+
+    prompt_files = setting.text_translation.system_prompt_files
+    ja_prompt_file = prompt_files.get("ja", "未配置")
+    en_prompt_file = prompt_files.get("en", "未配置")
 
     engine_code_parts = [
         f"{engine.upper()}={','.join(map(str, codes))}"
@@ -246,14 +291,14 @@ def _build_setting_summary(
         f"配置文件: [tag.path]{setting_path}[/tag.path]",
         f"正文接口: OpenAI 兼容 / 模型 [tag.count]{text_service.model}[/tag.count] / 地址 [tag.path]{text_service.base_url}[/tag.path] / 超时 [tag.count]{text_service.timeout}[/tag.count] 秒",
         f"模型请求额外参数: [tag.count]{len(text_service.request_body_extra)}[/tag.count] 项",
-        f"源语言: [tag.count]{source_language}[/tag.count] / 目标语言 [tag.count]zh-Hans[/tag.count]",
+        language_line,
         f"正文切块: 目标 [tag.count]{setting.translation_context.token_size}[/tag.count] token，换算系数 [tag.count]{setting.translation_context.factor}[/tag.count]，同角色最多连续 [tag.count]{setting.translation_context.max_command_items}[/tag.count] 条",
         f"正文翻译: [tag.count]{setting.text_translation.worker_count}[/tag.count] 个 worker，RPM [tag.count]{setting.text_translation.rpm or '不限'}[/tag.count]，失败重试 [tag.count]{setting.text_translation.retry_count}[/tag.count] 次，间隔 [tag.count]{setting.text_translation.retry_delay}[/tag.count] 秒",
         f"模型输出原文对照: [tag.count]{'开启' if setting.text_translation.include_source_lines else '关闭'}[/tag.count]",
-        f"事件指令参数: 通用默认编码 [tag.count]{', '.join(map(str, setting.event_command_text.default_command_codes))}[/tag.count]，按引擎默认 [tag.count]{engine_code_label}[/tag.count]",
-        f"候选覆盖字体: [tag.path]{setting.write_back.replacement_font_path or '未配置'}[/tag.path]",
+        f"事件指令参数默认: 兼容旧配置编码 [tag.count]{', '.join(map(str, setting.event_command_text.default_command_codes))}[/tag.count]，按引擎有效默认 [tag.count]{engine_code_label}[/tag.count]",
+        f"字体覆盖候选配置: [tag.path]{setting.write_back.replacement_font_path or '未配置'}[/tag.path]（只有显式确认字体覆盖时使用）",
         f"文本规则: 行切分标点 [tag.count]{len(setting.text_rules.line_split_punctuations)}[/tag.count] 个，长文本宽度 [tag.count]{setting.text_rules.long_text_line_width_limit}[/tag.count]，提取剥离标点 [tag.count]{len(setting.text_rules.strip_wrapping_punctuation_pairs)}[/tag.count] 组，译文保形标点 [tag.count]{len(setting.text_rules.preserve_wrapping_punctuation_pairs)}[/tag.count] 组",
-        f"提示词文件: 正文=[tag.path]{text_prompt_file}[/tag.path]",
+        f"提示词文件: 本次=[tag.path]{setting.text_translation.selected_system_prompt_file}[/tag.path]，日文=[tag.path]{ja_prompt_file}[/tag.path]，英文=[tag.path]{en_prompt_file}[/tag.path]",
     ]
     if overrides is not None and overrides.has_any():
         lines.append("CLI 覆盖: 已应用本次命令传入的配置值")
@@ -261,26 +306,6 @@ def _build_setting_summary(
         names = "、".join(environment_overrides.enabled_names())
         lines.append(f"环境变量覆盖: 已应用 [tag.count]{names}[/tag.count]")
     return "\n".join(lines)
-
-
-def _read_prompt_file_name(
-    *,
-    raw_config: dict[str, object],
-    section_path: list[str],
-    prompt_key: str = "system_prompt_file",
-) -> str:
-    """从原始配置里读取提示词文件名。"""
-    current_map = raw_config
-    for key in section_path:
-        next_value = current_map.get(key)
-        if not isinstance(next_value, dict):
-            return "未配置"
-        current_map = cast(dict[str, object], next_value)
-
-    prompt_file = current_map.get(prompt_key)
-    if not isinstance(prompt_file, str) or not prompt_file.strip():
-        return "未配置"
-    return prompt_file
 
 
 __all__: list[str] = [

@@ -100,8 +100,9 @@ fn collect_origin_data_file_paths(
             .unwrap_or("");
         if path.is_file()
             && path.extension().is_some_and(|ext| ext == "json")
-            && is_standard_data_file_name(file_name)
             && file_names.is_none_or(|names| names.contains(file_name))
+            && (is_standard_data_file_name(file_name)
+                || file_names.is_some_and(|names| names.contains(file_name)))
         {
             paths.push(path);
         }

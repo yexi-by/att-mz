@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from app.event_command_text import EventCommandTextExtraction
 from app.note_tag_text import NoteTagTextExtraction
+from app.nonstandard_data import (
+    NONSTANDARD_DATA_LOCATION_PREFIX,
+    NonstandardDataTextExtraction,
+)
 from app.persistence import TargetGameSession
 from app.plugin_text import PluginTextExtraction
 from app.plugin_source_text import PluginSourceTextExtraction, filter_fresh_plugin_source_text_rules
@@ -15,6 +19,7 @@ from app.rmmz.schema import (
     GameData,
     MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
+    NonstandardDataTextRuleRecord,
     PLUGINS_FILE_NAME,
     PluginSourceTextRuleRecord,
     PluginTextRuleRecord,
@@ -25,7 +30,12 @@ from app.rmmz.text_rules import TextRules
 
 from .models import TextScopeEntry, TextScopeResult, TextScopeRuleHit, TextSourceType, WriteBackProbeError
 from .plugin_rules import read_fresh_plugin_text_rules
-from .rule_hits import collect_event_command_rule_hits, collect_note_tag_rule_hits, collect_plugin_rule_hits
+from .rule_hits import (
+    collect_event_command_rule_hits,
+    collect_nonstandard_data_rule_hits,
+    collect_note_tag_rule_hits,
+    collect_plugin_rule_hits,
+)
 from .write_probe import collect_write_back_probe_reasons
 
 
@@ -47,6 +57,11 @@ class TextScopeService:
             game_data=game_data,
         )
         event_rules = await session.read_event_command_text_rules()
+        nonstandard_data_rules = _fresh_nonstandard_data_rules_for_scope(
+            game_data=game_data,
+            text_rules=text_rules,
+            records=await session.read_nonstandard_data_text_rules(),
+        )
         plugin_source_rule_records = await session.read_plugin_source_text_rules()
         plugin_source_scan = (
             build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
@@ -73,6 +88,7 @@ class TextScopeService:
             plugin_source_rules=plugin_source_rules,
             plugin_source_scan=plugin_source_scan,
             note_tag_rules=note_tag_rules,
+            nonstandard_data_rules=nonstandard_data_rules,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
         active_items = {
@@ -114,6 +130,11 @@ class TextScopeService:
                 note_tag_rules=note_tag_rules,
                 text_rules=text_rules,
             ),
+            *collect_nonstandard_data_rule_hits(
+                game_data=game_data,
+                nonstandard_data_rules=nonstandard_data_rules,
+                text_rules=text_rules,
+            ),
         ]
         active_paths = set(active_items)
         for hit in rule_hits:
@@ -145,6 +166,7 @@ def build_translation_data_map(
     event_rules: list[EventCommandTextRuleRecord],
     plugin_source_rules: list[PluginSourceTextRuleRecord],
     note_tag_rules: list[NoteTagTextRuleRecord],
+    nonstandard_data_rules: list[NonstandardDataTextRuleRecord],
     mv_virtual_namebox_rules: list[MvVirtualNameboxRuleRecord] | None = None,
     plugin_source_scan: PluginSourceScan | None = None,
 ) -> dict[str, TranslationData]:
@@ -174,6 +196,10 @@ def build_translation_data_map(
     merge_translation_data_map(
         translation_data_map,
         NoteTagTextExtraction(game_data, note_tag_rules, text_rules).extract_all_text(),
+    )
+    merge_translation_data_map(
+        translation_data_map,
+        NonstandardDataTextExtraction(game_data, nonstandard_data_rules, text_rules).extract_all_text(),
     )
     return translation_data_map
 
@@ -259,6 +285,8 @@ def _source_type_from_location_path(location_path: str) -> TextSourceType:
         return "plugin_parameter"
     if location_path.startswith("js/plugins/"):
         return "plugin_source"
+    if location_path.startswith(f"{NONSTANDARD_DATA_LOCATION_PREFIX}/"):
+        return "nonstandard_data"
     if "/note/" in location_path:
         return "note_tag"
     if "/parameters/" in location_path:
@@ -276,4 +304,27 @@ def _rule_source_label(source_type: TextSourceType) -> str:
         return "事件指令规则"
     if source_type == "note_tag":
         return "Note 标签规则"
+    if source_type == "nonstandard_data":
+        return "非标准 data 文件文本规则"
     return "RPG Maker 标准数据结构"
+
+
+def _fresh_nonstandard_data_rules_for_scope(
+    *,
+    game_data: GameData,
+    text_rules: TextRules,
+    records: list[NonstandardDataTextRuleRecord],
+) -> list[NonstandardDataTextRuleRecord]:
+    """文本清单构建时跳过已知过期的非标准 data 规则，由 workflow gate 报告原因。"""
+    fresh_records: list[NonstandardDataTextRuleRecord] = []
+    for record in records:
+        try:
+            _ = NonstandardDataTextExtraction(
+                game_data=game_data,
+                rule_records=[record],
+                text_rules=text_rules,
+            ).collect_rule_hits()
+        except RuntimeError:
+            continue
+        fresh_records.append(record)
+    return fresh_records

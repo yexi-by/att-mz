@@ -359,6 +359,16 @@ class PluginSourceTextRuleRecord(BaseModel):
     excluded_selectors: list[str] = Field(default_factory=list)
 
 
+class NonstandardDataTextRuleRecord(BaseModel):
+    """单个非标准 data JSON 文件的文本规则快照。"""
+
+    file_name: str
+    file_hash: str
+    path_templates: list[str] = Field(default_factory=list)
+    excluded_path_templates: list[str] = Field(default_factory=list)
+    skipped: bool = False
+
+
 class PluginSourceRuntimeWriteMapRecord(BaseModel):
     """插件源码写回后从当前运行字符串反推翻译源条目的可选诊断映射。"""
 
@@ -537,6 +547,7 @@ __all__: list[str] = [
     "MAP_PATTERN",
     "MvVirtualNameboxRuleRecord",
     "MvVirtualNameboxSpeakerPolicy",
+    "NonstandardDataTextRuleRecord",
     "NoteTagTextRuleRecord",
     "PluginTextRuleRecord",
     "PluginSourceRuntimeScanCacheRecord",

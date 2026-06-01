@@ -83,6 +83,21 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
 
 
+def example_setting_text_with_absolute_prompt_files() -> str:
+    """读取示例配置，并把提示词相对路径改成当前仓库的绝对路径。"""
+    return (
+        EXAMPLE_SETTING_PATH.read_text(encoding="utf-8")
+        .replace(
+            'ja = "prompts/text_translation_ja_to_zh_system.md"',
+            f'ja = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+        )
+        .replace(
+            'en = "prompts/text_translation_en_to_zh_system.md"',
+            f'en = "{(ROOT / "prompts" / "text_translation_en_to_zh_system.md").as_posix()}"',
+        )
+    )
+
+
 class _AgentToolkitServiceProbe(AgentToolkitService):
     """暴露测试用公开方法，避免测试直接访问受保护 mixin API。"""
 
@@ -220,6 +235,47 @@ async def _install_minimal_external_text_rules(
         )
 
 
+async def _install_minimal_workflow_gate_prerequisites(
+    *,
+    registry: GameRegistry,
+    game_title: str,
+    game_dir: Path,
+) -> None:
+    """安装与当前占位符测试无关的最小流程前置状态。"""
+    await _install_minimal_external_text_rules(
+        registry=registry,
+        game_title=game_title,
+        game_dir=game_dir,
+    )
+    game_data = await load_game_data(game_dir)
+    async with await registry.open_game(game_title) as session:
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        if game_data.layout.engine_kind == "mv":
+            await session.replace_rule_review_state(
+                rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+                scope_hash=mv_virtual_namebox_rule_scope_hash(
+                    mv_virtual_namebox_candidate_details(game_data)
+                ),
+                reviewed_empty=True,
+            )
+
+
+def _replace_first_common_event_text(game_dir: Path, text: str) -> None:
+    """把 fixture 第一个公共事件正文替换为指定文本。"""
+    common_events_path = game_dir / "data" / "CommonEvents.json"
+    raw_value = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_value), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    text_command = ensure_json_object(commands[1], "CommonEvents.json[1].list[1]")
+    parameters = ensure_json_array(text_command["parameters"], "CommonEvents.json[1].list[1].parameters")
+    parameters[0] = text
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 @pytest.mark.asyncio
 async def test_doctor_uses_fake_llm_check_without_real_request(tmp_path: Path) -> None:
     """doctor 可以注入模型检查函数，测试环境不触发真实 API。"""
@@ -242,6 +298,8 @@ async def test_doctor_uses_fake_llm_check_without_real_request(tmp_path: Path) -
     assert report.status in {"ok", "warning"}
     assert called_models
     assert report.summary["llm_model"]
+    assert report.summary["llm_check_performed"] is True
+    assert report.summary["llm_connection_status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -258,6 +316,8 @@ async def test_doctor_creates_missing_db_directory(tmp_path: Path) -> None:
     error_codes = {error.code for error in report.errors}
     assert "db_dir" not in error_codes
     assert db_dir.exists()
+    assert report.summary["llm_check_performed"] is False
+    assert report.summary["llm_connection_status"] == "skipped"
 
 
 @pytest.mark.asyncio
@@ -423,10 +483,7 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     """插件规则为空时默认报错；显式确认后允许保存当前插件范围的空结果。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
-    )
+    setting_text = example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     registry = GameRegistry(tmp_path / "db")
@@ -581,10 +638,7 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
     """事件指令规则为空时默认报错；显式确认后允许保存当前编码范围的空结果。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
-    )
+    setting_text = example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     registry = GameRegistry(tmp_path / "db")
@@ -661,10 +715,7 @@ async def test_import_empty_event_command_rules_records_cli_code_scope(
     """事件指令空规则确认使用 CLI 显式编码计算范围。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
-    )
+    setting_text = example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     registry = GameRegistry(tmp_path / "db")
@@ -1576,11 +1627,11 @@ async def test_active_runtime_audit_rejects_missing_plugin_source_directory(
 
 
 @pytest.mark.asyncio
-async def test_active_runtime_audit_rejects_plugin_source_syntax_errors(
+async def test_active_runtime_audit_warns_for_original_plugin_source_syntax_errors(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """当前运行插件源码 JS 语法错误时必须报错，不能退回轻量扫描后放行。"""
+    """当前运行插件源码原本坏掉时只告警，不能越界阻断主汉化流程。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -1610,11 +1661,13 @@ async def test_active_runtime_audit_rejects_plugin_source_syntax_errors(
     runtime_report = await service.audit_active_runtime(game_title="テストゲーム")
     quality_report = await service.quality_report(game_title="テストゲーム")
 
-    assert runtime_report.status == "error"
+    assert runtime_report.status == "warning"
     assert quality_report.status == "error"
-    assert "active_runtime_syntax_error" in {error.code for error in runtime_report.errors}
+    assert "active_runtime_syntax_error" not in {error.code for error in runtime_report.errors}
+    assert "active_runtime_syntax_warning" in {warning.code for warning in runtime_report.warnings}
     assert "active_runtime_syntax_error" not in {error.code for error in quality_report.errors}
     assert runtime_report.summary["active_runtime_syntax_error_count"] == 1
+    assert runtime_report.summary["active_runtime_blocking_issue_count"] == 0
     assert "active_runtime_syntax_error_count" not in quality_report.summary
     assert "BrokenSyntax.js" in json.dumps(runtime_report.details, ensure_ascii=False)
 
@@ -2426,6 +2479,270 @@ async def test_scan_placeholder_candidates_marks_custom_rule_coverage(
     assert "テスト一行目です" not in raw_json
 
 
+@pytest.mark.asyncio
+async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """空普通占位符规则确认后，未覆盖候选不再卡住流程。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    missing_report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+    )
+    report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+    doctor_report = await service.doctor(game_title="テストゲーム", check_llm=False)
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    assert missing_report.status == "error"
+    assert "confirm-empty" in missing_report.errors[0].message
+    assert report.status == "warning"
+    assert {"placeholder_rules_empty", "placeholder_uncovered_reviewed"} <= {warning.code for warning in report.warnings}
+    assert report.summary["uncovered_count"] != 0
+    assert "uncovered_placeholder_reviewed" in {warning.code for warning in doctor_report.warnings}
+    assert state is not None
+    assert state.reviewed_empty is True
+    assert "placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_candidates(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """非空普通占位符规则仍有候选时，保存 reviewed_empty=false 的风险确认。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"NO_MATCH": "[CUSTOM_NO_MATCH_{index}]"}, ensure_ascii=False),
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    assert report.status == "warning"
+    assert "placeholder_uncovered_reviewed" in {warning.code for warning in report.warnings}
+    assert report.summary["imported_rule_count"] == 1
+    assert report.summary["uncovered_count"] != 0
+    assert state is not None
+    assert state.reviewed_empty is False
+    assert "placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_import_empty_structured_placeholder_rules_confirms_uncovered_candidates(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """空结构化占位符规则确认后，协议外壳候选不再卡住流程。"""
+    _replace_first_common_event_text(minimal_english_game_dir, "<名前: Alraune>")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    missing_report = await service.import_structured_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text='{"paired_shell_rules": []}',
+    )
+    report = await service.import_structured_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text='{"paired_shell_rules": []}',
+        confirm_empty=True,
+    )
+    doctor_report = await service.doctor(game_title="English Fixture Game", check_llm=False)
+    game_data = await load_game_data(minimal_english_game_dir)
+    async with await registry.open_game("English Fixture Game") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    assert missing_report.status == "error"
+    assert "confirm-empty" in missing_report.errors[0].message
+    assert report.status == "warning"
+    assert {"structured_placeholder_rules_empty", "structured_placeholder_uncovered_reviewed"} <= {
+        warning.code
+        for warning in report.warnings
+    }
+    assert report.summary["uncovered_count"] == 1
+    assert "uncovered_structured_placeholder_reviewed" in {warning.code for warning in doctor_report.warnings}
+    assert state is not None
+    assert state.reviewed_empty is True
+    assert "structured_placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_uncovered_candidates(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """非空结构化规则仍未覆盖候选时，保存 reviewed_empty=false 的风险确认。"""
+    _replace_first_common_event_text(minimal_english_game_dir, "<名前: Alraune>")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "NEVER",
+                    "pattern": r"(?P<open><Never>)(?P<text>[^<>\r\n]+)(?P<close></Never>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_NEVER_OPEN_{index}]",
+                        "close": "[CUSTOM_NEVER_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.import_structured_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text=rules_text,
+    )
+    game_data = await load_game_data(minimal_english_game_dir)
+    async with await registry.open_game("English Fixture Game") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    assert report.status == "warning"
+    assert "structured_placeholder_uncovered_reviewed" in {warning.code for warning in report.warnings}
+    assert report.summary["imported_rule_count"] == 1
+    assert report.summary["uncovered_count"] == 1
+    assert state is not None
+    assert state.reviewed_empty is False
+    assert "structured_placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_placeholder_candidate_review_state_mismatch_blocks_workflow(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """候选范围变化后，旧的占位符候选风险确认不能继续放行。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash="stale-placeholder-scope",
+            reviewed_empty=True,
+        )
+        errors = await collect_workflow_gate_errors(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=scope,
+        )
+
+    assert "placeholder_uncovered" in {error.code for error in errors}
+
+
 def test_placeholder_candidate_scan_requires_full_span_coverage() -> None:
     """覆盖扫描不能把标准短前缀当成长候选已覆盖。"""
     translation_data_map = {
@@ -2807,7 +3124,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     ],
 )
 @pytest.mark.asyncio
-async def test_validate_agent_workspace_blocks_uncovered_structured_candidates(
+async def test_validate_agent_workspace_warns_uncovered_structured_candidates(
     minimal_english_game_dir: Path,
     tmp_path: Path,
     sample_text: str,
@@ -2874,7 +3191,6 @@ async def test_validate_agent_workspace_blocks_uncovered_structured_candidates(
     )
     report = await service.validate_agent_workspace(game_title="English Fixture Game", workspace=workspace)
 
-    error_codes = {error.code for error in report.errors}
     warning_codes = {warning.code for warning in report.warnings}
     coverage_summary = ensure_json_object(
         ensure_json_object(report.details["structured_placeholder_coverage"], "structured_placeholder_coverage")[
@@ -2888,10 +3204,9 @@ async def test_validate_agent_workspace_blocks_uncovered_structured_candidates(
         ],
         "structured_placeholder_coverage.details",
     )
-    assert report.status == "error"
     assert coverage_summary == standalone_coverage_report.summary
     assert coverage_details == standalone_coverage_report.details
-    assert "structured_placeholder_coverage_uncovered" in error_codes
+    assert "structured_placeholder_coverage_uncovered" in warning_codes
     assert "structured_placeholder_uncovered" in warning_codes
     assert coverage_summary["uncovered_count"] == 1
     candidates = ensure_json_array(coverage_details["candidates"], "structured_placeholder_coverage.details.candidates")
@@ -3535,14 +3850,16 @@ async def test_validate_agent_workspace_reports_long_task_stages(
         callbacks=(set_progress, advance_progress, set_status),
     )
 
-    assert progress_updates[0] == (0, 12)
-    assert sum(advanced_steps) == 12
+    assert progress_updates[0] == (0, 13)
+    assert sum(advanced_steps) == 13
     for expected_status in [
         "读取工作区清单",
         "加载翻译源视图",
         "抽取当前文本范围",
         "扫描插件源码",
+        "扫描非标准 data 文件",
         "校验插件规则",
+        "校验非标准 data 文件规则",
         "校验结构化占位符规则",
         "汇总工作区校验报告",
     ]:
@@ -3689,7 +4006,7 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
 
     after_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
-    before_error_codes = {error.code for error in before_report.errors}
+    before_warning_codes = {warning.code for warning in before_report.warnings}
     after_error_codes = {error.code for error in after_report.errors}
     empty_rule_error_codes = {
         "plugin_rules_empty_unconfirmed",
@@ -3698,7 +4015,7 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
         "placeholder_rules_empty_unconfirmed",
         "structured_placeholder_rules_empty_unconfirmed",
     }
-    assert empty_rule_error_codes <= before_error_codes
+    assert empty_rule_error_codes <= before_warning_codes
     assert note_import_report.status == "warning"
     assert {warning.code for warning in note_import_report.warnings} == {"note_tag_rules_empty"}
     assert empty_rule_error_codes.isdisjoint(after_error_codes)
@@ -3866,7 +4183,7 @@ async def test_validate_agent_workspace_reports_invalid_glossary_file(
 
 
 @pytest.mark.asyncio
-async def test_validate_agent_workspace_blocks_uncovered_placeholder_rules(
+async def test_validate_agent_workspace_warns_uncovered_placeholder_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3927,8 +4244,7 @@ async def test_validate_agent_workspace_blocks_uncovered_placeholder_rules(
     )
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
-    assert report.status == "error"
-    assert "placeholder_coverage_uncovered" in {error.code for error in report.errors}
+    assert "placeholder_coverage_uncovered" in {warning.code for warning in report.warnings}
     placeholder_details = ensure_json_object(report.details["placeholder_rules"], "placeholder_rules")
     assert placeholder_details == standalone_validation_report.details
     placeholder_coverage = ensure_json_object(report.details["placeholder_coverage"], "placeholder_coverage")
@@ -4828,12 +5144,8 @@ async def test_manual_long_text_import_splits_overwide_lines(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     setting_path = tmp_path / "setting.toml"
-    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8")
+    setting_text = example_setting_text_with_absolute_prompt_files()
     setting_text = setting_text.replace("long_text_line_width_limit = 26", "long_text_line_width_limit = 3")
-    setting_text = setting_text.replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
-    )
     _ = setting_path.write_text(setting_text, encoding="utf-8")
     service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
     pending_path = tmp_path / "pending-translations.json"

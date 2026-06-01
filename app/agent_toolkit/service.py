@@ -16,6 +16,7 @@ from .services.coverage import CoverageAgentMixin
 from .services.doctor import DoctorAgentMixin
 from .services.feedback import FeedbackAgentMixin
 from .services.manual_translation import ManualTranslationAgentMixin
+from .services.nonstandard_data import NonstandardDataAgentMixin
 from .services.placeholder_rules import PlaceholderRuleAgentMixin
 from .services.quality import QualityAgentMixin
 from .services.rule_validation import RuleValidationAgentMixin
@@ -30,6 +31,7 @@ class AgentToolkitService(
     FeedbackAgentMixin,
     QualityAgentMixin,
     ManualTranslationAgentMixin,
+    NonstandardDataAgentMixin,
     RuleValidationAgentMixin,
     WorkspaceAgentMixin,
 ):

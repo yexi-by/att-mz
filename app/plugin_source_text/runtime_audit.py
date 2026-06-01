@@ -40,6 +40,8 @@ class ActiveRuntimePluginSourceIssue:
     code: str
     message: str
     file_name: str
+    active: bool = True
+    blocking: bool = True
     fragment: str = ""
     literal: PluginSourceStringLiteral | None = None
     read_error: str = ""
@@ -50,12 +52,13 @@ class ActiveRuntimePluginSourceIssue:
         if self.literal is None:
             payload: JsonObject = {
                 "file": self.file_name,
-                "active": True,
+                "active": self.active,
             }
         else:
             payload = self.literal.to_json_object()
         payload["code"] = self.code
         payload["message"] = self.message
+        payload["blocking"] = self.blocking
         payload["fragment"] = self.fragment
         if self.read_error:
             payload["read_error"] = self.read_error
@@ -122,6 +125,8 @@ class ActiveRuntimePluginSourceAudit:
             "active_runtime_text_issue_audit_enabled": self.text_issue_audit_enabled,
             "active_runtime_read_error_file_count": self.read_error_file_count,
             "active_runtime_issue_count": len(self.issues),
+            "active_runtime_blocking_issue_count": sum(1 for issue in self.issues if issue.blocking),
+            "active_runtime_warning_issue_count": sum(1 for issue in self.issues if not issue.blocking),
             "active_runtime_read_error_count": counts.get("active_runtime_read_error", 0),
             "active_runtime_syntax_error_count": counts.get("active_runtime_syntax_error", 0),
             "active_runtime_source_residual_count": counts.get("active_runtime_source_residual", 0),
@@ -159,6 +164,10 @@ def audit_active_runtime_plugin_source(
     issues: list[ActiveRuntimePluginSourceIssue] = []
     runtime_write_map_by_key = {
         (record.runtime_file_name, record.runtime_selector): record
+        for record in (runtime_write_map_records or [])
+    }
+    managed_runtime_file_names = {
+        record.runtime_file_name
         for record in (runtime_write_map_records or [])
     }
     literal_count = 0
@@ -202,13 +211,23 @@ def audit_active_runtime_plugin_source(
                     _strict_active_runtime_syntax_issue(
                         file_name=file_name,
                         error=RuntimeError(syntax_error),
+                        active=True,
+                        blocking=file_name in managed_runtime_file_names,
                     )
                 )
                 continue
         else:
             syntax_error = batch_scan.syntax_errors.get(file_name)
             if syntax_error is not None:
-                raise RuntimeError(f"{file_name} {syntax_error}")
+                issues.append(
+                    _strict_active_runtime_syntax_issue(
+                        file_name=file_name,
+                        error=RuntimeError(syntax_error),
+                        active=False,
+                        blocking=file_name in managed_runtime_file_names,
+                    )
+                )
+                continue
         file_scan = batch_scan.file_scans[file_name]
         literals = file_scan.literals
         literal_count += len(literals)
@@ -418,12 +437,20 @@ def _strict_active_runtime_syntax_issue(
     *,
     file_name: str,
     error: BaseException,
+    active: bool,
+    blocking: bool,
 ) -> ActiveRuntimePluginSourceIssue:
     """把严格 AST 扫描失败转换成当前运行语法问题。"""
+    if blocking:
+        message = "当前游戏运行文件里的插件源码无法完成 JS 语法检查，不能确认 ATT-MZ 写回的插件源码是否安全"
+    else:
+        message = "当前游戏运行文件里的插件源码无法完成 JS 语法检查，已跳过该文件的插件源码文本审计"
     return ActiveRuntimePluginSourceIssue(
         code="active_runtime_syntax_error",
-        message="当前游戏运行文件里的插件源码无法完成 JS 语法检查，不能确认是否存在漏翻、坏控制符或 JS 语法错误",
+        message=message,
         file_name=file_name,
+        active=active,
+        blocking=blocking,
         syntax_error=f"{type(error).__name__}: {error}",
     )
 

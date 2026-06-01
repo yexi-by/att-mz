@@ -22,7 +22,7 @@ from app.plugin_source_text import (
     plugin_source_rule_records_to_import_json,
 )
 from app.rmmz import load_active_game_data, load_game_data
-from app.rmmz.schema import GameData, PluginSourceTextRuleRecord, TranslationItem
+from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, PluginSourceTextRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
@@ -742,6 +742,47 @@ async def test_active_runtime_audit_can_limit_to_read_and_syntax_checks(
 
 
 @pytest.mark.asyncio
+async def test_active_runtime_audit_blocks_syntax_error_for_managed_plugin_source(
+    minimal_game_dir: Path,
+) -> None:
+    """只有 ATT-MZ 已管理的插件源码语法错误才是写后验收硬错误。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "ManagedBroken", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "ManagedBroken.js").write_text("const Messages = { title: '坏掉 };\n", encoding="utf-8")
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+        runtime_write_map_records=[
+            PluginSourceRuntimeWriteMapRecord(
+                location_path="js/plugins/ManagedBroken.js/ast:string:0:1:dummy",
+                source_file_name="ManagedBroken.js",
+                source_selector="ast:string:0:1:dummy",
+                source_file_hash="source-hash",
+                source_text_hash="source-text-hash",
+                translation_lines_hash="translation-hash",
+                runtime_file_name="ManagedBroken.js",
+                runtime_selector="ast:string:0:1:dummy",
+                runtime_file_hash="runtime-hash",
+                runtime_text_hash="runtime-text-hash",
+                runtime_line=1,
+                created_at="2026-01-01T00:00:00",
+            )
+        ],
+    )
+
+    assert audit.issue_counts["active_runtime_syntax_error"] == 1
+    assert audit.summary_json()["active_runtime_blocking_issue_count"] == 1
+    assert audit.issues[0].blocking is True
+
+
+@pytest.mark.asyncio
 async def test_active_runtime_audit_batches_native_ast_scan(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1274,6 +1315,53 @@ async def test_prepare_workspace_writes_plugin_source_risk_summary_without_ast_m
 
 
 @pytest.mark.asyncio
+async def test_prepare_workspace_warns_and_skips_invalid_plugin_source(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """原游戏混入非法 JS 插件源码时，工作区准备只告警并跳过源码扫描。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "BrokenSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "BrokenSource.js").write_text("=begin\nRGSS script\n", encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    workspace = tmp_path / "workspace"
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    payload = ensure_json_object(
+        coerce_json_value(
+            cast(
+                object,
+                json.loads((workspace / "plugin-source-risk-report.json").read_text(encoding="utf-8")),
+            )
+        ),
+        "plugin-source-risk-report.json",
+    )
+
+    assert report.status == "warning"
+    assert {warning.code for warning in report.warnings} >= {"plugin_source_syntax_warning"}
+    assert report.summary["plugin_source_syntax_error_file_count"] == 1
+    assert ensure_json_array(payload["syntax_errors"], "plugin-source-risk-report.syntax_errors") == [
+        {
+            "file": "BrokenSource.js",
+            "active": True,
+            "syntax_error": "原生 AST 解析报告 JS 语法错误",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_quality_report_hides_plugin_source_review_fields_until_branch_started(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1370,8 +1458,10 @@ async def test_plugin_source_rule_validation_rejects_invalid_js_directly(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
 
-    with pytest.raises(RuntimeError, match="JS 语法错误"):
-        _ = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+
+    assert scan.syntax_errors == {"BrokenSource.js": "原生 AST 解析报告 JS 语法错误"}
+    assert scan.risk.syntax_error_file_count == 1
 
     validation_report = await AgentToolkitService(
         game_registry=registry,
@@ -1384,7 +1474,7 @@ async def test_plugin_source_rule_validation_rejects_invalid_js_directly(
     assert validation_report.status == "error"
     assert validation_report.summary["unwritable_count"] == 0
     assert validation_report.errors[0].code == "plugin_source_rules_invalid"
-    assert "JS 语法错误" in validation_report.errors[0].message
+    assert "JS AST 解析" in validation_report.errors[0].message
     assert validation_report.details["rules"] == []
 
 

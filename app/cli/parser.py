@@ -26,6 +26,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(doctor_parser, required=False)
     _ = doctor_parser.add_argument("--no-check-llm", action="store_true", help="跳过模型连通性检查")
 
+    probe_source_language_parser = subparsers.add_parser(
+        "probe-source-language",
+        help="注册前只按玩家可见文本探测游戏源语言",
+    )
+    _ = probe_source_language_parser.add_argument("--path", required=True, help="RPG Maker 游戏根目录")
+    _ = probe_source_language_parser.add_argument("--output", help="源语言探测完整 JSON 报告输出文件")
+
     add_game_parser = subparsers.add_parser("add-game", help="注册干净原始 RPG Maker 游戏目录")
     _ = add_game_parser.add_argument("--path", required=True, help="RPG Maker 游戏根目录")
     _ = add_game_parser.add_argument(
@@ -33,6 +40,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["ja", "en"],
         required=True,
         help="游戏原文语言，必须显式指定；ja 表示日文，en 表示英文",
+    )
+
+    reset_game_parser = subparsers.add_parser(
+        "reset-game",
+        help="危险：把已注册游戏回到注册前状态并删除游戏数据库",
+    )
+    add_optional_target_arguments(reset_game_parser)
+    _ = reset_game_parser.add_argument("--dry-run", action="store_true", help="只输出会恢复和删除的路径，不修改文件")
+    _ = reset_game_parser.add_argument(
+        "--confirm-game-title",
+        help="真正执行危险回溯时必须填入完整游戏标题；不传只会返回确认错误和计划",
     )
 
     export_plugins_parser = subparsers.add_parser(
@@ -104,6 +122,35 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_note_tag_parser)
     _ = import_note_tag_parser.add_argument("--input", required=True, help="Note 标签规则 JSON 文件")
     _ = import_note_tag_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有 Note 标签规则候选，允许导入空规则")
+
+    scan_nonstandard_data_parser = subparsers.add_parser(
+        "scan-nonstandard-data",
+        help="扫描非标准 data 文件文本风险",
+    )
+    add_optional_target_arguments(scan_nonstandard_data_parser)
+    _ = scan_nonstandard_data_parser.add_argument("--output", help="非标准 data 文件文本风险报告 JSON 输出文件")
+
+    export_nonstandard_data_parser = subparsers.add_parser(
+        "export-nonstandard-data-json",
+        help="导出非标准 data 文件候选报告和原始 JSON 副本",
+    )
+    add_optional_target_arguments(export_nonstandard_data_parser)
+    _ = export_nonstandard_data_parser.add_argument("--output-dir", required=True, help="非标准 data 文件文本工作区输出目录")
+
+    validate_nonstandard_data_parser = subparsers.add_parser(
+        "validate-nonstandard-data-rules",
+        help="校验非标准 data 文件文本规则 JSON",
+    )
+    add_optional_target_arguments(validate_nonstandard_data_parser)
+    _ = validate_nonstandard_data_parser.add_argument("--input", required=True, help="非标准 data 文件文本规则 JSON 文件")
+    _ = validate_nonstandard_data_parser.add_argument("--output", help="写出完整 JSON 报告文件")
+
+    import_nonstandard_data_parser = subparsers.add_parser(
+        "import-nonstandard-data-rules",
+        help="把外部非标准 data 文件文本规则 JSON 导入游戏数据库",
+    )
+    add_optional_target_arguments(import_nonstandard_data_parser)
+    _ = import_nonstandard_data_parser.add_argument("--input", required=True, help="非标准 data 文件文本规则 JSON 文件")
 
     scan_placeholder_parser = subparsers.add_parser(
         "scan-placeholder-candidates",
@@ -435,7 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_placeholder_source_group = import_placeholder_parser.add_mutually_exclusive_group(required=True)
     _ = import_placeholder_source_group.add_argument("--rules", help="占位符规则 JSON 字符串")
     _ = import_placeholder_source_group.add_argument("--input", help="占位符规则 JSON 文件")
-    _ = import_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有普通占位符候选，允许导入空规则")
+    _ = import_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认已审查当前普通占位符候选，允许导入空规则")
 
     validate_structured_placeholder_parser = subparsers.add_parser(
         "validate-structured-placeholder-rules",
@@ -465,7 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_structured_placeholder_parser)
     _ = import_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
-    _ = import_structured_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有结构化占位符候选，允许导入空规则")
+    _ = import_structured_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认已审查当前结构化占位符候选，允许导入空规则")
 
     validate_plugin_parser = subparsers.add_parser(
         "validate-plugin-rules",

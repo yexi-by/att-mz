@@ -15,6 +15,7 @@ from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
     LlmFailureRecord,
+    NonstandardDataTextRuleRecord,
     PlaceholderRuleRecord,
     PluginSourceRuntimeScanCacheRecord,
     PluginSourceRuntimeStringLiteralCacheRecord,
@@ -101,6 +102,55 @@ def create_database_with_invalid_table_shapes(db_path: Path, tmp_path: Path) -> 
                 )
                 continue
             _ = connection.execute(f"CREATE TABLE [{table_name}] (wrong_column TEXT)")
+
+
+def create_legacy_registry_database(
+    *,
+    db_path: Path,
+    game_title: str,
+    game_path: Path,
+    content_root: Path,
+) -> None:
+    """创建能读取 metadata 但缺少新表的旧版注册库。"""
+    with sqlite3.connect(db_path) as connection:
+        _ = connection.execute("CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)")
+        _ = connection.execute(
+            "INSERT INTO schema_version (schema_key, version) VALUES ('current', ?)",
+            (CURRENT_SCHEMA_VERSION,),
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE metadata (
+                metadata_key TEXT PRIMARY KEY,
+                game_title TEXT NOT NULL,
+                game_path TEXT NOT NULL,
+                engine_kind TEXT NOT NULL,
+                content_root TEXT NOT NULL,
+                engine_version TEXT NOT NULL
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            INSERT INTO metadata (
+                metadata_key,
+                game_title,
+                game_path,
+                engine_kind,
+                content_root,
+                engine_version
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "current_game",
+                game_title,
+                str(game_path),
+                "mz",
+                str(content_root),
+                "1.0.0",
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -217,6 +267,24 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         await session.replace_plugin_source_runtime_scan_cache([runtime_scan_cache])
         assert await session.read_plugin_source_runtime_scan_cache() == [runtime_scan_cache]
+
+        nonstandard_rule = NonstandardDataTextRuleRecord(
+            file_name="Recipes.json",
+            file_hash="recipes-hash",
+            path_templates=["$[*]['name']"],
+            excluded_path_templates=["$[*]['icon']"],
+            skipped=False,
+        )
+        skipped_nonstandard_rule = NonstandardDataTextRuleRecord(
+            file_name="Disciplines.json",
+            file_hash="disciplines-hash",
+            skipped=True,
+        )
+        await session.replace_nonstandard_data_text_rules([nonstandard_rule, skipped_nonstandard_rule])
+        assert await session.read_nonstandard_data_text_rules() == [
+            skipped_nonstandard_rule,
+            nonstandard_rule,
+        ]
 
         event_rule = EventCommandTextRuleRecord(
             command_code=357,
@@ -342,6 +410,51 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         llm_failures = await session.read_llm_failures(run_record.run_id)
         assert llm_failures[0].category == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_list_games_with_issues_skips_legacy_schema_database(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """列注册游戏时旧库进入 warning，不拖死可用游戏。"""
+    db_dir = tmp_path / "db"
+    registry = GameRegistry(db_dir)
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    create_legacy_registry_database(
+        db_path=db_dir / "AAA旧库.db",
+        game_title="旧库",
+        game_path=tmp_path / "old-game",
+        content_root=tmp_path / "old-game",
+    )
+
+    records, issues = await registry.list_games_with_issues()
+
+    assert [item.game_title for item in records] == [record.game_title]
+    assert len(issues) == 1
+    assert issues[0].db_path.name == "AAA旧库.db"
+    assert "数据库结构不符合当前版本" in issues[0].message
+
+
+@pytest.mark.asyncio
+async def test_resolve_registered_title_by_path_ignores_unrelated_legacy_database(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """--game-path 定位目标游戏时，不被无关旧库 schema 拖死。"""
+    db_dir = tmp_path / "db"
+    registry = GameRegistry(db_dir)
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    create_legacy_registry_database(
+        db_path=db_dir / "AAA旧库.db",
+        game_title="旧库",
+        game_path=tmp_path / "old-game",
+        content_root=tmp_path / "old-game",
+    )
+
+    game_title = await registry.resolve_registered_title_by_path(minimal_game_dir)
+
+    assert game_title == record.game_title
 
 
 @pytest.mark.asyncio

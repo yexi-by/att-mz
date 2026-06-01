@@ -73,6 +73,7 @@ from app.rmmz.schema import (
     LlmFailureRecord,
     MvVirtualNameboxRuleRecord,
     NoteTagTextRuleRecord,
+    NonstandardDataTextRuleRecord,
     PLUGINS_FILE_NAME,
     PlaceholderRuleRecord,
     PluginSourceTextRuleRecord,
@@ -1130,6 +1131,28 @@ def _build_coverage_report(
             "write_back_probe_enabled": scope.write_back_probe_enabled,
         },
     )
+
+
+def _nonstandard_data_skipped_file_names(
+    records: Sequence[NonstandardDataTextRuleRecord],
+) -> list[str]:
+    """返回已确认跳过的非标准 data 文件名。"""
+    return sorted({record.file_name for record in records if record.skipped})
+
+
+def _nonstandard_data_skipped_warnings(
+    records: Sequence[NonstandardDataTextRuleRecord],
+) -> list[AgentIssue]:
+    """为已确认跳过的非标准 data 文件生成持续告警。"""
+    skipped_file_names = _nonstandard_data_skipped_file_names(records)
+    if not skipped_file_names:
+        return []
+    return [
+        issue(
+            "nonstandard_data_files_skipped",
+            f"已确认跳过 {len(skipped_file_names)} 个非标准 data 文件，这些文件可能仍含源语言文本；写回前请确认本轮可接受",
+        )
+    ]
 
 
 def _validate_source_residual_rule_records(records: Sequence[SourceResidualRuleRecord]) -> list[AgentIssue]:
@@ -3035,6 +3058,8 @@ __all__: list[str] = [
     '_preview_placeholder_sample',
     '_placeholder_preview_loses_visible_source_text',
     '_build_coverage_report',
+    '_nonstandard_data_skipped_file_names',
+    '_nonstandard_data_skipped_warnings',
     '_validate_source_residual_rule_records',
     '_coverage_hard_stop_errors',
     '_text_scope_blocking_errors',

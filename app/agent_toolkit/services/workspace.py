@@ -31,6 +31,7 @@ from .common import (
     _is_path_inside,
     _merge_terminology_registry,
     _note_tag_rule_records_to_import_json,
+    _nonstandard_data_skipped_warnings,
     _placeholder_rule_records_to_import_json,
     _plugin_rule_records_to_import_json,
     _structured_placeholder_rule_records_to_import_json,
@@ -70,6 +71,13 @@ from .common import (
     write_glossary_json,
 )
 from app.config.schemas import TextRulesSetting
+from app.nonstandard_data import (
+    build_nonstandard_data_scan,
+    export_nonstandard_data_workspace,
+    nonstandard_data_rule_records_to_import_json,
+    parse_nonstandard_data_rule_import_text,
+    validate_nonstandard_data_rules,
+)
 from app.plugin_source_text import (
     PluginSourceScan,
     build_plugin_source_scan,
@@ -108,6 +116,22 @@ from app.rmmz.schema import MvVirtualNameboxRuleRecord
 from app.terminology import collect_terminology_bundle_errors
 
 
+def _plugin_source_scan_warnings(scan: PluginSourceScan) -> list[AgentIssue]:
+    """把跳过的非法插件源码文件转换成 Agent 告警。"""
+    if not scan.syntax_errors:
+        return []
+    active_count = sum(1 for file_name in scan.syntax_errors if file_name in scan.enabled_plugin_files)
+    return [
+        issue(
+            "plugin_source_syntax_warning",
+            (
+                f"发现 {len(scan.syntax_errors)} 个插件源码文件不是合法 JS，已跳过插件源码文本扫描；"
+                f"其中启用插件 {active_count} 个，详情见 plugin-source-risk-report.json"
+            ),
+        )
+    ]
+
+
 class WorkspaceAgentMixin:
     """承载 AgentToolkitService 的 WorkspaceAgentMixin 命令族。"""
 
@@ -136,6 +160,7 @@ class WorkspaceAgentMixin:
         warnings: list[AgentIssue] = []
         if not scan.candidates:
             warnings.append(issue("plugin_source_text_empty", "没有扫描到插件源码硬编码文本候选"))
+        warnings.extend(_plugin_source_scan_warnings(scan))
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
@@ -178,7 +203,7 @@ class WorkspaceAgentMixin:
         details["output"] = str(output_path)
         return AgentReport.from_parts(
             errors=[],
-            warnings=[],
+            warnings=_plugin_source_scan_warnings(scan),
             summary={
                 "source_view": resolved_view.value,
                 "output": str(output_path),
@@ -213,6 +238,7 @@ class WorkspaceAgentMixin:
             note_tag_rules = await session.read_note_tag_text_rules()
             event_rules = await session.read_event_command_text_rules()
             plugin_source_rules = await session.read_plugin_source_text_rules()
+            nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             placeholder_records = await session.read_placeholder_rules()
             structured_placeholder_records = await session.read_structured_placeholder_rules()
@@ -234,6 +260,12 @@ class WorkspaceAgentMixin:
                 rule_records=plugin_source_rules,
             )
             plugin_source_extension_active = plugin_source_scan.risk.high_risk or bool(plugin_source_rules)
+            nonstandard_data_scan = await build_nonstandard_data_scan(
+                layout=game_data.layout,
+                source_view=GameFileView.TRANSLATION_SOURCE,
+                text_rules=text_rules,
+            )
+            nonstandard_data_extension_active = nonstandard_data_scan.high_risk or bool(nonstandard_data_rules)
         terminology_summary = await export_terminology_artifacts(
             game_data=game_data,
             output_dir=target_dir / "terminology",
@@ -271,6 +303,27 @@ class WorkspaceAgentMixin:
             await _write_json_value(
                 plugin_source_rules_path,
                 plugin_source_rule_records_to_import_json(plugin_source_rules),
+            )
+        nonstandard_data_dir = target_dir / "nonstandard-data"
+        nonstandard_data_export_details = await export_nonstandard_data_workspace(
+            scan=nonstandard_data_scan,
+            output_dir=nonstandard_data_dir,
+        )
+        nonstandard_data_risk_path = target_dir / "nonstandard-data-risk-report.json"
+        await _write_json_object(
+            nonstandard_data_risk_path,
+            {
+                "source_view": GameFileView.TRANSLATION_SOURCE.value,
+                "summary": nonstandard_data_scan.summary_json(),
+                "files": [file_scan.to_json_object() for file_scan in nonstandard_data_scan.file_scans],
+            },
+        )
+        nonstandard_data_rules_path: Path | None = None
+        if nonstandard_data_extension_active:
+            nonstandard_data_rules_path = target_dir / "nonstandard-data-rules.json"
+            await _write_json_value(
+                nonstandard_data_rules_path,
+                nonstandard_data_rule_records_to_import_json(nonstandard_data_rules),
             )
         note_tag_candidates_path = target_dir / "note-tag-candidates.json"
         note_tag_report = await export_note_tag_candidates_file(
@@ -350,7 +403,13 @@ class WorkspaceAgentMixin:
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
             "plugin_source_candidate_count": len(plugin_source_scan.candidates),
             "plugin_source_high_risk": plugin_source_scan.risk.high_risk,
+            "plugin_source_syntax_error_file_count": len(plugin_source_scan.syntax_errors),
             "stale_plugin_rule_count": stale_plugin_rule_count,
+            "nonstandard_data_file_count": len(nonstandard_data_scan.files),
+            "nonstandard_data_candidate_count": len(nonstandard_data_scan.candidates),
+            "nonstandard_data_high_risk": nonstandard_data_scan.high_risk,
+            "nonstandard_data_path_rule_count": sum(len(rule.path_templates) for rule in nonstandard_data_rules),
+            "nonstandard_data_skipped_file_count": sum(1 for rule in nonstandard_data_rules if rule.skipped),
             "note_tag_candidate_count": note_tag_report.candidate_tag_count,
             "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
             "event_command_count": event_command_count,
@@ -382,6 +441,8 @@ class WorkspaceAgentMixin:
             str(plugin_json_string_leaf_candidates_path),
             str(plugin_rules_path),
             str(plugin_source_risk_path),
+            str(nonstandard_data_risk_path),
+            str(nonstandard_data_dir),
             str(note_tag_candidates_path),
             str(note_tag_rules_path),
             str(event_commands_path),
@@ -392,6 +453,8 @@ class WorkspaceAgentMixin:
         ]
         if plugin_source_rules_path is not None:
             manifest_files.append(str(plugin_source_rules_path))
+        if nonstandard_data_rules_path is not None:
+            manifest_files.append(str(nonstandard_data_rules_path))
         if mv_virtual_namebox_candidates_path is not None:
             manifest_files.append(str(mv_virtual_namebox_candidates_path))
         if mv_virtual_namebox_rules_path is not None:
@@ -419,9 +482,15 @@ class WorkspaceAgentMixin:
             _ = await file.write(f"{json.dumps(manifest, ensure_ascii=False, indent=2)}\n")
         return AgentReport.from_parts(
             errors=[],
-            warnings=[],
+            warnings=[
+                *_nonstandard_data_skipped_warnings(nonstandard_data_rules),
+                *_plugin_source_scan_warnings(plugin_source_scan),
+            ],
             summary={**generated_summary, "workspace": str(target_dir), "manifest": str(manifest_path)},
-            details={"manifest": manifest},
+            details={
+                "manifest": manifest,
+                "nonstandard_data_export": nonstandard_data_export_details,
+            },
         )
 
     async def validate_agent_workspace(
@@ -433,7 +502,7 @@ class WorkspaceAgentMixin:
     ) -> AgentReport:
         """检查 Agent 临时工作区里的可导入文件。"""
         set_progress, advance_progress, set_status = callbacks or _noop_quality_progress_callbacks()
-        set_progress(0, 12)
+        set_progress(0, 13)
         set_status("读取工作区清单")
         errors: list[AgentIssue] = []
         warnings: list[AgentIssue] = []
@@ -442,6 +511,8 @@ class WorkspaceAgentMixin:
         glossary_path = workspace / "terminology" / "glossary.json"
         plugin_rules_path = workspace / "plugin-rules.json"
         plugin_source_rules_path = workspace / "plugin-source-rules.json"
+        nonstandard_data_risk_path = workspace / "nonstandard-data-risk-report.json"
+        nonstandard_data_rules_path = workspace / "nonstandard-data-rules.json"
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
@@ -485,10 +556,23 @@ class WorkspaceAgentMixin:
                 text_rules=text_rules,
             )
             plugin_source_required = plugin_source_scan.risk.high_risk
+            set_status("扫描非标准 data 文件")
+            try:
+                nonstandard_data_scan = await build_nonstandard_data_scan(
+                    layout=game_data.layout,
+                    source_view=GameFileView.TRANSLATION_SOURCE,
+                    text_rules=text_rules,
+                )
+                nonstandard_data_scan_error: Exception | None = None
+            except Exception as error:
+                nonstandard_data_scan = None
+                nonstandard_data_scan_error = error
             advance_progress(1)
             set_status("读取已保存译文和空规则复核状态")
             stored_plugin_source_rules = await session.read_plugin_source_text_rules()
             plugin_source_started = bool(stored_plugin_source_rules)
+            stored_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
+            nonstandard_data_started = bool(stored_nonstandard_data_rules)
             translated_paths = await session.read_translation_location_paths()
             empty_rule_issues = await _read_empty_rule_review_issues(
                 session=session,
@@ -584,7 +668,7 @@ class WorkspaceAgentMixin:
             if _summary_int(plugin_report.summary, "rule_count") == 0:
                 plugin_empty_issue = empty_rule_issues["plugin_rules"]
                 if plugin_empty_issue is not None:
-                    errors.append(plugin_empty_issue)
+                    warnings.append(plugin_empty_issue)
         else:
             errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
         if plugin_source_rules_path.exists():
@@ -637,6 +721,47 @@ class WorkspaceAgentMixin:
             if plugin_source_required or plugin_source_started:
                 errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
         advance_progress(1)
+        set_status("校验非标准 data 文件规则")
+        if not nonstandard_data_risk_path.exists():
+            errors.append(issue("nonstandard_data_risk_report_missing", "工作区缺少 nonstandard-data-risk-report.json"))
+        if nonstandard_data_scan_error is not None:
+            errors.append(
+                issue(
+                    "nonstandard_data_scan_failed",
+                    f"非标准 data 文件文本扫描失败: {type(nonstandard_data_scan_error).__name__}: {nonstandard_data_scan_error}",
+                )
+            )
+        elif nonstandard_data_scan is not None and nonstandard_data_rules_path.exists():
+            try:
+                async with aiofiles.open(nonstandard_data_rules_path, "r", encoding="utf-8") as file:
+                    nonstandard_data_rules_text = await file.read()
+                nonstandard_data_import_file = parse_nonstandard_data_rule_import_text(nonstandard_data_rules_text)
+                nonstandard_data_validation = validate_nonstandard_data_rules(
+                    scan=nonstandard_data_scan,
+                    import_file=nonstandard_data_import_file,
+                )
+                if nonstandard_data_validation.skipped_files:
+                    persistent_warnings = _nonstandard_data_skipped_warnings(stored_nonstandard_data_rules)
+                    if persistent_warnings:
+                        warnings.extend(persistent_warnings)
+                    else:
+                        warnings.append(
+                            issue(
+                                "nonstandard_data_files_skipped",
+                                f"已确认跳过 {len(nonstandard_data_validation.skipped_files)} 个非标准 data 文件，后续报告仍会提示这些文件可能残留源文",
+                            )
+                        )
+                details["nonstandard_data_rules"] = nonstandard_data_validation.details
+            except Exception as error:
+                errors.append(
+                    issue(
+                        "nonstandard_data_rules_invalid",
+                        f"非标准 data 文件文本规则不可导入: {type(error).__name__}: {error}",
+                    )
+                )
+        elif nonstandard_data_scan is not None and (nonstandard_data_scan.high_risk or nonstandard_data_started):
+            errors.append(issue("nonstandard_data_rules_missing", "工作区缺少 nonstandard-data-rules.json"))
+        advance_progress(1)
         set_status("校验 Note 和事件规则")
         if note_tag_rules_path.exists():
             async with aiofiles.open(note_tag_rules_path, "r", encoding="utf-8") as file:
@@ -652,7 +777,7 @@ class WorkspaceAgentMixin:
             if _summary_int(note_tag_report.summary, "tag_count") == 0:
                 note_tag_empty_issue = empty_rule_issues["note_tag_rules"]
                 if note_tag_empty_issue is not None:
-                    errors.append(note_tag_empty_issue)
+                    warnings.append(note_tag_empty_issue)
         else:
             errors.append(issue("note_tag_rules_missing", "工作区缺少 note-tag-rules.json"))
         if event_rules_path.exists():
@@ -669,7 +794,7 @@ class WorkspaceAgentMixin:
             if _summary_int(event_report.summary, "path_rule_count") == 0:
                 event_empty_issue = empty_rule_issues["event_command_rules"]
                 if event_empty_issue is not None:
-                    errors.append(event_empty_issue)
+                    warnings.append(event_empty_issue)
         else:
             errors.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
         advance_progress(1)
@@ -688,7 +813,7 @@ class WorkspaceAgentMixin:
                 if _summary_int(mv_namebox_report.summary, "rule_count") == 0:
                     mv_namebox_empty_issue = empty_rule_issues["mv_virtual_namebox_rules"]
                     if mv_namebox_empty_issue is not None:
-                        errors.append(mv_namebox_empty_issue)
+                        warnings.append(mv_namebox_empty_issue)
             else:
                 errors.append(issue("mv_virtual_namebox_rules_missing", f"MV 工作区缺少 {MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME}"))
         if placeholder_rules_path.exists():
@@ -706,7 +831,7 @@ class WorkspaceAgentMixin:
             if _summary_int(placeholder_report.summary, "rule_count") == 0:
                 placeholder_empty_issue = empty_rule_issues["placeholder_rules"]
                 if placeholder_empty_issue is not None:
-                    errors.append(placeholder_empty_issue)
+                    warnings.append(placeholder_empty_issue)
             try:
                 placeholder_coverage_report = _build_workspace_placeholder_coverage_report(
                     rules_text=placeholder_rules_text,
@@ -715,6 +840,7 @@ class WorkspaceAgentMixin:
                     translation_data_map=translation_data_map,
                 )
                 errors.extend(placeholder_coverage_report.errors)
+                warnings.extend(placeholder_coverage_report.warnings)
                 details["placeholder_coverage"] = {
                     "summary": placeholder_coverage_report.summary,
                     "details": placeholder_coverage_report.details,
@@ -723,10 +849,10 @@ class WorkspaceAgentMixin:
                 if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
                     errors.append(issue("placeholder_coverage_invalid", "占位符候选扫描缺少有效的 uncovered_count"))
                 elif uncovered_value > 0:
-                    errors.append(
+                    warnings.append(
                         issue(
                             "placeholder_coverage_uncovered",
-                            f"还有 {uncovered_value} 个当前正文会使用但未被规则覆盖的游戏控制符",
+                            f"还有 {uncovered_value} 个当前正文会使用但未被规则覆盖的游戏控制符；导入时需要确认候选风险",
                         )
                     )
             except Exception as error:
@@ -760,7 +886,7 @@ class WorkspaceAgentMixin:
             if _summary_int(structured_placeholder_report.summary, "rule_count") == 0:
                 structured_placeholder_empty_issue = empty_rule_issues["structured_placeholder_rules"]
                 if structured_placeholder_empty_issue is not None:
-                    errors.append(structured_placeholder_empty_issue)
+                    warnings.append(structured_placeholder_empty_issue)
             try:
                 structured_placeholder_coverage_report = _build_workspace_structured_placeholder_coverage_report(
                     game_title=game_title,
@@ -777,10 +903,10 @@ class WorkspaceAgentMixin:
                 if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
                     errors.append(issue("structured_placeholder_coverage_invalid", "结构化占位符候选扫描缺少有效的 uncovered_count"))
                 elif uncovered_value > 0:
-                    errors.append(
+                    warnings.append(
                         issue(
                             "structured_placeholder_coverage_uncovered",
-                            f"还有 {uncovered_value} 个当前正文会使用但未被结构化规则覆盖的协议外壳候选",
+                            f"还有 {uncovered_value} 个当前正文会使用但未被结构化规则覆盖的协议外壳候选；导入时需要确认候选风险",
                         )
                     )
             except Exception as error:

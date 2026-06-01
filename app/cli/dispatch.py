@@ -9,7 +9,13 @@ import argparse
 from collections.abc import Awaitable, Callable
 
 from app.cli.arguments import read_str_arg
-from app.cli.commands.registry import run_add_game_command, run_doctor_command, run_list_command
+from app.cli.commands.registry import (
+    run_add_game_command,
+    run_doctor_command,
+    run_list_command,
+    run_probe_source_language_command,
+    run_reset_game_command,
+)
 from app.cli.commands.rules import (
     run_build_placeholder_rules_command,
     run_export_event_commands_json_command,
@@ -18,16 +24,20 @@ from app.cli.commands.rules import (
     run_export_plugins_json_command,
     run_import_event_command_rules_command,
     run_import_mv_virtual_namebox_rules_command,
+    run_import_nonstandard_data_rules_command,
     run_import_note_tag_rules_command,
     run_import_placeholder_rules_command,
     run_import_plugin_source_rules_command,
     run_import_plugin_rules_command,
     run_import_source_residual_rules_command,
     run_import_structured_placeholder_rules_command,
+    run_export_nonstandard_data_json_command,
     run_scan_placeholder_candidates_command,
+    run_scan_nonstandard_data_command,
     run_scan_structured_placeholder_candidates_command,
     run_validate_event_command_rules_command,
     run_validate_mv_virtual_namebox_rules_command,
+    run_validate_nonstandard_data_rules_command,
     run_validate_note_tag_rules_command,
     run_validate_placeholder_rules_command,
     run_validate_plugin_source_rules_command,
@@ -71,7 +81,9 @@ CommandHandler = Callable[[argparse.Namespace], Awaitable[int]]
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "list": run_list_command,
     "doctor": run_doctor_command,
+    "probe-source-language": run_probe_source_language_command,
     "add-game": run_add_game_command,
+    "reset-game": run_reset_game_command,
     "export-plugins-json": run_export_plugins_json_command,
     "import-plugin-rules": run_import_plugin_rules_command,
     "export-event-commands-json": run_export_event_commands_json_command,
@@ -79,6 +91,10 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "export-note-tag-candidates": run_export_note_tag_candidates_command,
     "validate-note-tag-rules": run_validate_note_tag_rules_command,
     "import-note-tag-rules": run_import_note_tag_rules_command,
+    "scan-nonstandard-data": run_scan_nonstandard_data_command,
+    "export-nonstandard-data-json": run_export_nonstandard_data_json_command,
+    "validate-nonstandard-data-rules": run_validate_nonstandard_data_rules_command,
+    "import-nonstandard-data-rules": run_import_nonstandard_data_rules_command,
     "scan-placeholder-candidates": run_scan_placeholder_candidates_command,
     "validate-placeholder-rules": run_validate_placeholder_rules_command,
     "build-placeholder-rules": run_build_placeholder_rules_command,

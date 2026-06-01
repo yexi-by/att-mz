@@ -23,12 +23,13 @@ rpm = 200
 retry_count = 3
 retry_delay = 2
 include_source_lines = false
-system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"
-# 注册游戏时必须显式使用 `add-game --source-language ja|en`；运行时会自动切换到对应提示词。
-# 默认提示词文件名含义：`ja_to_zh` 表示日文到简体中文，`en_to_zh` 表示英文到简体中文。
-# 如果这里填写自定义提示词文件，语言档案不会覆盖该文件；CLI 的 --system-prompt 仍是最高优先级。
 # 自定义提示词可包含 `{{输出字段列表}}`、`{{原文对照规则}}`、`{{原文对照示例行}}` 三个模板占位符来控制输出协议位置；不包含时程序会在末尾自动追加本轮输出协议。
 # 默认不要求模型输出原文对照，排障时可改为 true 或在命令行临时传 `--include-source-lines`。
+# 注册游戏时必须显式使用 `add-game --source-language ja|en`；运行时按注册源语言从下表选择提示词。
+
+[text_translation.system_prompt_files]
+ja = "prompts/text_translation_ja_to_zh_system.md"
+en = "prompts/text_translation_en_to_zh_system.md"
 
 [event_command_text]
 default_command_codes = [357]

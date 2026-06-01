@@ -102,7 +102,7 @@ def apply_setting_overrides(
     )
     if overrides.text_translation_system_prompt is not None:
         text_translation["system_prompt"] = overrides.text_translation_system_prompt
-        text_translation["system_prompt_file"] = "<cli>"
+        text_translation["selected_system_prompt_file"] = "<cli>"
 
     event_command_text = _read_or_create_section(raw_config, "event_command_text")
     _set_if_present(

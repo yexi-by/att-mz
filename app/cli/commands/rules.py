@@ -20,7 +20,7 @@ from app.cli.arguments import (
 )
 from app.cli.runtime import HandlerSession, resolve_optional_target_game_title, resolve_target_game_title
 from app.cli.reports import build_sampled_stdout_report, write_report_outputs
-from app.rmmz.text_rules import JsonObject
+from app.rmmz.text_rules import JsonArray, JsonObject
 
 
 async def run_export_plugins_json_command(args: argparse.Namespace) -> int:
@@ -96,12 +96,14 @@ async def run_export_event_commands_json_command(args: argparse.Namespace) -> in
             output_path=output_path,
             command_codes=command_codes,
         )
+    exported_command_codes: JsonArray = [code for code in summary.command_codes]
     report = AgentReport.from_parts(
         errors=[],
         warnings=[],
         summary={
             "game": game_title,
             "output": summary.output_path,
+            "command_codes": exported_command_codes,
             "command_count": summary.command_count,
         },
         details={},
@@ -224,6 +226,54 @@ async def run_import_note_tag_rules_command(args: argparse.Namespace) -> int:
         confirm_empty=read_bool_arg(args, "confirm_empty"),
     )
     write_report_outputs(report=report, args=args, title="Note 标签规则导入报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_scan_nonstandard_data_command(args: argparse.Namespace) -> int:
+    """执行 `scan-nonstandard-data` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    service = AgentToolkitService()
+    report = await service.scan_nonstandard_data(game_title=game_title)
+    write_report_outputs(report=report, args=args, title="非标准 data 文件文本风险报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_export_nonstandard_data_json_command(args: argparse.Namespace) -> int:
+    """执行 `export-nonstandard-data-json` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    output_dir = read_required_path_arg(args, "output_dir")
+    service = AgentToolkitService()
+    report = await service.export_nonstandard_data_json(
+        game_title=game_title,
+        output_dir=output_dir,
+    )
+    write_report_outputs(report=report, args=args, title="非标准 data 文件文本导出报告", write_output_file=False)
+    return 1 if report.status == "error" else 0
+
+
+async def run_validate_nonstandard_data_rules_command(args: argparse.Namespace) -> int:
+    """执行 `validate-nonstandard-data-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.validate_nonstandard_data_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+    )
+    write_report_outputs(report=report, args=args, title="非标准 data 文件文本规则校验报告")
+    return 1 if report.status == "error" else 0
+
+
+async def run_import_nonstandard_data_rules_command(args: argparse.Namespace) -> int:
+    """执行 `import-nonstandard-data-rules` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    rules_text = await read_text_file(read_required_path_arg(args, "input"))
+    service = AgentToolkitService()
+    report = await service.import_nonstandard_data_rules(
+        game_title=game_title,
+        rules_text=rules_text,
+    )
+    write_report_outputs(report=report, args=args, title="非标准 data 文件文本规则导入报告")
     return 1 if report.status == "error" else 0
 
 

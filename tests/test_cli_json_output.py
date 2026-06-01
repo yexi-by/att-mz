@@ -64,8 +64,23 @@ def test_add_game_requires_explicit_source_language() -> None:
         _ = parser.parse_args(["add-game", "--path", "demo"])
 
     args = parser.parse_args(["add-game", "--path", "demo", "--source-language", "ja"])
+    probe_args = parser.parse_args(["probe-source-language", "--path", "demo", "--output", "probe.json"])
+    reset_args = parser.parse_args(
+        [
+            "reset-game",
+            "--game",
+            "demo",
+            "--dry-run",
+            "--confirm-game-title",
+            "demo",
+        ]
+    )
 
     assert namespace_optional_str(args, "source_language") == "ja"
+    assert namespace_optional_str(probe_args, "path") == "demo"
+    assert namespace_optional_str(probe_args, "output") == "probe.json"
+    assert namespace_optional_str(reset_args, "confirm_game_title") == "demo"
+    assert getattr(reset_args, "dry_run") is True
 
 
 def test_add_game_existing_source_snapshot_reports_business_error(
@@ -139,7 +154,7 @@ async def test_list_json_includes_engine_layout_metadata(
     class FakeRegistry:
         """替代真实注册表，避免测试依赖全局数据库目录。"""
 
-        async def list_games(self) -> list[FakeRegisteredGame]:
+        async def list_games_with_issues(self) -> tuple[list[FakeRegisteredGame], list[object]]:
             """返回一条带完整引擎布局字段的注册记录。"""
             return [
                 FakeRegisteredGame(
@@ -152,7 +167,7 @@ async def test_list_json_includes_engine_layout_metadata(
                     source_language="en",
                     target_language="zh-Hans",
                 )
-            ]
+            ], []
 
     monkeypatch.setattr("app.cli.commands.registry.GameRegistry", FakeRegistry)
 
@@ -849,6 +864,44 @@ def test_rule_commands_accept_input_files() -> None:
             "note-tag-rules.json",
         ]
     )
+    nonstandard_scan_args = parser.parse_args(
+        [
+            "scan-nonstandard-data",
+            "--game",
+            "demo",
+            "--output",
+            "nonstandard-data-risk-report.json",
+        ]
+    )
+    nonstandard_export_args = parser.parse_args(
+        [
+            "export-nonstandard-data-json",
+            "--game",
+            "demo",
+            "--output-dir",
+            "nonstandard-data",
+        ]
+    )
+    nonstandard_validate_args = parser.parse_args(
+        [
+            "validate-nonstandard-data-rules",
+            "--game",
+            "demo",
+            "--input",
+            "nonstandard-data-rules.json",
+            "--output",
+            "nonstandard-data-report.json",
+        ]
+    )
+    nonstandard_import_args = parser.parse_args(
+        [
+            "import-nonstandard-data-rules",
+            "--game",
+            "demo",
+            "--input",
+            "nonstandard-data-rules.json",
+        ]
+    )
     residual_args = parser.parse_args(
         [
             "validate-source-residual-rules",
@@ -920,6 +973,11 @@ def test_rule_commands_accept_input_files() -> None:
     assert namespace_optional_str(note_export_args, "output") == "note-tag-candidates.json"
     assert namespace_optional_str(note_validate_args, "input") == "note-tag-rules.json"
     assert namespace_optional_str(note_import_args, "input") == "note-tag-rules.json"
+    assert namespace_optional_str(nonstandard_scan_args, "output") == "nonstandard-data-risk-report.json"
+    assert namespace_optional_str(nonstandard_export_args, "output_dir") == "nonstandard-data"
+    assert namespace_optional_str(nonstandard_validate_args, "input") == "nonstandard-data-rules.json"
+    assert namespace_optional_str(nonstandard_validate_args, "output") == "nonstandard-data-report.json"
+    assert namespace_optional_str(nonstandard_import_args, "input") == "nonstandard-data-rules.json"
     assert namespace_optional_str(residual_args, "input") == "source-residual-rules.json"
     assert namespace_optional_str(residual_args, "rules") is None
     assert namespace_optional_str(residual_import_args, "input") == "source-residual-rules.json"
@@ -950,6 +1008,28 @@ def test_validate_agent_workspace_command_accepts_output_file() -> None:
 
     assert namespace_optional_str(args, "workspace") == "workspace"
     assert namespace_optional_str(args, "output") == "validate-agent-workspace-report.json"
+
+
+def test_placeholder_confirm_empty_help_describes_reviewed_candidates(
+    capsys: CaptureFixture[str],
+) -> None:
+    """占位符空规则确认描述的是已审查候选，不是候选必须为空。"""
+    parser = build_parser()
+
+    with pytest.raises(SystemExit) as placeholder_exit:
+        _ = parser.parse_args(["import-placeholder-rules", "--help"])
+    assert placeholder_exit.value.code == 0
+    placeholder_help = capsys.readouterr().out
+
+    with pytest.raises(SystemExit) as structured_exit:
+        _ = parser.parse_args(["import-structured-placeholder-rules", "--help"])
+    assert structured_exit.value.code == 0
+    structured_help = capsys.readouterr().out
+
+    assert "确认已审查当前普通占位符候选" in placeholder_help
+    assert "确认已审查当前结构化占位符候选" in structured_help
+    assert "确认当前扫描没有" not in placeholder_help
+    assert "确认当前扫描没有" not in structured_help
 
 
 def test_translate_quality_errors_do_not_fail_process() -> None:

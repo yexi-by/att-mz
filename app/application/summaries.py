@@ -26,6 +26,7 @@ class EventCommandJsonExportSummary:
     """事件指令参数 JSON 导出任务摘要。"""
 
     output_path: str
+    command_codes: list[int]
     command_count: int
 
 

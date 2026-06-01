@@ -44,7 +44,10 @@ worker_count = 1
 rpm = 10
 retry_count = 1
 retry_delay = 1
-system_prompt_file = "missing_prompt.txt"
+
+[text_translation.system_prompt_files]
+ja = "missing_prompt.txt"
+en = "missing_prompt.txt"
 
 [event_command_text]
 default_command_codes = [357]
@@ -103,7 +106,7 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
     assert setting.text_translation.retry_count == 5
     assert setting.text_translation.retry_delay == 3
     assert setting.text_translation.include_source_lines is True
-    assert setting.text_translation.system_prompt_file == "<cli>"
+    assert setting.text_translation.selected_system_prompt_file == "<cli>"
     assert setting.text_translation.system_prompt.startswith("系统提示词")
     assert "`source_lines` 尽量原样复制输入原文，用于人工对照。" in setting.text_translation.system_prompt
     assert setting.event_command_text.default_command_codes == [357, 355]
@@ -128,7 +131,7 @@ def test_english_language_profile_selects_public_prompt(monkeypatch: pytest.Monk
     setting = load_setting(setting_path=ROOT / "setting.example.toml", source_language="en")
     system_prompt = setting.text_translation.system_prompt
 
-    assert setting.text_translation.system_prompt_file == "prompts/text_translation_en_to_zh_system.md"
+    assert setting.text_translation.selected_system_prompt_file == "prompts/text_translation_en_to_zh_system.md"
     assert "RPG Maker 英文游戏" in system_prompt
     assert "location_path" not in system_prompt
     assert "translated_text" not in system_prompt
@@ -146,7 +149,7 @@ def test_japanese_language_profile_selects_explicit_public_prompt(
     setting = load_setting(setting_path=ROOT / "setting.example.toml", source_language="ja")
     system_prompt = setting.text_translation.system_prompt
 
-    assert setting.text_translation.system_prompt_file == "prompts/text_translation_ja_to_zh_system.md"
+    assert setting.text_translation.selected_system_prompt_file == "prompts/text_translation_ja_to_zh_system.md"
     assert "RPG Maker 日文到简体中文游戏" in system_prompt
     assert "text_translation_ja_to_zh_system.md" not in system_prompt
 
@@ -229,6 +232,44 @@ def test_custom_prompt_partial_template_fails_fast(
         _ = load_setting(setting_path=setting_path)
 
 
+def test_obsolete_single_prompt_file_setting_fails_fast(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧的单提示词配置必须显式报错，避免默认日文提示词伪装成当前游戏事实。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    setting_path = tmp_path / "setting.toml"
+    _ = setting_path.write_text(
+        """
+[llm]
+base_url = "https://example.invalid"
+api_key = "from-file"
+model = "file-model"
+timeout = 10
+
+[translation_context]
+token_size = 10
+factor = 1.0
+max_command_items = 1
+
+[text_translation]
+worker_count = 1
+rpm = 10
+retry_count = 1
+retry_delay = 1
+system_prompt_file = "prompt.txt"
+
+[event_command_text]
+default_command_codes = [357]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="text_translation.system_prompt_file 已废弃"):
+        _ = load_setting(setting_path=setting_path)
+
+
 def test_custom_prompt_template_can_enable_source_lines_protocol(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -290,7 +331,10 @@ worker_count = 1
 rpm = 10
 retry_count = 1
 retry_delay = 1
-system_prompt_file = "prompt.txt"
+
+[text_translation.system_prompt_files]
+ja = "prompt.txt"
+en = "prompt.txt"
 
 [event_command_text]
 default_command_codes = [357]
@@ -391,7 +435,10 @@ rpm = 10
 retry_count = 1
 retry_delay = 1
 {text_translation_extra}
-system_prompt_file = "prompt.txt"
+
+[text_translation.system_prompt_files]
+ja = "prompt.txt"
+en = "prompt.txt"
 
 [event_command_text]
 default_command_codes = [357]

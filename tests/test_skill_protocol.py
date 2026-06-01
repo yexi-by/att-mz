@@ -11,6 +11,7 @@ DEV_SKILL = ROOT / "skills" / "att-mz" / "SKILL.md"
 RELEASE_SKILL = ROOT / "skills" / "att-mz-release" / "SKILL.md"
 DEV_REFERENCES = ROOT / "skills" / "att-mz" / "references"
 RELEASE_REFERENCES = ROOT / "skills" / "att-mz-release" / "references"
+PROJECT_AGENTS = ROOT / "AGENTS.md"
 
 REQUIRED_REFERENCE_NAMES = {
     "cli-command-contract.md",
@@ -20,6 +21,7 @@ REQUIRED_REFERENCE_NAMES = {
     "terminology-workflow.md",
     "external-rules-workflow.md",
     "plugin-rules-agent-task.md",
+    "nonstandard-data-agent-task.md",
     "plugin-source-text-agent-task.md",
     "event-command-rules-agent-task.md",
     "note-tag-rules-agent-task.md",
@@ -80,6 +82,7 @@ def test_main_skill_matrix_uses_cohesive_work_units() -> None:
         "| 术语概念 |",
         "| 术语工程 |",
         "| 外部文本规则 |",
+        "| 非标准 data 文本 |",
         "| 插件源码文本 |",
         "| 占位符收束 |",
         "| 正文翻译 |",
@@ -225,7 +228,9 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         "文件型规则一律用 `--input <文件>`",
         "不要用 `--rules \"$(cat ...)\"`",
         "不要把大 JSON 塞进命令行",
-        "注册游戏必须显式传 `--source-language ja` 或 `--source-language en`",
+        "注册游戏必须先运行 `probe-source-language --path <游戏目录>`",
+        "`probe-source-language --path <游戏目录> --output <探测报告>`",
+        "探测命令只提供分析报告",
         "`doctor --no-check-llm`",
         "`list`",
         "`prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`",
@@ -313,6 +318,9 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
         "plugin-rules.json",
         "plugin-source-risk-report.json",
         "plugin-source-rules.json",
+        "nonstandard-data-risk-report.json",
+        "nonstandard-data/candidates.json",
+        "nonstandard-data-rules.json",
         "event-command-rules.json",
         "note-tag-rules.json",
         "pending-translations.json",
@@ -364,7 +372,7 @@ def test_external_rule_references_define_second_round_contracts() -> None:
     workflow_text = read(DEV_REFERENCES / "external-rules-workflow.md")
     for phrase in [
         "插件规则、事件指令规则和 Note 标签规则可以并行处理",
-        "插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动",
+        "非标准 data 文本和插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动",
         "三类外部规则全部导入后，才能重新生成和收束占位符规则",
         "plugin-rules-agent-task.md",
         "event-command-rules-agent-task.md",
@@ -457,6 +465,26 @@ def test_plugin_source_reference_allows_read_only_source_cross_check() -> None:
                 assert phrase in text
 
 
+def test_nonstandard_data_reference_defines_side_branch_contract() -> None:
+    """非标准 data 支线任务必须限定输入边界、全量归类和跳过语义。"""
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "nonstandard-data-agent-task.md")
+        for phrase in [
+            "非标准 `data/*.json`",
+            "`nonstandard-data-risk-report.json`",
+            "`nonstandard-data/candidates.json`",
+            "`nonstandard-data/source/*.json`",
+            "不读取 A.T.T MZ 项目源码、数据库、内部 Python 对象或游戏目录其他文件",
+            "唯一可写文件是 `<工作区>/nonstandard-data-rules.json`",
+            "必须全量归类",
+            "`skipped: true` 只能在用户明确确认",
+            "后续报告会持续 warning",
+            "validate-nonstandard-data-rules --game <游戏标题> --input <工作区>/nonstandard-data-rules.json",
+            "import-nonstandard-data-rules --game <游戏标题> --input <工作区>/nonstandard-data-rules.json",
+        ]:
+            assert phrase in text
+
+
 def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> None:
     """普通占位符 reference 承载作用域和混合协议处理策略。"""
     text = read(DEV_REFERENCES / "placeholder-rules.md")
@@ -469,7 +497,10 @@ def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> No
         "三类外部规则改变后，必须重新运行",
         "不要因为它混有协议语法就一概排除",
         "去掉 `[CUSTOM_...]` 后仍应保留需要翻译的玩家可见文本",
-        "`summary.uncovered_count` 必须等于 0",
+        "确认无需写规则的误报或特殊候选可以在导入时确认风险",
+        "已审查但不写规则",
+        "剩余风险已确认",
+        "禁止为了消除计数而编造会吞文本或误保护的规则",
         "小写 `\\n` 是游戏文本中的字面量换行",
         r"原文是 `\F3[66」「` 时，译文也保留 `\F3[66」「`",
     ]:
@@ -491,7 +522,24 @@ def test_structured_placeholder_reference_defines_contract() -> None:
         "validate-structured-placeholder-rules",
         "scan-structured-placeholder-candidates",
         "import-structured-placeholder-rules",
+        "覆盖风险已处理或已确认",
+        "已审查但不写结构化规则",
+        "不要为了通过扫描而编造结构化规则",
         "源文残留检查会先在占位符仍存在的形态下执行，再恢复外壳",
+    ]:
+        assert phrase in text
+
+
+def test_agent_rules_forbid_unconditional_candidate_hard_blocks() -> None:
+    """项目规范固定候选扫描不能逼 Agent 编造规则。"""
+    text = read(PROJECT_AGENTS)
+    for phrase in [
+        "不能把“扫描命中”或“未覆盖候选”无条件升级为必须写规则的硬阻塞",
+        "翻译、保护、排除、确认跳过或确认风险",
+        "禁止要求 Agent 为了过检查而编造规则",
+        "工作区验收只能检查外部文件结构、候选风险和报告可见性",
+        "不得依赖必须先执行有副作用导入才会存在的数据库确认状态",
+        "已审查但不写规则",
     ]:
         assert phrase in text
 
@@ -608,7 +656,7 @@ def test_plugin_source_skill_allows_explicit_low_risk_request() -> None:
         workflow_text = read(references / "external-rules-workflow.md")
         assert "低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务" in task_text
         assert "默认审计不是补译清单" in task_text
-        assert "插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动" in workflow_text
+        assert "非标准 data 文本和插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动" in workflow_text
 
 
 def test_database_wiki_documents_configured_event_command_defaults() -> None:

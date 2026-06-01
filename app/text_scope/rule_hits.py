@@ -5,10 +5,17 @@ from __future__ import annotations
 from app.event_command_text.importer import command_matches_filters
 from app.note_tag_text.parser import iter_note_tag_matches
 from app.note_tag_text.sources import collect_note_tag_sources, note_file_pattern_matches
+from app.nonstandard_data import NonstandardDataTextExtraction
 from app.plugin_text.common import expand_rule_to_leaf_paths, jsonpath_to_location_path, resolve_plugin_leaves
 from app.plugin_text.paths import jsonpath_to_event_command_location_path, resolve_event_command_leaves
 from app.rmmz.commands import iter_all_commands
-from app.rmmz.schema import EventCommandTextRuleRecord, GameData, NoteTagTextRuleRecord, PluginTextRuleRecord
+from app.rmmz.schema import (
+    EventCommandTextRuleRecord,
+    GameData,
+    NonstandardDataTextRuleRecord,
+    NoteTagTextRuleRecord,
+    PluginTextRuleRecord,
+)
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.text_rules import TextRules
 
@@ -149,3 +156,26 @@ def collect_note_tag_rule_hits(
                     )
                 )
     return hits
+
+
+def collect_nonstandard_data_rule_hits(
+    *,
+    game_data: GameData,
+    nonstandard_data_rules: list[NonstandardDataTextRuleRecord],
+    text_rules: TextRules,
+) -> list[TextScopeRuleHit]:
+    """展开非标准 data 文件规则命中的全部字符串叶子。"""
+    extractor = NonstandardDataTextExtraction(
+        game_data=game_data,
+        rule_records=nonstandard_data_rules,
+        text_rules=text_rules,
+    )
+    return [
+        TextScopeRuleHit(
+            location_path=location_path,
+            source_type="nonstandard_data",
+            rule_source="非标准 data 文件文本规则",
+            original_text=original_text,
+        )
+        for location_path, original_text in extractor.collect_rule_hits()
+    ]

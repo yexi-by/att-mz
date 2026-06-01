@@ -5,13 +5,11 @@
 from .common import (
     AgentReport,
     AgentServiceContext,
-    DEFAULT_SOURCE_LANGUAGE,
     JsonArray,
     JsonObject,
     Path,
     PlaceholderRuleRecord,
     Sequence,
-    SourceLanguage,
     StructuredPlaceholderRule,
     StructuredPlaceholderRuleRecord,
     TextRules,
@@ -86,7 +84,6 @@ class PlaceholderRuleAgentMixin:
         sample_texts: Sequence[str],
     ) -> AgentReport:
         """校验自定义占位符规则，并预览样本文本的替换与还原结果。"""
-        setting_source_language: SourceLanguage = DEFAULT_SOURCE_LANGUAGE
         source_label = "--placeholder-rules"
         if custom_placeholder_rules_text is None and game_title is not None:
             source_label = "当前游戏数据库"
@@ -96,7 +93,6 @@ class PlaceholderRuleAgentMixin:
         try:
             if game_title is not None:
                 async with await self.game_registry.open_game(game_title) as session:
-                    setting_source_language = session.source_language
                     setting = load_setting(self.setting_path, source_language=session.source_language)
                     custom_rules = await self._resolve_custom_rules(
                         session=session,
@@ -117,12 +113,12 @@ class PlaceholderRuleAgentMixin:
                     else:
                         translation_data_map = None
             elif custom_placeholder_rules_text is None:
-                setting = load_setting(self.setting_path, source_language=setting_source_language)
+                setting = load_setting(self.setting_path)
                 custom_rules = ()
                 structured_rules = ()
                 translation_data_map = None
             else:
-                setting = load_setting(self.setting_path, source_language=setting_source_language)
+                setting = load_setting(self.setting_path)
                 custom_rules = load_custom_placeholder_rules_text(custom_placeholder_rules_text)
                 structured_rules = ()
                 translation_data_map = None
@@ -228,7 +224,13 @@ class PlaceholderRuleAgentMixin:
         scope_hash = placeholder_rule_scope_hash(candidate_details)
         async with await self.game_registry.open_game(game_title) as session:
             await session.replace_placeholder_rules(rule_records)
-            if rule_records:
+            if uncovered_count:
+                await session.replace_rule_review_state(
+                    rule_domain=PLACEHOLDER_RULE_DOMAIN,
+                    scope_hash=scope_hash,
+                    reviewed_empty=not rule_records,
+                )
+            elif rule_records:
                 await session.delete_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
             else:
                 await session.replace_rule_review_state(
@@ -236,24 +238,34 @@ class PlaceholderRuleAgentMixin:
                     scope_hash=scope_hash,
                     reviewed_empty=True,
                 )
+        warnings = [*validation_report.warnings]
+        if not rule_records:
+            warnings.append(issue("placeholder_rules_empty", "已导入空普通占位符规则"))
+        if uncovered_count:
+            warnings.append(
+                issue(
+                    "placeholder_uncovered_reviewed",
+                    f"仍有 {uncovered_count} 个未覆盖的疑似自定义控制符；本次导入已确认当前候选风险",
+                )
+            )
         return AgentReport.from_parts(
             errors=[],
-            warnings=validation_report.warnings
-            if rule_records
-            else [
-                *validation_report.warnings,
-                issue("placeholder_rules_empty", "已导入空自定义占位符规则"),
-            ],
+            warnings=warnings,
             summary={
                 "game": game_title,
                 "imported_rule_count": len(rule_records),
                 "validated_rule_count": validation_report.summary.get("rule_count", len(rule_records)),
                 "sample_count": validation_report.summary.get("sample_count", 0),
+                "uncovered_count": uncovered_count,
             },
             details={
                 "validation": {
                     "summary": validation_report.summary,
                     "details": validation_report.details,
+                },
+                "coverage": {
+                    "summary": coverage_report.summary,
+                    "details": coverage_report.details,
                 }
             },
         )
@@ -435,7 +447,13 @@ class PlaceholderRuleAgentMixin:
         scope_hash = structured_placeholder_rule_scope_hash(candidate_details)
         async with await self.game_registry.open_game(game_title) as session:
             await session.replace_structured_placeholder_rules(rule_records)
-            if rule_records:
+            if uncovered_count:
+                await session.replace_rule_review_state(
+                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+                    scope_hash=scope_hash,
+                    reviewed_empty=not rule_records,
+                )
+            elif rule_records:
                 await session.delete_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
             else:
                 await session.replace_rule_review_state(
@@ -443,24 +461,34 @@ class PlaceholderRuleAgentMixin:
                     scope_hash=scope_hash,
                     reviewed_empty=True,
                 )
+        warnings = [*validation_report.warnings]
+        if not rule_records:
+            warnings.append(issue("structured_placeholder_rules_empty", "已导入空结构化占位符规则"))
+        if uncovered_count:
+            warnings.append(
+                issue(
+                    "structured_placeholder_uncovered_reviewed",
+                    f"仍有 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选；本次导入已确认当前候选风险",
+                )
+            )
         return AgentReport.from_parts(
             errors=[],
-            warnings=validation_report.warnings
-            if rule_records
-            else [
-                *validation_report.warnings,
-                issue("structured_placeholder_rules_empty", "已导入空结构化占位符规则"),
-            ],
+            warnings=warnings,
             summary={
                 "game": game_title,
                 "imported_rule_count": len(rule_records),
                 "validated_rule_count": validation_report.summary.get("rule_count", len(rule_records)),
                 "sample_count": validation_report.summary.get("sample_count", 0),
+                "uncovered_count": uncovered_count,
             },
             details={
                 "validation": {
                     "summary": validation_report.summary,
                     "details": validation_report.details,
+                },
+                "coverage": {
+                    "summary": coverage_report.summary,
+                    "details": coverage_report.details,
                 }
             },
         )

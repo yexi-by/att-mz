@@ -47,13 +47,18 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
-| `list` | 列出当前已注册游戏 | 游戏清单可读取 | 未注册时先执行 add-game |
-| `doctor --no-check-llm` | 检查项目静态环境，不请求模型服务 | `status` 不是 `error` | 修环境后重跑，不启动翻译 |
+| `list` | 列出当前可读取的已注册游戏；旧库、坏库或外部 SQLite 会进入 warning 并跳过 | 命令返回 0，`summary.game_count` 和 `summary.skipped_database_count` 可解释 | 需要继续使用被跳过游戏时，按 warning 说明重新注册或修复对应库 |
+| `doctor --no-check-llm` | 检查项目静态环境，不请求模型服务；无 `--game` 时日志里的语言档案只是默认配置，不是当前游戏源语言 | `status` 不是 `error`，`summary.llm_connection_status` 为 `skipped` | 修环境后重跑，不启动翻译，不把默认语言档案当作注册依据 |
+| `probe-source-language --path <游戏目录> --output <探测报告>` | 注册前只按玩家可见文本探测源语言，排除资源名、公式、ID、脚本和协议值 | `summary.recommended_source_language` 为 `ja`、`en` 或 `uncertain`；命令不注册游戏、不写数据库、不创建可信源快照 | 不确定或与用户认知冲突时展示样本让用户确认，禁止用 grep 假名或英文字符代替 |
 | `add-game --path <游戏目录> --source-language ja` | 按日文源语言注册干净原始游戏目录 | `summary.game_title` 可用于后续 `--game` | 目录已有可信源快照时换用干净原始游戏目录 |
 | `add-game --path <游戏目录> --source-language en` | 按英文源语言注册干净原始游戏目录 | `summary.game_title` 可用于后续 `--game` | 目录已有可信源快照时换用干净原始游戏目录 |
-| `doctor --game <游戏标题> --no-check-llm` | 检查游戏绑定和规则状态 | `status` 不是 `error` | 缺规则时只允许继续准备工作区，不启动翻译或写回 |
+| `doctor --game <游戏标题> --no-check-llm` | 检查游戏绑定和规则状态；当前游戏源语言只看 `summary.source_language` | `status` 不是 `error`，`summary.llm_connection_status` 为 `skipped` | 缺规则时只允许继续准备工作区，不启动翻译或写回 |
+| `reset-game --game <游戏标题> --dry-run` | 危险回溯预演：只列出将恢复的运行文件和将删除的注册痕迹 | `summary.changed` 为 `false`，`details.restore` 和 `details.delete.paths` 可解释 | 真正执行前把计划转述给用户确认 |
+| `reset-game --game <游戏标题> --confirm-game-title <游戏标题>` | 用户明确要求时，把当前运行文件恢复到可信源快照，再删除 `data_origin`、`plugins_origin.js`、`plugins_source_origin`、`gamefont_origin.css` 和游戏数据库 | `summary.changed` 为 `true`；后续该游戏不再注册，需要重新 `add-game` | 确认标题不匹配、可信源快照缺失或校验失败时停止；禁止手动删库绕过恢复 |
 
-注册游戏必须显式传 `--source-language ja` 或 `--source-language en`，不做语言自动检测。
+注册游戏必须先运行 `probe-source-language --path <游戏目录>`，再显式传 `--source-language ja` 或 `--source-language en`。探测命令只提供分析报告，`add-game` 不读取探测报告，也不会自动替用户决定或阻止源语言选择。
+
+`reset-game` 只能在用户明确要求注销、重置或恢复到注册前状态时使用。执行顺序固定为先恢复当前运行文件，再删除注册痕迹；如果报告提示字体文件清单没有注册快照，只能说明该边界，不能自行删除无法证明由本项目创建的字体文件。
 
 ## 工作区与规则导入
 
@@ -63,7 +68,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>` | 总体验收工作区和规则覆盖；stdout 摘要、完整明细写入报告文件 | 无 `errors` | 逐项修工作区 JSON 后重跑 |
 | `cleanup-agent-workspace --workspace <工作区>` | 清理 CLI 生成的工作区文件 | 命令返回 0 | 缺 `manifest.json` 时先人工确认范围 |
 | `export-plugins-json --game <游戏标题> --output <plugins.json>` | 单独导出当前插件配置 JSON | 输出文件存在 | 重新检查游戏注册和 `js/plugins.js` |
-| `export-event-commands-json --game <游戏标题> --output <候选文件>` | 单独导出配置默认编码的事件指令候选 | 输出文件存在，候选数量可解释 | 需要覆盖默认编码时显式加 `--code CODE` 后重跑 |
+| `export-event-commands-json --game <游戏标题> --output <候选文件>` | 单独导出配置默认编码的事件指令候选 | 输出文件存在，`summary.command_codes` 和候选数量可解释 | 需要覆盖默认编码时显式加 `--code CODE` 后重跑 |
 
 ## MV 虚拟名字框
 
@@ -84,6 +89,10 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件>` | 用户确认高风险后导出插件源码 AST 地图；默认 `--view translation-source` | 输出文件存在，风险摘要、候选数量和 `summary.source_view` 可解释 | 只处理 `js/plugins` 直接 `.js` 文件；需要审计当前运行文件时显式传 `--view active-runtime` |
 | `validate-plugin-source-rules --game <游戏标题> --input <规则文件>` | 校验插件源码 selector、排除 selector 和当前源码哈希 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 修 `plugin-source-rules.json` 后重跑；selector 失效时重新导出 AST 地图 |
 | `import-plugin-source-rules --game <游戏标题> --input <规则文件>` | 保存插件源码文本规则 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 导入后重新扫描占位符候选，再进入正文翻译 |
+| `scan-nonstandard-data --game <游戏标题> --output <风险报告文件>` | 扫描非标准 data 文件文本风险摘要 | 输出文件存在；高风险时返回 warning 并给出候选数量 | 高风险时导出候选并填写规则，或按文件确认跳过 |
+| `export-nonstandard-data-json --game <游戏标题> --output-dir <工作区>/nonstandard-data` | 导出非标准 data 文件候选报告和原始 JSON 副本 | 输出目录包含 `candidates.json` 和 `source/*.json` | 删除不完整目录后重跑，不读源码猜路径 |
+| `validate-nonstandard-data-rules --game <游戏标题> --input <规则文件>` | 校验非标准 data 文件文本规则、路径命中和候选全量归类 | 无 `errors`；跳过文件只允许出现 warning | 修 `nonstandard-data-rules.json` 后重跑；路径失效时重新导出候选 |
+| `import-nonstandard-data-rules --game <游戏标题> --input <规则文件>` | 保存非标准 data 文件文本规则 | `status` 为 `ok`；跳过文件只允许出现 warning | 导入后重新扫描占位符候选，再进入正文翻译 |
 | `validate-event-command-rules --game <游戏标题> --input <规则文件>` | 校验事件指令编码、match 和路径 | 无 `errors` | 修 `event-command-rules.json` 后重跑 |
 | `import-event-command-rules --game <游戏标题> --input <规则文件>` | 保存事件指令文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；若候选用 `--code` 导出，空规则导入也传同一组 `--code CODE`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
 | `export-note-tag-candidates --game <游戏标题> --output <文件>` | 单独导出 Note 标签候选 | 输出文件存在，候选数量可解释 | 异常时检查游戏注册和文件结构 |
@@ -98,11 +107,11 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- | --- |
 | `build-placeholder-rules --game <游戏标题> --output <规则文件>` | 基于当前正文集合生成普通占位符草稿 | 输出文件存在 | 查看 `errors`，不要手写替代导出 |
 | `validate-placeholder-rules --game <游戏标题> --input <规则文件>` | 校验正则、模板和样本文本往返 | `status` 为 `ok` 或只有可接受 warning | 修规则后重跑 |
-| `scan-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描普通占位符候选覆盖 | `summary.uncovered_count == 0` | 未覆盖时修规则，再 validate 和 scan |
-| `import-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存普通占位符规则 | `status` 为 `ok`；空规则需 `--confirm-empty` | 回到 validate/scan 修规则 |
+| `scan-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描普通占位符候选覆盖 | 规则命中可解释，未覆盖候选已修规则或确认风险 | 未覆盖且无法确认时修规则，再 validate 和 scan |
+| `import-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存普通占位符规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
 | `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 校验结构化规则 | `status` 不是 `error` | 修规则后重跑 |
-| `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描结构化候选覆盖 | 覆盖风险已确认 | 未覆盖时修规则，再 validate 和 scan |
-| `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存结构化规则 | `status` 为 `ok`；空规则需确认 | 回到 validate/scan 修规则 |
+| `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描结构化候选覆盖 | 规则命中可解释，覆盖风险已处理或已确认 | 未覆盖且无法确认时修规则，再 validate 和 scan |
+| `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存结构化规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
 
 ## 翻译、检查和手动修复
 

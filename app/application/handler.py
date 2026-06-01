@@ -7,6 +7,7 @@
 import asyncio
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,7 @@ from app.config import (
     load_custom_placeholder_rules_text,
 )
 from app.config.schemas import Setting
-from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
+from app.language import SourceLanguage
 from app.event_command_text import (
     build_event_command_rule_records_from_import,
     command_matches_filters,
@@ -93,6 +94,7 @@ from app.plugin_text import (
     load_plugin_rule_import_file,
 )
 from app.plugin_source_text import audit_active_runtime_plugin_source
+from app.nonstandard_data import audit_active_runtime_nonstandard_data
 from app.application.use_cases.translation_run import (
     TranslationProgressState,
     TranslationRunInterrupted,
@@ -111,6 +113,7 @@ from app.rmmz.schema import (
     GameData,
     EventCommandTextRuleRecord,
     NoteTagTextRuleRecord,
+    NonstandardDataTextRuleRecord,
     PlaceholderRuleRecord,
     PLUGINS_FILE_NAME,
     PluginSourceRuntimeWriteMapRecord,
@@ -219,7 +222,7 @@ class TranslationHandler:
     def _load_runtime_setting(
         self,
         setting_overrides: SettingOverrides | None = None,
-        source_language: SourceLanguage = DEFAULT_SOURCE_LANGUAGE,
+        source_language: SourceLanguage | None = None,
     ) -> Setting:
         """加载配置并按本轮命令重置模型服务。"""
         return load_runtime_setting(
@@ -231,7 +234,7 @@ class TranslationHandler:
     def _load_setting(
         self,
         setting_overrides: SettingOverrides | None = None,
-        source_language: SourceLanguage = DEFAULT_SOURCE_LANGUAGE,
+        source_language: SourceLanguage | None = None,
     ) -> Setting:
         """加载当前配置，不改动模型服务连接状态。"""
         return load_setting(overrides=setting_overrides, source_language=source_language)
@@ -450,6 +453,7 @@ class TranslationHandler:
             logger.success(f"[tag.success]事件指令参数 JSON 导出完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 编码 [tag.count]{code_label}[/tag.count] 指令 [tag.count]{command_count}[/tag.count] 条 文件 [tag.path]{resolved_output_path}[/tag.path]")
             return EventCommandJsonExportSummary(
                 output_path=str(resolved_output_path),
+                command_codes=list(sorted(effective_command_codes)),
                 command_count=command_count,
             )
 
@@ -1138,6 +1142,7 @@ class TranslationHandler:
 
         set_status("保存写入诊断映射")
         await session.replace_plugin_source_runtime_write_maps(plan.plugin_source_runtime_write_maps)
+        nonstandard_data_rule_records = await session.read_nonstandard_data_text_rules()
         post_write_audit_started = time.perf_counter()
         set_status("审计写入后的当前运行文件")
         active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
@@ -1145,6 +1150,7 @@ class TranslationHandler:
             game_data=active_runtime_game_data,
             text_rules=text_rules,
             runtime_write_map_records=plan.plugin_source_runtime_write_maps,
+            nonstandard_data_rule_records=nonstandard_data_rule_records,
         )
         post_write_audit_ms = int((time.perf_counter() - post_write_audit_started) * 1000)
         advance_progress(total_count)
@@ -1182,8 +1188,9 @@ class TranslationHandler:
         game_data: GameData,
         text_rules: TextRules,
         runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
+        nonstandard_data_rule_records: list[NonstandardDataTextRuleRecord],
     ) -> None:
-        """写入后审计当前运行插件源码的可读性和 JS 语法。"""
+        """写入后审计当前运行插件源码和受管理非标准 data 文件。"""
         audit = audit_active_runtime_plugin_source(
             game_data=game_data,
             text_rules=text_rules,
@@ -1194,9 +1201,26 @@ class TranslationHandler:
                 for record in runtime_write_map_records
             ) if runtime_write_map_records else None,
         )
-        if not audit.issues:
-            return
-        counts = audit.issue_counts
+        blocking_issues = tuple(issue for issue in audit.issues if issue.blocking)
+        if not blocking_issues:
+            if not nonstandard_data_rule_records:
+                return
+            nonstandard_data_audit = audit_active_runtime_nonstandard_data(
+                layout=game_data.layout,
+                rule_records=nonstandard_data_rule_records,
+                text_rules=text_rules,
+            )
+            if not nonstandard_data_audit.issues:
+                return
+            first_issue = nonstandard_data_audit.issues[0]
+            detail = first_issue.read_error or first_issue.fragment
+            detail_text = f"；{detail}" if detail else ""
+            message = (
+                f"写入后当前运行文件审计未通过：非标准 data 文件问题 {len(nonstandard_data_audit.issues)} 条。"
+                f"首个问题：{first_issue.message}（文件 {first_issue.file_name}{detail_text}）"
+            )
+            raise WriteBackGateError(message)
+        counts = Counter(issue.code for issue in blocking_issues)
         summary_parts: list[str] = []
         for label, code in (
             ("读取失败", "active_runtime_read_error"),
@@ -1207,7 +1231,7 @@ class TranslationHandler:
             count = counts.get(code, 0)
             if count > 0:
                 summary_parts.append(f"{label} {count} 条")
-        first_issue = audit.issues[0]
+        first_issue = blocking_issues[0]
         detail = first_issue.syntax_error or first_issue.read_error or first_issue.fragment
         detail_text = f"；{detail}" if detail else ""
         summary_text = "、".join(summary_parts) if summary_parts else f"{len(audit.issues)} 条问题"
