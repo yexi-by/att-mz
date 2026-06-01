@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from app.agent_toolkit.placeholder_scan import (
     count_uncovered_candidates,
@@ -66,6 +67,40 @@ class WorkflowGateIssue:
     message: str
 
 
+type CandidateReviewStage = Literal[
+    "workspace_validate",
+    "rule_import",
+    "workflow_gate",
+    "manual_import",
+    "text_scope",
+    "audit_coverage",
+    "quality_report",
+    "write_back",
+]
+type CandidateReviewSeverity = Literal["none", "warning", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateReviewDecision:
+    """候选扫描在指定阶段的统一审查决策。"""
+
+    rule_domain: RuleReviewDomain
+    stage: CandidateReviewStage
+    severity: CandidateReviewSeverity
+    code: str
+    message: str
+    scope_hash: str
+    uncovered_count: int
+    rule_count: int
+    reviewed: bool
+    reviewed_empty: bool | None
+    details: JsonArray
+
+    def to_issue(self) -> WorkflowGateIssue:
+        """转换成现有流程门禁问题对象。"""
+        return WorkflowGateIssue(code=self.code, message=self.message)
+
+
 async def collect_workflow_gate_errors(
     *,
     session: TargetGameSession,
@@ -110,15 +145,18 @@ async def collect_workflow_gate_errors(
             text_rules=text_rules,
         )
     )
-    errors.extend(
-        await _placeholder_gate_errors(
-            session=session,
-            scope=scope,
-            text_rules=text_rules,
-            custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
-        )
+    placeholder_decisions = await collect_placeholder_candidate_review_decisions(
+        session=session,
+        scope=scope,
+        text_rules=text_rules,
+        custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
+        stage="workflow_gate",
     )
-    errors.extend(await _structured_placeholder_gate_errors(session=session, scope=scope, text_rules=text_rules))
+    errors.extend(
+        decision.to_issue()
+        for decision in placeholder_decisions
+        if decision.severity == "error"
+    )
     errors.extend(_text_scope_gate_errors(scope=scope, text_rules=text_rules))
     _ = setting
     return errors
@@ -305,11 +343,7 @@ def count_uncovered_structured_placeholder_candidates(
         translation_data_map=translation_data_map,
         structured_rules=structured_rules,
     )
-    return sum(
-        1
-        for detail in details
-        if isinstance(detail, dict) and detail.get("covered") is not True
-    )
+    return _count_uncovered_structured_details(details)
 
 
 def collect_structured_placeholder_candidate_details(
@@ -554,88 +588,42 @@ async def _nonstandard_data_rule_gate_errors(
     ]
 
 
-async def _placeholder_gate_errors(
+async def collect_placeholder_candidate_review_decisions(
     *,
     session: TargetGameSession,
     scope: TextScopeResult,
     text_rules: TextRules,
     custom_placeholder_rules_supplied: bool,
-) -> list[WorkflowGateIssue]:
-    """检查普通自定义占位符规则是否覆盖当前正文候选。"""
+    stage: CandidateReviewStage,
+) -> list[CandidateReviewDecision]:
+    """收集普通/结构化占位符候选在指定阶段的统一审查决策。"""
     candidates = scan_placeholder_candidates(scope.translation_data_map, text_rules)
-    uncovered_count = count_uncovered_candidates(candidates)
-    errors: list[WorkflowGateIssue] = []
-    current_scope_hash = placeholder_rule_scope_hash(placeholder_candidates_to_details(candidates))
-    review_state_matches = await _rule_review_state_matches(
+    candidate_details = placeholder_candidates_to_details(candidates)
+    placeholder_decision = await _build_candidate_review_decision(
         session=session,
         rule_domain=PLACEHOLDER_RULE_DOMAIN,
-        current_scope_hash=current_scope_hash,
+        stage=stage,
+        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        uncovered_count=count_uncovered_candidates(candidates),
+        rule_count=len(await session.read_placeholder_rules()),
+        details=candidate_details,
+        custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
     )
-    if uncovered_count and not review_state_matches:
-        errors.append(
-            WorkflowGateIssue(
-                code="placeholder_uncovered",
-                message=f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符，请先导入普通占位符规则或确认当前候选风险",
-            )
-        )
-    if custom_placeholder_rules_supplied:
-        return errors
-    placeholder_records = await session.read_placeholder_rules()
-    if uncovered_count == 0 or placeholder_records or review_state_matches:
-        return errors
-    errors.extend(
-        await _empty_rule_review_errors(
-            session=session,
-            rule_domain=PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=current_scope_hash,
-            label="普通占位符规则",
-        )
-    )
-    return errors
-
-
-async def _structured_placeholder_gate_errors(
-    *,
-    session: TargetGameSession,
-    scope: TextScopeResult,
-    text_rules: TextRules,
-) -> list[WorkflowGateIssue]:
-    """检查结构化占位符规则是否覆盖当前正文候选。"""
     structured_details = collect_structured_placeholder_candidate_details(
         translation_data_map=scope.translation_data_map,
         structured_rules=text_rules.structured_placeholder_rules,
     )
-    uncovered_count = sum(
-        1
-        for detail in structured_details
-        if isinstance(detail, dict) and detail.get("covered") is not True
-    )
-    errors: list[WorkflowGateIssue] = []
-    current_scope_hash = structured_placeholder_rule_scope_hash(structured_details)
-    review_state_matches = await _rule_review_state_matches(
+    structured_decision = await _build_candidate_review_decision(
         session=session,
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-        current_scope_hash=current_scope_hash,
+        stage=stage,
+        scope_hash=structured_placeholder_rule_scope_hash(structured_details),
+        uncovered_count=_count_uncovered_structured_details(structured_details),
+        rule_count=len(await session.read_structured_placeholder_rules()),
+        details=structured_details,
+        custom_placeholder_rules_supplied=False,
     )
-    if uncovered_count and not review_state_matches:
-        errors.append(
-            WorkflowGateIssue(
-                code="structured_placeholder_uncovered",
-                message=f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选，请先导入结构化占位符规则或确认当前候选风险",
-            )
-        )
-    structured_records = await session.read_structured_placeholder_rules()
-    if uncovered_count == 0 or structured_records or review_state_matches:
-        return errors
-    errors.extend(
-        await _empty_rule_review_errors(
-            session=session,
-            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=current_scope_hash,
-            label="结构化占位符规则",
-        )
-    )
-    return errors
+    return [placeholder_decision, structured_decision]
 
 
 async def collect_placeholder_candidate_review_warnings(
@@ -644,47 +632,104 @@ async def collect_placeholder_candidate_review_warnings(
     scope: TextScopeResult,
     text_rules: TextRules,
     custom_placeholder_rules_supplied: bool,
+    stage: CandidateReviewStage = "quality_report",
 ) -> list[WorkflowGateIssue]:
     """收集已审查但仍有未覆盖占位符候选的提示。"""
-    warnings: list[WorkflowGateIssue] = []
-    candidates = scan_placeholder_candidates(scope.translation_data_map, text_rules)
-    uncovered_count = count_uncovered_candidates(candidates)
-    if uncovered_count and not custom_placeholder_rules_supplied:
-        current_scope_hash = placeholder_rule_scope_hash(placeholder_candidates_to_details(candidates))
-        if await _rule_review_state_matches(
-            session=session,
-            rule_domain=PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=current_scope_hash,
-        ):
-            warnings.append(
-                WorkflowGateIssue(
-                    code="placeholder_uncovered_reviewed",
-                    message=f"仍有 {uncovered_count} 个未覆盖的疑似自定义控制符；当前候选已通过导入命令确认风险",
-                )
-            )
-    structured_details = collect_structured_placeholder_candidate_details(
-        translation_data_map=scope.translation_data_map,
-        structured_rules=text_rules.structured_placeholder_rules,
+    decisions = await collect_placeholder_candidate_review_decisions(
+        session=session,
+        scope=scope,
+        text_rules=text_rules,
+        custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
+        stage=stage,
     )
-    structured_uncovered_count = sum(
-        1
-        for detail in structured_details
-        if isinstance(detail, dict) and detail.get("covered") is not True
+    return [
+        decision.to_issue()
+        for decision in decisions
+        if decision.severity == "warning"
+    ]
+
+
+async def _build_candidate_review_decision(
+    *,
+    session: TargetGameSession,
+    rule_domain: RuleReviewDomain,
+    stage: CandidateReviewStage,
+    scope_hash: str,
+    uncovered_count: int,
+    rule_count: int,
+    details: JsonArray,
+    custom_placeholder_rules_supplied: bool,
+) -> CandidateReviewDecision:
+    """按统一阶段契约生成单个候选域的审查决策。"""
+    state = await session.read_rule_review_state(rule_domain=rule_domain)
+    reviewed = state is not None and state.scope_hash == scope_hash
+    reviewed_empty = state.reviewed_empty if state is not None else None
+    if uncovered_count <= 0:
+        return CandidateReviewDecision(
+            rule_domain=rule_domain,
+            stage=stage,
+            severity="none",
+            code="",
+            message="",
+            scope_hash=scope_hash,
+            uncovered_count=uncovered_count,
+            rule_count=rule_count,
+            reviewed=reviewed,
+            reviewed_empty=reviewed_empty,
+            details=details,
+        )
+    if rule_domain == PLACEHOLDER_RULE_DOMAIN:
+        unreviewed_code = "placeholder_uncovered"
+        reviewed_code = "placeholder_uncovered_reviewed"
+        unreviewed_message = (
+            f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符，"
+            "请先导入普通占位符规则或确认当前候选风险"
+        )
+        reviewed_message = (
+            f"仍有 {uncovered_count} 个未覆盖的疑似自定义控制符；"
+            "当前候选已通过导入命令确认风险"
+        )
+    elif rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
+        unreviewed_code = "structured_placeholder_uncovered"
+        reviewed_code = "structured_placeholder_uncovered_reviewed"
+        unreviewed_message = (
+            f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选，"
+            "请先导入结构化占位符规则或确认当前候选风险"
+        )
+        reviewed_message = (
+            f"仍有 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选；"
+            "当前候选已通过导入命令确认风险"
+        )
+    else:
+        raise ValueError(f"不支持的候选审查域: {rule_domain}")
+
+    if reviewed and not custom_placeholder_rules_supplied:
+        return CandidateReviewDecision(
+            rule_domain=rule_domain,
+            stage=stage,
+            severity="warning",
+            code=reviewed_code,
+            message=reviewed_message,
+            scope_hash=scope_hash,
+            uncovered_count=uncovered_count,
+            rule_count=rule_count,
+            reviewed=reviewed,
+            reviewed_empty=reviewed_empty,
+            details=details,
+        )
+    return CandidateReviewDecision(
+        rule_domain=rule_domain,
+        stage=stage,
+        severity="error",
+        code=unreviewed_code,
+        message=unreviewed_message,
+        scope_hash=scope_hash,
+        uncovered_count=uncovered_count,
+        rule_count=rule_count,
+        reviewed=reviewed,
+        reviewed_empty=reviewed_empty,
+        details=details,
     )
-    if structured_uncovered_count:
-        current_scope_hash = structured_placeholder_rule_scope_hash(structured_details)
-        if await _rule_review_state_matches(
-            session=session,
-            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=current_scope_hash,
-        ):
-            warnings.append(
-                WorkflowGateIssue(
-                    code="structured_placeholder_uncovered_reviewed",
-                    message=f"仍有 {structured_uncovered_count} 个未被结构化规则覆盖的协议外壳候选；当前候选已通过导入命令确认风险",
-                )
-            )
-    return warnings
 
 
 def _text_scope_gate_errors(*, scope: TextScopeResult, text_rules: TextRules) -> list[WorkflowGateIssue]:
@@ -749,17 +794,6 @@ async def _empty_rule_review_errors(
     return []
 
 
-async def _rule_review_state_matches(
-    *,
-    session: TargetGameSession,
-    rule_domain: RuleReviewDomain,
-    current_scope_hash: str,
-) -> bool:
-    """判断当前候选范围是否已有持久化审查确认。"""
-    state = await session.read_rule_review_state(rule_domain=rule_domain)
-    return state is not None and state.scope_hash == current_scope_hash
-
-
 def _candidate_int_sum(candidates: JsonArray, key: str) -> int:
     """统计候选对象中的整数计数字段。"""
     total = 0
@@ -771,6 +805,15 @@ def _candidate_int_sum(candidates: JsonArray, key: str) -> int:
             continue
         total += raw_count
     return total
+
+
+def _count_uncovered_structured_details(details: JsonArray) -> int:
+    """统计结构化占位符候选详情中的未覆盖项。"""
+    return sum(
+        1
+        for detail in details
+        if isinstance(detail, dict) and detail.get("covered") is not True
+    )
 
 
 STRUCTURED_SHELL_CANDIDATE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -820,8 +863,12 @@ def _structured_rule_covered_ranges(
 
 
 __all__: list[str] = [
+    "CandidateReviewDecision",
+    "CandidateReviewSeverity",
+    "CandidateReviewStage",
     "WorkflowGateIssue",
     "collect_external_text_rule_gate_errors",
+    "collect_placeholder_candidate_review_decisions",
     "collect_placeholder_candidate_review_warnings",
     "assert_workflow_gate_passed",
     "collect_structured_placeholder_candidate_details",

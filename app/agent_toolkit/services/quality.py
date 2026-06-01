@@ -882,6 +882,7 @@ class QualityAgentMixin:
                 scope=scope,
                 text_rules=text_rules,
                 custom_placeholder_rules_supplied=False,
+                stage="quality_report",
             )
             active_paths = scope.active_paths
             writable_paths = scope.writable_paths

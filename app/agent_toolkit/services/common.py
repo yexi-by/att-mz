@@ -2449,7 +2449,7 @@ def _build_placeholder_coverage_report_with_context(
     uncovered_count = count_uncovered_candidates(candidates)
     warnings: list[AgentIssue] = []
     if uncovered_count:
-        warnings.append(issue("uncovered_placeholder", f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符"))
+        warnings.append(issue("placeholder_uncovered", f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符"))
     return AgentReport.from_parts(
         errors=[],
         warnings=warnings,

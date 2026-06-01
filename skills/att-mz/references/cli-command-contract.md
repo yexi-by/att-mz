@@ -113,6 +113,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描结构化候选覆盖 | 规则命中可解释，覆盖风险已处理或已确认 | 未覆盖且无法确认时修规则，再 validate 和 scan |
 | `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存结构化规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
 
+普通占位符未确认风险时使用 `placeholder_uncovered` error，确认风险后在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中使用 `placeholder_uncovered_reviewed` warning。结构化占位符对应 `structured_placeholder_uncovered` error 和 `structured_placeholder_uncovered_reviewed` warning。warning 只表示流程可继续，不表示译文可以改坏协议片段；坏控制符仍会在保存或写文件前成为质量 error。
+
 ## 翻译、检查和手动修复
 
 | 命令 | 用途 | 成功判断 | 失败处理 |

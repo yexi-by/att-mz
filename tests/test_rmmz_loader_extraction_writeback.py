@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, cast
+from typing import cast
 
 import pytest
 
@@ -252,6 +252,76 @@ async def _prepare_write_gate_session(
         reviewed_empty=False,
     )
     return game_data, setting, text_rules
+
+
+@pytest.mark.asyncio
+async def test_direct_write_back_rejects_placeholder_risk_before_rust_plan(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已保存坏译文必须在 Python 写回前置质量门被拦住。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    _ = (app_home / "setting.toml").write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        translated_items: list[TranslationItem] = []
+        for item in scope.active_items():
+            translation_lines = [
+                _translated_test_line_preserving_controls(line, text_rules)
+                for line in item.original_lines
+            ]
+            if item.location_path == "CommonEvents.json/2/0":
+                translation_lines = ["测试"]
+            translated_items.append(
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=translation_lines,
+                )
+            )
+        await session.write_translation_items(translated_items)
+
+    rust_plan_called = False
+
+    def forbidden_rust_plan(*args: object, **kwargs: object) -> object:
+        """如果走到 Rust 计划，说明写回前置质量门没有提前拦截。"""
+        nonlocal rust_plan_called
+        rust_plan_called = True
+        _ = (args, kwargs)
+        raise AssertionError("写回前置质量门应先拦截坏译文")
+
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_rust_plan)
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(WriteBackGateError, match="游戏控制符可能被改坏"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+    assert rust_plan_called is False
 
 
 class _NativePlanSessionStub:
@@ -1645,13 +1715,6 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             ]
         )
 
-    def forbidden_python_native_check(*args: object, **kwargs: object) -> NoReturn:
-        """写入路径不应在 Python 侧重复执行 Rust 计划会执行的原生检查。"""
-        _ = (args, kwargs)
-        raise AssertionError("写入路径不应重复执行 Python 侧原生检查")
-
-    monkeypatch.setattr("app.application.write_back_gate.collect_native_quality_counts", forbidden_python_native_check)
-    monkeypatch.setattr("app.application.write_back_gate.count_native_write_protocol_issues", forbidden_python_native_check)
     handler = TranslationHandler(registry, LLMHandler())
     try:
         summary = await handler.write_back(

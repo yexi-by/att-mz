@@ -156,6 +156,44 @@ def _translated_test_line_preserving_controls(line: str, text_rules: TextRules) 
     return "".join(translated_parts)
 
 
+def _translated_test_line_preserving_protocol_candidates(line: str, text_rules: TextRules) -> str:
+    """生成保留已保护控制符和未覆盖疑似控制符的测试译文。"""
+    spans = [
+        (span.start_index, span.end_index, span.original)
+        for span in text_rules.iter_control_sequence_spans(line)
+    ]
+    spans.extend(
+        (candidate.start_index, candidate.end_index, candidate.original)
+        for candidate in text_rules.iter_unprotected_control_sequence_candidates(line)
+    )
+    spans.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    selected_spans: list[tuple[int, int, str]] = []
+    protected_until = -1
+    for start_index, end_index, original in spans:
+        if start_index < protected_until:
+            continue
+        selected_spans.append((start_index, end_index, original))
+        protected_until = end_index
+    if not selected_spans:
+        return "测试"
+
+    translated_parts: list[str] = []
+    last_end = 0
+    visible_text_inserted = False
+    for start_index, end_index, original in selected_spans:
+        if start_index > last_end and not visible_text_inserted:
+            translated_parts.append("测试")
+            visible_text_inserted = True
+        translated_parts.append(original)
+        last_end = end_index
+    if last_end < len(line) and not visible_text_inserted:
+        translated_parts.append("测试")
+        visible_text_inserted = True
+    if not visible_text_inserted:
+        translated_parts.append("测试")
+    return "".join(translated_parts)
+
+
 def _mv_virtual_namebox_rules_text() -> str:
     """生成测试用 MV 虚拟名字框规则 JSON。"""
     return json.dumps(
@@ -2528,10 +2566,95 @@ async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
     assert report.status == "warning"
     assert {"placeholder_rules_empty", "placeholder_uncovered_reviewed"} <= {warning.code for warning in report.warnings}
     assert report.summary["uncovered_count"] != 0
-    assert "uncovered_placeholder_reviewed" in {warning.code for warning in doctor_report.warnings}
+    assert "placeholder_uncovered_reviewed" in {warning.code for warning in doctor_report.warnings}
     assert state is not None
     assert state.reviewed_empty is True
     assert "placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_confirmed_empty_placeholder_risk_allows_quality_warning_and_write_back(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """确认空占位符风险后，正确保留协议片段的译文必须能写回。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    _ = (app_home / "setting.toml").write_text(
+        example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=app_home / "setting.toml")
+    placeholder_report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+    structured_report = await service.import_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"paired_shell_rules": []}, ensure_ascii=False),
+        confirm_empty=True,
+    )
+    pending_path = tmp_path / "pending-translations.json"
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+
+    setting = load_setting(app_home / "setting.toml", source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    payload = load_json_object(pending_path)
+    manual_payload: dict[str, object] = {}
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        original_lines = ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
+        translation_lines: list[str] = []
+        for raw_line in original_lines:
+            if not isinstance(raw_line, str):
+                raise TypeError(f"{location_path}.original_lines 必须是字符串数组")
+            translation_lines.append(
+                _translated_test_line_preserving_protocol_candidates(raw_line, text_rules)
+            )
+        manual_entry: JsonObject = {key: value for key, value in entry.items()}
+        manual_entry["translation_lines"] = [cast(JsonValue, line) for line in translation_lines]
+        manual_payload[location_path] = manual_entry
+    manual_path = tmp_path / "manual-translations.json"
+    _ = manual_path.write_text(json.dumps(manual_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    manual_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=manual_path,
+    )
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        write_summary = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    assert placeholder_report.status == "warning"
+    assert placeholder_report.summary["uncovered_count"] != 0
+    assert structured_report.status in {"ok", "warning"}
+    assert export_report.status == "ok"
+    assert manual_report.status == "ok"
+    assert quality_report.status == "warning"
+    assert {warning.code for warning in quality_report.warnings} == {"placeholder_uncovered_reviewed"}
+    assert quality_report.errors == []
+    assert write_summary.data_item_count > 0
 
 
 @pytest.mark.asyncio
@@ -2634,7 +2757,7 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
         for warning in report.warnings
     }
     assert report.summary["uncovered_count"] == 1
-    assert "uncovered_structured_placeholder_reviewed" in {warning.code for warning in doctor_report.warnings}
+    assert "structured_placeholder_uncovered_reviewed" in {warning.code for warning in doctor_report.warnings}
     assert state is not None
     assert state.reviewed_empty is True
     assert "structured_placeholder_uncovered" not in {error.code for error in errors}
@@ -3206,7 +3329,6 @@ async def test_validate_agent_workspace_warns_uncovered_structured_candidates(
     )
     assert coverage_summary == standalone_coverage_report.summary
     assert coverage_details == standalone_coverage_report.details
-    assert "structured_placeholder_coverage_uncovered" in warning_codes
     assert "structured_placeholder_uncovered" in warning_codes
     assert coverage_summary["uncovered_count"] == 1
     candidates = ensure_json_array(coverage_details["candidates"], "structured_placeholder_coverage.details.candidates")
@@ -4244,7 +4366,7 @@ async def test_validate_agent_workspace_warns_uncovered_placeholder_rules(
     )
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
-    assert "placeholder_coverage_uncovered" in {warning.code for warning in report.warnings}
+    assert "placeholder_uncovered" in {warning.code for warning in report.warnings}
     placeholder_details = ensure_json_object(report.details["placeholder_rules"], "placeholder_rules")
     assert placeholder_details == standalone_validation_report.details
     placeholder_coverage = ensure_json_object(report.details["placeholder_coverage"], "placeholder_coverage")

@@ -40,6 +40,8 @@ class AgentReport(BaseModel):
         details: JsonObject,
     ) -> "AgentReport":
         """根据错误和告警集合构造报告状态。"""
+        errors = _deduplicate_issues(errors)
+        warnings = _deduplicate_issues(warnings)
         if errors:
             status: AgentReportStatus = "error"
         elif warnings:
@@ -62,6 +64,19 @@ class AgentReport(BaseModel):
 def issue(code: str, message: str) -> AgentIssue:
     """创建报告问题对象。"""
     return AgentIssue(code=code, message=message)
+
+
+def _deduplicate_issues(items: list[AgentIssue]) -> list[AgentIssue]:
+    """按稳定 code/message 去掉重复报告项，保留首次出现顺序。"""
+    deduplicated_items: list[AgentIssue] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for item in items:
+        key = (item.code, item.message)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduplicated_items.append(item)
+    return deduplicated_items
 
 
 __all__: list[str] = [

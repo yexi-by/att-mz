@@ -55,6 +55,7 @@ class CoverageAgentMixin:
                 scope=scope,
                 text_rules=text_rules,
                 custom_placeholder_rules_supplied=False,
+                stage="text_scope",
             )
         translated_paths = {item.location_path for item in translated_items}
         inactive_entries = [
@@ -128,6 +129,7 @@ class CoverageAgentMixin:
                 scope=scope,
                 text_rules=text_rules,
                 custom_placeholder_rules_supplied=False,
+                stage="audit_coverage",
             )
         report = _build_coverage_report(
             scope=scope,

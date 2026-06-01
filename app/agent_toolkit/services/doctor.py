@@ -8,10 +8,10 @@ from .common import (
     AgentServiceContext,
     JsonObject,
     JsonValue,
+    TextScopeService,
     TextRules,
     _append_check,
     _current_python_major_minor,
-    count_uncovered_candidates,
     ensure_db_directory,
     issue,
     load_environment_overrides,
@@ -20,7 +20,6 @@ from .common import (
     resolve_app_path,
     resolve_replacement_font_path,
     resolve_setting_path,
-    scan_placeholder_candidates,
     sys,
 )
 from app.persistence import RuleReviewStateRecord
@@ -35,11 +34,9 @@ from app.rule_review import (
     plugin_rule_scope_hash,
 )
 from app.application.flow_gate import (
-    collect_structured_placeholder_candidate_details,
+    collect_placeholder_candidate_review_decisions,
     event_command_rule_scope_hash_for_setting,
-    normal_placeholder_scope_hash,
     note_tag_rule_scope_hash_for_text_rules,
-    structured_placeholder_scope_hash,
 )
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
@@ -182,38 +179,32 @@ class DoctorAgentMixin:
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
                 structured_placeholder_rules = await session.read_structured_placeholder_rules()
-                translation_data_map = await self._extract_active_translation_data_map(
+                scope = await TextScopeService().build(
                     session=session,
                     game_data=game_data,
                     text_rules=text_rules,
                 )
-                candidates = scan_placeholder_candidates(translation_data_map, text_rules)
-                uncovered_count = count_uncovered_candidates(candidates)
-                structured_candidate_details = collect_structured_placeholder_candidate_details(
-                    translation_data_map=translation_data_map,
-                    structured_rules=text_rules.structured_placeholder_rules,
-                )
-                structured_uncovered_count = sum(
-                    1
-                    for detail in structured_candidate_details
-                    if isinstance(detail, dict) and detail.get("covered") is not True
-                )
-                placeholder_scope_hash = normal_placeholder_scope_hash(
-                    translation_data_map=translation_data_map,
+                placeholder_decisions = await collect_placeholder_candidate_review_decisions(
+                    session=session,
+                    scope=scope,
                     text_rules=text_rules,
+                    custom_placeholder_rules_supplied=False,
+                    stage="quality_report",
                 )
-                structured_placeholder_scope_hash_value = structured_placeholder_scope_hash(
-                    translation_data_map=translation_data_map,
-                    structured_rules=text_rules.structured_placeholder_rules,
+                placeholder_decision = next(
+                    decision
+                    for decision in placeholder_decisions
+                    if decision.rule_domain == PLACEHOLDER_RULE_DOMAIN
                 )
-                placeholder_candidate_reviewed = (
-                    placeholder_review_state is not None
-                    and placeholder_review_state.scope_hash == placeholder_scope_hash
+                structured_placeholder_decision = next(
+                    decision
+                    for decision in placeholder_decisions
+                    if decision.rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN
                 )
-                structured_placeholder_candidate_reviewed = (
-                    structured_placeholder_review_state is not None
-                    and structured_placeholder_review_state.scope_hash == structured_placeholder_scope_hash_value
-                )
+                placeholder_scope_hash = placeholder_decision.scope_hash
+                structured_placeholder_scope_hash_value = structured_placeholder_decision.scope_hash
+                uncovered_count = placeholder_decision.uncovered_count
+                structured_uncovered_count = structured_placeholder_decision.uncovered_count
                 plugin_rules_reviewed_empty, plugin_rules_review_state_stale = _rule_review_empty_state(
                     state=plugin_review_state,
                     current_scope_hash=plugin_rule_scope_hash(game_data),
@@ -321,30 +312,9 @@ class DoctorAgentMixin:
                 summary["uncovered_placeholder_count"] = uncovered_count
                 summary["uncovered_structured_placeholder_count"] = structured_uncovered_count
                 if uncovered_count:
-                    if placeholder_candidate_reviewed:
-                        warnings.append(
-                            issue(
-                                "uncovered_placeholder_reviewed",
-                                f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符；当前候选已通过导入命令确认风险",
-                            )
-                        )
-                    else:
-                        warnings.append(issue("uncovered_placeholder", f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符"))
+                    warnings.append(issue(placeholder_decision.code, placeholder_decision.message))
                 if structured_uncovered_count:
-                    if structured_placeholder_candidate_reviewed:
-                        warnings.append(
-                            issue(
-                                "uncovered_structured_placeholder_reviewed",
-                                f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选；当前候选已通过导入命令确认风险",
-                            )
-                        )
-                    else:
-                        warnings.append(
-                            issue(
-                                "uncovered_structured_placeholder",
-                                f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选",
-                            )
-                        )
+                    warnings.append(issue(structured_placeholder_decision.code, structured_placeholder_decision.message))
         except Exception as error:
             errors.append(issue("game", f"目标游戏检查失败: {type(error).__name__}: {error}"))
 

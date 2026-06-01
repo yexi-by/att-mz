@@ -848,13 +848,6 @@ class WorkspaceAgentMixin:
                 uncovered_value = placeholder_coverage_report.summary.get("uncovered_count")
                 if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
                     errors.append(issue("placeholder_coverage_invalid", "占位符候选扫描缺少有效的 uncovered_count"))
-                elif uncovered_value > 0:
-                    warnings.append(
-                        issue(
-                            "placeholder_coverage_uncovered",
-                            f"还有 {uncovered_value} 个当前正文会使用但未被规则覆盖的游戏控制符；导入时需要确认候选风险",
-                        )
-                    )
             except Exception as error:
                 errors.append(
                     issue(
@@ -902,13 +895,6 @@ class WorkspaceAgentMixin:
                 uncovered_value = structured_placeholder_coverage_report.summary.get("uncovered_count")
                 if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
                     errors.append(issue("structured_placeholder_coverage_invalid", "结构化占位符候选扫描缺少有效的 uncovered_count"))
-                elif uncovered_value > 0:
-                    warnings.append(
-                        issue(
-                            "structured_placeholder_coverage_uncovered",
-                            f"还有 {uncovered_value} 个当前正文会使用但未被结构化规则覆盖的协议外壳候选；导入时需要确认候选风险",
-                        )
-                    )
             except Exception as error:
                 errors.append(
                     issue(

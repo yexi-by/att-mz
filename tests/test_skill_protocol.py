@@ -265,6 +265,21 @@ def test_cli_command_contract_reference_defines_stage_commands() -> None:
         assert phrase in text
 
 
+def test_cli_command_contract_defines_candidate_gate_stage_codes() -> None:
+    """命令契约固定候选门禁跨阶段 warning/error 语义。"""
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        text = read(references / "cli-command-contract.md")
+        for phrase in [
+            "`placeholder_uncovered` error",
+            "`placeholder_uncovered_reviewed` warning",
+            "`structured_placeholder_uncovered` error",
+            "`structured_placeholder_uncovered_reviewed` warning",
+            "warning 只表示流程可继续",
+            "坏控制符仍会在保存或写文件前成为质量 error",
+        ]:
+            assert phrase in text
+
+
 def test_cli_command_contract_lists_every_parser_command() -> None:
     """命令契约覆盖 argparse 暴露的全部命令名。"""
     command_names = parser_command_names()
@@ -501,6 +516,8 @@ def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> No
         "已审查但不写规则",
         "剩余风险已确认",
         "禁止为了消除计数而编造会吞文本或误保护的规则",
+        "确认风险不是允许翻坏协议片段",
+        "质量检查或写文件前检查必须报 error",
         "小写 `\\n` 是游戏文本中的字面量换行",
         r"原文是 `\F3[66」「` 时，译文也保留 `\F3[66」「`",
     ]:
@@ -525,6 +542,8 @@ def test_structured_placeholder_reference_defines_contract() -> None:
         "覆盖风险已处理或已确认",
         "已审查但不写结构化规则",
         "不要为了通过扫描而编造结构化规则",
+        "确认结构化候选风险只允许流程继续",
+        "不允许译文改坏协议外壳",
         "源文残留检查会先在占位符仍存在的形态下执行，再恢复外壳",
     ]:
         assert phrase in text
@@ -540,6 +559,10 @@ def test_agent_rules_forbid_unconditional_candidate_hard_blocks() -> None:
         "工作区验收只能检查外部文件结构、候选风险和报告可见性",
         "不得依赖必须先执行有副作用导入才会存在的数据库确认状态",
         "已审查但不写规则",
+        "任何前置放行都必须覆盖后置成功路径",
+        "禁止只让 validate/import 通过而 translate/write-back 无路可走",
+        "协议片段被翻坏时在保存或写回前被拦截",
+        "不表示允许模型或人工译文改坏协议片段",
     ]:
         assert phrase in text
 

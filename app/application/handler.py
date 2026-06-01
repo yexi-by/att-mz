@@ -994,7 +994,7 @@ class TranslationHandler:
             translated_items=translated_items,
             require_complete_translation=require_complete_translation,
             scope=scope,
-            include_native_checks=False,
+            include_native_checks=True,
         )
         writable_items = await self._filter_writable_translation_items(
             session=session,
