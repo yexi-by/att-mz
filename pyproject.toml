@@ -1,6 +1,6 @@
 [project]
 name = "att-mz"
-version = "0.1.9"
+version = "0.1.10"
 description = "面向 RPG Maker（RM）游戏的 Agent 汉化工具包"
 requires-python = ">=3.14"
 dependencies = [

@@ -60,6 +60,11 @@ jobs:
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "zip_name=att-mz-windows-x86_64.zip" >> $env:GITHUB_OUTPUT
+          "release_notes=dist/release-notes.md" >> $env:GITHUB_OUTPUT
+
+      - name: Prepare release notes
+        shell: pwsh
+        run: python scripts/extract_release_notes.py --tag "${{ steps.meta.outputs.tag }}" --output "${{ steps.meta.outputs.release_notes }}"
 
       - name: Install project dependencies
         shell: pwsh
@@ -103,6 +108,6 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: A.T.T MZ ${{ steps.meta.outputs.tag }}
           files: dist/${{ steps.meta.outputs.zip_name }}
+          body_path: ${{ steps.meta.outputs.release_notes }}
           draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
-          generate_release_notes: true

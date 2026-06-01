@@ -712,6 +712,7 @@ def test_release_docs_and_workflow_include_rust_gates() -> None:
         assert command in release_doc_text
 
     ordered_steps = [
+        "- name: Prepare release notes",
         "- name: Type check",
         "- name: Test",
         "- name: Rust fmt",
@@ -724,6 +725,11 @@ def test_release_docs_and_workflow_include_rust_gates() -> None:
     assert ordered_positions == sorted(ordered_positions)
 
     assert "dry_run" not in workflow_text
+    assert "python scripts/extract_release_notes.py --tag" in workflow_text
+    assert "body_path: ${{ steps.meta.outputs.release_notes }}" in workflow_text
+    assert "generate_release_notes" not in workflow_text
+    assert "GitHub Release 正文来自 `CHANGELOG.md` 中对应 tag 的版本段落" in release_doc_text
+    assert "不能只使用 GitHub 自动生成的 Release notes" in release_doc_text
     assert "不创建 GitHub Release" not in release_doc_text
 
 

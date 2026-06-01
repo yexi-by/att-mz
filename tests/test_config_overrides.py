@@ -188,11 +188,11 @@ def test_builtin_prompt_template_can_enable_source_lines_protocol(
     assert "本轮输出协议补充" not in system_prompt
 
 
-def test_custom_prompt_without_template_fails_fast(
+def test_custom_prompt_without_template_appends_output_protocol(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """自定义提示词缺少模板时必须停止加载，避免静默拼接协议。"""
+    """自定义提示词缺少模板时自动追加输出协议，保留旧 CLI 用法。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
     setting_path = _write_minimal_setting(
@@ -202,8 +202,32 @@ def test_custom_prompt_without_template_fails_fast(
         prompt_text="系统提示词",
     )
 
+    setting = load_setting(setting_path=setting_path)
+
+    assert setting.text_translation.include_source_lines is True
+    assert setting.text_translation.system_prompt.startswith("系统提示词")
+    assert "本轮输出协议补充" in setting.text_translation.system_prompt
+    assert "每个 JSON 数组元素必须包含 `id`、`role`、`source_lines`、`translation_lines`" in setting.text_translation.system_prompt
+    assert "`source_lines` 尽量原样复制输入原文，用于人工对照。" in setting.text_translation.system_prompt
+    assert "location_path" not in setting.text_translation.system_prompt
+
+
+def test_custom_prompt_partial_template_fails_fast(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自定义提示词只写了部分模板占位符时显式失败，避免半套协议。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        prompt_text="系统提示词 {{输出字段列表}}",
+    )
+
     with pytest.raises(ValueError, match="正文翻译提示词模板缺少必要占位符"):
         _ = load_setting(setting_path=setting_path)
+
 
 def test_custom_prompt_template_can_enable_source_lines_protocol(
     tmp_path: Path,

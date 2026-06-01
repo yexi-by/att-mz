@@ -577,7 +577,10 @@ def add_setting_override_arguments(
                 dest="include_source_lines",
                 help="要求模型不要输出原文对照字段",
             )
-        _ = group.add_argument("--system-prompt", help="正文翻译系统提示词文本")
+        _ = group.add_argument(
+            "--system-prompt",
+            help="正文翻译系统提示词文本；不含输出协议模板占位符时会自动追加本轮输出协议",
+        )
     _ = group.add_argument("--replacement-font-path", help="用户确认覆盖字体后使用的候选字体路径")
     if not include_text_rules:
         return
