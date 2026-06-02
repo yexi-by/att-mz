@@ -8,13 +8,20 @@ from importlib import import_module
 from pathlib import Path
 from typing import Protocol, cast
 
+from app.application.font_replacement.constants import FONTS_DIRECTORY_NAME
+from app.application.font_replacement.files import (
+    collect_replaced_source_font_names,
+    resolve_replacement_font_path,
+)
+from app.config.schemas import Setting
+from app.native_quality import build_native_text_rules_payload
 from app.rmmz.schema import (
     FontReplacementRecord,
     PluginSourceRuntimeMappingKind,
     PluginSourceRuntimeWriteMapRecord,
 )
 from app.native_contract import NATIVE_CONTRACT_VERSION, ensure_native_contract_version
-from app.rmmz.text_rules import JsonObject
+from app.rmmz.text_rules import JsonObject, TextRules
 
 
 type RawJsonObject = dict[str, object]
@@ -76,6 +83,41 @@ class NativeWriteBackPlan:
     font_replacement_records: list[FontReplacementRecord]
     summary: NativeWriteBackSummary
     timings_ms: dict[str, int]
+
+
+def build_native_write_back_setting_payload(
+    *,
+    setting: Setting,
+    text_rules: TextRules,
+    content_root: Path,
+    confirm_font_overwrite: bool,
+    writable_location_paths: list[str],
+) -> tuple[JsonObject, Path | None, list[str]]:
+    """整理 Rust 写回计划和写回级质量 gate 共用的配置载荷。"""
+    payload: JsonObject = {
+        "long_text_line_width_limit": setting.text_rules.long_text_line_width_limit,
+        "line_width_count_pattern": setting.text_rules.line_width_count_pattern,
+        "line_split_punctuations": [punctuation for punctuation in setting.text_rules.line_split_punctuations],
+        "preserve_wrapping_punctuation_pairs": [
+            [left, right]
+            for left, right in setting.text_rules.preserve_wrapping_punctuation_pairs
+        ],
+        "quality_text_rules": build_native_text_rules_payload(text_rules),
+        "allowed_translation_paths": [path for path in writable_location_paths],
+    }
+    if not confirm_font_overwrite:
+        return payload, None, []
+    replacement_font_path = setting.write_back.replacement_font_path
+    if replacement_font_path is None or not replacement_font_path.strip():
+        return payload, None, []
+    source_font_path = resolve_replacement_font_path(replacement_font_path)
+    source_font_names = collect_replaced_source_font_names(
+        font_dir=content_root / FONTS_DIRECTORY_NAME,
+        replacement_font_name=source_font_path.name,
+    )
+    payload["replacement_font_path"] = str(source_font_path)
+    payload["source_font_names"] = [font_name for font_name in source_font_names]
+    return payload, source_font_path, source_font_names
 
 
 def build_native_write_back_plan(
@@ -391,5 +433,6 @@ __all__ = [
     "NativePlannedFile",
     "NativeWriteBackPlan",
     "NativeWriteBackSummary",
+    "build_native_write_back_setting_payload",
     "build_native_write_back_plan",
 ]

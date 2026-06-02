@@ -7,17 +7,21 @@ import aiosqlite
 
 from app.rmmz.schema import TranslationItem
 
-from .rows import decode_string_list, row_item_type, row_optional_str, row_str
+from .rows import decode_string_list, row_int, row_item_type, row_optional_str, row_str
 from .session_base import SessionMixinBase
 from .sql import (
     DELETE_TRANSLATION_ITEM_BY_PATH,
     DELETE_TRANSLATION_ITEMS_BY_PREFIX,
     INSERT_TRANSLATION,
+    COUNT_TRANSLATED_ITEMS,
     SELECT_TRANSLATED_ITEM_BY_PATH,
     SELECT_TRANSLATED_ITEMS,
     SELECT_TRANSLATED_ITEMS_BY_PREFIX,
     SELECT_TRANSLATION_PATHS,
+    TRANSLATION_TABLE_NAME,
 )
+
+PATH_DELETE_BATCH_SIZE = 500
 
 
 class TranslationRecordSessionMixin(SessionMixinBase):
@@ -48,6 +52,14 @@ class TranslationRecordSessionMixin(SessionMixinBase):
         async with self.connection.execute(SELECT_TRANSLATION_PATHS) as cursor:
             rows = await cursor.fetchall()
         return {row_str(row, "location_path", self.db_path) for row in rows}
+
+    async def count_translated_items(self) -> int:
+        """统计主翻译表中的已保存译文数量。"""
+        async with self.connection.execute(COUNT_TRANSLATED_ITEMS) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "translated_count", self.db_path)
 
     async def read_translated_items(self) -> list[TranslationItem]:
         """读取主翻译表中的全部正文译文。"""
@@ -129,12 +141,19 @@ class TranslationRecordSessionMixin(SessionMixinBase):
         location_paths: Sequence[str],
     ) -> int:
         """按精确定位路径批量删除主翻译表记录。"""
+        unique_paths = sorted(set(location_paths))
+        if not unique_paths:
+            return 0
         deleted_rows = 0
-        for location_path in location_paths:
-            cursor = await self.connection.execute(
-                DELETE_TRANSLATION_ITEM_BY_PATH,
-                (location_path,),
-            )
+        for batch in _chunks(unique_paths, PATH_DELETE_BATCH_SIZE):
+            placeholders = ", ".join("?" for _path in batch)
+            sql = f"""
+--sql
+                DELETE FROM [{TRANSLATION_TABLE_NAME}]
+                WHERE location_path IN ({placeholders})
+            ;
+            """
+            cursor = await self.connection.execute(sql, tuple(batch))
             if cursor.rowcount > 0:
                 deleted_rows += cursor.rowcount
         await self.connection.commit()
@@ -159,3 +178,8 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             source_line_paths=source_line_paths,
             translation_lines=translation_lines,
         )
+
+
+def _chunks(values: Sequence[str], size: int) -> list[Sequence[str]]:
+    """把路径列表分块，避免 SQLite 参数过多。"""
+    return [values[index:index + size] for index in range(0, len(values), size)]

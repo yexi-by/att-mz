@@ -50,6 +50,7 @@ class TextScopeService:
         text_rules: TextRules,
         translated_items: list[TranslationItem] | None = None,
         include_write_probe: bool = False,
+        plugin_source_scan: PluginSourceScan | None = None,
     ) -> TextScopeResult:
         """读取规则、展开命中项，并按需生成写入可行性信息。"""
         plugin_rules, stale_plugin_rules = await read_fresh_plugin_text_rules(
@@ -63,16 +64,14 @@ class TextScopeService:
             records=await session.read_nonstandard_data_text_rules(),
         )
         plugin_source_rule_records = await session.read_plugin_source_text_rules()
-        plugin_source_scan = (
-            build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-            if plugin_source_rule_records
-            else None
-        )
+        resolved_plugin_source_scan = plugin_source_scan if plugin_source_rule_records else None
+        if plugin_source_rule_records and resolved_plugin_source_scan is None:
+            resolved_plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         plugin_source_rules, _stale_plugin_source_rules = filter_fresh_plugin_source_text_rules(
             game_data=game_data,
             rule_records=plugin_source_rule_records,
             text_rules=text_rules,
-            scan=plugin_source_scan,
+            scan=resolved_plugin_source_scan,
         )
         note_tag_rules = await session.read_note_tag_text_rules()
         mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
@@ -86,7 +85,7 @@ class TextScopeService:
             plugin_rules=plugin_rules,
             event_rules=event_rules,
             plugin_source_rules=plugin_source_rules,
-            plugin_source_scan=plugin_source_scan,
+            plugin_source_scan=resolved_plugin_source_scan,
             note_tag_rules=note_tag_rules,
             nonstandard_data_rules=nonstandard_data_rules,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,

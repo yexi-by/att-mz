@@ -1051,6 +1051,30 @@ def test_translate_quality_errors_do_not_fail_process() -> None:
     assert report.summary["quality_error_count"] == 2
 
 
+def test_translate_summary_report_includes_text_index_status() -> None:
+    """小批翻译摘要会暴露索引来源和自动重建摘要。"""
+    summary = TextTranslationSummary(
+        total_extracted_items=10,
+        pending_count=3,
+        deduplicated_count=3,
+        batch_count=1,
+        success_count=3,
+        error_count=0,
+        total_pending_count=10,
+        text_index_status="cold_rebuilt",
+        text_index_rebuild_summary={
+            "index_status": "rebuilt",
+            "indexed_count": 10,
+        },
+    )
+
+    report = build_translate_summary_report(summary)
+
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+    rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "rebuild_summary")
+    assert rebuild_summary["index_status"] == "rebuilt"
+
+
 def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
     """规则导入 JSON 报告必须提醒 Agent 已清理译文和恢复位置。"""
     backup_path = "outputs/rule-import-backups/demo/plugin-rules-20260101-010101.json"

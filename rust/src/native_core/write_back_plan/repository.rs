@@ -4,68 +4,74 @@ use super::models::{
 use super::utils::collect_python_named_groups;
 use crate::native_core::models::NativeSourceResidualRule;
 use fancy_regex::Regex as FancyRegex;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params_from_iter};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+const SQLITE_IN_CLAUSE_CHUNK_SIZE: usize = 500;
 
 pub(super) fn open_readonly_connection(db_path: &Path) -> Result<Connection, String> {
     Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("只读打开数据库失败 {}: {error}", db_path.display()))
 }
-pub(super) fn read_translation_items(
+pub(super) fn read_translation_items_for_allowed_paths(
     connection: &Connection,
+    allowed_paths: &[String],
 ) -> Result<Vec<TranslationItem>, String> {
-    let mut statement = connection
-        .prepare(
+    assert_no_disallowed_translation_items(connection, allowed_paths)?;
+    if allowed_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut items: Vec<TranslationItem> = Vec::new();
+    for chunk in allowed_paths.chunks(SQLITE_IN_CLAUSE_CHUNK_SIZE) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
             "SELECT location_path, item_type, role, original_lines, source_line_paths, translation_lines \
-             FROM translation_items ORDER BY location_path",
-        )
-        .map_err(|error| format!("读取译文记录 SQL 准备失败: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            let location_path: String = row.get(0)?;
-            let item_type: String = row.get(1)?;
-            let role: Option<String> = row.get(2)?;
-            let original_lines_text: String = row.get(3)?;
-            let source_line_paths_text: String = row.get(4)?;
-            let translation_lines_text: String = row.get(5)?;
-            Ok((
+             FROM translation_items WHERE location_path IN ({placeholders}) ORDER BY location_path"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("按可写范围读取译文记录 SQL 准备失败: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter().map(String::as_str)), |row| {
+                let location_path: String = row.get(0)?;
+                let item_type: String = row.get(1)?;
+                let role: Option<String> = row.get(2)?;
+                let original_lines_text: String = row.get(3)?;
+                let source_line_paths_text: String = row.get(4)?;
+                let translation_lines_text: String = row.get(5)?;
+                Ok((
+                    location_path,
+                    item_type,
+                    role,
+                    original_lines_text,
+                    source_line_paths_text,
+                    translation_lines_text,
+                ))
+            })
+            .map_err(|error| format!("按可写范围读取译文记录失败: {error}"))?;
+        for row in rows {
+            let (
                 location_path,
                 item_type,
                 role,
                 original_lines_text,
                 source_line_paths_text,
                 translation_lines_text,
-            ))
-        })
-        .map_err(|error| format!("读取译文记录失败: {error}"))?;
-    let mut items: Vec<TranslationItem> = Vec::new();
-    for row in rows {
-        let (
-            location_path,
-            item_type,
-            role,
-            original_lines_text,
-            source_line_paths_text,
-            translation_lines_text,
-        ) = row.map_err(|error| format!("读取译文记录行失败: {error}"))?;
-        let original_lines = parse_string_array(&original_lines_text, "original_lines")?;
-        let source_line_paths = parse_string_array(&source_line_paths_text, "source_line_paths")?;
-        let translation_lines = parse_string_array(&translation_lines_text, "translation_lines")?;
-        if translation_lines.is_empty()
-            || translation_lines.iter().all(|line| line.trim().is_empty())
-        {
-            return Err(format!("译文行为空，不能写进游戏文件: {location_path}"));
+            ) = row.map_err(|error| format!("读取译文记录行失败: {error}"))?;
+            items.push(translation_item_from_row_values(
+                location_path,
+                item_type,
+                role,
+                original_lines_text,
+                source_line_paths_text,
+                translation_lines_text,
+            )?);
         }
-        items.push(TranslationItem {
-            location_path,
-            item_type,
-            role,
-            original_lines,
-            source_line_paths,
-            translation_lines,
-        });
     }
+    items.sort_by(|left, right| left.location_path.cmp(&right.location_path));
     Ok(items)
 }
 
@@ -73,22 +79,33 @@ pub(super) fn parse_string_array(text: &str, label: &str) -> Result<Vec<String>,
     serde_json::from_str(text).map_err(|error| format!("{label} 不是字符串数组 JSON: {error}"))
 }
 
-pub(super) fn filter_translation_items_by_policy(
-    items: Vec<TranslationItem>,
+fn assert_no_disallowed_translation_items(
+    connection: &Connection,
     allowed_paths: &[String],
-) -> Result<Vec<TranslationItem>, String> {
+) -> Result<(), String> {
     let allowed: HashSet<&str> = allowed_paths.iter().map(String::as_str).collect();
-    let mut disallowed_paths: Vec<&str> = items
-        .iter()
-        .map(|item| item.location_path.as_str())
-        .filter(|path| !allowed.contains(path))
-        .collect();
+    let mut statement = connection
+        .prepare("SELECT location_path FROM translation_items ORDER BY location_path")
+        .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            let location_path: String = row.get(0)?;
+            Ok(location_path)
+        })
+        .map_err(|error| format!("读取译文路径失败: {error}"))?;
+    let mut disallowed_paths: Vec<String> = Vec::new();
+    for row in rows {
+        let location_path = row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
+        if !allowed.contains(location_path.as_str()) {
+            disallowed_paths.push(location_path);
+        }
+    }
     if !disallowed_paths.is_empty() {
         disallowed_paths.sort_unstable();
         let samples = disallowed_paths
             .iter()
             .take(5)
-            .copied()
+            .map(String::as_str)
             .collect::<Vec<_>>()
             .join("、");
         let suffix = if disallowed_paths.len() > 5 {
@@ -100,7 +117,31 @@ pub(super) fn filter_translation_items_by_policy(
             "发现已保存译文不在当前可写文本范围内，不能继续写进游戏文件: {samples}{suffix}"
         ));
     }
-    Ok(items)
+    Ok(())
+}
+
+fn translation_item_from_row_values(
+    location_path: String,
+    item_type: String,
+    role: Option<String>,
+    original_lines_text: String,
+    source_line_paths_text: String,
+    translation_lines_text: String,
+) -> Result<TranslationItem, String> {
+    let original_lines = parse_string_array(&original_lines_text, "original_lines")?;
+    let source_line_paths = parse_string_array(&source_line_paths_text, "source_line_paths")?;
+    let translation_lines = parse_string_array(&translation_lines_text, "translation_lines")?;
+    if translation_lines.is_empty() || translation_lines.iter().all(|line| line.trim().is_empty()) {
+        return Err(format!("译文行为空，不能写进游戏文件: {location_path}"));
+    }
+    Ok(TranslationItem {
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        translation_lines,
+    })
 }
 
 pub(super) fn read_plugin_source_text_rules(

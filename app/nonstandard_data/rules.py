@@ -204,13 +204,12 @@ def validate_nonstandard_data_rules(
     )
 
 
-def build_nonstandard_data_rule_records_from_import(
+def build_nonstandard_data_rule_records_from_validation(
     *,
     scan: NonstandardDataScan,
-    import_file: NonstandardDataRuleImportFile,
+    validation: NonstandardDataRuleValidationResult,
 ) -> list[NonstandardDataTextRuleRecord]:
-    """校验外部规则并生成可持久化的数据库记录。"""
-    validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+    """使用已验证结果生成可持久化的数据库记录。"""
     files_by_name = {
         nonstandard_file.file_name: nonstandard_file
         for nonstandard_file in scan.files
@@ -313,7 +312,7 @@ __all__ = [
     "NonstandardDataRuleImportFile",
     "NonstandardDataRuleSpec",
     "NonstandardDataRuleValidationResult",
-    "build_nonstandard_data_rule_records_from_import",
+    "build_nonstandard_data_rule_records_from_validation",
     "nonstandard_data_rule_records_to_import_json",
     "nonstandard_data_rule_records_to_import_file",
     "parse_nonstandard_data_rule_import_text",

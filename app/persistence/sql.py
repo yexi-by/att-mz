@@ -27,10 +27,14 @@ FONT_REPLACEMENT_RECORDS_TABLE_NAME = "font_replacement_records"
 TRANSLATION_RUNS_TABLE_NAME = "translation_runs"
 LLM_FAILURES_TABLE_NAME = "llm_failures"
 TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
+TEXT_INDEX_META_TABLE_NAME = "text_index_meta"
+TEXT_INDEX_ITEMS_TABLE_NAME = "text_index_items"
+TEXT_INDEX_INVALIDATIONS_TABLE_NAME = "text_index_invalidations"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
-CURRENT_SCHEMA_VERSION = 12
+TEXT_INDEX_META_KEY = "current"
+CURRENT_SCHEMA_VERSION = 14
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -60,6 +64,9 @@ EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     TRANSLATION_RUNS_TABLE_NAME,
     LLM_FAILURES_TABLE_NAME,
     TRANSLATION_QUALITY_ERRORS_TABLE_NAME,
+    TEXT_INDEX_META_TABLE_NAME,
+    TEXT_INDEX_ITEMS_TABLE_NAME,
+    TEXT_INDEX_INVALIDATIONS_TABLE_NAME,
 )
 
 CREATE_SCHEMA_VERSION_TABLE = f"""
@@ -221,6 +228,47 @@ CREATE_TRANSLATION_QUALITY_ERRORS_TABLE = f"""
         model_response   TEXT NOT NULL,
         PRIMARY KEY (run_id, location_path),
         FOREIGN KEY (run_id) REFERENCES [{TRANSLATION_RUNS_TABLE_NAME}](run_id) ON DELETE CASCADE
+    )
+;
+"""
+
+CREATE_TEXT_INDEX_META_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_INDEX_META_TABLE_NAME}] (
+        index_key                   TEXT PRIMARY KEY,
+        source_snapshot_fingerprint TEXT NOT NULL,
+        rules_fingerprint           TEXT NOT NULL,
+        item_count                  INTEGER NOT NULL,
+        workflow_gate_scope_hashes  TEXT NOT NULL,
+        created_at                  TEXT NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_INDEX_ITEMS_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_INDEX_ITEMS_TABLE_NAME}] (
+        location_path               TEXT PRIMARY KEY,
+        item_type                   TEXT NOT NULL CHECK (item_type IN ('long_text', 'array', 'short_text')),
+        role                        TEXT,
+        original_lines              TEXT NOT NULL,
+        source_line_paths           TEXT NOT NULL,
+        source_type                 TEXT NOT NULL,
+        source_file                 TEXT NOT NULL,
+        writable                    INTEGER NOT NULL CHECK (writable IN (0, 1)),
+        source_snapshot_fingerprint TEXT NOT NULL,
+        rules_fingerprint           TEXT NOT NULL,
+        locator_json                TEXT NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_INDEX_INVALIDATIONS_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_INDEX_INVALIDATIONS_TABLE_NAME}] (
+        reason_key TEXT PRIMARY KEY,
+        detail     TEXT NOT NULL,
+        created_at TEXT NOT NULL
     )
 ;
 """
@@ -656,15 +704,76 @@ INSERT_TRANSLATION_QUALITY_ERROR = f"""
 ;
 """
 
+UPSERT_TEXT_INDEX_META = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_INDEX_META_TABLE_NAME}]
+    (index_key, source_snapshot_fingerprint, rules_fingerprint, item_count, workflow_gate_scope_hashes, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_INDEX_ITEM = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+    (
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_type,
+        source_file,
+        writable,
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        locator_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_INDEX_INVALIDATION = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_INDEX_INVALIDATIONS_TABLE_NAME}]
+    (reason_key, detail, created_at)
+    VALUES (?, ?, ?)
+;
+"""
+
 DELETE_ALL_TRANSLATION_QUALITY_ERRORS = f"""
 --sql
     DELETE FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
 ;
 """
 
+DELETE_ALL_TEXT_INDEX_META = f"""
+--sql
+    DELETE FROM [{TEXT_INDEX_META_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_INDEX_ITEMS = f"""
+--sql
+    DELETE FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_INDEX_INVALIDATIONS = f"""
+--sql
+    DELETE FROM [{TEXT_INDEX_INVALIDATIONS_TABLE_NAME}]
+;
+"""
+
 SELECT_TRANSLATION_PATHS = f"""
 --sql
     SELECT location_path
+    FROM [{TRANSLATION_TABLE_NAME}]
+;
+"""
+
+COUNT_TRANSLATED_ITEMS = f"""
+--sql
+    SELECT COUNT(*) AS translated_count
     FROM [{TRANSLATION_TABLE_NAME}]
 ;
 """
@@ -933,6 +1042,177 @@ SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN = f"""
 ;
 """
 
+SELECT_TRANSLATION_QUALITY_ERROR_BY_RUN_AND_PATH = f"""
+--sql
+    SELECT *
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+    WHERE run_id = ? AND location_path = ?
+    LIMIT 1
+;
+"""
+
+COUNT_TRANSLATION_QUALITY_ERRORS_BY_RUN = f"""
+--sql
+    SELECT COUNT(*) AS quality_error_count
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+    WHERE run_id = ?
+;
+"""
+
+SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN = f"""
+--sql
+    SELECT error_type, COUNT(*) AS error_count
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+    WHERE run_id = ?
+    GROUP BY error_type
+    ORDER BY error_type
+;
+"""
+
+SELECT_TEXT_INDEX_META = f"""
+--sql
+    SELECT source_snapshot_fingerprint, rules_fingerprint, item_count, workflow_gate_scope_hashes, created_at
+    FROM [{TEXT_INDEX_META_TABLE_NAME}]
+    WHERE index_key = ?
+    LIMIT 1
+;
+"""
+
+SELECT_TEXT_INDEX_ITEMS = f"""
+--sql
+    SELECT
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_type,
+        source_file,
+        writable,
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        locator_json
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+    ORDER BY location_path
+;
+"""
+
+SELECT_TEXT_INDEX_ITEM_COUNT = f"""
+--sql
+    SELECT COUNT(*) AS item_count
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+;
+"""
+
+COUNT_TEXT_INDEX_TRANSLATED_ITEMS = f"""
+--sql
+    SELECT COUNT(*) AS translated_count
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+    INNER JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+        ON translations.location_path = index_items.location_path
+;
+"""
+
+COUNT_PENDING_TEXT_INDEX_QUALITY_ERRORS = f"""
+--sql
+    SELECT COUNT(*) AS quality_error_count
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
+    INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+        ON index_items.location_path = quality_errors.location_path
+    LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+        ON translations.location_path = quality_errors.location_path
+    WHERE quality_errors.run_id = ?
+        AND index_items.writable = 1
+        AND translations.location_path IS NULL
+;
+"""
+
+SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_TYPE_COUNTS = f"""
+--sql
+    SELECT quality_errors.error_type, COUNT(*) AS error_count
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
+    INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+        ON index_items.location_path = quality_errors.location_path
+    LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+        ON translations.location_path = quality_errors.location_path
+    WHERE quality_errors.run_id = ?
+        AND index_items.writable = 1
+        AND translations.location_path IS NULL
+    GROUP BY quality_errors.error_type
+    ORDER BY quality_errors.error_type
+;
+"""
+
+SELECT_PENDING_TEXT_INDEX_ITEMS = f"""
+--sql
+    SELECT
+        indexed.location_path,
+        indexed.item_type,
+        indexed.role,
+        indexed.original_lines,
+        indexed.source_line_paths,
+        indexed.source_type,
+        indexed.source_file,
+        indexed.writable,
+        indexed.source_snapshot_fingerprint,
+        indexed.rules_fingerprint,
+        indexed.locator_json
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+    LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translated
+        ON translated.location_path = indexed.location_path
+    WHERE translated.location_path IS NULL
+        AND indexed.writable = 1
+    ORDER BY indexed.location_path
+    LIMIT ?
+;
+"""
+
+SELECT_PENDING_TEXT_INDEX_COUNT = f"""
+--sql
+    SELECT COUNT(*) AS pending_count
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+    LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translated
+        ON translated.location_path = indexed.location_path
+    WHERE translated.location_path IS NULL
+        AND indexed.writable = 1
+;
+"""
+
+SELECT_TEXT_INDEX_ITEM_BY_PATH = f"""
+--sql
+    SELECT
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_type,
+        source_file,
+        writable,
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        locator_json
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+    WHERE location_path = ?
+    LIMIT 1
+;
+"""
+
+SELECT_TEXT_INDEX_LOCATION_PATHS = f"""
+--sql
+    SELECT location_path
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+;
+"""
+
+SELECT_TEXT_INDEX_INVALIDATIONS = f"""
+--sql
+    SELECT reason_key, detail, created_at
+    FROM [{TEXT_INDEX_INVALIDATIONS_TABLE_NAME}]
+    ORDER BY reason_key
+;
+"""
+
 DELETE_ALL_PLUGIN_TEXT_RULES = f"""
 --sql
     DELETE FROM [{PLUGIN_TEXT_RULES_TABLE_NAME}]
@@ -1104,6 +1384,9 @@ __all__: list[str] = [
     "CREATE_TRANSLATION_QUALITY_ERRORS_TABLE",
     "CREATE_TRANSLATION_RUNS_TABLE",
     "CREATE_TRANSLATION_TABLE",
+    "CREATE_TEXT_INDEX_INVALIDATIONS_TABLE",
+    "CREATE_TEXT_INDEX_ITEMS_TABLE",
+    "CREATE_TEXT_INDEX_META_TABLE",
     "CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE",
     "CREATE_FIELD_TRANSLATION_TERMS_TABLE",
     "CREATE_TEXT_GLOSSARY_TERMS_TABLE",
@@ -1126,9 +1409,15 @@ __all__: list[str] = [
     "DELETE_RULE_REVIEW_STATE",
     "DELETE_ALL_FIELD_TRANSLATION_TERMS",
     "DELETE_ALL_TEXT_GLOSSARY_TERMS",
+    "DELETE_ALL_TEXT_INDEX_INVALIDATIONS",
+    "DELETE_ALL_TEXT_INDEX_ITEMS",
+    "DELETE_ALL_TEXT_INDEX_META",
     "DELETE_ALL_TRANSLATION_QUALITY_ERRORS",
     "DELETE_TRANSLATION_ITEM_BY_PATH",
     "DELETE_TRANSLATION_ITEMS_BY_PREFIX",
+    "COUNT_PENDING_TEXT_INDEX_QUALITY_ERRORS",
+    "COUNT_TEXT_INDEX_TRANSLATED_ITEMS",
+    "COUNT_TRANSLATED_ITEMS",
     "EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE_NAME",
     "EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE_NAME",
     "EVENT_COMMAND_TEXT_RULE_PATHS_TABLE_NAME",
@@ -1156,6 +1445,8 @@ __all__: list[str] = [
     "INSERT_TRANSLATION_QUALITY_ERROR",
     "INSERT_FIELD_TRANSLATION_TERM",
     "INSERT_TEXT_GLOSSARY_TERM",
+    "INSERT_TEXT_INDEX_INVALIDATION",
+    "INSERT_TEXT_INDEX_ITEM",
     "LLM_FAILURES_TABLE_NAME",
     "LANGUAGE_SETTINGS_KEY",
     "LANGUAGE_SETTINGS_TABLE_NAME",
@@ -1196,6 +1487,10 @@ __all__: list[str] = [
     "SELECT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE",
     "SELECT_SOURCE_SNAPSHOT_FILES",
     "SELECT_RULE_REVIEW_STATE",
+    "COUNT_TRANSLATION_QUALITY_ERRORS_BY_RUN",
+    "SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_TYPE_COUNTS",
+    "SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN",
+    "SELECT_TRANSLATION_QUALITY_ERROR_BY_RUN_AND_PATH",
     "SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN",
     "SELECT_TRANSLATION_RUN",
     "SELECT_TRANSLATED_ITEMS",
@@ -1206,10 +1501,22 @@ __all__: list[str] = [
     "SELECT_TABLE_NAMES",
     "SELECT_TERMINOLOGY_BUNDLE_STATE",
     "SELECT_TEXT_GLOSSARY_TERMS",
+    "SELECT_PENDING_TEXT_INDEX_COUNT",
+    "SELECT_PENDING_TEXT_INDEX_ITEMS",
+    "SELECT_TEXT_INDEX_INVALIDATIONS",
+    "SELECT_TEXT_INDEX_ITEM_COUNT",
+    "SELECT_TEXT_INDEX_ITEMS",
+    "SELECT_TEXT_INDEX_ITEM_BY_PATH",
+    "SELECT_TEXT_INDEX_LOCATION_PATHS",
+    "SELECT_TEXT_INDEX_META",
     "SELECT_FIELD_TRANSLATION_TERMS",
     "SCHEMA_VERSION_KEY",
     "SCHEMA_VERSION_TABLE_NAME",
     "TEXT_GLOSSARY_TERMS_TABLE_NAME",
+    "TEXT_INDEX_INVALIDATIONS_TABLE_NAME",
+    "TEXT_INDEX_ITEMS_TABLE_NAME",
+    "TEXT_INDEX_META_KEY",
+    "TEXT_INDEX_META_TABLE_NAME",
     "TERMINOLOGY_BUNDLE_STATE_KEY",
     "TERMINOLOGY_BUNDLE_STATE_TABLE_NAME",
     "TRANSLATION_QUALITY_ERRORS_TABLE_NAME",
@@ -1219,6 +1526,7 @@ __all__: list[str] = [
     "UPSERT_LANGUAGE_SETTINGS",
     "UPSERT_SCHEMA_VERSION",
     "UPSERT_TERMINOLOGY_BUNDLE_STATE",
+    "UPSERT_TEXT_INDEX_META",
     "UPSERT_TRANSLATION_RUN",
     "CURRENT_SCHEMA_VERSION",
 ]

@@ -57,14 +57,16 @@ async def load_game_data(
     *,
     include_plugin_source_files: bool = True,
     include_writable_copies: bool = True,
+    run_dialogue_probe_check: bool = True,
 ) -> GameData:
-    """加载游戏数据；业务服务层必须使用显式视图入口。"""
+    """加载兼容完整游戏数据；业务服务层必须使用显式视图入口。"""
     return await _load_game_data(
         game_path,
         use_origin_backups=True,
         require_origin_backups=False,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
@@ -72,8 +74,9 @@ async def load_game_data_for_view(
     game_path: str | Path,
     *,
     source_view: GameFileView,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
+    include_plugin_source_files: bool = False,
+    include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """按指定文件视图加载游戏数据。"""
     return await _load_game_data(
@@ -82,14 +85,16 @@ async def load_game_data_for_view(
         require_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
 async def load_active_game_data(
     game_path: str | Path,
     *,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
+    include_plugin_source_files: bool = False,
+    include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """从 RPG Maker 游戏根目录加载当前激活文件，不读取完整原始备份。"""
     return await load_game_data_for_view(
@@ -97,14 +102,16 @@ async def load_active_game_data(
         source_view=GameFileView.ACTIVE_RUNTIME,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
 async def load_active_runtime_game_data(
     game_path: str | Path,
     *,
-    include_plugin_source_files: bool = True,
+    include_plugin_source_files: bool = False,
     include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """从 RPG Maker 游戏根目录加载当前运行视图文件。"""
     return await load_game_data_for_view(
@@ -112,14 +119,16 @@ async def load_active_runtime_game_data(
         source_view=GameFileView.ACTIVE_RUNTIME,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
 async def load_translation_source_game_data(
     game_path: str | Path,
     *,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
+    include_plugin_source_files: bool = False,
+    include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """从 RPG Maker 游戏根目录加载翻译源视图文件。"""
     return await _load_game_data(
@@ -128,6 +137,7 @@ async def load_translation_source_game_data(
         require_origin_backups=True,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
@@ -138,6 +148,7 @@ async def _load_game_data(
     require_origin_backups: bool,
     include_plugin_source_files: bool,
     include_writable_copies: bool,
+    run_dialogue_probe_check: bool,
 ) -> GameData:
     """按指定来源策略加载标准数据文件并构造 `GameData`。"""
     layout = resolve_game_layout(game_path)
@@ -215,7 +226,8 @@ async def _load_game_data(
     if system is None or common_events is None or troops is None:
         raise ValueError("游戏缺少 System.json、CommonEvents.json 或 Troops.json，禁止启动")
 
-    run_dialogue_probe(map_data=map_data, common_events=common_events, troops=troops)
+    if run_dialogue_probe_check:
+        run_dialogue_probe(map_data=map_data, common_events=common_events, troops=troops)
 
     return GameData(
         layout=layout,
@@ -506,6 +518,9 @@ class GameDataManager:
         game_data = await load_game_data_for_view(
             resolved_game_path,
             source_view=GameFileView.TRANSLATION_SOURCE,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
         )
 
         if has_origin_backup:

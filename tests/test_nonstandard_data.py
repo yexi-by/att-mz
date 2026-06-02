@@ -11,6 +11,9 @@ from app.application.flow_gate import collect_workflow_gate_errors
 from app.nonstandard_data import (
     build_nonstandard_data_scan,
     build_nonstandard_data_file_hash,
+    NonstandardDataRuleImportFile,
+    NonstandardDataRuleValidationResult,
+    NonstandardDataScan,
     NonstandardDataTextExtraction,
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
@@ -149,6 +152,7 @@ async def test_prepare_agent_workspace_exports_nonstandard_data_branch(
 
     assert report.status == "ok"
     assert report.summary["nonstandard_data_high_risk"] is True
+    assert "nonstandard_data_export" in report.details
     assert (workspace / "nonstandard-data-rules.json").read_text(encoding="utf-8").strip() == "[]"
     assert (workspace / "nonstandard-data" / "source" / "UnknownPluginData.json").is_file()
     assert ensure_json_object(risk_report["summary"], "summary")["candidate_count"] == 1
@@ -306,12 +310,28 @@ async def test_nonstandard_data_skipped_warning_persists_in_reports(
 async def test_nonstandard_data_rules_import_persists_records(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """导入规则会保存当前源文件哈希和路径分类。"""
     _write_high_risk_nonstandard_data(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    validation_count = 0
+
+    def counting_validate_nonstandard_data_rules(
+        *,
+        scan: NonstandardDataScan,
+        import_file: NonstandardDataRuleImportFile,
+    ) -> NonstandardDataRuleValidationResult:
+        nonlocal validation_count
+        validation_count += 1
+        return validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.nonstandard_data.validate_nonstandard_data_rules",
+        counting_validate_nonstandard_data_rules,
+    )
 
     report = await service.import_nonstandard_data_rules(
         game_title="テストゲーム",
@@ -334,6 +354,7 @@ async def test_nonstandard_data_rules_import_persists_records(
     origin_text = (minimal_game_dir / "data_origin" / "UnknownPluginData.json").read_bytes().decode("utf-8")
 
     assert report.status == "ok"
+    assert validation_count == 1
     assert (minimal_game_dir / "data_origin" / "UnknownPluginData.json").is_file()
     assert "data_origin/UnknownPluginData.json" in {record.relative_path for record in snapshot_records}
     assert records == [

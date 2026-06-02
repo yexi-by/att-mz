@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import OrderedDict
 from bisect import bisect_right
 from dataclasses import dataclass
 
@@ -59,6 +60,8 @@ CALL_CONTEXT_PATTERN: re.Pattern[str] = re.compile(
 KEY_CONTEXT_PATTERN: re.Pattern[str] = re.compile(
     r"(?:([A-Za-z_$][\w$]*)|['\"]([^'\"]+)['\"])\s*:\s*$"
 )
+_NATIVE_SCAN_CACHE_MAX_SIZE = 256
+_NATIVE_SCAN_CACHE: OrderedDict[str, NativeJavaScriptStringScan] = OrderedDict()
 
 
 def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> PluginSourceScan:
@@ -107,6 +110,11 @@ def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> P
 def build_plugin_source_file_hash(source: str) -> str:
     """计算插件源码文件内容哈希。"""
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def clear_plugin_source_native_scan_cache() -> None:
+    """清空进程内插件源码 AST 扫描缓存。"""
+    _NATIVE_SCAN_CACHE.clear()
 
 
 def candidate_selector_for_span(*, start_index: int, end_index: int, raw_text: str) -> str:
@@ -254,7 +262,8 @@ def scan_plugin_source_file_text_strict(
     text_rules: TextRules | None = None,
 ) -> PluginSourceFileTextScan:
     """只使用原生 AST 扫描单个源码文件，语法错误或原生解析不可用时直接失败。"""
-    spans = _collect_native_string_literal_spans_required(source)
+    file_hash = build_plugin_source_file_hash(source)
+    spans = _collect_native_string_literal_spans_required(source, file_hash=file_hash)
     literals, candidates = _build_literals_and_candidates_from_spans(
         file_name=file_name,
         source=source,
@@ -264,7 +273,7 @@ def scan_plugin_source_file_text_strict(
     )
     return PluginSourceFileTextScan(
         file_name=file_name,
-        file_hash=build_plugin_source_file_hash(source),
+        file_hash=file_hash,
         literals=literals,
         candidate_index=PluginSourceCandidateIndex(
             candidates=candidates,
@@ -280,7 +289,14 @@ def scan_plugin_source_files_text_strict(
     text_rules: TextRules | None = None,
 ) -> PluginSourceBatchTextScan:
     """批量严格扫描多个插件源码文件，逐文件保留 JS 语法错误。"""
-    scans = parse_native_javascript_string_spans_batch(files)
+    file_hashes = {
+        file_name: build_plugin_source_file_hash(source)
+        for file_name, source in files.items()
+    }
+    scans = _parse_native_javascript_string_spans_batch_cached(
+        files=files,
+        file_hashes=file_hashes,
+    )
     file_scans: dict[str, PluginSourceFileTextScan] = {}
     syntax_errors: dict[str, str] = {}
     for file_name, source in sorted(files.items()):
@@ -297,7 +313,7 @@ def scan_plugin_source_files_text_strict(
         )
         file_scans[file_name] = PluginSourceFileTextScan(
             file_name=file_name,
-            file_hash=build_plugin_source_file_hash(source),
+            file_hash=file_hashes[file_name],
             literals=literals,
             candidate_index=PluginSourceCandidateIndex(
                 candidates=candidates,
@@ -471,12 +487,70 @@ def _collect_string_literal_spans(source: str) -> list[_StringLiteralSpan]:
     return _collect_native_string_literal_spans_required(source)
 
 
-def _collect_native_string_literal_spans_required(source: str) -> list[_StringLiteralSpan]:
+def _collect_native_string_literal_spans_required(
+    source: str,
+    *,
+    file_hash: str | None = None,
+) -> list[_StringLiteralSpan]:
     """调用原生 AST 解析器，禁止在严格流程中退回轻量扫描。"""
-    scan = parse_native_javascript_string_spans(source)
+    resolved_hash = file_hash if file_hash is not None else build_plugin_source_file_hash(source)
+    scan = _read_native_scan_cache(resolved_hash)
+    if scan is None:
+        scan = parse_native_javascript_string_spans(source)
+        _write_native_scan_cache(resolved_hash, scan)
     if scan.has_error:
         raise RuntimeError("原生 AST 解析报告 JS 语法错误")
     return _native_scan_to_internal_spans(scan)
+
+
+def _parse_native_javascript_string_spans_batch_cached(
+    *,
+    files: dict[str, str],
+    file_hashes: dict[str, str],
+) -> dict[str, NativeJavaScriptStringScan]:
+    """按源码 hash 复用 Rust AST 字符串节点扫描结果。"""
+    scans: dict[str, NativeJavaScriptStringScan] = {}
+    uncached_representatives: dict[str, tuple[str, str]] = {}
+    for file_name, source in sorted(files.items()):
+        file_hash = file_hashes[file_name]
+        cached_scan = _read_native_scan_cache(file_hash)
+        if cached_scan is not None:
+            scans[file_name] = cached_scan
+            continue
+        if file_hash not in uncached_representatives:
+            uncached_representatives[file_hash] = (file_name, source)
+
+    if uncached_representatives:
+        fresh_input = {
+            representative_name: source
+            for representative_name, source in uncached_representatives.values()
+        }
+        fresh_scans = parse_native_javascript_string_spans_batch(fresh_input)
+        fresh_scans_by_hash: dict[str, NativeJavaScriptStringScan] = {}
+        for file_hash, (representative_name, _source) in uncached_representatives.items():
+            fresh_scan = fresh_scans[representative_name]
+            _write_native_scan_cache(file_hash, fresh_scan)
+            fresh_scans_by_hash[file_hash] = fresh_scan
+        for file_name, file_hash in file_hashes.items():
+            if file_name not in scans:
+                scans[file_name] = fresh_scans_by_hash[file_hash]
+    return scans
+
+
+def _read_native_scan_cache(file_hash: str) -> NativeJavaScriptStringScan | None:
+    """读取并刷新进程内 AST 扫描缓存项。"""
+    scan = _NATIVE_SCAN_CACHE.get(file_hash)
+    if scan is not None:
+        _NATIVE_SCAN_CACHE.move_to_end(file_hash)
+    return scan
+
+
+def _write_native_scan_cache(file_hash: str, scan: NativeJavaScriptStringScan) -> None:
+    """写入进程内 AST 扫描缓存并按 LRU 控制大小。"""
+    _NATIVE_SCAN_CACHE[file_hash] = scan
+    _NATIVE_SCAN_CACHE.move_to_end(file_hash)
+    while len(_NATIVE_SCAN_CACHE) > _NATIVE_SCAN_CACHE_MAX_SIZE:
+        _ = _NATIVE_SCAN_CACHE.popitem(last=False)
 
 
 def _native_scan_to_internal_spans(scan: NativeJavaScriptStringScan) -> list[_StringLiteralSpan]:
@@ -711,6 +785,7 @@ __all__ = [
     "build_plugin_source_file_hash",
     "build_plugin_source_scan",
     "candidate_selector_for_span",
+    "clear_plugin_source_native_scan_cache",
     "find_candidate_by_selector",
     "iter_plugin_source_string_literals",
     "scan_plugin_source_file_text",

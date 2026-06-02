@@ -98,22 +98,24 @@ async def collect_write_back_quality_errors(
         )
 
     latest_run = await session.read_latest_translation_run()
-    if latest_run is not None:
-        quality_errors = await session.read_translation_quality_errors(latest_run.run_id)
-        active_quality_errors = [
-            item
-            for item in quality_errors
-            if item.location_path in pending_paths
-        ]
+    if require_complete_translation and latest_run is not None:
+        active_quality_errors = (
+            await session.read_translation_quality_errors_by_paths(
+                latest_run.run_id,
+                pending_paths,
+            )
+            if pending_paths
+            else []
+        )
         llm_failures = await session.read_llm_failures(latest_run.run_id)
-        if require_complete_translation and active_quality_errors:
+        if active_quality_errors:
             errors.append(
                 WriteBackQualityIssue(
                     code="translation_quality_errors",
                     message=f"最新翻译运行有 {len(active_quality_errors)} 条模型翻了但项目检查没通过的译文",
                 )
             )
-        if require_complete_translation and llm_failures and pending_paths:
+        if llm_failures and pending_paths:
             errors.append(
                 WriteBackQualityIssue(
                     code="llm_failures",

@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -33,6 +33,7 @@ from app.plugin_source_text import (
     build_plugin_source_scan,
     parse_plugin_source_rule_import_text,
 )
+from app.nonstandard_data.runtime_audit import ActiveRuntimeNonstandardDataAudit
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
@@ -255,12 +256,12 @@ async def _prepare_write_gate_session(
 
 
 @pytest.mark.asyncio
-async def test_direct_write_back_rejects_placeholder_risk_before_rust_plan(
+async def test_direct_write_back_delegates_native_quality_to_rust_plan(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """已保存坏译文必须在 Python 写回前置质量门被拦住。"""
+    """写回不再在 Python 侧重复执行 native 质量检查，由 Rust 计划统一拦截。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     _ = (app_home / "setting.toml").write_text(
@@ -301,19 +302,26 @@ async def test_direct_write_back_rejects_placeholder_risk_before_rust_plan(
             )
         await session.write_translation_items(translated_items)
 
+    def forbidden_python_native_check(*args: object, **kwargs: object) -> NoReturn:
+        """Python 写回前置不应再重复执行 Rust 已覆盖的 native 质量检查。"""
+        _ = (args, kwargs)
+        raise AssertionError("Python 写回前置不应重复执行 native 质量或协议检查")
+
     rust_plan_called = False
 
-    def forbidden_rust_plan(*args: object, **kwargs: object) -> object:
-        """如果走到 Rust 计划，说明写回前置质量门没有提前拦截。"""
+    def fake_rust_plan(*args: object, **kwargs: object) -> object:
+        """模拟 Rust 写回计划统一返回质量 gate 失败。"""
         nonlocal rust_plan_called
         rust_plan_called = True
         _ = (args, kwargs)
-        raise AssertionError("写回前置质量门应先拦截坏译文")
+        raise RuntimeError("写进游戏文件前检查没通过：发现 1 条译文里的游戏控制符可能被改坏")
 
-    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_rust_plan)
+    monkeypatch.setattr("app.application.write_back_gate.collect_native_quality_counts", forbidden_python_native_check)
+    monkeypatch.setattr("app.application.write_back_gate.count_native_write_protocol_issues", forbidden_python_native_check)
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_rust_plan)
     handler = TranslationHandler(registry, LLMHandler())
     try:
-        with pytest.raises(WriteBackGateError, match="游戏控制符可能被改坏"):
+        with pytest.raises(RuntimeError, match="游戏控制符可能被改坏"):
             _ = await handler.write_back(
                 game_title="テストゲーム",
                 callbacks=(lambda _current, _total: None, lambda _count: None),
@@ -321,7 +329,7 @@ async def test_direct_write_back_rejects_placeholder_risk_before_rust_plan(
     finally:
         await handler.close()
 
-    assert rust_plan_called is False
+    assert rust_plan_called is True
 
 
 class _NativePlanSessionStub:
@@ -332,6 +340,9 @@ class _NativePlanSessionStub:
     content_root: Path
     runtime_map_replace_count: int
     runtime_map_replace_calls: int
+    nonstandard_data_rules: list[NonstandardDataTextRuleRecord]
+    runtime_scan_cache_read_calls: int
+    runtime_scan_cache_replace_count: int
 
     def __init__(self, tmp_path: Path) -> None:
         """初始化可满足写回 helper 的最小会话字段。"""
@@ -340,6 +351,9 @@ class _NativePlanSessionStub:
         self.content_root = tmp_path / "game"
         self.runtime_map_replace_count = 0
         self.runtime_map_replace_calls = 0
+        self.nonstandard_data_rules = []
+        self.runtime_scan_cache_read_calls = 0
+        self.runtime_scan_cache_replace_count = 0
 
     async def replace_plugin_source_runtime_write_maps(self, records: list[object]) -> None:
         """记录插件源码当前运行映射是否被替换。"""
@@ -352,21 +366,16 @@ class _NativePlanSessionStub:
 
     async def read_nonstandard_data_text_rules(self) -> list[NonstandardDataTextRuleRecord]:
         """测试写回 helper 时没有非标准 data 规则。"""
+        return self.nonstandard_data_rules
+
+    async def read_plugin_source_runtime_scan_cache(self) -> list[object]:
+        """读取当前运行插件源码 AST 扫描缓存。"""
+        self.runtime_scan_cache_read_calls += 1
         return []
 
-
-def _empty_active_runtime_audit() -> ActiveRuntimePluginSourceAudit:
-    """构造没有问题的当前运行文件审计结果。"""
-    return ActiveRuntimePluginSourceAudit(
-        issues=(),
-        text_issue_audit_enabled=True,
-        scanned_file_count=0,
-        active_file_count=0,
-        literal_count=0,
-        active_literal_count=0,
-        read_error_file_count=0,
-    )
-
+    async def replace_plugin_source_runtime_scan_cache(self, records: list[object]) -> None:
+        """记录当前运行插件源码 AST 扫描缓存刷新数量。"""
+        self.runtime_scan_cache_replace_count = len(records)
 
 @pytest.mark.asyncio
 async def test_native_write_back_helper_applies_plan(
@@ -420,31 +429,26 @@ async def test_native_write_back_helper_applies_plan(
             assert source_path is None
             written_files.append((target_path, content))
 
-    async def fake_load_active_runtime_game_data(game_path: Path) -> GameData:
-        """模拟写入后重新加载当前运行视图。"""
-        assert game_path == session.game_path
-        return cast(GameData, cast(object, SimpleNamespace()))
+    async def fake_load_active_runtime_game_data(game_path: Path, **kwargs: object) -> GameData:
+        """无插件源码映射和非标准 data 规则时不应加载当前运行视图。"""
+        _ = (game_path, kwargs)
+        raise AssertionError("无写后审计目标时不应加载当前运行视图")
 
-    def fake_audit_active_runtime_plugin_source(
-        *,
-        game_data: GameData,
-        text_rules: TextRules,
-        runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
-        audit_text_issues: bool,
-        text_issue_scope_keys: frozenset[tuple[str, str]] | None,
-    ) -> ActiveRuntimePluginSourceAudit:
-        """模拟当前运行文件审计通过。"""
-        _ = game_data
-        _ = text_rules
-        assert runtime_write_map_records == []
-        assert audit_text_issues is False
-        assert text_issue_scope_keys is None
-        return _empty_active_runtime_audit()
+    def fake_audit_active_runtime_plugin_source_with_scan_cache(
+        *args: object,
+        **kwargs: object,
+    ) -> NoReturn:
+        """无插件源码映射时不应执行插件源码审计。"""
+        _ = (args, kwargs)
+        raise AssertionError("无插件源码映射时不应执行插件源码审计")
 
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
     monkeypatch.setattr("app.application.handler.write_planned_text_file_sources", fake_write_planned_text_files)
     monkeypatch.setattr("app.application.handler.load_active_runtime_game_data", fake_load_active_runtime_game_data)
-    monkeypatch.setattr("app.application.handler.audit_active_runtime_plugin_source", fake_audit_active_runtime_plugin_source)
+    monkeypatch.setattr(
+        "app.application.handler.audit_active_runtime_plugin_source_with_scan_cache",
+        fake_audit_active_runtime_plugin_source_with_scan_cache,
+    )
 
     handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
     try:
@@ -479,8 +483,134 @@ async def test_native_write_back_helper_applies_plan(
         "生成 Rust 写回计划",
         "替换游戏运行文件",
         "保存写入诊断映射",
-        "审计写入后的当前运行文件",
+        "跳过写入后的当前运行文件审计",
     ]
+    assert session.runtime_map_replace_calls == 1
+    assert session.runtime_map_replace_count == 0
+
+
+@pytest.mark.asyncio
+async def test_native_write_back_helper_nonstandard_data_audit_skips_game_data_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """只有非标准 data 规则时，写后审计不应加载全量当前运行视图。"""
+    session = _NativePlanSessionStub(tmp_path)
+    (session.content_root / "data").mkdir(parents=True)
+    (session.content_root / "js").mkdir(parents=True)
+    _ = (session.content_root / "js" / "plugins.js").write_text("[]", encoding="utf-8")
+    session.nonstandard_data_rules = [
+        NonstandardDataTextRuleRecord(
+            file_name="Extra.json",
+            file_hash="source-hash",
+            path_templates=["$.name"],
+        )
+    ]
+    statuses: list[str] = []
+    audited_rules: list[NonstandardDataTextRuleRecord] = []
+
+    def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
+        """返回没有插件源码映射的最小 Rust 写回计划。"""
+        assert kwargs["mode"] == "write_back"
+        return NativeWriteBackPlan(
+            files=[
+                NativePlannedFile(
+                    target_path=session.content_root / "data" / "System.json",
+                    relative_path="data/System.json",
+                    content="{\"gameTitle\":\"测试\"}\n",
+                )
+            ],
+            plugin_source_runtime_write_maps=[],
+            font_replacement_records=[],
+            summary=NativeWriteBackSummary(
+                data_item_count=1,
+                plugin_item_count=0,
+                terminology_written_count=0,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=1,
+                skipped_file_count=0,
+            ),
+            timings_ms={"total": 1},
+        )
+
+    def fake_write_planned_text_files(
+        *,
+        files: list[tuple[Path, str | None, Path | None]],
+        rollback_dir_parent: Path,
+    ) -> None:
+        """测试中不实际替换文件。"""
+        _ = (files, rollback_dir_parent)
+
+    async def fake_load_active_runtime_game_data(game_path: Path, **kwargs: object) -> GameData:
+        """非标准 data 审计只需要 layout，不应加载 GameData。"""
+        _ = (game_path, kwargs)
+        raise AssertionError("只有非标准 data 规则时不应加载当前运行视图")
+
+    def fake_audit_active_runtime_plugin_source_with_scan_cache(
+        *args: object,
+        **kwargs: object,
+    ) -> NoReturn:
+        """没有插件源码映射时不应执行插件源码审计。"""
+        _ = (args, kwargs)
+        raise AssertionError("没有插件源码映射时不应执行插件源码审计")
+
+    def fake_audit_active_runtime_nonstandard_data(
+        *,
+        layout: object,
+        rule_records: list[NonstandardDataTextRuleRecord],
+        text_rules: TextRules,
+    ) -> ActiveRuntimeNonstandardDataAudit:
+        """记录非标准 data 审计输入。"""
+        _ = text_rules
+        assert getattr(layout, "content_root") == session.content_root
+        audited_rules.extend(rule_records)
+        return ActiveRuntimeNonstandardDataAudit(
+            issues=(),
+            audit_enabled=True,
+            file_count=1,
+            skipped_file_count=0,
+            managed_path_count=1,
+        )
+
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
+    monkeypatch.setattr("app.application.handler.write_planned_text_file_sources", fake_write_planned_text_files)
+    monkeypatch.setattr("app.application.handler.load_active_runtime_game_data", fake_load_active_runtime_game_data)
+    monkeypatch.setattr(
+        "app.application.handler.audit_active_runtime_plugin_source_with_scan_cache",
+        fake_audit_active_runtime_plugin_source_with_scan_cache,
+    )
+    monkeypatch.setattr("app.application.handler.audit_active_runtime_nonstandard_data", fake_audit_active_runtime_nonstandard_data)
+
+    handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
+    try:
+        _ = await handler.write_runtime_files_with_native_plan(
+            session=cast(TargetGameSession, cast(object, session)),
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None, statuses.append),
+            setting=cast(
+                Setting,
+                cast(
+                    object,
+                    SimpleNamespace(
+                        text_rules=TextRulesSetting(),
+                        write_back=WriteBackSetting(),
+                    ),
+                ),
+            ),
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+            mode="write_back",
+            writable_location_paths=[],
+            confirm_font_overwrite=False,
+            success_phase="游戏文本回写完成",
+        )
+    finally:
+        await handler.close()
+
+    assert audited_rules == session.nonstandard_data_rules
+    assert statuses[-1] == "审计写入后的当前运行文件"
     assert session.runtime_map_replace_calls == 1
     assert session.runtime_map_replace_count == 0
 
@@ -550,49 +680,62 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
         assert rollback_dir_parent == session.content_root
         events.append("write")
 
-    async def fake_load_active_runtime_game_data(game_path: Path) -> GameData:
+    async def fake_load_active_runtime_game_data(game_path: Path, **kwargs: object) -> GameData:
         """记录写入后重新加载当前运行视图。"""
         assert game_path == session.game_path
+        assert kwargs == {"include_plugin_source_files": True}
         events.append("load")
         return cast(GameData, cast(object, SimpleNamespace()))
 
-    def fake_audit_active_runtime_plugin_source(
+    refreshed_cache_record = object()
+
+    def fake_audit_active_runtime_plugin_source_with_scan_cache(
         *,
         game_data: GameData,
         text_rules: TextRules,
+        cache_records: list[object],
+        created_at: str,
         runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
         audit_text_issues: bool,
         text_issue_scope_keys: frozenset[tuple[str, str]] | None,
-    ) -> ActiveRuntimePluginSourceAudit:
+    ) -> tuple[ActiveRuntimePluginSourceAudit, list[object]]:
         """模拟当前运行文件审计发现 JS 语法错误。"""
         _ = game_data
         _ = text_rules
+        assert cache_records == []
+        assert created_at
         assert runtime_write_map_records == [runtime_map]
         assert audit_text_issues is True
         assert text_issue_scope_keys == {("Broken.js", "ast:string:0:1:dummy")}
         events.append("audit")
-        return ActiveRuntimePluginSourceAudit(
-            issues=(
-                ActiveRuntimePluginSourceIssue(
-                    code="active_runtime_syntax_error",
-                    message="当前游戏运行文件里的插件源码无法完成 JS 语法检查",
-                    file_name="Broken.js",
-                    blocking=True,
-                    syntax_error="RuntimeError: 原生 AST 解析报告 JS 语法错误",
+        return (
+            ActiveRuntimePluginSourceAudit(
+                issues=(
+                    ActiveRuntimePluginSourceIssue(
+                        code="active_runtime_syntax_error",
+                        message="当前游戏运行文件里的插件源码无法完成 JS 语法检查",
+                        file_name="Broken.js",
+                        blocking=True,
+                        syntax_error="RuntimeError: 原生 AST 解析报告 JS 语法错误",
+                    ),
                 ),
+                text_issue_audit_enabled=True,
+                scanned_file_count=1,
+                active_file_count=1,
+                literal_count=0,
+                active_literal_count=0,
+                read_error_file_count=0,
             ),
-            text_issue_audit_enabled=True,
-            scanned_file_count=1,
-            active_file_count=1,
-            literal_count=0,
-            active_literal_count=0,
-            read_error_file_count=0,
+            [refreshed_cache_record],
         )
 
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
     monkeypatch.setattr("app.application.handler.write_planned_text_file_sources", fake_write_planned_text_files)
     monkeypatch.setattr("app.application.handler.load_active_runtime_game_data", fake_load_active_runtime_game_data)
-    monkeypatch.setattr("app.application.handler.audit_active_runtime_plugin_source", fake_audit_active_runtime_plugin_source)
+    monkeypatch.setattr(
+        "app.application.handler.audit_active_runtime_plugin_source_with_scan_cache",
+        fake_audit_active_runtime_plugin_source_with_scan_cache,
+    )
 
     handler = TranslationHandler(GameRegistry(tmp_path / "db"), LLMHandler())
     try:
@@ -623,6 +766,8 @@ async def test_native_write_back_helper_saves_runtime_map_before_post_write_audi
     assert events == ["write", "load", "audit"]
     assert session.runtime_map_replace_calls == 1
     assert session.runtime_map_replace_count == 1
+    assert session.runtime_scan_cache_read_calls == 1
+    assert session.runtime_scan_cache_replace_count == 1
 
 
 @pytest.mark.asyncio
@@ -1088,6 +1233,12 @@ async def test_direct_write_back_rejects_latest_quality_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """直接调用业务写回也必须拦截模型翻了但项目检查没通过的译文。"""
+
+    async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
+        """写回前检查不应读取最新运行的全部质量错误明细。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回前检查不应读取全部质量错误")
+
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_text = _example_setting_text_with_absolute_prompt_files()
@@ -1182,6 +1333,10 @@ async def test_direct_write_back_rejects_latest_quality_errors(
                 )
             ],
         )
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
+        forbidden_full_quality_error_read,
+    )
 
     handler = TranslationHandler(registry, LLMHandler())
     try:
@@ -1427,6 +1582,16 @@ async def test_write_terminology_allows_pending_body_translation_run(
             deduplicated_count=100,
             batch_count=1,
         )
+
+    async def forbidden_quality_error_path_read(*args: object, **kwargs: object) -> NoReturn:
+        """术语写回不要求正文译文完整，不应读取待翻译正文路径上的质量错误。"""
+        _ = (args, kwargs)
+        raise AssertionError("术语写回不应读取待翻译正文路径上的质量错误")
+
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors_by_paths",
+        forbidden_quality_error_path_read,
+    )
 
     handler = TranslationHandler(registry, LLMHandler())
     try:
@@ -2502,6 +2667,69 @@ async def test_active_runtime_loader_skips_writable_copies_by_default(minimal_ga
 
 
 @pytest.mark.asyncio
+async def test_translation_source_view_uses_lightweight_defaults(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """翻译源显式视图默认不读取插件源码、不构造写入副本、不执行对话探针。"""
+
+    def forbidden_dialogue_probe(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("轻量翻译源加载不应执行全游戏对话探针")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    monkeypatch.setattr("app.rmmz.loader.run_dialogue_probe", forbidden_dialogue_probe)
+
+    game_data = await load_game_data_for_view(
+        minimal_game_dir,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+    )
+
+    assert game_data.plugin_source_files == {}
+    assert game_data.plugin_source_read_errors == {}
+    assert game_data.writable_data == {}
+    assert game_data.writable_plugins_js == []
+    assert game_data.writable_plugin_source_files == {}
+
+
+@pytest.mark.asyncio
+async def test_translation_source_view_keeps_heavy_capabilities_explicit(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码、写入副本和对话探针仍可通过显式参数启用。"""
+
+    probe_calls = 0
+
+    def count_dialogue_probe(*args: object, **kwargs: object) -> None:
+        nonlocal probe_calls
+        _ = (args, kwargs)
+        probe_calls += 1
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    monkeypatch.setattr("app.rmmz.loader.run_dialogue_probe", count_dialogue_probe)
+
+    game_data = await load_game_data_for_view(
+        minimal_game_dir,
+        source_view=GameFileView.TRANSLATION_SOURCE,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
+
+    assert probe_calls == 1
+    assert set(game_data.plugin_source_files) == {"ComplexPlugin.js", "TestPlugin.js"}
+    assert game_data.writable_data
+    assert game_data.writable_plugins_js
+    assert game_data.writable_data["System.json"] is not game_data.data["System.json"]
+    assert game_data.writable_plugins_js[0] is not game_data.plugins_js[0]
+
+
+@pytest.mark.asyncio
 async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapshot(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -2527,6 +2755,8 @@ async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapsho
     game_data = await load_game_data_for_view(
         minimal_game_dir,
         source_view=GameFileView.TRANSLATION_SOURCE,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
     )
     write_game_files(
         game_data,

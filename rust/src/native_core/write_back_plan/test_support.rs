@@ -1111,6 +1111,42 @@ fn build_plan_rejects_missing_allowed_translation_paths() {
 }
 
 #[test]
+fn build_plan_checks_disallowed_paths_before_decoding_translation_payloads() {
+    let fixture = create_fixture_dir("att_mz_write_plan_disallowed_paths_before_payloads");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    insert_translation_item(
+        &db_path,
+        "Map999.json/1/name",
+        "short_text",
+        "not-json",
+        "[]",
+        "[\"测试\"]",
+    );
+
+    let error = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "write_back",
+        false,
+    )
+    .expect_err("不属于当前可写范围的译文必须先被路径检查拦住");
+
+    assert!(
+        error.contains("发现已保存译文不在当前可写文本范围内"),
+        "错误文案应说明已保存译文路径过期: {error}",
+    );
+    assert!(
+        !error.contains("original_lines"),
+        "Rust 写回计划不应先解析无关译文 payload: {error}",
+    );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
 fn build_plan_rejects_missing_text_plan_layout_fields() {
     let fixture = create_fixture_dir("att_mz_write_plan_missing_text_layout");
     let game_dir = fixture.join("game");

@@ -12,6 +12,7 @@ from .common import (
     QualityProgressCallbacks,
     TextRules,
     TextScopeService,
+    TranslationErrorItem,
     TranslationItem,
     _build_manual_translation_template_entry,
     _build_translation_line_break_count_detail,
@@ -28,6 +29,7 @@ from .common import (
     load_setting,
     _noop_quality_progress_callbacks,
 )
+from app.text_index import detect_text_index_invalidations, text_index_item_to_translation_item
 
 
 class ManualTranslationAgentMixin:
@@ -145,6 +147,24 @@ class ManualTranslationAgentMixin:
         invalid_items: JsonArray = []
         valid_items: list[TranslationItem] = []
         scope_mode = "saved_quality_errors"
+        text_index_status = ""
+        text_index_rebuild_summary: JsonObject = {}
+        rebuild_warnings: list[AgentIssue] = []
+
+        def import_summary(*, imported_count: int, error_count: int | None = None) -> JsonObject:
+            summary: JsonObject = {
+                "input": str(input_path),
+                "imported_count": imported_count,
+                "scope_mode": scope_mode,
+            }
+            if error_count is not None:
+                summary["error_count"] = error_count
+            if scope_mode == "text_index":
+                summary["text_index_status"] = text_index_status
+                if text_index_rebuild_summary:
+                    summary["text_index_rebuild_summary"] = text_index_rebuild_summary
+            return summary
+
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
             custom_rules = await self._resolve_custom_rules(
@@ -157,56 +177,85 @@ class ManualTranslationAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            translated_items = await session.read_translated_items()
+            payload_paths = {str(location_path) for location_path in payload}
+            translated_items = await session.read_translated_items_by_paths(sorted(payload_paths))
             translated_items_by_path = {item.location_path: item for item in translated_items}
             latest_run = await session.read_latest_translation_run()
             latest_quality_error_paths: set[str] = set()
+            latest_quality_errors_by_path: dict[str, TranslationErrorItem] = {}
             if latest_run is not None:
-                latest_quality_error_paths = {
-                    item.location_path
-                    for item in await session.read_translation_quality_errors(latest_run.run_id)
+                latest_quality_error_items = await session.read_translation_quality_errors_by_paths(
+                    latest_run.run_id,
+                    payload_paths,
+                )
+                latest_quality_errors_by_path = {
+                    item.location_path: item
+                    for item in latest_quality_error_items
                 }
-            payload_paths = {str(location_path) for location_path in payload}
+                latest_quality_error_paths = set(latest_quality_errors_by_path)
             can_use_saved_quality_error_scope = (
                 not payload_paths
                 or (
                     latest_run is not None
-                    and payload_paths <= set(translated_items_by_path)
                     and payload_paths <= latest_quality_error_paths
                 )
             )
             if can_use_saved_quality_error_scope:
-                active_items = {
-                    location_path: translated_items_by_path[location_path]
-                    for location_path in payload_paths
-                }
-            else:
-                scope_mode = "full_current_scope"
-                game_data = await self._load_translation_source_game_data(session)
-                scope = await TextScopeService().build(
-                    session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
-                    translated_items=translated_items,
-                )
-                blocking_errors = _text_scope_blocking_errors(scope)
-                if blocking_errors:
-                    return AgentReport.from_parts(
-                        errors=blocking_errors,
-                        warnings=[],
-                        summary={
-                            "input": str(input_path),
-                            "imported_count": 0,
-                            "error_count": len(blocking_errors),
-                            "scope_mode": scope_mode,
-                        },
-                        details={},
+                active_items = {}
+                for location_path in payload_paths:
+                    translated_item = translated_items_by_path.get(location_path)
+                    if translated_item is not None:
+                        active_items[location_path] = translated_item
+                        continue
+                    quality_error_item = latest_quality_errors_by_path[location_path]
+                    active_items[location_path] = TranslationItem(
+                        location_path=quality_error_item.location_path,
+                        item_type=quality_error_item.item_type,
+                        role=quality_error_item.role,
+                        original_lines=list(quality_error_item.original_lines),
+                        translation_lines=list(quality_error_item.translation_lines),
                     )
+            else:
+                scope_mode = "text_index"
+                index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
+                )
+                if index_invalidations:
+                    invalidation_details: JsonArray = [
+                        {
+                            "reason_key": item.reason_key,
+                            "detail": item.detail,
+                            "created_at": item.created_at,
+                        }
+                        for item in index_invalidations
+                    ]
+                    text_index_status = (
+                        "cold_rebuilt"
+                        if any(item.reason_key == "text_index_missing" for item in index_invalidations)
+                        else "stale_rebuilt"
+                    )
+                    rebuild_report = await self.rebuild_text_index(game_title=game_title)
+                    text_index_rebuild_summary = dict(rebuild_report.summary)
+                    if rebuild_report.status == "error":
+                        text_index_status = "rebuild_failed"
+                        return AgentReport.from_parts(
+                            errors=rebuild_report.errors,
+                            warnings=rebuild_report.warnings,
+                            summary=import_summary(imported_count=0, error_count=len(rebuild_report.errors)),
+                            details={
+                                "text_index_invalidations": invalidation_details,
+                                "text_index_rebuild": rebuild_report.details,
+                            },
+                        )
+                    rebuild_warnings.extend(rebuild_report.warnings)
+                else:
+                    text_index_status = "used"
+                index_records = await session.read_text_index_items_by_paths(sorted(payload_paths))
                 active_items = {
-                    item.location_path: item
-                    for translation_data in scope.translation_data_map.values()
-                    for item in translation_data.translation_items
-                    if item.location_path in scope.writable_paths
+                    record.location_path: text_index_item_to_translation_item(record)
+                    for record in index_records
+                    if record.writable
                 }
             source_residual_rules = await session.read_source_residual_rules()
 
@@ -264,13 +313,8 @@ class ManualTranslationAgentMixin:
             if errors:
                 return AgentReport.from_parts(
                     errors=errors,
-                    warnings=[],
-                    summary={
-                        "input": str(input_path),
-                        "imported_count": 0,
-                        "error_count": len(errors),
-                        "scope_mode": scope_mode,
-                    },
+                    warnings=rebuild_warnings,
+                    summary=import_summary(imported_count=0, error_count=len(errors)),
                     details={"invalid_items": invalid_items},
                 )
 
@@ -278,15 +322,13 @@ class ManualTranslationAgentMixin:
             imported_paths = {item.location_path for item in valid_items}
             _ = await session.delete_translation_quality_errors_by_paths(imported_paths)
             if latest_run is not None:
-                remaining_quality_errors = await session.read_translation_quality_errors(latest_run.run_id)
+                remaining_quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
-                if scope_mode == "full_current_scope":
-                    translated_paths = await session.read_translation_location_paths()
-                    current_pending_paths = set(active_items) - translated_paths
-                    has_pending_items = bool(current_pending_paths)
+                if scope_mode == "text_index":
+                    has_pending_items = await session.count_pending_text_index_items() > 0
                 else:
                     has_pending_items = latest_run.pending_count > 0
-                if not has_pending_items and not remaining_quality_errors and not llm_failures:
+                if not has_pending_items and remaining_quality_error_count == 0 and not llm_failures:
                     await session.write_translation_run(
                         latest_run.model_copy(
                             update={
@@ -302,11 +344,11 @@ class ManualTranslationAgentMixin:
 
         return AgentReport.from_parts(
             errors=[],
-            warnings=[] if valid_items else [issue("manual_translation_empty", "手动填写译文表没有可导入条目")],
-            summary={
-                "input": str(input_path),
-                "imported_count": len(valid_items),
-                "scope_mode": scope_mode,
-            },
+            warnings=(
+                rebuild_warnings
+                if valid_items
+                else [*rebuild_warnings, issue("manual_translation_empty", "手动填写译文表没有可导入条目")]
+            ),
+            summary=import_summary(imported_count=len(valid_items)),
             details={},
         )

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.language import SourceLanguage, TargetLanguage
 from app.rule_review import RuleReviewDomain
-from app.rmmz.schema import EngineKind
+from app.rmmz.schema import EngineKind, ItemType
 
 
 @dataclass(slots=True)
@@ -59,3 +59,40 @@ class RuleReviewStateRecord:
     scope_hash: str
     reviewed_empty: bool
     updated_at: str
+
+
+@dataclass(slots=True)
+class TextIndexMetadata:
+    """当前翻译源视图索引的全局元信息。"""
+
+    source_snapshot_fingerprint: str
+    rules_fingerprint: str
+    item_count: int
+    created_at: str
+    workflow_gate_scope_hashes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TextIndexItemRecord:
+    """当前翻译源视图中的单个文本范围索引项。"""
+
+    location_path: str
+    item_type: ItemType
+    role: str | None
+    original_lines: list[str]
+    source_line_paths: list[str]
+    source_type: str
+    source_file: str
+    writable: bool
+    source_snapshot_fingerprint: str
+    rules_fingerprint: str
+    locator_json: str
+
+
+@dataclass(slots=True)
+class TextIndexInvalidationRecord:
+    """文本范围索引失效原因记录。"""
+
+    reason_key: str
+    detail: str
+    created_at: str

@@ -6,26 +6,33 @@ from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
+    EventCommandTextRuleRecord,
     JsonObject,
     NoteTagTextExtraction,
     NoteTagTextRuleRecord,
+    PLUGINS_FILE_NAME,
     Path,
+    PluginTextRuleRecord,
     TextRules,
     TranslationItem,
     _format_mv_namebox_rule_error,
     _note_tag_item_matches_rule,
-    _validate_event_command_rules_with_context,
+    _validate_event_command_rule_records_with_context,
     _validate_mv_virtual_namebox_rules_with_context,
-    _validate_note_tag_rules_with_context,
+    _validate_note_tag_rule_records_with_context,
+    _validate_plugin_rule_records_with_context,
     _validate_plugin_source_rules_with_context,
-    _validate_plugin_rules_with_context,
     _write_json_object,
+    build_event_command_rule_records_from_import,
     build_note_tag_rule_records_from_import,
+    build_plugin_rule_records_from_import,
     collect_translation_data_paths,
     export_note_tag_candidates_file,
     issue,
     load_setting,
+    parse_event_command_rule_import_text,
     parse_note_tag_rule_import_text,
+    parse_plugin_rule_import_text,
 )
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.flow_gate import (
@@ -40,6 +47,8 @@ from app.plugin_source_text import (
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
+from app.event_command_text import command_matches_filters
+from app.rmmz.commands import iter_all_commands
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_candidates_payload,
     mv_virtual_namebox_candidate_details,
@@ -47,7 +56,7 @@ from app.rmmz.mv_namebox import (
     parse_mv_virtual_namebox_rule_import_text,
     validate_mv_virtual_namebox_rules_against_game,
 )
-from app.rmmz.schema import PluginSourceTextRuleRecord
+from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
@@ -71,9 +80,44 @@ def _translation_paths_matching_note_rules(
     }
 
 
+def _note_tag_rule_prefixes(rule_records: list[NoteTagTextRuleRecord]) -> list[str]:
+    """返回 Note 标签规则影响的已保存译文路径前缀。"""
+    return sorted({f"{record.file_name}/" for record in rule_records})
+
+
+def _plugin_rule_prefixes(rule_records: list[PluginTextRuleRecord]) -> list[str]:
+    """返回插件参数规则影响的已保存译文路径前缀。"""
+    return sorted({f"{PLUGINS_FILE_NAME}/{record.plugin_index}/" for record in rule_records})
+
+
+def _event_command_rule_prefixes(
+    *,
+    game_data: GameData,
+    rule_records: list[EventCommandTextRuleRecord],
+) -> list[str]:
+    """返回事件指令规则影响的已保存译文路径前缀。"""
+    prefixes: set[str] = set()
+    for rule_record in rule_records:
+        for path, _display_name, command in iter_all_commands(game_data):
+            if command.code != rule_record.command_code:
+                continue
+            if not command_matches_filters(
+                parameters=command.parameters,
+                filters=rule_record.parameter_filters,
+            ):
+                continue
+            prefixes.add("/".join(map(str, path)))
+    return sorted(prefixes)
+
+
 def _plugin_source_rule_prefixes(rule_records: list[PluginSourceTextRuleRecord]) -> list[str]:
     """返回插件源码规则影响的已保存译文路径前缀。"""
     return sorted({f"js/plugins/{record.file_name}/" for record in rule_records})
+
+
+def _plugin_source_file_prefixes(game_data: GameData) -> list[str]:
+    """返回当前启用插件源码文件对应的已保存译文路径前缀。"""
+    return sorted({f"js/plugins/{file_name}/" for file_name in game_data.plugin_source_files})
 
 
 class RuleValidationAgentMixin:
@@ -251,7 +295,16 @@ class RuleValidationAgentMixin:
                     structured_placeholder_rules=structured_rules,
                 )
                 game_data = await self._load_translation_source_game_data(session)
-                translated_paths: set[str] = await session.read_translation_location_paths()
+                import_file = parse_note_tag_rule_import_text(rules_text)
+                records = build_note_tag_rule_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                    text_rules=text_rules,
+                )
+                translated_note_items = await session.read_translated_items_by_prefixes(
+                    _note_tag_rule_prefixes(records)
+                )
+                translated_paths = {item.location_path for item in translated_note_items}
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
@@ -267,8 +320,8 @@ class RuleValidationAgentMixin:
                 },
                 details={"rules": []},
             )
-        return _validate_note_tag_rules_with_context(
-            rules_text=rules_text,
+        return _validate_note_tag_rule_records_with_context(
+            records=records,
             game_data=game_data,
             text_rules=text_rules,
             translated_paths=translated_paths,
@@ -308,8 +361,11 @@ class RuleValidationAgentMixin:
                         confirm_empty=confirm_empty,
                     )
                 old_records = await session.read_note_tag_text_rules()
+                old_note_items = await session.read_translated_items_by_prefixes(
+                    _note_tag_rule_prefixes(old_records)
+                )
                 old_note_paths = _translation_paths_matching_note_rules(
-                    translated_items=await session.read_translated_items(),
+                    translated_items=old_note_items,
                     rule_records=old_records,
                 )
                 new_note_paths = collect_translation_data_paths(
@@ -487,13 +543,22 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules_text=None,
                 )
                 structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
                 game_data = await self._load_translation_source_game_data(session)
-                translated_paths: set[str] = await session.read_translation_location_paths()
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
+                import_file = parse_plugin_rule_import_text(rules_text)
+                records = build_plugin_rule_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                    text_rules=text_rules,
+                )
+                translated_plugin_items = await session.read_translated_items_by_prefixes(
+                    _plugin_rule_prefixes(records)
+                )
+                translated_paths = {item.location_path for item in translated_plugin_items}
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
@@ -509,8 +574,8 @@ class RuleValidationAgentMixin:
                 },
                 details={"rules": []},
             )
-        return _validate_plugin_rules_with_context(
-            rules_text=rules_text,
+        return _validate_plugin_rule_records_with_context(
+            records=records,
             game_data=game_data,
             text_rules=text_rules,
             translated_paths=translated_paths,
@@ -531,8 +596,14 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
-                translated_paths: set[str] = await session.read_translation_location_paths()
+                game_data = await self._load_translation_source_game_data(
+                    session,
+                    include_plugin_source_files=True,
+                )
+                translated_plugin_source_items = await session.read_translated_items_by_prefixes(
+                    _plugin_source_file_prefixes(game_data)
+                )
+                translated_paths = {item.location_path for item in translated_plugin_source_items}
             scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         except Exception as error:
             return AgentReport.from_parts(
@@ -582,7 +653,10 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
+                game_data = await self._load_translation_source_game_data(
+                    session,
+                    include_plugin_source_files=True,
+                )
                 scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
                 records = build_plugin_source_rule_records_from_import(
                     game_data=game_data,
@@ -719,13 +793,21 @@ class RuleValidationAgentMixin:
                     custom_placeholder_rules_text=None,
                 )
                 structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
                 game_data = await self._load_translation_source_game_data(session)
-                translated_paths: set[str] = await session.read_translation_location_paths()
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
+                import_file = parse_event_command_rule_import_text(rules_text)
+                records = build_event_command_rule_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                )
+                translated_event_items = await session.read_translated_items_by_prefixes(
+                    _event_command_rule_prefixes(game_data=game_data, rule_records=records)
+                )
+                translated_paths = {item.location_path for item in translated_event_items}
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
@@ -741,8 +823,8 @@ class RuleValidationAgentMixin:
                 },
                 details={"rules": []},
             )
-        return _validate_event_command_rules_with_context(
-            rules_text=rules_text,
+        return _validate_event_command_rule_records_with_context(
+            records=records,
             game_data=game_data,
             text_rules=text_rules,
             translated_paths=translated_paths,

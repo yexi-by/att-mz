@@ -31,6 +31,7 @@ scripts/*
 !scripts/build_release.py
 !scripts/benchmark_active_runtime_audit.py
 !scripts/benchmark_rebuild_active_runtime.py
+!scripts/benchmark_small_tasks.py
 !scripts/extract_release_notes.py
 
 

@@ -202,6 +202,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="额外执行写入可行性探针；大游戏只读报告默认不启用",
     )
 
+    rebuild_text_index_parser = subparsers.add_parser(
+        "rebuild-text-index",
+        help="重建当前游戏的持久文本范围索引",
+    )
+    add_optional_target_arguments(rebuild_text_index_parser)
+    _ = rebuild_text_index_parser.add_argument("--output", help="写出 JSON 报告文件")
+
     text_scope_parser = subparsers.add_parser(
         "text-scope",
         help="输出当前游戏统一文本清单",

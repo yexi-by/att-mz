@@ -12,7 +12,7 @@ from .common import (
     load_setting,
 )
 from app.nonstandard_data import (
-    build_nonstandard_data_rule_records_from_import,
+    build_nonstandard_data_rule_records_from_validation,
     build_nonstandard_data_scan,
     export_nonstandard_data_workspace,
     parse_nonstandard_data_rule_import_text,
@@ -229,12 +229,12 @@ class NonstandardDataAgentMixin:
                     source_view=GameFileView.TRANSLATION_SOURCE,
                     text_rules=text_rules,
                 )
-                rule_records = build_nonstandard_data_rule_records_from_import(
+                validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+                rule_records = build_nonstandard_data_rule_records_from_validation(
                     scan=scan,
-                    import_file=import_file,
+                    validation=validation,
                 )
                 await session.replace_nonstandard_data_text_rules(rule_records)
-            validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("nonstandard_data_rules_invalid", f"非标准 data 文件文本规则导入失败: {type(error).__name__}: {error}")],

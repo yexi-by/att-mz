@@ -39,6 +39,8 @@ from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
 )
+from app.rule_review_decision import RuleCoverageResult
+from app.text_index import detect_text_index_invalidations, text_index_items_to_translation_data_map
 
 
 class PlaceholderRuleAgentMixin:
@@ -53,7 +55,6 @@ class PlaceholderRuleAgentMixin:
         """扫描目标游戏中疑似需要自定义保护的控制符。"""
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_translation_source_game_data(session)
             custom_rules = await self._resolve_custom_rules(
                 session=session,
                 custom_placeholder_rules_text=custom_placeholder_rules_text,
@@ -64,11 +65,21 @@ class PlaceholderRuleAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            translation_data_map = await self._extract_active_translation_data_map(
+            text_index_invalidations = await detect_text_index_invalidations(
                 session=session,
-                game_data=game_data,
                 text_rules=text_rules,
             )
+            if text_index_invalidations:
+                game_data = await self._load_translation_source_game_data(session)
+                translation_data_map = await self._extract_active_translation_data_map(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                )
+            else:
+                translation_data_map = text_index_items_to_translation_data_map(
+                    await session.read_text_index_items()
+                )
 
         return _build_placeholder_coverage_report_with_context(
             setting_text_rules=setting.text_rules,
@@ -101,16 +112,25 @@ class PlaceholderRuleAgentMixin:
                     )
                     structured_rules = await self._resolve_structured_rules(session=session)
                     if not sample_texts:
-                        game_data = await self._load_translation_source_game_data(session)
                         extraction_rules = TextRules.from_setting(
                             setting.text_rules,
                             structured_placeholder_rules=structured_rules,
                         )
-                        translation_data_map = await self._extract_active_translation_data_map(
+                        text_index_invalidations = await detect_text_index_invalidations(
                             session=session,
-                            game_data=game_data,
                             text_rules=extraction_rules,
                         )
+                        if text_index_invalidations:
+                            game_data = await self._load_translation_source_game_data(session)
+                            translation_data_map = await self._extract_active_translation_data_map(
+                                session=session,
+                                game_data=game_data,
+                                text_rules=extraction_rules,
+                            )
+                        else:
+                            translation_data_map = text_index_items_to_translation_data_map(
+                                await session.read_text_index_items()
+                            )
                     else:
                         translation_data_map = None
             elif custom_placeholder_rules_text is None:
@@ -157,11 +177,74 @@ class PlaceholderRuleAgentMixin:
         confirm_empty: bool = False,
     ) -> AgentReport:
         """校验并导入当前游戏专用自定义占位符规则。"""
-        validation_report = await self.validate_placeholder_rules(
-            game_title=game_title,
-            custom_placeholder_rules_text=rules_text,
-            sample_texts=[],
-        )
+        coverage: RuleCoverageResult | None = None
+        try:
+            custom_rules = load_custom_placeholder_rules_text(rules_text)
+            rule_records = [
+                PlaceholderRuleRecord(
+                    pattern_text=rule.pattern_text,
+                    placeholder_template=rule.placeholder_template,
+                )
+                for rule in custom_rules
+            ]
+            async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
+                structured_rules = await self._resolve_structured_rules(session=session)
+                validation_extraction_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+                text_index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=validation_extraction_rules,
+                )
+                if text_index_invalidations:
+                    game_data = await self._load_translation_source_game_data(session)
+                    validation_translation_data_map = await self._extract_active_translation_data_map(
+                        session=session,
+                        game_data=game_data,
+                        text_rules=validation_extraction_rules,
+                    )
+                else:
+                    validation_translation_data_map = text_index_items_to_translation_data_map(
+                        await session.read_text_index_items()
+                    )
+                validation_report = _validate_placeholder_rules_with_context(
+                    source_label="--placeholder-rules",
+                    setting_text_rules=setting.text_rules,
+                    custom_rules=custom_rules,
+                    structured_rules=structured_rules,
+                    sample_texts=[],
+                    translation_data_map=validation_translation_data_map,
+                )
+                if not validation_report.errors:
+                    text_rules = TextRules.from_setting(
+                        setting.text_rules,
+                        custom_placeholder_rules=custom_rules,
+                        structured_placeholder_rules=structured_rules,
+                    )
+                    coverage = build_normal_placeholder_coverage_result(
+                        translation_data_map=validation_translation_data_map,
+                        text_rules=text_rules,
+                        rule_count=len(rule_records),
+                    )
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[
+                    issue(
+                        "placeholder_rules_invalid",
+                        f"自定义占位符规则不可用: {type(error).__name__}: {error}",
+                    )
+                ],
+                warnings=[],
+                summary={
+                    "game": game_title,
+                    "imported_rule_count": 0,
+                    "validated_rule_count": 0,
+                    "sample_count": 0,
+                },
+                details={},
+            )
         if validation_report.errors:
             return AgentReport.from_parts(
                 errors=validation_report.errors,
@@ -180,33 +263,8 @@ class PlaceholderRuleAgentMixin:
                 },
             )
 
-        custom_rules = load_custom_placeholder_rules_text(rules_text)
-        rule_records = [
-            PlaceholderRuleRecord(
-                pattern_text=rule.pattern_text,
-                placeholder_template=rule.placeholder_template,
-            )
-            for rule in custom_rules
-        ]
-        async with await self.game_registry.open_game(game_title) as session:
-            setting = load_setting(self.setting_path, source_language=session.source_language)
-            structured_rules = await self._resolve_structured_rules(session=session)
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
-            game_data = await self._load_translation_source_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            coverage = build_normal_placeholder_coverage_result(
-                translation_data_map=translation_data_map,
-                text_rules=text_rules,
-                rule_count=len(rule_records),
-            )
+        if coverage is None:
+            raise RuntimeError("普通占位符规则导入缺少覆盖检查结果")
         uncovered_count = coverage.uncovered_count
         if not rule_records:
             try:
@@ -400,11 +458,58 @@ class PlaceholderRuleAgentMixin:
         confirm_empty: bool = False,
     ) -> AgentReport:
         """校验并导入当前游戏专用结构化占位符规则。"""
-        validation_report = await self.validate_structured_placeholder_rules(
-            game_title=game_title,
-            rules_text=rules_text,
-            sample_texts=[],
-        )
+        coverage: RuleCoverageResult | None = None
+        try:
+            structured_rules = load_structured_placeholder_rules_text(rules_text)
+            rule_records = _structured_placeholder_rule_records_from_runtime(structured_rules)
+            async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+                game_data = await self._load_translation_source_game_data(session)
+                translation_data_map = await self._extract_active_translation_data_map(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                )
+                validation_report = _validate_structured_placeholder_rules_with_context(
+                    game_title=game_title,
+                    rules_text=rules_text,
+                    setting_text_rules=setting.text_rules,
+                    custom_rules=custom_rules,
+                    sample_texts=[],
+                    translation_data_map=translation_data_map,
+                )
+                if not validation_report.errors:
+                    coverage = build_structured_placeholder_coverage_result(
+                        translation_data_map=translation_data_map,
+                        structured_rules=structured_rules,
+                        rule_count=len(rule_records),
+                    )
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[
+                    issue(
+                        "structured_placeholder_rules_invalid",
+                        f"结构化占位符规则不可用: {type(error).__name__}: {error}",
+                    )
+                ],
+                warnings=[],
+                summary={
+                    "game": game_title,
+                    "imported_rule_count": 0,
+                    "validated_rule_count": 0,
+                    "sample_count": 0,
+                },
+                details={},
+            )
         if validation_report.errors:
             return AgentReport.from_parts(
                 errors=validation_report.errors,
@@ -422,31 +527,8 @@ class PlaceholderRuleAgentMixin:
                     }
                 },
             )
-
-        structured_rules = load_structured_placeholder_rules_text(rules_text)
-        rule_records = _structured_placeholder_rule_records_from_runtime(structured_rules)
-        async with await self.game_registry.open_game(game_title) as session:
-            setting = load_setting(self.setting_path, source_language=session.source_language)
-            custom_rules = await self._resolve_custom_rules(
-                session=session,
-                custom_placeholder_rules_text=None,
-            )
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
-            game_data = await self._load_translation_source_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            coverage = build_structured_placeholder_coverage_result(
-                translation_data_map=translation_data_map,
-                structured_rules=structured_rules,
-                rule_count=len(rule_records),
-            )
+        if coverage is None:
+            raise RuntimeError("结构化占位符规则导入缺少覆盖检查结果")
         uncovered_count = coverage.uncovered_count
         if not rule_records:
             try:

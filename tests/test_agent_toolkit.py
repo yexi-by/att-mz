@@ -4,7 +4,8 @@ import json
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NoReturn, cast
+from types import SimpleNamespace
+from typing import NoReturn, cast, override
 
 import pytest
 
@@ -25,9 +26,10 @@ from app.application.flow_gate import (
     note_tag_rule_scope_hash_for_text_rules,
     structured_placeholder_scope_hash,
 )
-from app.application.handler import TranslationHandler
+from app.application.handler import TranslationHandler, TranslationRunLimits
 from app.config import SettingOverrides
 from app.config.schemas import Setting, TextRulesSetting
+from app.event_command_text import EventCommandTextExtraction
 from app.language import SourceLanguage
 from app.llm import LLMHandler
 from app.native_quality import collect_native_quality_counts, collect_native_quality_details
@@ -35,6 +37,7 @@ from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_text import build_plugin_hash
 from app.plugin_source_text import (
     PluginSourceBatchTextScan,
+    PluginSourceScan,
     build_plugin_source_file_hash,
     build_plugin_source_scan,
     iter_plugin_source_string_literals,
@@ -45,8 +48,9 @@ from app.plugin_source_text.runtime_mapping import (
     plugin_source_runtime_hash_text,
 )
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
+from app.rmmz.game_file_view import GameFileView
 from app.rmmz.json_types import JsonArray, JsonObject, JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
-from app.rmmz.loader import load_active_runtime_game_data, load_game_data
+from app.rmmz.loader import load_active_runtime_game_data, load_game_data, load_game_data_for_view as real_load_game_data_for_view
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -81,6 +85,7 @@ from app.rule_review import (
     structured_placeholder_rule_scope_hash,
 )
 from app.text_scope import TextScopeEntry, TextScopeResult, TextScopeService
+from app.translation import TranslationBatch
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
 from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
@@ -111,14 +116,16 @@ class _AgentToolkitServiceProbe(AgentToolkitService):
         self,
         session: TargetGameSession,
         *,
+        include_plugin_source_files: bool | None = None,
         include_writable_copies: bool | None = None,
     ) -> GameData:
         """调用翻译源加载入口并保留默认参数行为。"""
-        if include_writable_copies is None:
+        if include_plugin_source_files is None and include_writable_copies is None:
             return await self._load_translation_source_game_data(session)
         return await self._load_translation_source_game_data(
             session,
-            include_writable_copies=include_writable_copies,
+            include_plugin_source_files=include_plugin_source_files or False,
+            include_writable_copies=include_writable_copies or False,
         )
 
 
@@ -134,6 +141,17 @@ def load_json_array(path: Path) -> list[object]:
     raw_value = cast(object, json.loads(path.read_text(encoding="utf-8")))
     json_array = ensure_json_array(coerce_json_value(raw_value), str(path))
     return [item for item in json_array]
+
+
+async def _rebuild_text_index_for_test(
+    service: AgentToolkitService,
+    *,
+    game_title: str = "テストゲーム",
+) -> AgentReport:
+    """测试中显式建立 warm index，固定小任务不再隐式全量建范围的契约。"""
+    report = await service.rebuild_text_index(game_title=game_title)
+    assert report.status == "ok"
+    return report
 
 
 def _contains_japanese_test_char(text: str) -> bool:
@@ -380,7 +398,7 @@ async def test_agent_translation_source_load_skips_writable_copies_by_default(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Agent 只读翻译源加载默认不构造大型可写副本。"""
+    """Agent 只读翻译源加载默认不读取插件源码，也不构造大型可写副本。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = _AgentToolkitServiceProbe(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -391,13 +409,19 @@ async def test_agent_translation_source_load_skips_writable_copies_by_default(
             session,
             include_writable_copies=True,
         )
+        plugin_source_game_data = await service.load_translation_source_for_test(
+            session,
+            include_plugin_source_files=True,
+        )
 
     assert game_data.data
+    assert game_data.plugin_source_files == {}
     assert game_data.writable_data == {}
     assert game_data.writable_plugins_js == []
     assert game_data.writable_plugin_source_files == {}
     assert writable_game_data.writable_data
     assert writable_game_data.writable_plugins_js
+    assert set(plugin_source_game_data.plugin_source_files) == {"ComplexPlugin.js", "TestPlugin.js"}
 
 
 @pytest.mark.asyncio
@@ -794,6 +818,63 @@ async def test_import_empty_event_command_rules_records_cli_code_scope(
     assert state.scope_hash == event_command_rule_scope_hash_for_command_codes(
         game_data=game_data,
         command_codes=frozenset({999}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签规则导入清理旧译文时，只读取旧规则文件前缀。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = example_setting_text_with_absolute_prompt_files()
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+    empty_rules_path = tmp_path / "note-tag-rules-empty.json"
+    _ = empty_rules_path.write_text("{}\n", encoding="utf-8")
+    stale_item = TranslationItem(
+        location_path="Items.json/1/note/MissingTag",
+        item_type="short_text",
+        original_lines=["古いタグ"],
+        translation_lines=["旧标签"],
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
+        )
+        await session.write_translation_items([stale_item])
+
+    async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
+        raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
+
+    monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_full_translation_read)
+
+    summary = await handler.import_note_tag_rules(
+        game_title="テストゲーム",
+        input_path=empty_rules_path,
+        confirm_empty=True,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        translated_paths = await session.read_translation_location_paths()
+        state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+
+    game_data = await load_game_data(minimal_game_dir)
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    assert summary.imported_file_count == 0
+    assert summary.imported_tag_count == 0
+    assert summary.deleted_translation_items == 1
+    assert stale_item.location_path not in translated_paths
+    assert state is not None
+    assert state.scope_hash == note_tag_rule_scope_hash_for_text_rules(
+        game_data=game_data,
+        text_rules=TextRules.from_setting(setting.text_rules),
     )
 
 
@@ -1277,6 +1358,180 @@ async def test_quality_report_stops_on_coverage_error_before_native_checks(
     assert "coverage_unwritable" in {error.code for error in report.errors}
     assert report.summary["source_residual_count"] == 0
     assert report.summary["write_back_protocol_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quality_report_include_write_probe_uses_rust_quality_gate(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写回级质量报告必须复用 Rust quality_gate，不再重复 Python native gate。"""
+
+    def forbidden_python_native_gate(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("include-write-probe 质量报告不应重复执行 Python native gate")
+
+    rust_gate_calls: list[dict[str, object]] = []
+
+    def fake_rust_quality_gate(**kwargs: object) -> object:
+        rust_gate_calls.append(dict(kwargs))
+        assert kwargs["mode"] == "quality_gate"
+        assert "content_output_dir" not in kwargs
+        return SimpleNamespace(
+            summary=SimpleNamespace(
+                data_item_count=1,
+                plugin_item_count=0,
+                terminology_written_count=0,
+                plugin_source_runtime_map_count=0,
+            ),
+            timings_ms={"quality_gate": 1, "total": 2},
+        )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        game_data = await load_game_data(minimal_game_dir)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        translated_items = [
+            TranslationItem(
+                location_path=item.location_path,
+                item_type=item.item_type,
+                role=item.role,
+                original_lines=[line for line in item.original_lines],
+                source_line_paths=[path for path in item.source_line_paths],
+                translation_lines=[
+                    _translated_test_line_preserving_controls(line, text_rules)
+                    for line in item.original_lines
+                ],
+            )
+            for item in scope.active_items()
+        ]
+        await session.write_translation_items(translated_items)
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.collect_agent_service_native_quality_details",
+        forbidden_python_native_gate,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.collect_agent_service_native_write_protocol_details",
+        forbidden_python_native_gate,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.build_native_write_back_plan",
+        fake_rust_quality_gate,
+    )
+
+    report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
+
+    assert rust_gate_calls
+    assert report.summary["write_back_probe_enabled"] is True
+    write_back_gate = ensure_json_object(report.summary["write_back_gate"], "write_back_gate")
+    assert write_back_gate["status"] == "ok"
+    assert write_back_gate["mode"] == "quality_gate"
+
+
+@pytest.mark.asyncio
+async def test_quality_report_write_probe_and_write_back_share_rust_gate_error(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一坏译文在质量报告和写回中必须由同一 Rust 写回级 gate 阻断。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    _ = (app_home / "setting.toml").write_text(
+        example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        placeholder_record = PlaceholderRuleRecord(
+            pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
+            placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
+        )
+        await session.replace_placeholder_rules([placeholder_record])
+        text_rules = TextRules.from_setting(
+            setting.text_rules,
+            custom_placeholder_rules=(
+                CustomPlaceholderRule.create(
+                    pattern_text=placeholder_record.pattern_text,
+                    placeholder_template=placeholder_record.placeholder_template,
+                ),
+            ),
+        )
+        game_data = await load_game_data(minimal_game_dir)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        writable_items = [
+            item
+            for item in scope.active_items()
+            if item.location_path in scope.writable_paths
+        ]
+        bad_location_path = next(
+            item.location_path
+            for item in writable_items
+            if any(list(text_rules.iter_control_sequence_spans(line)) for line in item.original_lines)
+        )
+        translated_items = [
+            TranslationItem(
+                location_path=item.location_path,
+                item_type=item.item_type,
+                role=item.role,
+                original_lines=[line for line in item.original_lines],
+                source_line_paths=[path for path in item.source_line_paths],
+                translation_lines=(
+                    ["测试" for _line in item.original_lines]
+                    if item.location_path == bad_location_path
+                    else [
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ]
+                ),
+            )
+            for item in writable_items
+        ]
+        await session.write_translation_items(translated_items)
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
+    write_back_gate = ensure_json_object(report.summary["write_back_gate"], "write_back_gate")
+    gate_message = write_back_gate["message"]
+    assert report.status == "error"
+    assert "write_back_gate" in {error.code for error in report.errors}
+    assert write_back_gate["status"] == "error"
+    assert isinstance(gate_message, str)
+    assert gate_message
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(RuntimeError) as error_info:
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+    assert str(error_info.value) == gate_message
 
 
 @pytest.mark.asyncio
@@ -2024,7 +2279,10 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        active_game_data = await load_active_runtime_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         runtime_source = active_game_data.plugin_source_files["BadSource.js"]
         source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
@@ -2169,7 +2427,10 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        active_game_data = await load_active_runtime_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         translation_items: list[TranslationItem] = []
         runtime_maps: list[PluginSourceRuntimeWriteMapRecord] = []
@@ -2412,7 +2673,10 @@ async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        active_game_data = await load_active_runtime_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
@@ -2491,7 +2755,10 @@ async def test_active_runtime_audit_reports_unmapped_residual_when_other_runtime
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        active_game_data = await load_active_runtime_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(
@@ -2576,6 +2843,154 @@ async def test_import_placeholder_rules_runs_validation_before_save(
 
 
 @pytest.mark.asyncio
+async def test_import_placeholder_rules_loads_translation_source_once(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通占位符规则导入在同一加载上下文内完成验证和覆盖检查。"""
+    load_count = 0
+    extract_count = 0
+
+    async def counting_load_game_data_for_view(
+        game_path: str | Path,
+        *,
+        source_view: GameFileView,
+        include_plugin_source_files: bool = False,
+        include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
+    ) -> GameData:
+        nonlocal load_count
+        load_count += 1
+        return await real_load_game_data_for_view(
+            game_path,
+            source_view=source_view,
+            include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
+        )
+
+    class CountingExtractService(AgentToolkitService):
+        @override
+        async def _extract_active_translation_data_map(
+            self,
+            *,
+            session: TargetGameSession,
+            game_data: GameData,
+            text_rules: TextRules,
+            plugin_source_scan: PluginSourceScan | None = None,
+        ) -> dict[str, TranslationData]:
+            nonlocal extract_count
+            extract_count += 1
+            return await super()._extract_active_translation_data_map(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+                plugin_source_scan=plugin_source_scan,
+            )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", counting_load_game_data_for_view)
+    service = CountingExtractService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+
+    assert report.status in {"ok", "warning"}
+    assert load_count == 1
+    assert extract_count == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_placeholder_rules_uses_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，占位符规则校验不再构建完整文本范围。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-placeholder-rules 命中 warm index 时不应构建完整文本范围")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.validate_placeholder_rules(
+        game_title="テストゲーム",
+        custom_placeholder_rules_text="{}",
+        sample_texts=[],
+    )
+
+    assert report.status in {"ok", "warning"}
+    assert report.summary["rule_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_placeholder_candidates_uses_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，占位符候选扫描直接读取索引项。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("scan-placeholder-candidates 命中 warm index 时不应构建完整文本范围")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.scan_placeholder_candidates(
+        game_title="テストゲーム",
+        custom_placeholder_rules_text=None,
+    )
+
+    assert report.status in {"ok", "warning"}
+    candidate_count = report.summary["candidate_count"]
+    assert isinstance(candidate_count, int)
+    assert candidate_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_import_placeholder_rules_uses_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，占位符规则导入复用索引完成验证和覆盖检查。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("import-placeholder-rules 命中 warm index 时不应构建完整文本范围")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+
+    assert report.status in {"ok", "warning"}
+    assert report.summary["imported_rule_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_import_structured_placeholder_rules_saves_separate_records(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -2630,6 +3045,69 @@ async def test_import_structured_placeholder_rules_saves_separate_records(
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_import_structured_placeholder_rules_loads_translation_source_once(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结构化占位符规则导入复用同一正文上下文完成验证和覆盖检查。"""
+    load_count = 0
+    extract_count = 0
+
+    async def counting_load_game_data_for_view(
+        game_path: str | Path,
+        *,
+        source_view: GameFileView,
+        include_plugin_source_files: bool = False,
+        include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
+    ) -> GameData:
+        nonlocal load_count
+        load_count += 1
+        return await real_load_game_data_for_view(
+            game_path,
+            source_view=source_view,
+            include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
+        )
+
+    class CountingExtractService(AgentToolkitService):
+        @override
+        async def _extract_active_translation_data_map(
+            self,
+            *,
+            session: TargetGameSession,
+            game_data: GameData,
+            text_rules: TextRules,
+            plugin_source_scan: PluginSourceScan | None = None,
+        ) -> dict[str, TranslationData]:
+            nonlocal extract_count
+            extract_count += 1
+            return await super()._extract_active_translation_data_map(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+                plugin_source_scan=plugin_source_scan,
+            )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", counting_load_game_data_for_view)
+    service = CountingExtractService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.import_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text='{"paired_shell_rules": []}',
+        confirm_empty=True,
+    )
+
+    assert report.status in {"ok", "warning"}
+    assert load_count == 1
+    assert extract_count == 1
 
 
 @pytest.mark.asyncio
@@ -2890,6 +3368,7 @@ async def test_confirmed_empty_placeholder_risk_allows_quality_warning_and_write
         manual_payload[location_path] = manual_entry
     manual_path = tmp_path / "manual-translations.json"
     _ = manual_path.write_text(json.dumps(manual_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _ = await _rebuild_text_index_for_test(service)
 
     manual_report = await service.import_manual_translations(
         game_title="テストゲーム",
@@ -2910,7 +3389,7 @@ async def test_confirmed_empty_placeholder_risk_allows_quality_warning_and_write
     assert structured_report.status in {"ok", "warning"}
     assert export_report.status == "ok"
     assert manual_report.status == "ok"
-    assert quality_report.status == "warning"
+    assert quality_report.status == "warning", quality_report.to_json_text()
     assert {warning.code for warning in quality_report.warnings} == {"placeholder_uncovered_reviewed"}
     assert quality_report.errors == []
     assert write_summary.data_item_count > 0
@@ -3631,6 +4110,9 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert item_source_path.exists()
     assert item_candidate_path.exists()
     assert manifest_path.exists()
+    assert (workspace / "nonstandard-data-risk-report.json").exists()
+    assert not (workspace / "nonstandard-data").exists()
+    assert "nonstandard_data_export" not in report.details
     rules = load_json_object(rules_path)
     structured_rules = load_json_object(structured_rules_path)
     plugin_json_string_candidates = load_json_array(plugin_json_string_candidates_path)
@@ -3645,6 +4127,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     speaker_names = ensure_json_object(coerce_json_value(speaker_source["speaker_names"]), "speaker_names")
     item_names = ensure_json_object(coerce_json_value(item_source["item_names"]), "item_names")
     workflow = ensure_json_object(coerce_json_value(manifest["workflow"]), "manifest.workflow")
+    manifest_files = ensure_json_array(coerce_json_value(manifest["files"]), "manifest.files")
     subagent_rounds = ensure_json_array(
         coerce_json_value(cast(object, workflow["subagent_rounds"])),
         "manifest.workflow.subagent_rounds",
@@ -3677,6 +4160,7 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert report.summary["placeholder_rule_draft_count"] == 1
     assert report.summary["structured_placeholder_rule_count"] == 0
     assert report.summary["terminology_subtask_count"] == 5
+    assert str(workspace / "nonstandard-data") not in {str(value) for value in manifest_files if isinstance(value, str)}
     assert "main_agent_rounds" not in workflow
     assert len(subagent_rounds) == 2
     assert first_round["name"] == "terminology_candidates"
@@ -3688,6 +4172,148 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert "plugin-json-string-leaf-candidates.json" in json.dumps(report.details, ensure_ascii=False)
     assert "note-tag-rules.json" in json.dumps(report.details, ensure_ascii=False)
     assert "structured-placeholder-rules.json" in json.dumps(report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已有插件源码规则时，工作区准备复用风险扫描结果，不在文本范围构建中二次扫描。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "WorkspaceReuse", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "WorkspaceReuse.js").write_text(
+        "const Messages = { title: '翻訳する本文' };\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        game_data = await load_game_data(
+            minimal_game_dir,
+            include_writable_copies=False,
+            run_dialogue_probe_check=False,
+        )
+        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "WorkspaceReuse.js")
+        candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "WorkspaceReuse.js")
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="WorkspaceReuse.js",
+                    file_hash=file_scan.file_hash,
+                    selectors=[candidate.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+
+    def forbidden_scope_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+        """prepare-agent-workspace 已有扫描结果时，TextScopeService 不应再扫描插件源码。"""
+        _ = (args, kwargs)
+        raise AssertionError("prepare-agent-workspace 不应在文本范围构建中重复扫描插件源码")
+
+    monkeypatch.setattr("app.text_scope.builder.build_plugin_source_scan", forbidden_scope_plugin_source_scan)
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=tmp_path / "workspace",
+        command_codes=None,
+    )
+
+    assert report.status == "ok"
+    assert report.summary["plugin_source_rule_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_agent_workspace_uses_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，工作区占位符候选不再触发完整文本范围构建。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("prepare-agent-workspace 命中 warm index 时不应构建完整文本范围")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=tmp_path / "workspace",
+        command_codes=None,
+    )
+
+    assert report.status == "ok"
+    assert report.summary["translation_scope_mode"] == "text_index"
+    assert report.summary["text_index_status"] == "used"
+    draft_count = report.summary["placeholder_rule_draft_count"]
+    assert isinstance(draft_count, int)
+    assert draft_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_skips_inactive_heavy_branch_scans(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未启动插件源码和非标准 data 支线时，工作区验收不应重复扫描这些重分支。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    manifest = load_json_object(workspace / "manifest.json")
+    generated = ensure_json_object(coerce_json_value(manifest["generated"]), "manifest.generated")
+    assert generated["plugin_source_high_risk"] is False
+    assert generated["nonstandard_data_high_risk"] is False
+    assert not (workspace / "plugin-source-rules.json").exists()
+    assert not (workspace / "nonstandard-data-rules.json").exists()
+
+    def forbidden_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+        """未启动插件源码支线时不应扫描插件源码。"""
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 不应扫描未启动的插件源码支线")
+
+    async def forbidden_nonstandard_data_scan(*args: object, **kwargs: object) -> NoReturn:
+        """未启动非标准 data 支线时不应扫描非标准 data。"""
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 不应扫描未启动的非标准 data 支线")
+
+    monkeypatch.setattr("app.agent_toolkit.services.workspace.build_plugin_source_scan", forbidden_plugin_source_scan)
+    monkeypatch.setattr("app.agent_toolkit.services.workspace.build_nonstandard_data_scan", forbidden_nonstandard_data_scan)
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    error_codes = {error.code for error in report.errors}
+    assert "plugin_source_rules_missing" not in error_codes
+    assert "nonstandard_data_rules_missing" not in error_codes
+    assert "nonstandard_data_scan_failed" not in error_codes
 
 
 @pytest.mark.parametrize(
@@ -3922,6 +4548,61 @@ async def test_validate_plugin_rules_reports_json_string_leaf_candidates(
     assert "解析后的内部字符串叶子" in rejected_report.errors[0].message
     assert "$['parameters']['Nested']['text']" in rejected_report.errors[0].message
     assert accepted_report.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件规则校验只读取规则插件前缀内的已保存译文。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="plugins.js/0/Nested/text",
+                    item_type="short_text",
+                    original_lines=["ネスト本文"],
+                    translation_lines=["嵌套正文"],
+                ),
+                TranslationItem(
+                    location_path="Actors.json/1/name",
+                    item_type="short_text",
+                    original_lines=["関係ない名前"],
+                    translation_lines=["无关名字"],
+                ),
+            ]
+        )
+
+    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
+        raise AssertionError("插件规则校验不能全量读取已保存路径")
+
+    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+
+    report = await service.validate_plugin_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Nested']['text']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["hit_count"] == 1
+    assert report.summary["translated_count"] == 1
+    rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
+    first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
+    assert first_rule_detail["translated_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -4288,6 +4969,91 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
 
 
 @pytest.mark.asyncio
+async def test_plain_rule_validation_skips_plugin_source_file_loading(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件参数、Note 和事件指令规则校验不读取插件源码文件。"""
+    load_flags: list[bool] = []
+
+    async def counting_load_game_data_for_view(
+        game_path: str | Path,
+        *,
+        source_view: GameFileView,
+        include_plugin_source_files: bool = False,
+        include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
+    ) -> GameData:
+        load_flags.append(include_plugin_source_files)
+        if include_plugin_source_files:
+            raise AssertionError("普通规则校验不应读取插件源码文件")
+        return await real_load_game_data_for_view(
+            game_path,
+            source_view=source_view,
+            include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
+        )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", counting_load_game_data_for_view)
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    plugin_report = await service.validate_plugin_rules(game_title="テストゲーム", rules_text="[]")
+    note_report = await service.validate_note_tag_rules(game_title="テストゲーム", rules_text="{}")
+    event_report = await service.validate_event_command_rules(game_title="テストゲーム", rules_text="{}")
+
+    assert plugin_report.summary["rule_count"] == 0
+    assert note_report.summary["tag_count"] == 0
+    assert event_report.summary["path_rule_count"] == 0
+    assert load_flags == [False, False, False]
+
+
+@pytest.mark.asyncio
+async def test_mv_namebox_rule_validation_skips_plugin_source_file_loading(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MV 虚拟名字框规则校验只需要 data 事件，不读取插件源码文件。"""
+    load_flags: list[bool] = []
+
+    async def counting_load_game_data_for_view(
+        game_path: str | Path,
+        *,
+        source_view: GameFileView,
+        include_plugin_source_files: bool = False,
+        include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
+    ) -> GameData:
+        load_flags.append(include_plugin_source_files)
+        if include_plugin_source_files:
+            raise AssertionError("MV 虚拟名字框规则校验不应读取插件源码文件")
+        return await real_load_game_data_for_view(
+            game_path,
+            source_view=source_view,
+            include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
+        )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", counting_load_game_data_for_view)
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_mv_virtual_namebox_rules_text(),
+    )
+
+    assert report.summary["rule_count"] == 1
+    assert load_flags == [False]
+
+
+@pytest.mark.asyncio
 async def test_validate_agent_workspace_reports_duplicate_translation_samples(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -4437,8 +5203,6 @@ async def test_validate_agent_workspace_reports_long_task_stages(
         "读取工作区清单",
         "加载翻译源视图",
         "抽取当前文本范围",
-        "扫描插件源码",
-        "扫描非标准 data 文件",
         "校验插件规则",
         "校验非标准 data 文件规则",
         "校验结构化占位符规则",
@@ -4511,7 +5275,8 @@ async def test_manual_export_and_status_commands_report_long_task_stages(
         "构建当前文本范围",
         "筛选还没成功保存译文",
         "手动填写译文表已完成",
-        "刷新当前文本范围",
+        "文本范围索引不可用，自动重建索引",
+        "读取持久文本范围索引",
         "正文翻译状态已完成",
         "调用 Rust 原生质检核心（",
         "质量修复表已完成",
@@ -5010,6 +5775,58 @@ async def test_note_tag_rule_validation_import_and_pending_export(
 
 
 @pytest.mark.asyncio
+async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签规则校验只读取规则文件前缀内的已保存译文。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:一行目>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="Items.json/1/note/拡張説明",
+                    item_type="short_text",
+                    original_lines=["一行目"],
+                    translation_lines=["第一行"],
+                ),
+                TranslationItem(
+                    location_path="Actors.json/1/name",
+                    item_type="short_text",
+                    original_lines=["関係ない名前"],
+                    translation_lines=["无关名字"],
+                ),
+            ]
+        )
+
+    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
+        raise AssertionError("Note 标签规则校验不能全量读取已保存路径")
+
+    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+
+    report = await service.validate_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["hit_count"] == 1
+    assert report.summary["translated_count"] == 1
+    rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
+    first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
+    assert first_rule_detail["translated_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_import_empty_note_tag_rules_allows_confirmed_empty_with_candidates(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -5056,6 +5873,7 @@ async def test_import_empty_note_tag_rules_allows_confirmed_empty_with_candidate
 async def test_import_note_tag_rules_replaces_stale_existing_rule(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """旧 Note 标签规则过期时，仍然可以导入新规则并清理旧译文。"""
     registry = GameRegistry(tmp_path / "db")
@@ -5072,6 +5890,11 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
         await session.write_translation_items([stale_item])
+
+    async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
+        raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
+
+    monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_full_translation_read)
 
     report = await service.import_note_tag_rules(
         game_title="テストゲーム",
@@ -5177,8 +6000,16 @@ async def test_manual_quality_fix_import_uses_saved_item_fast_path(
         _ = (args, kwargs)
         raise AssertionError("质量修复导入不应加载完整游戏数据")
 
+    async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
+        """质量修复快路径不应读取最新运行的全部质量错误。"""
+        _ = (args, kwargs)
+        raise AssertionError("质量修复导入不应读取全部质量错误")
+
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
     target_path = "CommonEvents.json/1/0"
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
@@ -5211,7 +6042,17 @@ async def test_manual_quality_fix_import_uses_saved_item_fast_path(
                     error_type="源文残留",
                     error_detail=["发现日文残留"],
                     model_response="",
-                )
+                ),
+                TranslationErrorItem(
+                    location_path="Map999.json/ghost",
+                    item_type="long_text",
+                    role=None,
+                    original_lines=["別の原文"],
+                    translation_lines=["別の原文"],
+                    error_type="源文残留",
+                    error_detail=["另一个质量错误"],
+                    model_response="",
+                ),
             ],
         )
     input_path = tmp_path / "quality-fix.json"
@@ -5234,6 +6075,10 @@ async def test_manual_quality_fix_import_uses_saved_item_fast_path(
         "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
         forbidden_game_data_load,
     )
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
+        forbidden_full_quality_error_read,
+    )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
     import_report = await service.import_manual_translations(
@@ -5245,11 +6090,138 @@ async def test_manual_quality_fix_import_uses_saved_item_fast_path(
     assert import_report.summary["scope_mode"] == "saved_quality_errors"
     async with await registry.open_game("テストゲーム") as session:
         translated_items = await session.read_translated_items()
-        quality_errors = await session.read_translation_quality_errors(run_record.run_id)
+        remaining_quality_error_count = await session.count_translation_quality_errors(run_record.run_id)
+        target_quality_errors = await session.read_translation_quality_errors_by_paths(
+            run_record.run_id,
+            {target_path},
+        )
     translated_by_path = {item.location_path: item for item in translated_items}
     assert translated_by_path[target_path].translation_lines == ["你好"]
     assert translated_by_path[target_path].source_line_paths == ["CommonEvents.json/1/1"]
-    assert quality_errors == []
+    assert remaining_quality_error_count == 1
+    assert target_quality_errors == []
+
+
+@pytest.mark.asyncio
+async def test_manual_pending_import_uses_text_index_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通手动导入在 warm index 存在时只按输入路径读取索引。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 导入不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index 手动导入不应加载完整游戏数据")
+
+    async def forbidden_full_text_index_path_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 导入不应读取完整索引路径集合。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index 手动导入不应读取完整索引路径集合")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=10,
+    )
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    indexed_count = rebuild_report.summary["indexed_count"]
+    assert isinstance(indexed_count, int)
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.start_translation_run(
+            total_extracted=indexed_count,
+            pending_count=indexed_count,
+            deduplicated_count=indexed_count,
+            batch_count=1,
+        )
+    payload = load_json_object(pending_path)
+    target_path = ""
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        if entry["item_type"] != "array":
+            target_path = location_path
+            break
+    assert target_path
+    target_entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
+    target_entry["translation_lines"] = ["手动译文"]
+    _ = pending_path.write_text(
+        json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(
+        "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_location_paths",
+        forbidden_full_text_index_path_read,
+    )
+
+    import_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert import_report.status == "ok"
+    assert import_report.summary["scope_mode"] == "text_index"
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    translated_by_path = {item.location_path: item for item in translated_items}
+    assert translated_by_path[target_path].translation_lines
+
+
+@pytest.mark.asyncio
+async def test_manual_pending_import_cold_rebuilds_missing_text_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """普通手动导入缺索引时自动 cold rebuild，然后只按输入路径保存。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=10,
+    )
+    payload = load_json_object(pending_path)
+    target_path = ""
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        if entry["item_type"] != "array":
+            target_path = location_path
+            break
+    assert target_path
+    target_entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
+    target_entry["translation_lines"] = ["手动译文"]
+    _ = pending_path.write_text(
+        json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    import_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert import_report.status == "ok"
+    assert import_report.summary["scope_mode"] == "text_index"
+    assert import_report.summary["text_index_status"] == "cold_rebuilt"
+    rebuild_summary = ensure_json_object(import_report.summary["text_index_rebuild_summary"], "rebuild_summary")
+    assert rebuild_summary["index_status"] == "rebuilt"
+    async with await registry.open_game("テストゲーム") as session:
+        metadata = await session.read_text_index_metadata()
+        translated_items = await session.read_translated_items()
+    assert metadata is not None
+    translated_by_path = {item.location_path: item for item in translated_items}
+    assert translated_by_path[target_path].translation_lines == ["手动译文"]
 
 
 @pytest.mark.asyncio
@@ -5265,6 +6237,16 @@ async def test_translation_status_uses_database_fast_path_by_default(
         _ = (args, kwargs)
         raise AssertionError("translation-status 默认不应加载游戏文件")
 
+    async def forbidden_full_translation_path_read(*args: object, **kwargs: object) -> NoReturn:
+        """快速状态查询不应读取全部已保存译文路径。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status 默认不应读取全部已保存译文路径")
+
+    async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
+        """快速状态查询不应读取全部质量错误明细。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status 默认不应读取全部质量错误明细")
+
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
@@ -5278,6 +6260,14 @@ async def test_translation_status_uses_database_fast_path_by_default(
         "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
         forbidden_game_data_load,
     )
+    monkeypatch.setattr(
+        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_location_paths",
+        forbidden_full_translation_path_read,
+    )
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
+        forbidden_full_quality_error_read,
+    )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
     report = await service.translation_status(game_title="テストゲーム")
@@ -5286,6 +6276,508 @@ async def test_translation_status_uses_database_fast_path_by_default(
     assert report.summary["scope_refreshed"] is False
     assert report.summary["pending_count"] == 8
     assert report.summary["extractable_count"] == 12
+
+
+@pytest.mark.asyncio
+async def test_translation_status_refresh_scope_cold_rebuilds_missing_text_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """translation-status --refresh-scope 缺索引时自动重建并用索引刷新统计。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.start_translation_run(
+            total_extracted=999,
+            pending_count=999,
+            deduplicated_count=10,
+            batch_count=1,
+        )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.translation_status(game_title="テストゲーム", refresh_scope=True)
+
+    assert report.status == "ok"
+    assert report.summary["scope_refreshed"] is True
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+    rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "text_index_rebuild_summary")
+    assert rebuild_summary["index_status"] == "rebuilt"
+    assert report.summary["extractable_count"] == rebuild_summary["indexed_count"]
+    assert report.summary["pending_count"] == rebuild_summary["indexed_count"]
+    assert report.summary["run_pending_count"] == 999
+
+
+@pytest.mark.asyncio
+async def test_translation_status_refresh_scope_uses_text_index_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """translation-status --refresh-scope 在 warm index 下不加载完整游戏数据。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 状态刷新不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status --refresh-scope 不应加载完整游戏数据")
+
+    async def forbidden_full_text_index_path_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 状态刷新不应读取完整索引路径集合。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status --refresh-scope 不应读取完整索引路径集合")
+
+    async def forbidden_full_translation_path_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 状态刷新不应读取全部已保存译文路径。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status --refresh-scope 不应读取全部已保存译文路径")
+
+    async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 状态刷新不应读取全部质量错误明细。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status --refresh-scope 不应读取全部质量错误明细")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.start_translation_run(
+            total_extracted=999,
+            pending_count=999,
+            deduplicated_count=10,
+            batch_count=1,
+        )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(
+        "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_location_paths",
+        forbidden_full_text_index_path_read,
+    )
+    monkeypatch.setattr(
+        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_location_paths",
+        forbidden_full_translation_path_read,
+    )
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
+        forbidden_full_quality_error_read,
+    )
+
+    report = await service.translation_status(game_title="テストゲーム", refresh_scope=True)
+
+    assert report.status == "ok"
+    assert report.summary["scope_refreshed"] is True
+    assert report.summary["text_index_status"] == "used"
+    assert report.summary["extractable_count"] == rebuild_report.summary["indexed_count"]
+    assert report.summary["pending_count"] == rebuild_report.summary["indexed_count"]
+    assert report.summary["run_pending_count"] == 999
+
+
+@pytest.mark.asyncio
+async def test_reset_translations_input_deletes_paths_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reset-translations --input 只按输入路径删库，不加载游戏或构建完整范围。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """按路径重置不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("reset --input 不应加载完整游戏数据")
+
+    async def forbidden_full_text_index_path_read(*args: object, **kwargs: object) -> NoReturn:
+        """按路径重置不应读取完整索引路径集合。"""
+        _ = (args, kwargs)
+        raise AssertionError("reset --input 不应读取完整索引路径集合")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    target_path = "CommonEvents.json/1/0"
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["你好"],
+                )
+            ]
+        )
+    input_path = tmp_path / "reset.json"
+    _ = input_path.write_text(
+        json.dumps({"location_paths": [target_path]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(
+        "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_location_paths",
+        forbidden_full_text_index_path_read,
+    )
+
+    report = await service.reset_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert report.status == "ok"
+    assert report.summary["mode"] == "input"
+    assert report.summary["requested_count"] == 1
+    assert report.summary["reset_count"] == 1
+    assert report.summary["text_index_status"] == "used"
+    async with await registry.open_game("テストゲーム") as session:
+        assert await session.read_translated_items() == []
+
+
+@pytest.mark.asyncio
+async def test_reset_translations_input_rejects_unknown_paths_without_partial_delete(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """reset-translations --input 遇到不属于当前范围的路径时整体失败。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    target_path = "CommonEvents.json/1/0"
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["你好"],
+                )
+            ]
+        )
+    input_path = tmp_path / "reset-invalid.json"
+    _ = input_path.write_text(
+        json.dumps({"location_paths": [target_path, "missing/path"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.reset_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert report.status == "error"
+    assert report.errors[0].code == "reset_translation_location"
+    assert report.summary["reset_count"] == 0
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    assert len(translated_items) == 1
+    assert translated_items[0].location_path == target_path
+
+
+@pytest.mark.asyncio
+async def test_reset_translations_input_cold_rebuilds_missing_text_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """reset-translations --input 缺索引时自动重建，再校验和删除输入路径。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    target_path = "CommonEvents.json/1/0"
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["你好"],
+                )
+            ]
+        )
+    input_path = tmp_path / "reset-cold.json"
+    _ = input_path.write_text(
+        json.dumps({"location_paths": [target_path]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.reset_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert report.status == "ok"
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+    rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "rebuild_summary")
+    assert rebuild_summary["index_status"] == "rebuilt"
+    assert report.summary["reset_count"] == 1
+    async with await registry.open_game("テストゲーム") as session:
+        assert await session.read_text_index_metadata() is not None
+        assert await session.read_translated_items() == []
+
+
+@pytest.mark.asyncio
+async def test_quality_report_cold_rebuilds_missing_text_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """普通 quality-report 缺索引时自动 cold rebuild，并报告重建阶段信息。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+    rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "text_index_rebuild_summary")
+    assert rebuild_summary["index_status"] == "rebuilt"
+    assert "stage_timings" in rebuild_summary
+    async with await registry.open_game("テストゲーム") as session:
+        metadata = await session.read_text_index_metadata()
+        assert metadata is not None
+        assert metadata.item_count == report.summary["extractable_count"]
+
+
+@pytest.mark.asyncio
+async def test_quality_report_text_index_keeps_external_rule_workflow_gate(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """默认质量报告走文本索引时，仍要报告外部规则未确认的流程硬闸。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    error_codes = {error.code for error in report.errors}
+    assert {
+        "plugin_text_missing",
+        "event_command_text_missing",
+        "note_tag_text_missing",
+    } <= error_codes
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+
+
+@pytest.mark.asyncio
+async def test_quality_report_uses_text_index_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通 quality-report 在 warm index 存在时不加载完整游戏数据。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 质量报告不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index quality-report 不应加载完整游戏数据")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    assert report.summary["text_index_status"] == "used"
+    assert report.summary["extractable_count"] == rebuild_report.summary["indexed_count"]
+    stage_timings = ensure_json_object(report.summary["stage_timings"], "stage_timings")
+    assert "read_index_and_state" in stage_timings
+    assert "total" in stage_timings
+    assert isinstance(report.summary["native_thread_count"], int)
+    assert report.summary["native_quality_payload_item_count"] == report.summary["translated_count"]
+    coverage = ensure_json_object(report.details["coverage"], "coverage")
+    assert coverage["detail_mode"] == "sampled"
+    pending_paths = ensure_json_object(coverage["pending_location_paths"], "pending_location_paths")
+    assert set(pending_paths) == {"count", "samples", "omitted_count"}
+
+
+@pytest.mark.asyncio
+async def test_translate_max_items_cold_rebuilds_missing_text_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """translate --max-items 缺索引时自动 cold rebuild，再按 SQL 限制 pending。"""
+    captured: dict[str, int] = {}
+
+    async def fake_run_text_translation_batches(*args: object, **kwargs: object) -> tuple[int, int]:
+        """截断到模型前，不消耗真实模型额度。"""
+        _ = args
+        raw_batches = kwargs["batches"]
+        if not isinstance(raw_batches, list):
+            raise TypeError("batches 必须是列表")
+        batches = cast(list[TranslationBatch], raw_batches)
+        captured["item_count"] = sum(len(batch.items) for batch in batches)
+        return (0, 0)
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", fake_run_text_translation_batches)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=3),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.text_index_status == "cold_rebuilt"
+    assert summary.text_index_rebuild_summary is not None
+    assert summary.text_index_rebuild_summary["index_status"] == "rebuilt"
+    assert summary.pending_count == 3
+    assert captured["item_count"] == 3
+    async with await registry.open_game("テストゲーム") as session:
+        metadata = await session.read_text_index_metadata()
+    assert metadata is not None
+    assert summary.total_extracted_items == metadata.item_count
+
+
+@pytest.mark.asyncio
+async def test_translate_max_items_text_index_keeps_external_rule_workflow_gate(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """小批翻译走文本索引时，外部规则未确认仍必须阻止进入模型批次。"""
+    _ = app_home_with_example_setting
+
+    async def forbidden_batches(*args: object, **kwargs: object) -> NoReturn:
+        """缺少外部规则时不能进入模型批次。"""
+        _ = (args, kwargs)
+        raise AssertionError("外部规则未确认时 translate --max-items 不能进入模型批次")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+    monkeypatch.setattr(
+        TranslationHandler,
+        "_run_prepared_translation_batches",
+        forbidden_batches,
+    )
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=3),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.text_index_status == "rebuild_failed"
+    assert summary.blocked_reason is not None
+    assert "插件规则" in summary.blocked_reason
+    assert "事件指令规则" in summary.blocked_reason
+    assert "Note 标签规则" in summary.blocked_reason
+
+
+@pytest.mark.asyncio
+async def test_translate_max_items_uses_text_index_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """translate --max-items 在 warm index 下先按 SQL 限制 pending，再进入批次准备。"""
+
+    async def forbidden_session_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 小批翻译不应加载完整游戏数据。"""
+        _ = (args, kwargs)
+        raise AssertionError("translate --max-items 不应加载完整游戏数据")
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 小批翻译不应构建完整 TextScope。"""
+        _ = (args, kwargs)
+        raise AssertionError("translate --max-items 不应构建完整 TextScope")
+
+    captured: dict[str, int] = {}
+
+    async def fake_run_text_translation_batches(*args: object, **kwargs: object) -> tuple[int, int]:
+        """截断到模型前，不消耗真实模型额度。"""
+        _ = args
+        raw_batches = kwargs["batches"]
+        if not isinstance(raw_batches, list):
+            raise TypeError("batches 必须是列表")
+        batches = cast(list[TranslationBatch], raw_batches)
+        captured["batch_count"] = len(batches)
+        captured["item_count"] = sum(len(batch.items) for batch in batches)
+        return (0, 0)
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    monkeypatch.setattr(TranslationHandler, "_load_session_game_data", forbidden_session_game_data_load)
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", fake_run_text_translation_batches)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=3),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.total_extracted_items == rebuild_report.summary["indexed_count"]
+    assert summary.total_pending_count == rebuild_report.summary["indexed_count"]
+    assert summary.text_index_status == "used"
+    assert summary.pending_count == 3
+    assert captured["item_count"] == 3
+    async with await registry.open_game("テストゲーム") as session:
+        latest_run = await session.read_latest_translation_run()
+    assert latest_run is not None
+    assert latest_run.total_extracted == rebuild_report.summary["indexed_count"]
+    assert latest_run.pending_count == 3
 
 
 @pytest.mark.asyncio
@@ -5338,6 +6830,7 @@ async def test_manual_translation_keeps_repeated_structured_shell_indices(
         json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _ = await _rebuild_text_index_for_test(service)
 
     import_report = await service.import_manual_translations(
         game_title="テストゲーム",
@@ -5398,6 +6891,7 @@ async def test_manual_translation_rejects_changed_unprotected_control_sequence(
         json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _ = await _rebuild_text_index_for_test(service)
 
     rejected_report = await service.import_manual_translations(
         game_title="テストゲーム",
@@ -5444,6 +6938,7 @@ async def test_manual_translation_uses_source_residual_exception_rules(
         json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _ = await _rebuild_text_index_for_test(service)
 
     rejected_report = await service.import_manual_translations(
         game_title="テストゲーム",
@@ -5793,8 +7288,9 @@ async def test_agent_reports_error_on_stale_plugin_rules(
     )
 
     error_codes = {error.code for error in quality_report.errors}
-    assert quality_report.summary["plugin_rule_count"] == 0
-    assert quality_report.summary["stale_plugin_rule_count"] == 1
+    assert quality_report.summary["text_index_status"] == "rebuild_failed"
+    rebuild_summary = ensure_json_object(quality_report.summary["text_index_rebuild_summary"], "rebuild_summary")
+    assert rebuild_summary["index_status"] == "not_rebuilt"
     assert "stale_plugin_rules" in error_codes
     assert export_report.status == "error"
     assert {error.code for error in export_report.errors} == {"stale_plugin_rules"}
@@ -5837,6 +7333,7 @@ async def test_manual_long_text_import_splits_overwide_lines(
             )
             break
 
+    _ = await _rebuild_text_index_for_test(service)
     import_report = await service.import_manual_translations(
         game_title="テストゲーム",
         input_path=pending_path,
@@ -5897,6 +7394,7 @@ async def test_manual_translation_import_rejects_text_structure_errors(
             break
     assert target_path
 
+    _ = await _rebuild_text_index_for_test(service)
     report = await service.import_manual_translations(
         game_title="テストゲーム",
         input_path=pending_path,
@@ -5946,6 +7444,7 @@ async def test_manual_translation_import_reports_all_invalid_items_without_parti
     assert len(selected) == 2
     _ = pending_path.write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    _ = await _rebuild_text_index_for_test(service)
     report = await service.import_manual_translations(
         game_title="テストゲーム",
         input_path=pending_path,
@@ -6152,11 +7651,11 @@ async def test_quality_fix_template_restores_prefilled_model_placeholders(
 
 
 @pytest.mark.asyncio
-async def test_reset_translations_validates_paths_before_deleting(
+async def test_reset_translations_input_deletes_known_paths_and_warns_missing_saved_paths(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """重置译文命令遇到非法定位路径时不做部分删除。"""
+    """按输入重置只删除请求路径中已保存的译文，并报告不存在的已保存路径。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -6170,6 +7669,11 @@ async def test_reset_translations_validates_paths_before_deleting(
     )
     payload = load_json_object(pending_path)
     target_path = next(iter(payload))
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        index_items = await session.read_text_index_items()
+    already_pending_path = next(item.location_path for item in index_items if item.location_path != target_path)
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
@@ -6185,35 +7689,23 @@ async def test_reset_translations_validates_paths_before_deleting(
         )
 
     _ = reset_path.write_text(
-        json.dumps({"location_paths": [target_path, "Missing.json/1"]}, ensure_ascii=False),
+        json.dumps({"location_paths": [target_path, already_pending_path]}, ensure_ascii=False),
         encoding="utf-8",
     )
-    rejected_report = await service.reset_translations(
+    report = await service.reset_translations(
         game_title="テストゲーム",
         input_path=reset_path,
     )
     async with await registry.open_game("テストゲーム") as session:
-        paths_after_reject = await session.read_translation_location_paths()
-
-    _ = reset_path.write_text(
-        json.dumps({"location_paths": [target_path]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    accepted_report = await service.reset_translations(
-        game_title="テストゲーム",
-        input_path=reset_path,
-    )
+        paths_after_reset = await session.read_translation_location_paths()
     quality_report = await service.quality_report(game_title="テストゲーム")
-    async with await registry.open_game("テストゲーム") as session:
-        paths_after_accept = await session.read_translation_location_paths()
 
-    assert rejected_report.status == "error"
-    assert rejected_report.summary["reset_count"] == 0
-    assert target_path in paths_after_reject
-    assert accepted_report.status == "ok"
-    assert accepted_report.summary["requested_count"] == 1
-    assert accepted_report.summary["reset_count"] == 1
-    assert target_path not in paths_after_accept
+    assert report.status == "warning"
+    assert report.summary["requested_count"] == 2
+    assert report.summary["reset_count"] == 1
+    assert report.summary["already_pending_count"] == 1
+    assert {warning.code for warning in report.warnings} == {"reset_translation_already_pending"}
+    assert target_path not in paths_after_reset
     pending_count = quality_report.summary["pending_count"]
     assert isinstance(pending_count, int)
     assert pending_count >= 1
@@ -6406,6 +7898,7 @@ async def test_validate_event_command_rules_previews_direct_parameter_write_back
 async def test_validate_event_command_rules_reports_hits_per_rule(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令规则报告按规则组统计命中数量，避免把总命中数写到每条规则。"""
     registry = GameRegistry(tmp_path / "db")
@@ -6429,6 +7922,25 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
         },
         ensure_ascii=False,
     )
+    extract_call_count = 0
+    real_extract_with_rule_items = EventCommandTextExtraction.extract_all_text_with_rule_items
+
+    def counted_extract_with_rule_items(
+        self: EventCommandTextExtraction,
+    ) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
+        nonlocal extract_call_count
+        extract_call_count += 1
+        return real_extract_with_rule_items(self)
+
+    def forbidden_extract_all_text(_self: EventCommandTextExtraction) -> dict[str, TranslationData]:
+        raise AssertionError("事件指令规则校验不能为每条规则组重复提取")
+
+    monkeypatch.setattr(
+        EventCommandTextExtraction,
+        "extract_all_text_with_rule_items",
+        counted_extract_with_rule_items,
+    )
+    monkeypatch.setattr(EventCommandTextExtraction, "extract_all_text", forbidden_extract_all_text)
 
     report = await service.validate_event_command_rules(
         game_title="テストゲーム",
@@ -6442,6 +7954,63 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
         for index, raw_detail in enumerate(rule_details)
     ]
     assert hit_counts == [1, 3]
+    assert extract_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_event_command_rules_uses_prefix_read_for_translated_count(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """事件指令规则校验只读取匹配指令前缀内的已保存译文。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/4/parameters/3/message",
+                    item_type="short_text",
+                    original_lines=["プラグイン台詞"],
+                    translation_lines=["事件指令译文"],
+                ),
+                TranslationItem(
+                    location_path="Actors.json/1/name",
+                    item_type="short_text",
+                    original_lines=["関係ない名前"],
+                    translation_lines=["无关名字"],
+                ),
+            ]
+        )
+
+    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
+        raise AssertionError("事件指令规则校验不能全量读取已保存路径")
+
+    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+
+    report = await service.validate_event_command_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {"0": "TestPlugin", "1": "Show"},
+                        "paths": ["$['parameters'][3]['message']"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["hit_count"] == 1
+    assert report.summary["translated_count"] == 1
+    rule_details = ensure_json_array(report.details["rules"], "rules")
+    first_rule_detail = ensure_json_object(coerce_json_value(rule_details[0]), "rules[0]")
+    assert first_rule_detail["translated_count"] == 1
 
 
 @pytest.mark.asyncio

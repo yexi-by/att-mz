@@ -34,11 +34,22 @@ class EventCommandTextExtraction:
 
     def extract_all_text(self) -> dict[str, TranslationData]:
         """按数据库规则提取事件指令参数中的字符串叶子。"""
+        translation_data_map, _rule_items = self._extract_all_text(collect_rule_items=False)
+        return translation_data_map
+
+    def extract_all_text_with_rule_items(self) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
+        """一次提取事件指令文本，并返回每条规则组对应的命中项。"""
+        return self._extract_all_text(collect_rule_items=True)
+
+    def _extract_all_text(self, *, collect_rule_items: bool) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
+        """按需提取全量文本和规则组命中项。"""
         if not self.rule_records:
-            return {}
+            return {}, []
 
         translation_data_map: dict[str, TranslationData] = {}
         seen_location_paths: set[str] = set()
+        rule_seen_location_paths: list[set[str]] = [set() for _rule in self.rule_records]
+        rule_items: list[list[TranslationItem]] = [[] for _rule in self.rule_records]
         command_hit_counts = [0 for _rule in self.rule_records]
         path_hit_counts: dict[tuple[int, str], int] = {
             (rule_index, path_template): 0
@@ -94,16 +105,24 @@ class EventCommandTextExtraction:
                         normalized_value = normalize_visible_text_for_extraction(leaf_value)
                         if not self.text_rules.should_translate_source_text(normalized_value):
                             continue
-                        if location_path in seen_location_paths:
-                            continue
-                        seen_location_paths.add(location_path)
-                        translation_data_map[file_name].translation_items.append(
-                            TranslationItem(
-                                location_path=location_path,
-                                item_type="short_text",
-                                original_lines=[normalized_value],
+                        if collect_rule_items and location_path not in rule_seen_location_paths[rule_index]:
+                            rule_seen_location_paths[rule_index].add(location_path)
+                            rule_items[rule_index].append(
+                                TranslationItem(
+                                    location_path=location_path,
+                                    item_type="short_text",
+                                    original_lines=[normalized_value],
+                                )
                             )
-                        )
+                        if location_path not in seen_location_paths:
+                            seen_location_paths.add(location_path)
+                            translation_data_map[file_name].translation_items.append(
+                                TranslationItem(
+                                    location_path=location_path,
+                                    item_type="short_text",
+                                    original_lines=[normalized_value],
+                                )
+                            )
 
         result = {
             file_name: data
@@ -115,7 +134,7 @@ class EventCommandTextExtraction:
             command_hit_counts=command_hit_counts,
             path_hit_counts=path_hit_counts,
         )
-        return result
+        return result, rule_items
 
 
 def _ensure_event_command_rules_have_current_hits(

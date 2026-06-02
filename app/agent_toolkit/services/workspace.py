@@ -95,6 +95,7 @@ from app.rmmz.mv_namebox import (
 from app.rmmz.game_file_view import GameFileView, parse_game_file_view
 from app.rmmz.schema import MvVirtualNameboxRuleRecord
 from app.terminology import collect_terminology_bundle_errors
+from app.text_index import detect_text_index_invalidations, text_index_items_to_translation_data_map
 
 
 def _plugin_source_scan_warnings(scan: PluginSourceScan) -> list[AgentIssue]:
@@ -130,6 +131,7 @@ class WorkspaceAgentMixin:
             game_data = await self._load_game_data_for_view(
                 session,
                 source_view=resolved_view,
+                include_plugin_source_files=True,
                 include_writable_copies=False,
             )
             text_rules = TextRules.from_setting(setting.text_rules)
@@ -171,6 +173,7 @@ class WorkspaceAgentMixin:
             game_data = await self._load_game_data_for_view(
                 session,
                 source_view=resolved_view,
+                include_plugin_source_files=True,
                 include_writable_copies=False,
             )
             text_rules = TextRules.from_setting(setting.text_rules)
@@ -208,6 +211,7 @@ class WorkspaceAgentMixin:
             setting = load_setting(self.setting_path, source_language=session.source_language)
             game_data = await self._load_translation_source_game_data(
                 session,
+                include_plugin_source_files=True,
                 include_writable_copies=False,
             )
             terminology_registry = await session.read_terminology_registry()
@@ -230,12 +234,29 @@ class WorkspaceAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            translation_data_map = await self._extract_active_translation_data_map(
+            plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            text_index_invalidations = await detect_text_index_invalidations(
                 session=session,
-                game_data=game_data,
                 text_rules=text_rules,
             )
-            plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            if text_index_invalidations:
+                translation_scope_mode = "full_scope"
+                text_index_status = (
+                    "missing_fallback"
+                    if any(item.reason_key == "text_index_missing" for item in text_index_invalidations)
+                    else "stale_fallback"
+                )
+                translation_data_map = await self._extract_active_translation_data_map(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                    plugin_source_scan=plugin_source_scan,
+                )
+            else:
+                translation_scope_mode = "text_index"
+                text_index_status = "used"
+                text_index_records = await session.read_text_index_items()
+                translation_data_map = text_index_items_to_translation_data_map(text_index_records)
             plugin_source_review = collect_plugin_source_review_coverage(
                 scan=plugin_source_scan,
                 rule_records=plugin_source_rules,
@@ -286,10 +307,12 @@ class WorkspaceAgentMixin:
                 plugin_source_rule_records_to_import_json(plugin_source_rules),
             )
         nonstandard_data_dir = target_dir / "nonstandard-data"
-        nonstandard_data_export_details = await export_nonstandard_data_workspace(
-            scan=nonstandard_data_scan,
-            output_dir=nonstandard_data_dir,
-        )
+        nonstandard_data_export_details: JsonObject | None = None
+        if nonstandard_data_extension_active:
+            nonstandard_data_export_details = await export_nonstandard_data_workspace(
+                scan=nonstandard_data_scan,
+                output_dir=nonstandard_data_dir,
+            )
         nonstandard_data_risk_path = target_dir / "nonstandard-data-risk-report.json"
         await _write_json_object(
             nonstandard_data_risk_path,
@@ -370,6 +393,8 @@ class WorkspaceAgentMixin:
             "engine_version": game_data.layout.engine_version,
             "source_language": session.source_language,
             "target_language": session.target_language,
+            "translation_scope_mode": translation_scope_mode,
+            "text_index_status": text_index_status,
             "content_root": str(game_data.layout.content_root),
             "data_dir": str(game_data.layout.data_dir),
             "event_command_codes": list(sorted(effective_codes)),
@@ -423,7 +448,6 @@ class WorkspaceAgentMixin:
             str(plugin_rules_path),
             str(plugin_source_risk_path),
             str(nonstandard_data_risk_path),
-            str(nonstandard_data_dir),
             str(note_tag_candidates_path),
             str(note_tag_rules_path),
             str(event_commands_path),
@@ -436,6 +460,8 @@ class WorkspaceAgentMixin:
             manifest_files.append(str(plugin_source_rules_path))
         if nonstandard_data_rules_path is not None:
             manifest_files.append(str(nonstandard_data_rules_path))
+        if nonstandard_data_export_details is not None:
+            manifest_files.append(str(nonstandard_data_dir))
         if mv_virtual_namebox_candidates_path is not None:
             manifest_files.append(str(mv_virtual_namebox_candidates_path))
         if mv_virtual_namebox_rules_path is not None:
@@ -461,6 +487,9 @@ class WorkspaceAgentMixin:
         manifest_path = target_dir / "manifest.json"
         async with aiofiles.open(manifest_path, "w", encoding="utf-8") as file:
             _ = await file.write(f"{json.dumps(manifest, ensure_ascii=False, indent=2)}\n")
+        details: JsonObject = {"manifest": manifest}
+        if nonstandard_data_export_details is not None:
+            details["nonstandard_data_export"] = nonstandard_data_export_details
         return AgentReport.from_parts(
             errors=[],
             warnings=[
@@ -468,10 +497,7 @@ class WorkspaceAgentMixin:
                 *_plugin_source_scan_warnings(plugin_source_scan),
             ],
             summary={**generated_summary, "workspace": str(target_dir), "manifest": str(manifest_path)},
-            details={
-                "manifest": manifest,
-                "nonstandard_data_export": nonstandard_data_export_details,
-            },
+            details=details,
         )
 
     async def validate_agent_workspace(
@@ -499,15 +525,32 @@ class WorkspaceAgentMixin:
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
-        _event_command_codes, event_command_codes_issue = await _read_workspace_event_command_codes(workspace)
+        workspace_manifest, manifest_issue = await _read_workspace_manifest(workspace)
+        if manifest_issue is not None:
+            errors.append(manifest_issue)
+        manifest_generated = _workspace_manifest_generated(workspace_manifest)
+        _event_command_codes, event_command_codes_issue = _workspace_event_command_codes_from_manifest(workspace_manifest)
         if event_command_codes_issue is not None:
             errors.append(event_command_codes_issue)
         advance_progress(1)
         async with await self.game_registry.open_game(game_title) as session:
-            set_status("加载翻译源视图")
             setting = load_setting(self.setting_path, source_language=session.source_language)
+            stored_plugin_source_rules = await session.read_plugin_source_text_rules()
+            stored_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
+            plugin_source_scan_required = (
+                plugin_source_rules_path.exists()
+                or bool(stored_plugin_source_rules)
+                or _manifest_bool(manifest_generated, "plugin_source_high_risk")
+            )
+            nonstandard_data_scan_required = (
+                nonstandard_data_rules_path.exists()
+                or bool(stored_nonstandard_data_rules)
+                or _manifest_bool(manifest_generated, "nonstandard_data_high_risk")
+            )
+            set_status("加载翻译源视图")
             game_data = await self._load_translation_source_game_data(
                 session,
+                include_plugin_source_files=plugin_source_scan_required,
                 include_writable_copies=False,
             )
             advance_progress(1)
@@ -531,28 +574,30 @@ class WorkspaceAgentMixin:
                 text_rules=text_rules,
             )
             advance_progress(1)
-            set_status("扫描插件源码")
-            plugin_source_scan = build_plugin_source_scan(
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            plugin_source_required = plugin_source_scan.risk.high_risk
-            set_status("扫描非标准 data 文件")
-            try:
-                nonstandard_data_scan = await build_nonstandard_data_scan(
-                    layout=game_data.layout,
-                    source_view=GameFileView.TRANSLATION_SOURCE,
+            plugin_source_scan: PluginSourceScan | None = None
+            plugin_source_required = _manifest_bool(manifest_generated, "plugin_source_high_risk")
+            if plugin_source_scan_required:
+                set_status("扫描插件源码")
+                plugin_source_scan = build_plugin_source_scan(
+                    game_data=game_data,
                     text_rules=text_rules,
                 )
-                nonstandard_data_scan_error: Exception | None = None
-            except Exception as error:
-                nonstandard_data_scan = None
-                nonstandard_data_scan_error = error
+                plugin_source_required = plugin_source_scan.risk.high_risk
+            nonstandard_data_scan = None
+            nonstandard_data_scan_error: Exception | None = None
+            if nonstandard_data_scan_required:
+                set_status("扫描非标准 data 文件")
+                try:
+                    nonstandard_data_scan = await build_nonstandard_data_scan(
+                        layout=game_data.layout,
+                        source_view=GameFileView.TRANSLATION_SOURCE,
+                        text_rules=text_rules,
+                    )
+                except Exception as error:
+                    nonstandard_data_scan_error = error
             advance_progress(1)
             set_status("读取已保存译文和支线状态")
-            stored_plugin_source_rules = await session.read_plugin_source_text_rules()
             plugin_source_started = bool(stored_plugin_source_rules)
-            stored_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
             nonstandard_data_started = bool(stored_nonstandard_data_rules)
             translated_paths = await session.read_translation_location_paths()
             empty_rule_issues = _workspace_empty_rule_warnings(game_data=game_data)
@@ -626,6 +671,8 @@ class WorkspaceAgentMixin:
         else:
             errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
         if plugin_source_rules_path.exists():
+            if plugin_source_scan is None:
+                raise RuntimeError("插件源码规则文件存在，但工作区验收没有执行插件源码扫描")
             async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
                 plugin_source_report = _validate_workspace_plugin_source_rules(
                     rules_text=await file.read(),
@@ -712,7 +759,7 @@ class WorkspaceAgentMixin:
                         "nonstandard_data_rules_invalid",
                         f"非标准 data 文件文本规则不可导入: {type(error).__name__}: {error}",
                     )
-                )
+            )
         elif nonstandard_data_scan is not None and (nonstandard_data_scan.high_risk or nonstandard_data_started):
             errors.append(issue("nonstandard_data_rules_missing", "工作区缺少 nonstandard-data-rules.json"))
         advance_progress(1)
@@ -1087,15 +1134,37 @@ def _workspace_empty_rule_warnings(*, game_data: GameData) -> dict[str, AgentIss
     return warnings_by_file
 
 
-async def _read_workspace_event_command_codes(workspace: Path) -> tuple[frozenset[int] | None, AgentIssue | None]:
-    """从工作区 manifest 读取本轮事件指令候选编码。"""
+async def _read_workspace_manifest(workspace: Path) -> tuple[JsonObject | None, AgentIssue | None]:
+    """读取工作区 manifest；缺失或损坏时返回单个错误。"""
     manifest_path = workspace / "manifest.json"
     if not manifest_path.exists():
         return None, issue("manifest_missing", "工作区缺少 manifest.json，无法确认工作区来源和事件指令编码")
     try:
         async with aiofiles.open(manifest_path, "r", encoding="utf-8") as file:
             raw_manifest = cast(object, json.loads(await file.read()))
-        manifest = ensure_json_object(coerce_json_value(raw_manifest), "manifest")
+        return ensure_json_object(coerce_json_value(raw_manifest), "manifest"), None
+    except Exception as error:
+        return None, issue("manifest_invalid", f"读取工作区 manifest 失败: {type(error).__name__}: {error}")
+
+
+def _workspace_manifest_generated(manifest: JsonObject | None) -> JsonObject:
+    """取出 manifest.generated；manifest 不可用时返回空对象。"""
+    if manifest is None:
+        return {}
+    try:
+        generated = ensure_json_object(manifest.get("generated"), "manifest.generated")
+    except Exception:
+        return {}
+    return generated
+
+
+def _workspace_event_command_codes_from_manifest(
+    manifest: JsonObject | None,
+) -> tuple[frozenset[int] | None, AgentIssue | None]:
+    """从工作区 manifest 读取本轮事件指令候选编码。"""
+    if manifest is None:
+        return None, None
+    try:
         generated = ensure_json_object(manifest.get("generated"), "manifest.generated")
         raw_codes = ensure_json_array(generated.get("event_command_codes"), "manifest.generated.event_command_codes")
         codes: set[int] = set()
@@ -1107,4 +1176,10 @@ async def _read_workspace_event_command_codes(workspace: Path) -> tuple[frozense
             return None, issue("manifest_invalid", "manifest.generated.event_command_codes 不能为空")
         return frozenset(codes), None
     except Exception as error:
-        return None, issue("manifest_invalid", f"读取工作区 manifest 失败: {type(error).__name__}: {error}")
+        return None, issue("manifest_invalid", f"读取工作区事件指令编码失败: {type(error).__name__}: {error}")
+
+
+def _manifest_bool(generated: JsonObject, key: str) -> bool:
+    """读取 manifest.generated 中的布尔开关，非法值按未启用处理。"""
+    value = generated.get(key)
+    return value is True

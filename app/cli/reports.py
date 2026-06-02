@@ -36,16 +36,7 @@ def build_translate_summary_report(summary: TextTranslationSummary) -> AgentRepo
     return AgentReport.from_parts(
         errors=[],
         warnings=warnings,
-        summary={
-            "run_id": summary.run_id,
-            "total_extracted_items": summary.total_extracted_items,
-            "pending_count": summary.pending_count,
-            "deduplicated_count": summary.deduplicated_count,
-            "batch_count": summary.batch_count,
-            "success_count": summary.success_count,
-            "quality_error_count": summary.error_count,
-            "llm_failure_count": summary.llm_failure_count,
-        },
+        summary=_build_translation_summary_object(summary),
         details={},
     )
 
@@ -83,6 +74,9 @@ def build_run_all_summary_report(
     summary: JsonObject = {
         "run_id": text_summary.run_id,
         "total_extracted_items": text_summary.total_extracted_items,
+        "total_pending_count": text_summary.total_pending_count
+        if text_summary.total_pending_count is not None
+        else text_summary.pending_count,
         "pending_count": text_summary.pending_count,
         "deduplicated_count": text_summary.deduplicated_count,
         "batch_count": text_summary.batch_count,
@@ -222,9 +216,12 @@ def write_report_outputs(
 
 def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonObject:
     """构建正文翻译摘要 JSON 对象。"""
-    return {
+    payload: JsonObject = {
         "run_id": summary.run_id,
         "total_extracted_items": summary.total_extracted_items,
+        "total_pending_count": summary.total_pending_count
+        if summary.total_pending_count is not None
+        else summary.pending_count,
         "pending_count": summary.pending_count,
         "deduplicated_count": summary.deduplicated_count,
         "batch_count": summary.batch_count,
@@ -232,6 +229,11 @@ def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonOb
         "quality_error_count": summary.error_count,
         "llm_failure_count": summary.llm_failure_count,
     }
+    if summary.text_index_status:
+        payload["text_index_status"] = summary.text_index_status
+    if summary.text_index_rebuild_summary is not None:
+        payload["text_index_rebuild_summary"] = summary.text_index_rebuild_summary
+    return payload
 
 
 def _build_write_back_summary_object(summary: WriteBackSummary) -> JsonObject:

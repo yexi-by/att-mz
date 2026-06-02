@@ -41,6 +41,19 @@ async def run_quality_report_command(args: argparse.Namespace) -> int:
     return 1 if report.status == "error" else 0
 
 
+async def run_rebuild_text_index_command(args: argparse.Namespace) -> int:
+    """执行 `rebuild-text-index` 命令。"""
+    game_title = await resolve_target_game_title(args)
+    service = AgentToolkitService()
+    with build_progress_reporter("文本范围索引重建") as progress:
+        report = await service.rebuild_text_index(
+            game_title=game_title,
+            callbacks=progress.status_callbacks(),
+        )
+    write_report_outputs(report=report, args=args, title="文本范围索引重建报告")
+    return 1 if report.status == "error" else 0
+
+
 async def run_text_scope_command(args: argparse.Namespace) -> int:
     """执行 `text-scope` 命令。"""
     game_title = await resolve_target_game_title(args)

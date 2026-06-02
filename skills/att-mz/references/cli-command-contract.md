@@ -123,20 +123,21 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 | 命令 | 用途 | 成功判断 | 失败处理 |
 | --- | --- | --- | --- |
-| `translate --game <游戏标题> --max-batches 1` | 小批量试跑正文翻译 | 命令正常结束，质量报告无新增规则性事故 | 看状态和质量报告，不盲目全量 |
+| `rebuild-text-index --game <游戏标题>` | 重建当前翻译源视图的持久文本范围索引；大型游戏规则导入、源文件变化或规则变化后先运行 | `summary.index_status=rebuilt`，索引数量可解释，`summary.elapsed_ms`、`summary.stage_timings` 和 `summary.native_thread_count` 能解释 cold rebuild 耗时；cold rebuild 是首次全量扫描 | 报错时先修规则、可信源快照或文本范围问题，不让小任务静默回退全量扫描 |
+| `translate --game <游戏标题> --max-items 3` | 使用文本范围索引做小批量正文翻译试跑；索引缺失或过期时自动重建，然后 SQL 层只取本轮数量 | 命令正常结束，`summary.pending_count` 是本轮数量，`summary.total_pending_count` 是当前总剩余数量，`summary.text_index_status` 可解释索引来源 | 索引重建失败时先修规则、可信源快照或文本范围问题；质量报告有规则性事故时先修规则 |
 | `translate --game <游戏标题>` | 继续翻译还没成功保存译文的文本 | 剩余量下降且质量风险可解释 | 连续多轮不下降时转修规则、换模型或手动处理 |
 | `run-all --game <游戏标题> --skip-write-back` | 按固定顺序翻译正文但不写进游戏文件 | `status` 为 `ok`，摘要说明写文件阶段已跳过 | 规则或质量错误未清前不写回 |
 | `run-all --game <游戏标题> --confirm-font-overwrite` | 翻译后执行最终写回并允许字体覆盖 | 用户已单独确认字体覆盖，摘要包含翻译和写文件结果 | 未确认字体覆盖时不使用 |
-| `translation-status --game <游戏标题>` | 快速查看最近运行、已保存译文和模型失败数量 | 数量能解释；需重新扫描当前文本范围时加 `--refresh-scope` | 数量下降时继续翻译，停滞时分析失败类型 |
+| `translation-status --game <游戏标题>` | 快速查看最近运行、已保存译文和模型失败数量 | 数量能解释；需按当前范围刷新时加 `--refresh-scope`，warm index 下优先用索引，索引缺失或过期时自动重建并在 `summary.text_index_status` 标明原因 | 数量下降时继续翻译，停滞时分析失败类型 |
 | `text-scope --game <游戏标题>` | 查看统一文本范围和规则来源 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 发现规则命中但不可翻译时先修规则 |
 | `audit-coverage --game <游戏标题>` | 对比规则命中、译文和当前文本范围 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 补规则、补译文或精确重置 |
 | `audit-active-runtime --game <游戏标题>` | 审计当前运行插件源码完整性；默认只阻断读取失败和 JS 语法错误，插件源码支线已启动或已有写回映射时才审计已管理 selector 的文本残留和坏控制符 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime`；普通流程不要把源语言字符串告警当漏翻清单 | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录或确认映射缺失 |
 | `diagnose-active-runtime --game <游戏标题> --output <诊断文件>` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释；`mapped_excluded` 不进入重置清单 | 映射缺失时报告无法反推；已映射翻译问题回到规则、重置或手动译文 |
-| `quality-report --game <游戏标题>` | 判断已保存译文记录、规则、控制符、源文残留、行宽和可生成性是否允许写回 | `status` 不是 `error`；需检查写入可行性时加 `--include-write-probe` | 按明细修译文或规则；有 error 禁止写回 |
+| `quality-report --game <游戏标题>` | 使用索引和已保存译文做普通质量报告；默认不执行写入可行性探针；索引缺失或过期时会先自动重建并在 `summary.text_index_status` 标明 `cold_rebuilt` 或 `stale_rebuilt` | `status` 不是 `error`；需要写回级检查时加 `--include-write-probe` | 按明细修译文或规则；有 error 禁止写回 |
 | `export-quality-fix-template --game <游戏标题> --output <文件>` | 导出检查没通过译文的修复表 | 输出文件存在，数量可解释；需检查写入可行性时加 `--include-write-probe` | 只改中文译文行后导入 |
 | `export-pending-translations --game <游戏标题> --output <文件>` | 导出还没成功保存译文的文本表 | 输出文件存在；可加 `--limit N`；需检查写入可行性时加 `--include-write-probe` | 抽样显示仍适合模型时回到翻译 |
-| `import-manual-translations --game <游戏标题> --input <文件>` | 检查并保存手动填写译文 | `status` 为 `ok` | 修中文译文行后重跑 |
-| `reset-translations --game <游戏标题> --input <文件>` | 精确删除坏译文，让模型重译 | `summary.mode=input` 且数量可解释 | 非法路径整体失败；修输入文件 |
+| `import-manual-translations --game <游戏标题> --input <文件>` | 按输入路径检查并保存手动填写译文；普通待补译导入依赖文本范围索引，索引缺失或过期时自动重建并在 `summary.text_index_status` 标明原因 | `status` 为 `ok` | 质量错误时只修中文译文行后重跑；索引重建失败时先修规则、可信源快照或文本范围问题 |
+| `reset-translations --game <游戏标题> --input <文件>` | 按输入路径精确删除坏译文，让模型重译；索引缺失或过期时自动重建，输入路径必须全部属于当前文本范围 | `summary.mode=input` 且数量可解释；未保存路径会作为 warning 报告 | 路径不属于当前范围时整体失败且不部分删除；数量异常时先核对输入文件，不手工拼全集 |
 | `reset-translations --game <游戏标题> --all` | 用户明确选择完整重译时删除当前提取范围译文 | `summary.mode=all` 且数量可解释 | 数量异常时先解释，不手工拼全集 |
 | `validate-source-residual-rules --game <游戏标题> --input <规则文件>` | 校验源文保留例外 | `status` 为 `ok` | 修例外规则，不关闭全局检测 |
 | `import-source-residual-rules --game <游戏标题> --input <规则文件>` | 保存源文保留例外 | `status` 为 `ok` | 回到 validate 修规则 |

@@ -9,6 +9,7 @@ import pytest
 
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
+from app.persistence.records import TextIndexInvalidationRecord, TextIndexItemRecord, TextIndexMetadata
 from app.persistence.sql import CURRENT_SCHEMA_VERSION, EXPECTED_STATIC_TABLE_NAMES
 from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
@@ -214,10 +215,14 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
                 )
             ],
         )
+        deleted_by_paths_count = await session.delete_translation_items_by_paths(
+            ["plugins.js/0/Title", "missing/path", "plugins.js/0/Title"]
+        )
+        assert deleted_by_paths_count == 1
         deleted_count = await session.delete_translation_items_except_paths(
             {"System.json/gameTitle"},
         )
-        assert deleted_count == 2
+        assert deleted_count == 1
         assert await session.read_translation_location_paths() == {
             "System.json/gameTitle"
         }
@@ -379,11 +384,27 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
                     error_type="AI漏翻",
                     error_detail=["无法解析"],
                     model_response="模型原始返回",
-                )
+                ),
+                TranslationErrorItem(
+                    location_path="Map002.json/1/0/0",
+                    item_type="long_text",
+                    role=None,
+                    original_lines=["別原文"],
+                    translation_lines=[],
+                    error_type="AI漏翻",
+                    error_detail=["另一个错误"],
+                    model_response="另一个模型原始返回",
+                ),
             ],
         )
         quality_errors = await session.read_translation_quality_errors(run_record.run_id)
         assert quality_errors[0].model_response == "模型原始返回"
+        assert await session.count_translation_quality_errors(run_record.run_id) == 2
+        quality_errors_by_paths = await session.read_translation_quality_errors_by_paths(
+            run_record.run_id,
+            {"Map002.json/1/0/0", "missing/path"},
+        )
+        assert [item.location_path for item in quality_errors_by_paths] == ["Map002.json/1/0/0"]
         await session.write_translation_run(
             run_record.model_copy(
                 update={
@@ -466,6 +487,144 @@ async def test_register_game_creates_declared_static_table_set(minimal_game_dir:
 
     table_names = read_sqlite_table_names(record.db_path)
     assert table_names - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
+
+
+@pytest.mark.asyncio
+async def test_text_index_records_replace_read_subset_and_invalidate(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """文本范围索引支持整批替换、精确读取和显式失效记录。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="en")
+    first_item = TextIndexItemRecord(
+        location_path="Map001.json/events/1/pages/0/list/0",
+        item_type="long_text",
+        role="Alice",
+        original_lines=["Hello there", "Welcome back"],
+        source_line_paths=["Map001.json/events/1/pages/0/list/1"],
+        source_type="event_command",
+        source_file="Map001.json",
+        writable=True,
+        source_snapshot_fingerprint="snapshot-v1",
+        rules_fingerprint="rules-v1",
+        locator_json='{"kind":"event_command","code":401}',
+    )
+    second_item = TextIndexItemRecord(
+        location_path="System.json/gameTitle",
+        item_type="short_text",
+        role=None,
+        original_lines=["Fixture Game"],
+        source_line_paths=[],
+        source_type="standard_data",
+        source_file="System.json",
+        writable=False,
+        source_snapshot_fingerprint="snapshot-v1",
+        rules_fingerprint="rules-v1",
+        locator_json='{"kind":"field","field":"gameTitle"}',
+    )
+    third_item = TextIndexItemRecord(
+        location_path="Map002.json/events/1/pages/0/list/0",
+        item_type="long_text",
+        role="Bob",
+        original_lines=["Good morning"],
+        source_line_paths=["Map002.json/events/1/pages/0/list/1"],
+        source_type="event_command",
+        source_file="Map002.json",
+        writable=True,
+        source_snapshot_fingerprint="snapshot-v1",
+        rules_fingerprint="rules-v1",
+        locator_json='{"kind":"event_command","code":401}',
+    )
+    metadata = TextIndexMetadata(
+        source_snapshot_fingerprint="snapshot-v1",
+        rules_fingerprint="rules-v1",
+        item_count=3,
+        created_at="2026-06-02T00:00:00",
+    )
+
+    async with await registry.open_game(record.game_title) as session:
+        assert await session.read_text_index_metadata() is None
+        assert await session.read_text_index_items_by_paths(["System.json/gameTitle"]) == []
+
+        await session.replace_text_index(metadata=metadata, items=[second_item, third_item, first_item])
+
+        assert await session.read_text_index_metadata() == metadata
+        assert await session.read_text_index_location_paths() == {
+            first_item.location_path,
+            second_item.location_path,
+            third_item.location_path,
+        }
+        assert await session.count_text_index_items() == 3
+        assert await session.read_text_index_items() == [first_item, third_item, second_item]
+        assert await session.read_text_index_items_by_paths(
+            [
+                "missing/path",
+                second_item.location_path,
+                first_item.location_path,
+                first_item.location_path,
+            ]
+        ) == [first_item, second_item]
+        assert await session.count_pending_text_index_items() == 2
+        assert await session.read_pending_text_index_items(limit=1) == [first_item]
+
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=first_item.location_path,
+                    item_type=first_item.item_type,
+                    role=first_item.role,
+                    original_lines=first_item.original_lines,
+                    source_line_paths=first_item.source_line_paths,
+                    translation_lines=["你好"],
+                )
+            ]
+        )
+        assert await session.count_pending_text_index_items() == 1
+        assert await session.read_pending_text_index_items(limit=None) == [third_item]
+
+        invalidations = [
+            TextIndexInvalidationRecord(
+                reason_key="source_snapshot_changed",
+                detail="可信源快照变化",
+                created_at="2026-06-02T00:01:00",
+            )
+        ]
+        await session.replace_text_index_invalidations(invalidations)
+        assert await session.read_text_index_invalidations() == invalidations
+
+        rebuilt_metadata = TextIndexMetadata(
+            source_snapshot_fingerprint="snapshot-v2",
+            rules_fingerprint="rules-v2",
+            item_count=0,
+            created_at="2026-06-02T00:02:00",
+        )
+        await session.replace_text_index(metadata=rebuilt_metadata, items=[])
+        assert await session.read_text_index_metadata() == rebuilt_metadata
+        assert await session.read_text_index_items() == []
+        assert await session.read_text_index_invalidations() == []
+
+
+@pytest.mark.asyncio
+async def test_text_index_replace_rejects_mismatched_item_count(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """文本范围索引元信息和实际项数不一致时显式失败。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="en")
+
+    async with await registry.open_game(record.game_title) as session:
+        with pytest.raises(ValueError, match="item_count"):
+            await session.replace_text_index(
+                metadata=TextIndexMetadata(
+                    source_snapshot_fingerprint="snapshot-v1",
+                    rules_fingerprint="rules-v1",
+                    item_count=1,
+                    created_at="2026-06-02T00:00:00",
+                ),
+                items=[],
+            )
 
 
 @pytest.mark.asyncio

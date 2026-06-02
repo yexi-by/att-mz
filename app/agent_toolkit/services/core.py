@@ -21,6 +21,7 @@ from .common import (
     parse_source_residual_rule_import_text,
     read_fresh_plugin_text_rules,
 )
+from app.plugin_source_text import PluginSourceScan
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 
@@ -33,8 +34,9 @@ class CoreAgentMixin:
         session: TargetGameSession,
         *,
         source_view: GameFileView,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """按显式视图加载单游戏数据，并在翻译源视图绑定会话。"""
         game_data = await load_game_data_for_view(
@@ -42,6 +44,7 @@ class CoreAgentMixin:
             source_view=source_view,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
         if source_view == GameFileView.TRANSLATION_SOURCE:
             snapshot_records = await session.read_source_snapshot_records()
@@ -58,8 +61,9 @@ class CoreAgentMixin:
         self: AgentServiceContext,
         session: TargetGameSession,
         *,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """加载翻译源视图，完整原始备份存在时优先读取备份。"""
         return await self._load_game_data_for_view(
@@ -67,20 +71,23 @@ class CoreAgentMixin:
             source_view=GameFileView.TRANSLATION_SOURCE,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
 
     async def _load_active_runtime_game_data(
         self: AgentServiceContext,
         session: TargetGameSession,
         *,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """加载当前运行视图，不读取任何 origin 备份。"""
         return await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
 
     async def _extract_active_translation_data_map(
@@ -89,6 +96,7 @@ class CoreAgentMixin:
         session: TargetGameSession,
         game_data: GameData,
         text_rules: TextRules,
+        plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
         """按当前数据库规则提取本轮正文条目，不执行写入探针。"""
         scope = await TextScopeService().build(
@@ -96,6 +104,7 @@ class CoreAgentMixin:
             game_data=game_data,
             text_rules=text_rules,
             include_write_probe=False,
+            plugin_source_scan=plugin_source_scan,
         )
         return scope.translation_data_map
 

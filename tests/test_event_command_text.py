@@ -17,7 +17,7 @@ from app.event_command_text import (
     resolve_event_command_codes,
 )
 from app.rmmz import load_game_data
-from app.rmmz.schema import EventCommandTextRuleRecord
+from app.rmmz.schema import EventCommandTextRuleRecord, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
 from tests._native_write_plan_helper import reset_writable_copies, write_data_text
 
@@ -198,6 +198,7 @@ def test_restore_font_parser_accepts_replacement_font_path() -> None:
 async def test_event_command_rule_import_extracts_and_writes_back(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令文本由外部规则导入后按数据库规则提取并写回。"""
     game_data = await load_game_data(minimal_game_dir)
@@ -233,6 +234,12 @@ async def test_event_command_rule_import_extracts_and_writes_back(
         "$['parameters'][3]['message']",
         "$['parameters'][3]['file']",
     ]
+    def forbidden_rule_item_extract(
+        _self: EventCommandTextExtraction,
+    ) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
+        raise AssertionError("普通事件指令提取不应构造规则组命中明细")
+
+    monkeypatch.setattr(EventCommandTextExtraction, "extract_all_text_with_rule_items", forbidden_rule_item_extract)
 
     extracted = EventCommandTextExtraction(game_data, records).extract_all_text()
     items = extracted["CommonEvents.json"].translation_items

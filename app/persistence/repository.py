@@ -58,6 +58,9 @@ from .sql import (
     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
     CREATE_TRANSLATION_RUNS_TABLE,
     CREATE_TRANSLATION_TABLE,
+    CREATE_TEXT_INDEX_INVALIDATIONS_TABLE,
+    CREATE_TEXT_INDEX_ITEMS_TABLE,
+    CREATE_TEXT_INDEX_META_TABLE,
     CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE,
     CREATE_TEXT_GLOSSARY_TERMS_TABLE,
     CREATE_FIELD_TRANSLATION_TERMS_TABLE,
@@ -78,6 +81,7 @@ from .sql import (
     UPSERT_SCHEMA_VERSION,
 )
 from .terminology_records import TerminologyRecordSessionMixin
+from .text_index_records import TextIndexRecordSessionMixin
 from .translation_records import TranslationRecordSessionMixin
 
 type ColumnSchemaSignature = tuple[int, str, str, int, str | None, int]
@@ -333,6 +337,9 @@ async def create_static_tables(connection: aiosqlite.Connection) -> None:
     _ = await connection.execute(CREATE_TRANSLATION_RUNS_TABLE)
     _ = await connection.execute(CREATE_LLM_FAILURES_TABLE)
     _ = await connection.execute(CREATE_TRANSLATION_QUALITY_ERRORS_TABLE)
+    _ = await connection.execute(CREATE_TEXT_INDEX_META_TABLE)
+    _ = await connection.execute(CREATE_TEXT_INDEX_ITEMS_TABLE)
+    _ = await connection.execute(CREATE_TEXT_INDEX_INVALIDATIONS_TABLE)
     _ = await connection.execute(
         UPSERT_SCHEMA_VERSION,
         (SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION),
@@ -716,6 +723,7 @@ class TargetGameSession(
     PluginSourceRuntimeRecordSessionMixin,
     SourceSnapshotRecordSessionMixin,
     RunRecordSessionMixin,
+    TextIndexRecordSessionMixin,
 ):
     """单个目标游戏的数据库会话。"""
 

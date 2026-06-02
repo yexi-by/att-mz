@@ -172,8 +172,9 @@ class AgentServiceContext(Protocol):
         session: TargetGameSession,
         *,
         source_view: GameFileView,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """按显式视图加载游戏数据。"""
         ...
@@ -182,8 +183,9 @@ class AgentServiceContext(Protocol):
         self,
         session: TargetGameSession,
         *,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """加载翻译源视图。"""
         ...
@@ -192,8 +194,9 @@ class AgentServiceContext(Protocol):
         self,
         session: TargetGameSession,
         *,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """加载当前运行视图。"""
         ...
@@ -204,8 +207,18 @@ class AgentServiceContext(Protocol):
         session: TargetGameSession,
         game_data: GameData,
         text_rules: TextRules,
+        plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
         """按当前规则提取本轮可处理文本。"""
+        ...
+
+    async def rebuild_text_index(
+        self,
+        *,
+        game_title: str,
+        callbacks: QualityProgressCallbacks | None = None,
+    ) -> AgentReport:
+        """重建当前游戏的持久文本范围索引。"""
         ...
 
     async def _build_source_residual_rule_records(
@@ -1858,9 +1871,6 @@ def _validate_plugin_rules_with_context(
     translated_paths: set[str],
 ) -> AgentReport:
     """使用已加载游戏上下文校验插件参数规则。"""
-    errors: list[AgentIssue] = []
-    warnings: list[AgentIssue] = []
-    details: JsonObject = {"rules": []}
     try:
         import_file = parse_plugin_rule_import_text(rules_text)
         records = build_plugin_rule_records_from_import(
@@ -1868,6 +1878,41 @@ def _validate_plugin_rules_with_context(
             import_file=import_file,
             text_rules=text_rules,
         )
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "plugin_count": 0,
+                "rule_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_plugin_rule_records_with_context(
+        records=records,
+        game_data=game_data,
+        text_rules=text_rules,
+        translated_paths=translated_paths,
+    )
+
+
+def _validate_plugin_rule_records_with_context(
+    *,
+    records: list[PluginTextRuleRecord],
+    game_data: GameData,
+    text_rules: TextRules,
+    translated_paths: set[str],
+) -> AgentReport:
+    """使用已构建的插件参数规则校验命中与写回可行性。"""
+    errors: list[AgentIssue] = []
+    warnings: list[AgentIssue] = []
+    details: JsonObject = {"rules": []}
+    try:
         extracted_map = PluginTextExtraction(
             game_data,
             plugin_rule_records=records,
@@ -2529,9 +2574,6 @@ def _validate_note_tag_rules_with_context(
     translated_paths: set[str],
 ) -> AgentReport:
     """使用已加载游戏上下文校验 Note 标签规则。"""
-    errors: list[AgentIssue] = []
-    warnings: list[AgentIssue] = []
-    details: JsonObject = {"rules": []}
     try:
         import_file = parse_note_tag_rule_import_text(rules_text)
         records = build_note_tag_rule_records_from_import(
@@ -2539,6 +2581,41 @@ def _validate_note_tag_rules_with_context(
             import_file=import_file,
             text_rules=text_rules,
         )
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "file_count": 0,
+                "tag_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_note_tag_rule_records_with_context(
+        records=records,
+        game_data=game_data,
+        text_rules=text_rules,
+        translated_paths=translated_paths,
+    )
+
+
+def _validate_note_tag_rule_records_with_context(
+    *,
+    records: list[NoteTagTextRuleRecord],
+    game_data: GameData,
+    text_rules: TextRules,
+    translated_paths: set[str],
+) -> AgentReport:
+    """使用已构建的 Note 标签规则校验命中与写回可行性。"""
+    errors: list[AgentIssue] = []
+    warnings: list[AgentIssue] = []
+    details: JsonObject = {"rules": []}
+    try:
         extracted_map = NoteTagTextExtraction(
             game_data=game_data,
             rule_records=records,
@@ -2627,17 +2704,49 @@ def _validate_event_command_rules_with_context(
     translated_paths: set[str],
 ) -> AgentReport:
     """使用已加载游戏上下文校验事件指令规则。"""
+    try:
+        import_file = parse_event_command_rule_import_text(rules_text)
+        records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "rule_group_count": 0,
+                "path_rule_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_event_command_rule_records_with_context(
+        records=records,
+        game_data=game_data,
+        text_rules=text_rules,
+        translated_paths=translated_paths,
+    )
+
+
+def _validate_event_command_rule_records_with_context(
+    *,
+    records: list[EventCommandTextRuleRecord],
+    game_data: GameData,
+    text_rules: TextRules,
+    translated_paths: set[str],
+) -> AgentReport:
+    """使用已构建的事件指令规则校验命中与写回可行性。"""
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
     try:
-        import_file = parse_event_command_rule_import_text(rules_text)
-        records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
-        extracted_map = EventCommandTextExtraction(
+        extracted_map, record_items_by_index = EventCommandTextExtraction(
             game_data,
             rule_records=records,
             text_rules=text_rules,
-        ).extract_all_text()
+        ).extract_all_text_with_rule_items()
         extracted_items = [
             item
             for translation_data in extracted_map.values()
@@ -2673,17 +2782,7 @@ def _validate_event_command_rules_with_context(
             errors.append(issue("event_command_rules_unwritable", f"事件指令规则存在 {len(unwritable_items)} 个不可写命中项"))
         unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
         rule_details: JsonArray = []
-        for record in records:
-            record_extracted_map = EventCommandTextExtraction(
-                game_data,
-                rule_records=[record],
-                text_rules=text_rules,
-            ).extract_all_text()
-            record_items = [
-                item
-                for translation_data in record_extracted_map.values()
-                for item in translation_data.translation_items
-            ]
+        for record, record_items in zip(records, record_items_by_index, strict=True):
             rule_details.append(
                 {
                     "command_code": record.command_code,

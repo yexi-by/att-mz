@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from app.rmmz.text_rules import JsonObject
+
 
 @dataclass(slots=True)
 class PluginRuleImportSummary:
@@ -81,6 +83,9 @@ class TextTranslationSummary:
     llm_failure_count: int = 0
     run_id: str = ""
     blocked_reason: str | None = None
+    total_pending_count: int | None = None
+    text_index_status: str = ""
+    text_index_rebuild_summary: JsonObject | None = None
 
     @property
     def is_blocked(self) -> bool:

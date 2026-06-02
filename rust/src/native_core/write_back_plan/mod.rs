@@ -46,9 +46,8 @@ use self::quality_gate::{
     assert_saved_translation_quality_passed, quality_gate_items_for_write_plan,
 };
 use self::repository::{
-    filter_translation_items_by_policy, open_readonly_connection, read_mv_virtual_namebox_rules,
-    read_plugin_source_text_rules, read_source_residual_rules, read_terminology_terms,
-    read_translation_items,
+    open_readonly_connection, read_mv_virtual_namebox_rules, read_plugin_source_text_rules,
+    read_source_residual_rules, read_terminology_terms, read_translation_items_for_allowed_paths,
 };
 use self::terminology::apply_terminology;
 use self::utils::{build_changed_file, externalize_planned_file_contents, is_map_file};
@@ -106,10 +105,8 @@ fn build_write_back_plan_inner(
 
     let load_started = Instant::now();
     let mut plugins_js = read_plugins_origin_file(&layout.plugins_origin_path)?;
-    let translated_items = filter_translation_items_by_policy(
-        read_translation_items(&connection)?,
-        allowed_translation_paths,
-    )?;
+    let translated_items =
+        read_translation_items_for_allowed_paths(&connection, allowed_translation_paths)?;
     let source_residual_rules = read_source_residual_rules(&connection)?;
     let plugin_source_text_rules = read_plugin_source_text_rules(&connection)?;
     let terminology = read_terminology_terms(&connection)?;

@@ -46,6 +46,25 @@ uv run python scripts/benchmark_rebuild_active_runtime.py `
 
 `--rust-threads 4` 只是发布门禁的可重复基线，不是运行上限。真实翻译、验收、写回和当前运行审计流程应按 Skill 要求设置 `ATT_MZ_RUST_THREADS`，优先使用运行主机可用逻辑处理器数量；如果发布门禁也改用更高线程数，必须同步记录新基线并调整阈值。
 
+小任务链路改到索引、导入、重置、质量报告或小批翻译时，还要在持有样本的环境运行 warm index 小任务性能基准。失败时暂停发布：
+
+```powershell
+uv run python scripts/benchmark_small_tasks.py `
+  --sample <样本游戏目录> `
+  --game <游戏标题> `
+  --db <数据库路径> `
+  --runs 1 `
+  --rust-threads 4 `
+  --max-items 3 `
+  --manual-item-count 100 `
+  --max-quality-report-ms 10000 `
+  --max-translate-ms 5000 `
+  --max-import-ms 2000 `
+  --max-reset-ms 1000
+```
+
+该命令会先重建文本范围索引，再依次计时普通 `quality-report`、`translate --max-items`、`import-manual-translations` 和 `reset-translations --input`。脚本默认启动本地假 OpenAI 兼容服务并覆盖临时配置，不消耗真实模型额度；只有显式传入 `--allow-real-llm` 时才使用当前模型配置。结果需要记录每个 task 的 `elapsed_ms`、`return_code`、`report_status`、`report_index_status`、`stage_timings`、`native_thread_count`、`llm_mode=fake`、`threshold_failures=[]`、`command_failures=[]` 和 `command_warnings=[]`。用于该脚本的样本应是可重复的大样本副本，且脚本生成的手动译文能通过当前质量规则；如果样本故意包含质量错误，应先准备专门的合格基线输入，不要把质量错误误判成性能通过。
+
 ## 协作模块
 
 - 开发版 Skill 位于 `skills/att-mz/SKILL.md`，用于源码环境中的翻译流程。
@@ -69,5 +88,5 @@ uv run python scripts/benchmark_rebuild_active_runtime.py `
 - `uv run pytest` 是 Python 业务测试交付红线。
 - 改到 Rust 或 PyO3 相关代码时执行 `cargo fmt --manifest-path rust/Cargo.toml -- --check`、`cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings` 和 `cargo test --manifest-path rust/Cargo.toml`。
 - 改到 Skill、README、提示词或工作区协议时同步检查 `tests/test_skill_protocol.py`。
-- 改到写文件、插件源码扫描、当前运行审计或性能脚本时，至少运行对应 benchmark 单测；发布前还要按上面的命令执行真实大样本性能门禁。
+- 改到写文件、插件源码扫描、当前运行审计、小任务链路或性能脚本时，至少运行对应 benchmark 单测；发布前还要按上面的命令执行真实大样本性能门禁。
 - 不要把私有样本路径写入仓库文件或 release workflow。
