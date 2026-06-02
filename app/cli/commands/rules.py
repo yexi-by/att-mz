@@ -234,7 +234,12 @@ async def run_scan_nonstandard_data_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
     report = await service.scan_nonstandard_data(game_title=game_title)
-    write_report_outputs(report=report, args=args, title="非标准 data 文件文本风险报告")
+    write_report_outputs(
+        report=report,
+        stdout_report=build_sampled_stdout_report(report),
+        args=args,
+        title="非标准 data 文件文本风险报告",
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -247,7 +252,13 @@ async def run_export_nonstandard_data_json_command(args: argparse.Namespace) -> 
         game_title=game_title,
         output_dir=output_dir,
     )
-    write_report_outputs(report=report, args=args, title="非标准 data 文件文本导出报告", write_output_file=False)
+    write_report_outputs(
+        report=report,
+        stdout_report=build_sampled_stdout_report(report),
+        args=args,
+        title="非标准 data 文件文本导出报告",
+        write_output_file=False,
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -260,7 +271,12 @@ async def run_validate_nonstandard_data_rules_command(args: argparse.Namespace) 
         game_title=game_title,
         rules_text=rules_text,
     )
-    write_report_outputs(report=report, args=args, title="非标准 data 文件文本规则校验报告")
+    write_report_outputs(
+        report=report,
+        stdout_report=build_sampled_stdout_report(report),
+        args=args,
+        title="非标准 data 文件文本规则校验报告",
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -273,7 +289,12 @@ async def run_import_nonstandard_data_rules_command(args: argparse.Namespace) ->
         game_title=game_title,
         rules_text=rules_text,
     )
-    write_report_outputs(report=report, args=args, title="非标准 data 文件文本规则导入报告")
+    write_report_outputs(
+        report=report,
+        stdout_report=build_sampled_stdout_report(report),
+        args=args,
+        title="非标准 data 文件文本规则导入报告",
+    )
     return 1 if report.status == "error" else 0
 
 

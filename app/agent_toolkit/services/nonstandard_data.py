@@ -55,6 +55,7 @@ class NonstandardDataAgentMixin:
                 warnings=[],
                 summary={
                     "game": game_title,
+                    "report_detail_mode": "full",
                     "nonstandard_file_count": 0,
                     "candidate_count": 0,
                     "high_risk": False,
@@ -66,6 +67,7 @@ class NonstandardDataAgentMixin:
             warnings=_scan_warnings(scan_candidate_count=len(scan.candidates)),
             summary={
                 "game": game_title,
+                "report_detail_mode": "full",
                 **scan.summary_json(),
             },
             details=scan.details_json(),
@@ -108,6 +110,7 @@ class NonstandardDataAgentMixin:
                 summary={
                     "game": game_title,
                     "output_dir": str(output_dir),
+                    "report_detail_mode": "full",
                     "nonstandard_file_count": 0,
                     "candidate_count": 0,
                     "high_risk": False,
@@ -120,6 +123,7 @@ class NonstandardDataAgentMixin:
             summary={
                 "game": game_title,
                 "output_dir": str(output_dir.resolve()),
+                "report_detail_mode": "full",
                 **scan.summary_json(),
             },
             details={
@@ -162,6 +166,7 @@ class NonstandardDataAgentMixin:
                 warnings=[],
                 summary={
                     "game": game_title,
+                    "report_detail_mode": "full",
                     "file_count": 0,
                     "path_rule_count": 0,
                     "excluded_path_rule_count": 0,
@@ -185,6 +190,7 @@ class NonstandardDataAgentMixin:
             warnings=warnings,
             summary={
                 "game": game_title,
+                "report_detail_mode": "full",
                 "file_count": len(validation.rules),
                 "path_rule_count": validation.rule_count,
                 "excluded_path_rule_count": validation.excluded_rule_count,
@@ -235,6 +241,7 @@ class NonstandardDataAgentMixin:
                 warnings=[],
                 summary={
                     "game": game_title,
+                    "report_detail_mode": "full",
                     "file_count": 0,
                     "path_rule_count": 0,
                     "excluded_path_rule_count": 0,
@@ -258,6 +265,7 @@ class NonstandardDataAgentMixin:
             warnings=warnings,
             summary={
                 "game": game_title,
+                "report_detail_mode": "full",
                 "file_count": len(validation.rules),
                 "path_rule_count": validation.rule_count,
                 "excluded_path_rule_count": validation.excluded_rule_count,

@@ -24,6 +24,7 @@ from app.cli.reports import build_sampled_stdout_report, build_write_back_summar
 from app.cli.commands.rules import (
     build_deleted_translation_backup_details,
     build_deleted_translation_warnings,
+    run_scan_nonstandard_data_command,
 )
 from app.cli.commands.registry import run_list_command
 from app.cli.commands.write_back import run_all_command
@@ -1418,6 +1419,66 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
     assert stdout_matches["omitted_count"] == 5
     assert first_sample_matches["count"] == 3
     assert len(output_matches) == 25
+
+
+@pytest.mark.asyncio
+async def test_scan_nonstandard_data_command_samples_stdout_and_writes_full_output(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """非标准 data 扫描命令 stdout 只展示样本，--output 写完整报告。"""
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def scan_nonstandard_data(self, *, game_title: str) -> AgentReport:
+            assert game_title == "demo"
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={
+                    "game": game_title,
+                    "report_detail_mode": "full",
+                    "candidate_count": 25,
+                },
+                details={
+                    "candidates": [
+                        {"index": index}
+                        for index in range(25)
+                    ],
+                },
+            )
+
+    output_path = tmp_path / "nonstandard-data-report.json"
+    monkeypatch.setattr(
+        "app.cli.commands.rules.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(game="demo", game_path=None, output=str(output_path))
+
+    exit_code = await run_scan_nonstandard_data_command(args)
+
+    captured = capsys.readouterr()
+    stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    output_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(output_path.read_text(encoding="utf-8")))),
+        "output JSON",
+    )
+    stdout_summary = ensure_json_object(stdout_payload["summary"], "stdout summary")
+    output_summary = ensure_json_object(output_payload["summary"], "output summary")
+    stdout_details = ensure_json_object(stdout_payload["details"], "stdout details")
+    output_details = ensure_json_object(output_payload["details"], "output details")
+    stdout_candidates = ensure_json_object(stdout_details["candidates"], "stdout candidates")
+    output_candidates = ensure_json_array(output_details["candidates"], "output candidates")
+
+    assert exit_code == 0
+    assert stdout_summary["report_detail_mode"] == "sampled"
+    assert output_summary["report_detail_mode"] == "full"
+    assert stdout_candidates["count"] == 25
+    assert len(ensure_json_array(stdout_candidates["samples"], "stdout candidates.samples")) == 20
+    assert stdout_candidates["omitted_count"] == 5
+    assert len(output_candidates) == 25
 
 
 def test_placeholder_rule_build_report_can_leave_rule_file_untouched(
