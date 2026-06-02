@@ -31,6 +31,9 @@ class SettingOverrides:
     line_width_count_pattern: str | None = None
     source_text_required_pattern: str | None = None
     source_residual_segment_pattern: str | None = None
+    source_residual_detection_profile: str | None = None
+    english_source_copy_min_words: int | None = None
+    english_source_copy_min_letters: int | None = None
     residual_escape_sequence_pattern: str | None = None
 
     def has_any(self) -> bool:
@@ -59,6 +62,9 @@ class SettingOverrides:
                 self.line_width_count_pattern is not None,
                 self.source_text_required_pattern is not None,
                 self.source_residual_segment_pattern is not None,
+                self.source_residual_detection_profile is not None,
+                self.english_source_copy_min_words is not None,
+                self.english_source_copy_min_letters is not None,
                 self.residual_escape_sequence_pattern is not None,
             )
         )
@@ -155,6 +161,21 @@ def apply_setting_overrides(
         text_rules,
         "source_residual_segment_pattern",
         overrides.source_residual_segment_pattern,
+    )
+    _set_if_present(
+        text_rules,
+        "source_residual_detection_profile",
+        overrides.source_residual_detection_profile,
+    )
+    _set_if_present(
+        text_rules,
+        "english_source_copy_min_words",
+        overrides.english_source_copy_min_words,
+    )
+    _set_if_present(
+        text_rules,
+        "english_source_copy_min_letters",
+        overrides.english_source_copy_min_letters,
     )
     _set_if_present(
         text_rules,

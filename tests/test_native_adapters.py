@@ -10,6 +10,7 @@ import pytest
 
 from app import native_javascript_ast, native_quality, native_write_plan
 from app.config.schemas import TextRulesSetting
+from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
 
@@ -24,6 +25,10 @@ class _FakeWritePlanModule:
         """保存待返回的 JSON 对象。"""
         self._payload = payload
         self.setting_payloads = []
+
+    def native_contract_version(self) -> int:
+        """返回当前测试契约版本。"""
+        return native_write_plan.NATIVE_CONTRACT_VERSION
 
     def build_write_back_plan(
         self,
@@ -72,6 +77,10 @@ class _FakeQualityModule:
         self._quality_payload = quality_payload
         self._protocol_payload = protocol_payload
 
+    def native_contract_version(self) -> int:
+        """返回当前测试契约版本。"""
+        return native_quality.NATIVE_CONTRACT_VERSION
+
     def scan_quality_counts(self, payload_json: str) -> str:
         """返回测试预置的质检计数。"""
         _ = payload_json
@@ -93,6 +102,18 @@ class _FakeQualityModule:
         raise AssertionError("计数路径不应请求完整写入协议明细")
 
 
+class _MissingNativeContractModule:
+    """模拟旧版 Rust 扩展：没有契约版本函数。"""
+
+
+class _OldNativeContractModule:
+    """模拟旧版 Rust 扩展：契约版本过低。"""
+
+    def native_contract_version(self) -> int:
+        """返回旧契约版本。"""
+        return 1
+
+
 def _sample_translation_item() -> TranslationItem:
     """构造原生适配层测试用译文条目。"""
     return TranslationItem(
@@ -102,6 +123,50 @@ def _sample_translation_item() -> TranslationItem:
         source_line_paths=["Items.json/1/name"],
         translation_lines=["草药"],
     )
+
+
+def _import_missing_native_contract(_name: str) -> object:
+    """返回缺少契约版本函数的旧扩展替身。"""
+    return _MissingNativeContractModule()
+
+
+def _import_old_native_contract(_name: str) -> object:
+    """返回契约版本过低的旧扩展替身。"""
+    return _OldNativeContractModule()
+
+
+def test_native_quality_rejects_stale_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """质检入口不能让旧 Rust 扩展静默忽略新文本规则字段。"""
+    monkeypatch.setattr(native_quality, "import_module", _import_missing_native_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+        _ = native_quality.native_thread_count()
+
+    monkeypatch.setattr(native_quality, "import_module", _import_old_native_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+        _ = native_quality.native_thread_count()
+
+
+def test_native_write_plan_rejects_stale_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """写回计划入口不能让旧 Rust 扩展继续执行旧质量 gate。"""
+    monkeypatch.setattr(native_write_plan, "import_module", _import_missing_native_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+        _ = native_write_plan.build_native_write_back_plan(
+            game_path=Path("."),
+            content_root=Path("."),
+            db_path=Path("game.db"),
+            mode="write_back",
+            confirm_font_overwrite=False,
+        )
+
+    monkeypatch.setattr(native_write_plan, "import_module", _import_old_native_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+        _ = native_write_plan.build_native_write_back_plan(
+            game_path=Path("."),
+            content_root=Path("."),
+            db_path=Path("game.db"),
+            mode="write_back",
+            confirm_font_overwrite=False,
+        )
 
 
 def test_native_write_plan_reports_native_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -400,6 +465,18 @@ def test_native_quality_counts_parse_count_only_payload(monkeypatch: pytest.Monk
     assert counts.placeholder_risk_count == 3
     assert counts.overwide_line_count == 4
     assert protocol_count == 5
+
+
+def test_native_text_rules_payload_includes_source_copy_residual_policy() -> None:
+    """英文源文复制残留配置必须进入 Rust 质检载荷。"""
+    text_rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
+
+    payload = native_quality.build_native_text_rules_payload(text_rules)
+
+    assert payload["source_residual_detection_profile"] == "english_source_copy"
+    assert payload["english_source_copy_min_words"] == 4
+    assert payload["english_source_copy_min_letters"] == 12
+    assert payload["allowed_source_residual_terms"] == []
 
 
 def test_native_quality_counts_reject_bad_count_types(monkeypatch: pytest.MonkeyPatch) -> None:

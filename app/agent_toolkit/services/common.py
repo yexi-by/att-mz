@@ -39,6 +39,7 @@ from app.native_quality import (
     collect_native_write_protocol_details,
     native_thread_count,
 )
+from app.regex_contract import RegexContractValidationError
 from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
 from app.plugin_text import (
     PluginTextExtraction,
@@ -1166,9 +1167,16 @@ def _validate_source_residual_rule_records(records: Sequence[SourceResidualRuleR
     """校验数据库中的源文残留例外规则仍可执行。"""
     try:
         _ = SourceResidualRuleSet.from_records(records)
+    except RegexContractValidationError as error:
+        return rule_contract_issues_to_agent_issues(error)
     except ValueError as error:
         return [issue("source_residual_rules_invalid", f"源文残留例外规则已损坏: {error}")]
     return []
+
+
+def rule_contract_issues_to_agent_issues(error: RegexContractValidationError) -> list[AgentIssue]:
+    """把强类型规则契约问题转换为公开 AgentReport 错误。"""
+    return [issue(contract_issue.issue_code, contract_issue.to_message()) for contract_issue in error.issues]
 
 
 def _coverage_hard_stop_errors(report: AgentReport) -> list[AgentIssue]:
@@ -2193,6 +2201,17 @@ def _validate_structured_placeholder_rules_with_context(
                 translation_data_map=translation_data_map,
                 structured_rules=structured_rules,
             )
+    except RegexContractValidationError as error:
+        return AgentReport.from_parts(
+            errors=rule_contract_issues_to_agent_issues(error),
+            warnings=[],
+            summary={
+                "game": game_title,
+                "rule_count": 0,
+                "sample_count": len(sample_text_list),
+            },
+            details={},
+        )
     except Exception as error:
         return AgentReport.from_parts(
             errors=[
@@ -2363,6 +2382,18 @@ def _validate_placeholder_rules_with_context(
             setting_text_rules,
             custom_placeholder_rules=custom_rules,
             structured_placeholder_rules=structured_rules,
+        )
+    except RegexContractValidationError as error:
+        errors.extend(rule_contract_issues_to_agent_issues(error))
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=warnings,
+            summary={
+                "source": source_label,
+                "rule_count": len(custom_rules),
+                "sample_count": len(sample_text_list),
+            },
+            details={},
         )
     except Exception as error:
         errors.append(issue("setting", f"配置加载失败: {type(error).__name__}: {error}"))
@@ -3079,6 +3110,7 @@ __all__: list[str] = [
     '_nonstandard_data_skipped_file_names',
     '_nonstandard_data_skipped_warnings',
     '_validate_source_residual_rule_records',
+    'rule_contract_issues_to_agent_issues',
     '_coverage_hard_stop_errors',
     '_text_scope_blocking_errors',
     '_read_feedback_texts',

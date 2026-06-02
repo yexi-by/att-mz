@@ -13,6 +13,7 @@ from app.rmmz.schema import (
     PluginSourceRuntimeMappingKind,
     PluginSourceRuntimeWriteMapRecord,
 )
+from app.native_contract import NATIVE_CONTRACT_VERSION, ensure_native_contract_version
 from app.rmmz.text_rules import JsonObject
 
 
@@ -21,6 +22,10 @@ type RawJsonObject = dict[str, object]
 
 class NativeWritePlanModule(Protocol):
     """PyO3 扩展暴露的写回计划接口。"""
+
+    def native_contract_version(self) -> int:
+        """返回 Rust/Python JSON 契约版本。"""
+        raise NotImplementedError
 
     def build_write_back_plan(
         self,
@@ -124,6 +129,7 @@ def _load_native_module() -> NativeWritePlanModule:
         native_module = import_module("app._native")
     except ImportError as error:
         raise RuntimeError("Rust 原生扩展不可用，请先执行 uv run maturin develop") from error
+    ensure_native_contract_version(cast(object, native_module))
     return cast(NativeWritePlanModule, cast(object, native_module))
 
 
@@ -381,6 +387,7 @@ def _ensure_array(value: object, context: str) -> list[object]:
 
 
 __all__ = [
+    "NATIVE_CONTRACT_VERSION",
     "NativePlannedFile",
     "NativeWriteBackPlan",
     "NativeWriteBackSummary",

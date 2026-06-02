@@ -44,7 +44,7 @@
 
 ## 源文残留
 
-发现源文残留时先判断是不是漏翻。漏翻就修中文译文行后导入。只有致谢名单、Staff 名、作品名、品牌名、游戏内专有名词等确实无需翻译的片段，才写入 `source-residual-rules.json` 并运行：
+发现源文残留时先判断是不是漏翻。日文残留通常按假名、片假名等字符级风险处理；英文残留报告偏高精度，优先表示译文连续复制了当前原文的大段英文。漏翻就修中文译文行后导入。只有致谢名单、Staff 名、作品名、品牌名、游戏内专有名词等确实无需翻译，且质量报告实际提示需要放行的片段，才写入 `source-residual-rules.json` 并运行：
 
 ```powershell
 .\att-mz.exe validate-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json
@@ -79,12 +79,14 @@
 
 ## 常见校验失败
 
-- `placeholder_rules_invalid`：检查是否把 `{正则表达式: 占位符模板}` 写反、模板是否能生成 `[CUSTOM_NAME_1]`、正则是否能编译。
+- `placeholder_rules_invalid`：检查是否把 `{正则表达式: 占位符模板}` 写反、模板是否能生成 `[CUSTOM_NAME_1]`、正则是否同时兼容 Python `re` 和 Rust `fancy-regex`。
+- `structured_placeholder_rules_invalid`：检查结构化规则 `pattern` 是否同时兼容 Python `re` 和 Rust `fancy-regex`，以及 `translatable_group`、`protected_groups` 是否都来自 Python 风格命名分组 `(?P<name>...)`。
+- `mv_virtual_namebox_rules_invalid`：检查 MV 虚拟名字框 `pattern` 是否同时兼容 Python `re` 和 Rust `fancy-regex`，`speaker_group` 和 `body_group` 是否使用 `(?P<name>...)`。
 - `plugin_rules_invalid`：检查顶层数组、插件下标、插件名、括号 JSONPath、路径是否命中字符串叶子；如果提示 JSON 字符串容器，查看 `plugin-json-string-leaf-candidates.json`；如果提示插件哈希或当前配置不一致，说明工作区导出后插件配置已变化，重新运行 `prepare-agent-workspace`，不要靠猜改路径。
 - `event_command_rules_invalid`：检查指令编码是否是字符串数字、`match` 键是否是参数索引、`paths` 是否从 `$['parameters']` 开始。
-- `note_tag_rules_invalid`：检查顶层 `{data文件名或文件模式: [note标签名, ...]}`，标签是否精确命中，是否误选机器协议。
+- `note_tag_rules_invalid`：检查顶层 `{data文件名或fnmatch文件通配模式: [note标签名, ...]}`，文件模式是否使用 `Map*.json` 这类通配而不是正则，标签是否精确命中，是否误选机器协议。
 - `manual_translation_invalid`：检查 `translation_lines` 是否为字符串数组、行数是否匹配条目类型、是否残留程序占位符或源文残留。
-- `source_residual_rules_invalid`：检查顶层是否是 `{position_rules, structural_rules}`；`position_rules` 的定位键必须来自当前文本内部位置，`allowed_terms` 必须是非空字符串数组且片段出现在当前条目原文或译文中，`reason` 必须非空；`structural_rules` 必须包含可编译的 `pattern`、非空 `allowed_terms`、存在于正则里的 `check_group` 和非空 `reason`。
+- `source_residual_rules_invalid`：检查顶层是否是 `{position_rules, structural_rules}`；`position_rules` 的定位键必须来自当前文本内部位置，`allowed_terms` 必须是非空字符串数组且片段出现在当前条目原文或译文中，`reason` 必须非空；`structural_rules` 必须包含同时兼容 Python `re` 和 Rust `regex` 的 `pattern`、非空 `allowed_terms`、两边都能识别的 `check_group` 和非空 `reason`。
 
 无法把错误信息对应到工作区 JSON，或同一合法文件反复触发无法解释的 CLI 错误时，停止翻译流程并报告工具问题。
 

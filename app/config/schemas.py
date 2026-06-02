@@ -14,6 +14,7 @@ from app.language import (
     DEFAULT_SOURCE_LANGUAGE,
     SUPPORTED_SOURCE_LANGUAGES,
     SourceLanguage,
+    SourceResidualDetectionProfile,
     SourceTextExclusionProfile,
 )
 from app.llm_request_body_extra import LLMRequestBodyExtra, normalize_request_body_extra
@@ -219,6 +220,9 @@ class TextRulesSetting(StrictBaseModel):
     source_residual_segment_pattern: str = Field(default=r"[\u3040-\u309F\u30A0-\u30FF]+")
     allowed_source_residual_terms: list[str] = Field(default_factory=list)
     source_residual_terms_ignore_case: bool = Field(default=False)
+    source_residual_detection_profile: SourceResidualDetectionProfile = Field(default="japanese_strict")
+    english_source_copy_min_words: int = Field(default=4, gt=0)
+    english_source_copy_min_letters: int = Field(default=12, gt=0)
     residual_escape_sequence_pattern: str = Field(default=r"\\[nrt]")
 
 

@@ -20,8 +20,10 @@ from .common import (
     resolve_app_path,
     resolve_replacement_font_path,
     resolve_setting_path,
+    rule_contract_issues_to_agent_issues,
     sys,
 )
+from app.regex_contract import RegexContractValidationError
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
@@ -139,11 +141,15 @@ class DoctorAgentMixin:
                     custom_placeholder_rules_text=None,
                 )
                 structured_rules = await self._resolve_structured_rules(session=session)
-                text_rules = TextRules.from_setting(
-                    setting.text_rules,
-                    custom_placeholder_rules=custom_rules,
-                    structured_placeholder_rules=structured_rules,
-                )
+                try:
+                    text_rules = TextRules.from_setting(
+                        setting.text_rules,
+                        custom_placeholder_rules=custom_rules,
+                        structured_placeholder_rules=structured_rules,
+                    )
+                except RegexContractValidationError as error:
+                    errors.extend(rule_contract_issues_to_agent_issues(error))
+                    return
                 plugin_source_rules = await session.read_plugin_source_text_rules()
                 _ = await self._load_active_runtime_game_data(
                     session,
@@ -169,11 +175,15 @@ class DoctorAgentMixin:
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
                 structured_placeholder_rules = await session.read_structured_placeholder_rules()
-                scope = await TextScopeService().build(
-                    session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
-                )
+                try:
+                    scope = await TextScopeService().build(
+                        session=session,
+                        game_data=game_data,
+                        text_rules=text_rules,
+                    )
+                except RegexContractValidationError as error:
+                    errors.extend(rule_contract_issues_to_agent_issues(error))
+                    return
                 placeholder_decisions = await collect_placeholder_candidate_review_decisions(
                     session=session,
                     scope=scope,

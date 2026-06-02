@@ -14,6 +14,8 @@
 
 文件型规则一律用 `--input <文件>`，不要用 `--rules "$(cat ...)"`，不要把大 JSON 塞进命令行。
 
+用户可写正则会在 validate/import、工作区验收和读取当前游戏已保存规则时提前预检。普通占位符、结构化占位符和 MV 虚拟名字框规则必须同时兼容 Python `re` 与 Rust `fancy-regex`；源文残留结构规则和会进入 Rust 的 `[text_rules]` 正则必须同时兼容 Python `re` 与 Rust `regex`。命名分组统一使用 `(?P<name>...)`。Note 标签文件键是 `fnmatch` 通配模式，不是正则。
+
 ## 配置与参数选择
 
 - 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传当前命令必需的定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`，以及已满足前置条件的确认参数。
@@ -139,7 +141,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `validate-source-residual-rules --game <游戏标题> --input <规则文件>` | 校验源文保留例外 | `status` 为 `ok` | 修例外规则，不关闭全局检测 |
 | `import-source-residual-rules --game <游戏标题> --input <规则文件>` | 保存源文保留例外 | `status` 为 `ok` | 回到 validate 修规则 |
 
-日文和英文游戏都使用通用源文残留命令。源文保留例外只用于确实不应翻译的片段，不能掩盖整句漏翻。
+日文和英文游戏都使用通用源文残留命令。英文残留检查偏高精度，主要报告译文连续复制当前原文的大段英文；源文保留例外只用于确实不应翻译且被报告的片段，不能掩盖整句漏翻。
 
 ## 写进游戏文件与反馈定位
 

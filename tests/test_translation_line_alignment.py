@@ -6,6 +6,7 @@ import json
 import pytest
 
 from app.config.schemas import TextRulesSetting
+from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.rmmz.control_codes import (
     CustomPlaceholderRule,
     LITERAL_LINE_BREAK_PLACEHOLDER,
@@ -110,6 +111,75 @@ async def _verify_single_item(
     right_items = None if right_queue.empty() else await right_queue.get()
     error_items = None if error_queue.empty() else await error_queue.get()
     return right_items, error_items
+
+
+async def _verify_single_item_raw_response(
+    *,
+    item: TranslationItem,
+    ai_result: str,
+    text_rules: TextRules,
+    prompt_id: str = "1",
+) -> tuple[list[TranslationItem] | None, list[TranslationErrorItem] | None]:
+    """执行单条原始模型响应校验并返回成功或失败条目。"""
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+
+    await verify_translation_batch(
+        ai_result=ai_result,
+        items=[item],
+        prompt_ids_by_location_path={item.location_path: prompt_id},
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
+    right_items = None if right_queue.empty() else await right_queue.get()
+    error_items = None if error_queue.empty() else await error_queue.get()
+    return right_items, error_items
+
+
+@pytest.mark.asyncio
+async def test_verify_translation_allows_short_english_fragments_for_english_game() -> None:
+    """英文游戏译文保留短拉丁片段时不应被当作源文残留。"""
+    text_rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        original_lines=["Press the red switch before opening the old gate."],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"],
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"]
+
+
+@pytest.mark.asyncio
+async def test_verify_translation_rejects_copied_english_source_phrase() -> None:
+    """英文游戏译文连续复制原文大段英文时仍按源文残留失败。"""
+    text_rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        original_lines=["Press the red switch before opening the old gate."],
+    )
+
+    right_items, error_items = await _verify_single_item(
+        item=item,
+        translation_lines=["不要 Press the red switch before opening 继续。"],
+        text_rules=text_rules,
+    )
+
+    assert right_items is None
+    assert error_items is not None
+    assert error_items[0].error_type == "源文残留"
+    assert "Press the red switch before opening" in "\n".join(error_items[0].error_detail)
 
 
 @pytest.mark.asyncio
@@ -611,17 +681,66 @@ async def test_translation_response_duplicate_valid_id_blocks_batch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_translation_response_rejects_repairable_invalid_json() -> None:
-    """可被第三方修复的非严格 JSON 不能作为正常译文保存。"""
+async def test_translation_response_repairs_markdown_code_block() -> None:
+    """模型用 Markdown 代码块包裹 JSON 数组时仍能解析译文。"""
     text_rules = _build_text_rules(width_limit=40)
     item = TranslationItem(
         location_path="Map001.json/1/0/0",
         item_type="long_text",
         original_lines=["こんにちは"],
     )
-    item.build_placeholders(text_rules)
-    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
-    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+    ai_result = (
+        "```json\n"
+        + _build_model_response(item=item, translation_lines=["你好"])
+        + "\n```"
+    )
+
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
+        ai_result=ai_result,
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_translation_response_repairs_explanatory_wrapper_text() -> None:
+    """模型在 JSON 数组前后追加说明文字时仍能解析译文。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["こんにちは"],
+    )
+    ai_result = (
+        "以下是翻译结果：\n"
+        + _build_model_response(item=item, translation_lines=["你好"])
+        + "\n翻译完成。"
+    )
+
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
+        ai_result=ai_result,
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_translation_response_repairs_trailing_comma_json() -> None:
+    """模型返回尾逗号等轻微 JSON 错误时可修复后解析。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["こんにちは"],
+    )
     ai_result = """[
   {
     "id": "1",
@@ -629,17 +748,122 @@ async def test_translation_response_rejects_repairable_invalid_json() -> None:
   }
 ]"""
 
-    await verify_translation_batch(
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
         ai_result=ai_result,
-        items=[item],
-        prompt_ids_by_location_path={item.location_path: "1"},
-        right_queue=right_queue,
-        error_queue=error_queue,
         text_rules=text_rules,
     )
 
-    assert right_queue.empty()
-    error_items = await error_queue.get()
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_translation_response_repairs_missing_comma_json() -> None:
+    """模型漏掉对象字段间逗号时可修复后解析。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["こんにちは"],
+    )
+    ai_result = """[
+  {
+    "id": "1"
+    "translation_lines": ["你好"]
+  }
+]"""
+
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
+        ai_result=ai_result,
+        text_rules=text_rules,
+    )
+
+    assert error_items is None
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_repaired_translation_response_missing_id_still_records_missing_key() -> None:
+    """修复只处理 JSON 格式，未知 ID 仍按漏翻处理。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["こんにちは"],
+    )
+    ai_result = """```json
+[
+  {
+    "id": "999",
+    "translation_lines": ["你好",],
+  }
+]
+```"""
+
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
+        ai_result=ai_result,
+        text_rules=text_rules,
+    )
+
+    assert right_items is None
+    assert error_items is not None
+    assert error_items[0].error_type == "AI漏翻"
+    assert error_items[0].model_response == ai_result
+
+
+@pytest.mark.asyncio
+async def test_repaired_translation_response_placeholder_mismatch_still_fails() -> None:
+    """修复只处理 JSON 格式，控制符被翻坏仍按质量错误处理。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        original_lines=[r"\C[4]こんにちは"],
+    )
+    ai_result = """以下是翻译结果：
+[
+  {
+    "id": "1",
+    "translation_lines": ["你好",],
+  }
+]
+"""
+
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
+        ai_result=ai_result,
+        text_rules=text_rules,
+    )
+
+    assert right_items is None
+    assert error_items is not None
+    assert error_items[0].error_type == "控制符不匹配"
+    assert error_items[0].model_response == ai_result
+
+
+@pytest.mark.asyncio
+async def test_unrepairable_translation_response_still_records_parse_failure() -> None:
+    """完全不可修复的模型响应仍按 JSON 解析失败处理。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        original_lines=["こんにちは"],
+    )
+    ai_result = "翻译结果不是 JSON，也没有任何数组。"
+
+    right_items, error_items = await _verify_single_item_raw_response(
+        item=item,
+        ai_result=ai_result,
+        text_rules=text_rules,
+    )
+
+    assert right_items is None
     assert error_items is not None
     assert error_items[0].error_type == "模型返回不可解析"
     assert error_items[0].model_response == ai_result

@@ -7,6 +7,7 @@
 
 import asyncio
 
+from json_repair import repair_json
 from pydantic import BaseModel, RootModel
 
 from app.rmmz.schema import ErrorType, TranslationErrorItem, TranslationItem
@@ -57,7 +58,7 @@ async def verify_translation_batch(
     error_items: list[TranslationErrorItem] = []
 
     try:
-        response_items = TranslationResponse.model_validate_json(ai_result).root
+        response_items = _parse_translation_response_items(ai_result)
         prompt_id_by_location_path = _validate_prompt_id_map(
             items=items,
             prompt_ids_by_location_path=prompt_ids_by_location_path,
@@ -229,6 +230,21 @@ async def verify_translation_batch(
         await right_queue.put(right_items)
     if error_items:
         await error_queue.put(error_items)
+
+
+def _parse_translation_response_items(ai_result: str) -> list[TranslationResponseItem]:
+    """解析模型响应；严格 JSON 失败时只修复 JSON 语法和外层包裹。"""
+    try:
+        return TranslationResponse.model_validate_json(ai_result).root
+    except Exception as strict_error:
+        try:
+            repaired_json = repair_json(ai_result, ensure_ascii=False)
+            return TranslationResponse.model_validate_json(repaired_json).root
+        except Exception as repair_error:
+            raise ValueError(
+                "严格 JSON 解析失败，修复后仍无法解析为 JSON 数组；"
+                + f"严格解析错误: {strict_error}; 修复后解析错误: {repair_error}"
+            ) from repair_error
 
 
 def _build_translation_line_map(

@@ -10,8 +10,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import cache
 
 from app.config.schemas import TextRulesSetting
+from app.regex_contract import validate_text_rules_regex_contract
 from app.rmmz.control_codes import (
     ALL_PLACEHOLDER_PATTERN,
     ControlSequenceSpan,
@@ -56,6 +58,11 @@ class TextRules:
         structured_placeholder_rules: tuple[StructuredPlaceholderRule, ...] = (),
     ) -> "TextRules":
         """根据配置构建并预编译全部正则规则。"""
+        validate_text_rules_regex_contract(
+            setting=setting,
+            custom_placeholder_rules=custom_placeholder_rules,
+            structured_placeholder_rules=structured_placeholder_rules,
+        )
         return cls(
             setting=setting,
             custom_placeholder_rules=custom_placeholder_rules,
@@ -292,6 +299,7 @@ class TextRules:
         translation_lines: list[str],
         *,
         allowed_terms: Sequence[str] = (),
+        original_lines: Sequence[str] | None = None,
     ) -> None:
         """检查译文中是否残留当前源语言文本。"""
         allowed_chars = set(self.setting.source_residual_allowed_chars)
@@ -300,8 +308,16 @@ class TextRules:
             translation_lines,
             [*allowed_terms, *self.setting.allowed_source_residual_terms],
         )
-        for index, line in enumerate(translation_lines, start=1):
-            line = masked_lines[index - 1]
+        if self.setting.source_residual_detection_profile == "english_source_copy":
+            if original_lines is None:
+                self._check_english_residual_without_original(translation_lines=masked_lines)
+                return
+            self._check_english_source_copy_residual(
+                original_lines=original_lines,
+                translation_lines=masked_lines,
+            )
+            return
+        for index, line in enumerate(masked_lines, start=1):
             cleaned_line = self._strip_non_content_for_residual(line)
             segments = [match.group(0) for match in self.source_residual_segment_pattern.finditer(cleaned_line)]
             if not segments:
@@ -323,6 +339,129 @@ class TextRules:
                 raise ValueError(
                     f"发现{self.setting.source_residual_label}残留(第 {index} 行): {real_residual_segments}"
                 )
+
+    def _check_english_source_copy_residual(
+        self,
+        *,
+        original_lines: Sequence[str],
+        translation_lines: Sequence[str],
+    ) -> None:
+        """检查英文译文是否连续复制了当前条目的大段原文。"""
+        original_text = "\n".join(
+            self._strip_non_content_for_residual(line)
+            for line in original_lines
+        )
+        original_tokens = self._collect_english_residual_tokens(original_text)
+        if not original_tokens:
+            return
+        original_token_values = [token.normalized for token in original_tokens]
+        for index, line in enumerate(translation_lines, start=1):
+            cleaned_line = self._strip_non_content_for_residual(line)
+            translation_tokens = self._collect_english_residual_tokens(cleaned_line)
+            copied_segments = self._find_english_source_copy_segments(
+                original_tokens=original_token_values,
+                translation_tokens=translation_tokens,
+            )
+            if copied_segments:
+                raise ValueError(
+                    f"发现{self.setting.source_residual_label}残留(第 {index} 行): {copied_segments}"
+                )
+
+    def _check_english_residual_without_original(
+        self,
+        *,
+        translation_lines: Sequence[str],
+    ) -> None:
+        """缺少当前原文时，按连续英文长段审计当前运行文本。"""
+        for index, line in enumerate(translation_lines, start=1):
+            cleaned_line = self._strip_non_content_for_residual(line)
+            translation_tokens = self._collect_english_residual_tokens(cleaned_line)
+            residual_segments = self._find_english_long_residual_segments(
+                cleaned_line=cleaned_line,
+                translation_tokens=translation_tokens,
+            )
+            if residual_segments:
+                raise ValueError(
+                    f"发现{self.setting.source_residual_label}残留(第 {index} 行): {residual_segments}"
+                )
+
+    def _collect_english_residual_tokens(self, text: str) -> list["_ResidualToken"]:
+        """按残留正则收集拉丁 token，不对 token 语义作任何词表判断。"""
+        tokens: list[_ResidualToken] = []
+        for match in self.source_residual_segment_pattern.finditer(text):
+            value = match.group(0)
+            if not _has_ascii_letter(value):
+                continue
+            normalized = value.casefold() if self.setting.source_residual_terms_ignore_case else value
+            tokens.append(
+                _ResidualToken(
+                    text=value,
+                    normalized=normalized,
+                    start_index=match.start(),
+                    end_index=match.end(),
+                )
+            )
+        return tokens
+
+    def _find_english_long_residual_segments(
+        self,
+        *,
+        cleaned_line: str,
+        translation_tokens: list["_ResidualToken"],
+    ) -> list[str]:
+        """在没有原文对照时，找出连续英文长段。"""
+        residual_segments: list[str] = []
+        current_run: list[_ResidualToken] = []
+        previous_token: _ResidualToken | None = None
+        for token in translation_tokens:
+            if (
+                previous_token is not None
+                and _english_token_gap_breaks_run(
+                    cleaned_line[previous_token.end_index:token.start_index]
+                )
+            ):
+                _append_english_run_if_residual(
+                    residual_segments=residual_segments,
+                    tokens=current_run,
+                    min_words=self.setting.english_source_copy_min_words,
+                    min_letters=self.setting.english_source_copy_min_letters,
+                )
+                current_run = []
+            current_run.append(token)
+            previous_token = token
+        _append_english_run_if_residual(
+            residual_segments=residual_segments,
+            tokens=current_run,
+            min_words=self.setting.english_source_copy_min_words,
+            min_letters=self.setting.english_source_copy_min_letters,
+        )
+        return residual_segments
+
+    def _find_english_source_copy_segments(
+        self,
+        *,
+        original_tokens: list[str],
+        translation_tokens: list["_ResidualToken"],
+    ) -> list[str]:
+        """找出译文里连续复制当前原文的英文 token 片段。"""
+        copied_segments: list[str] = []
+        start = 0
+        while start < len(translation_tokens):
+            best_end = 0
+            for end in range(start + self.setting.english_source_copy_min_words, len(translation_tokens) + 1):
+                candidate_tokens = translation_tokens[start:end]
+                letter_count = sum(_ascii_letter_count(token.text) for token in candidate_tokens)
+                if letter_count < self.setting.english_source_copy_min_letters:
+                    continue
+                candidate_values = [token.normalized for token in candidate_tokens]
+                if _contains_token_sequence(original_tokens, candidate_values):
+                    best_end = end
+            if best_end:
+                copied_segments.append(" ".join(token.text for token in translation_tokens[start:best_end]))
+                start = best_end
+                continue
+            start += 1
+        return copied_segments
 
     def _strip_non_content_for_residual(self, text: str) -> str:
         """在残留校验前剥离控制符和占位符噪音。"""
@@ -427,12 +566,10 @@ class TextRules:
         return False
 
 
-_DEFAULT_TEXT_RULES = TextRules.from_setting(TextRulesSetting())
-
-
+@cache
 def get_default_text_rules() -> TextRules:
     """返回配置缺省值构建的文本规则。"""
-    return _DEFAULT_TEXT_RULES
+    return TextRules.from_setting(TextRulesSetting())
 
 
 def _filter_standard_prefix_conflicts(
@@ -488,6 +625,16 @@ class _ProtectedRange:
 
 
 @dataclass(frozen=True, slots=True)
+class _ResidualToken:
+    """源文残留检测中的拉丁 token。"""
+
+    text: str
+    normalized: str
+    start_index: int
+    end_index: int
+
+
+@dataclass(frozen=True, slots=True)
 class _StructuredPlaceholderScanResult:
     """结构化占位符扫描结果。"""
 
@@ -514,6 +661,54 @@ def _match_group_range(
 def _ranges_overlap(left: _ProtectedRange, right: _ProtectedRange) -> bool:
     """判断两个半开范围是否重叠。"""
     return left.start < right.end and left.end > right.start
+
+
+def _has_ascii_letter(text: str) -> bool:
+    """判断文本中是否包含 ASCII 拉丁字母。"""
+    return any(char.isascii() and char.isalpha() for char in text)
+
+
+def _ascii_letter_count(text: str) -> int:
+    """统计 ASCII 拉丁字母数量。"""
+    return sum(1 for char in text if char.isascii() and char.isalpha())
+
+
+def _english_token_gap_breaks_run(gap: str) -> bool:
+    """判断两个英文 token 之间是否已被非英文正文打断。"""
+    for char in gap:
+        if char.isspace():
+            continue
+        if char.isascii() and not char.isalnum():
+            continue
+        return True
+    return False
+
+
+def _append_english_run_if_residual(
+    *,
+    residual_segments: list[str],
+    tokens: list[_ResidualToken],
+    min_words: int,
+    min_letters: int,
+) -> None:
+    """把达到阈值的连续英文 token 片段加入残留列表。"""
+    if len(tokens) < min_words:
+        return
+    letter_count = sum(_ascii_letter_count(token.text) for token in tokens)
+    if letter_count < min_letters:
+        return
+    residual_segments.append(" ".join(token.text for token in tokens))
+
+
+def _contains_token_sequence(source_tokens: list[str], candidate_tokens: list[str]) -> bool:
+    """判断候选 token 序列是否连续出现在源 token 序列中。"""
+    if not candidate_tokens or len(candidate_tokens) > len(source_tokens):
+        return False
+    candidate_length = len(candidate_tokens)
+    for start in range(0, len(source_tokens) - candidate_length + 1):
+        if source_tokens[start:start + candidate_length] == candidate_tokens:
+            return True
+    return False
 
 
 __all__: list[str] = [

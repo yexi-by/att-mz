@@ -12,6 +12,7 @@ mod note_sources;
 mod placeholders;
 mod pool;
 mod quality;
+mod regex_contract;
 mod rules;
 mod write_back_plan;
 mod write_protocol;
@@ -73,6 +74,11 @@ pub fn build_write_back_plan_impl(
     )
 }
 
+/// 预检用户可写正则是否满足跨核心契约。
+pub fn validate_regex_contract_impl(payload_json: &str) -> Result<String, String> {
+    regex_contract::validate_regex_contract_impl(payload_json)
+}
+
 /// 读取原生核心配置的线程数覆盖值。
 pub fn read_configured_thread_count() -> Result<Option<usize>, String> {
     pool::read_configured_thread_count()
@@ -92,6 +98,9 @@ mod tests {
             "source_residual_label": "日文",
             "allowed_source_residual_terms": [],
             "source_residual_terms_ignore_case": false,
+            "source_residual_detection_profile": "japanese_strict",
+            "english_source_copy_min_words": 4,
+            "english_source_copy_min_letters": 12,
             "line_width_count_pattern": r"[^\s]",
             "residual_escape_sequence_pattern": r"\\[A-Za-z0-9_]+\[[^\]]*\]",
             "long_text_line_width_limit": 999
@@ -105,8 +114,11 @@ mod tests {
             "source_residual_allowed_tail_chars": [],
             "source_residual_segment_pattern": r"[A-Za-z][A-Za-z0-9'’_-]*",
             "source_residual_label": "英文",
-            "allowed_source_residual_terms": ["HP", "MP", "TP", "OK"],
+            "allowed_source_residual_terms": [],
             "source_residual_terms_ignore_case": true,
+            "source_residual_detection_profile": "english_source_copy",
+            "english_source_copy_min_words": 4,
+            "english_source_copy_min_letters": 12,
             "line_width_count_pattern": r"[^\s]",
             "residual_escape_sequence_pattern": r"\\[A-Za-z0-9_]+\[[^\]]*\]",
             "long_text_line_width_limit": 999
@@ -114,15 +126,15 @@ mod tests {
     }
 
     #[test]
-    fn quality_scan_reports_source_residual_as_segments() {
+    fn quality_scan_reports_english_source_copy_residual_as_segments() {
         let payload = json!({
             "items": [
                 {
                     "location_path": "Map001.json/1/0/0",
                     "item_type": "long_text",
                     "role": null,
-                    "original_lines": ["Hello Alice"],
-                    "translation_lines": ["你好 Alice"]
+                    "original_lines": ["Press the red switch before opening the old gate."],
+                    "translation_lines": ["不要 Press the red switch before opening 继续。"]
                 }
             ],
             "text_rules": english_text_rules(),
@@ -133,8 +145,28 @@ mod tests {
         let reason = value["source_residual_items"][0]["reason"]
             .as_str()
             .expect("残留明细应包含原因");
-        assert!(reason.contains("Alice"));
+        assert!(reason.contains("Press the red switch before opening"));
         assert!(!reason.contains("'A', 'l'"));
+    }
+
+    #[test]
+    fn quality_scan_ignores_short_english_fragments_without_source_copy() {
+        let payload = json!({
+            "items": [
+                {
+                    "location_path": "Map001.json/1/0/0",
+                    "item_type": "long_text",
+                    "role": null,
+                    "original_lines": ["Press the red switch before opening the old gate."],
+                    "translation_lines": ["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"]
+                }
+            ],
+            "text_rules": english_text_rules(),
+            "source_residual_rules": []
+        });
+        let output = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        assert_eq!(value["source_residual_items"], json!([]));
     }
 
     #[test]
@@ -145,8 +177,8 @@ mod tests {
                     "location_path": "Map001.json/1/0/0",
                     "item_type": "long_text",
                     "role": null,
-                    "original_lines": ["Hello Alice"],
-                    "translation_lines": ["你好 Alice"]
+                    "original_lines": ["Press the red switch before opening the old gate."],
+                    "translation_lines": ["不要 Press the red switch before opening 继续。"]
                 }
             ],
             "text_rules": english_text_rules(),

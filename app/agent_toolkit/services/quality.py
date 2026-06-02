@@ -43,8 +43,10 @@ from .common import (
     json,
     load_setting,
     native_thread_count,
+    rule_contract_issues_to_agent_issues,
 )
 from app.application.flow_gate import collect_placeholder_candidate_review_warnings, collect_workflow_gate_errors
+from app.regex_contract import RegexContractValidationError
 from app.nonstandard_data import (
     ActiveRuntimeNonstandardDataAudit,
     audit_active_runtime_nonstandard_data,
@@ -70,6 +72,67 @@ from app.rmmz.schema import (
     PluginSourceTextRuleRecord,
     TranslationItem,
 )
+
+
+def _empty_quality_report(
+    *,
+    errors: list[AgentIssue],
+    source_language: str,
+    target_language: str,
+    include_write_probe: bool,
+    plugin_rule_count: int = 0,
+    stale_plugin_rule_count: int = 0,
+    event_command_rule_count: int = 0,
+    note_tag_rule_count: int = 0,
+    nonstandard_data_skipped_file_count: int = 0,
+    source_residual_rule_count: int = 0,
+    latest_run_id: str = "",
+    latest_run_status: str = "",
+) -> AgentReport:
+    """构造质量报告规则契约失败时的稳定空报告。"""
+    return AgentReport.from_parts(
+        errors=errors,
+        warnings=[],
+        summary={
+            "extractable_count": 0,
+            "translated_count": 0,
+            "pending_count": 0,
+            "stale_translation_count": 0,
+            "unwritable_count": 0,
+            "plugin_rule_count": plugin_rule_count,
+            "stale_plugin_rule_count": stale_plugin_rule_count,
+            "event_command_rule_count": event_command_rule_count,
+            "note_tag_rule_count": note_tag_rule_count,
+            "nonstandard_data_skipped_file_count": nonstandard_data_skipped_file_count,
+            "source_language": source_language,
+            "target_language": target_language,
+            "source_residual_rule_count": source_residual_rule_count,
+            "stale_source_residual_rule_count": 0,
+            "terminology_total_count": 0,
+            "terminology_filled_count": 0,
+            "terminology_empty_count": 0,
+            "latest_run_id": latest_run_id,
+            "latest_run_status": latest_run_status,
+            "llm_failure_count": 0,
+            "quality_error_count": 0,
+            "run_quality_error_count": 0,
+            "model_response_error_count": 0,
+            "source_residual_count": 0,
+            "text_structure_count": 0,
+            "placeholder_risk_count": 0,
+            "overwide_line_count": 0,
+            "write_back_protocol_count": 0,
+            "writable_translation_count": 0,
+            "write_back_probe_enabled": include_write_probe,
+        },
+        details={
+            "source_residual_items": [],
+            "text_structure_items": [],
+            "placeholder_risk_items": [],
+            "overwide_line_items": [],
+            "write_back_protocol_items": [],
+        },
+    )
 
 
 def _active_runtime_audit_errors(audit: ActiveRuntimePluginSourceAudit) -> list[AgentIssue]:
@@ -615,11 +678,21 @@ class QualityAgentMixin:
                 custom_placeholder_rules_text=None,
             )
             structured_rules = await self._resolve_structured_rules(session=session)
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
+            try:
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+            except RegexContractValidationError as error:
+                set_progress(1, 1)
+                set_status("文本规则检查没通过，质量报告已停止")
+                return _empty_quality_report(
+                    errors=rule_contract_issues_to_agent_issues(error),
+                    source_language=session.source_language,
+                    target_language=session.target_language,
+                    include_write_probe=include_write_probe,
+                )
             game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
             advance_progress(1)
@@ -824,11 +897,21 @@ class QualityAgentMixin:
                 custom_placeholder_rules_text=None,
             )
             structured_rules = await self._resolve_structured_rules(session=session)
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
+            try:
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+            except RegexContractValidationError as error:
+                set_progress(1, 1)
+                set_status("文本规则检查没通过，质量报告已停止")
+                return _empty_quality_report(
+                    errors=rule_contract_issues_to_agent_issues(error),
+                    source_language=session.source_language,
+                    target_language=session.target_language,
+                    include_write_probe=include_write_probe,
+                )
             game_data = await self._load_translation_source_game_data(session)
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
                 session=session,
@@ -860,13 +943,31 @@ class QualityAgentMixin:
                     plugin_source_unreviewed_details.append(candidate.to_json_object())
             latest_run = await session.read_latest_translation_run()
             translated_items = await session.read_translated_items()
-            scope = await TextScopeService().build(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-                translated_items=translated_items,
-                include_write_probe=include_write_probe,
-            )
+            try:
+                scope = await TextScopeService().build(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                    translated_items=translated_items,
+                    include_write_probe=include_write_probe,
+                )
+            except RegexContractValidationError as error:
+                set_progress(1, 1)
+                set_status("文本范围构建失败，质量报告已停止")
+                return _empty_quality_report(
+                    errors=rule_contract_issues_to_agent_issues(error),
+                    source_language=session.source_language,
+                    target_language=session.target_language,
+                    include_write_probe=include_write_probe,
+                    plugin_rule_count=sum(len(rule.path_templates) for rule in plugin_rules),
+                    stale_plugin_rule_count=stale_plugin_rule_count,
+                    event_command_rule_count=sum(len(rule.path_templates) for rule in event_rules),
+                    note_tag_rule_count=sum(len(rule.tag_names) for rule in note_tag_rules),
+                    nonstandard_data_skipped_file_count=len(_nonstandard_data_skipped_file_names(nonstandard_data_records)),
+                    source_residual_rule_count=len(source_residual_rules),
+                    latest_run_id=latest_run.run_id if latest_run is not None else "",
+                    latest_run_status=latest_run.status if latest_run is not None else "",
+                )
             workflow_gate_errors = await collect_workflow_gate_errors(
                 session=session,
                 game_data=game_data,

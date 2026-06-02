@@ -682,6 +682,21 @@ def add_setting_override_arguments(
     _ = group.add_argument("--line-width-count-pattern", help="长文本宽度计数字符正则")
     _ = group.add_argument("--source-text-required-pattern", help="进入正文翻译的源语言字符正则")
     _ = group.add_argument("--source-residual-segment-pattern", help="源文残留片段识别正则")
+    _ = group.add_argument(
+        "--source-residual-detection-profile",
+        choices=["japanese_strict", "english_source_copy"],
+        help="源文残留检测模式",
+    )
+    _ = group.add_argument(
+        "--english-source-copy-min-words",
+        type=int,
+        help="英文源文复制残留最少连续词数",
+    )
+    _ = group.add_argument(
+        "--english-source-copy-min-letters",
+        type=int,
+        help="英文源文复制残留最少拉丁字母数",
+    )
     _ = group.add_argument("--residual-escape-sequence-pattern", help="残留检查前剥离的转义序列正则")
 
 

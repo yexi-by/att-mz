@@ -44,7 +44,7 @@
 ## Note 标签规则
 
 - 输入：`note-tag-candidates.json` 和 `note-tag-rules.json` 草稿。
-- 输出：`note-tag-rules.json`，格式为 `{data文件名或文件模式: [note标签名, ...]}`。
+- 输出：`note-tag-rules.json`，格式为 `{data文件名或fnmatch文件通配模式: [note标签名, ...]}`。文件键可用 `Map*.json` 通配，不是正则。
 - 只选择 `note` 字段里由插件消费且玩家可见的文本，例如物品说明、技能说明、任务说明、地图事件名牌或提示语。
 - 必须根据 `sample_values` 判断，不能把某个标签名当成所有游戏通用答案。
 - 必须交叉验证：用标签名、`sample_values`、data 文件分布、同标签多样本和已回填草稿互相核对；样例不足以确认玩家可见性时排除并报告风险。

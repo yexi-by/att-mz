@@ -7,6 +7,13 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+const NATIVE_CONTRACT_VERSION: usize = 2;
+
+#[pyfunction]
+fn native_contract_version() -> usize {
+    NATIVE_CONTRACT_VERSION
+}
+
 #[pyfunction]
 fn native_thread_count() -> PyResult<usize> {
     native_core::read_configured_thread_count()
@@ -43,6 +50,14 @@ fn scan_write_protocol_count(py: Python<'_>, payload_json: String) -> PyResult<S
     let result = py.detach(move || {
         native_core::scan_write_protocol_count_impl(&payload_json)
             .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn validate_regex_contract(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::validate_regex_contract_impl(&payload_json).map_err(|error| error.to_string())
     });
     result.map_err(PyValueError::new_err)
 }
@@ -105,11 +120,13 @@ fn build_write_back_plan(
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(native_contract_version, m)?)?;
     m.add_function(wrap_pyfunction!(native_thread_count, m)?)?;
     m.add_function(wrap_pyfunction!(scan_quality, m)?)?;
     m.add_function(wrap_pyfunction!(scan_quality_counts, m)?)?;
     m.add_function(wrap_pyfunction!(scan_write_protocol, m)?)?;
     m.add_function(wrap_pyfunction!(scan_write_protocol_count, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_regex_contract, m)?)?;
     m.add_function(wrap_pyfunction!(collect_note_tag_sources, m)?)?;
     m.add_function(wrap_pyfunction!(scan_font_replacements, m)?)?;
     m.add_function(wrap_pyfunction!(parse_javascript_string_spans, m)?)?;

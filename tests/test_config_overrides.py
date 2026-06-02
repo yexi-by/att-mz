@@ -88,6 +88,9 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
         line_width_count_pattern="[a-z]",
         source_text_required_pattern="[ぁ-ん一-龠]+",
         source_residual_segment_pattern="[ぁ-ん]+",
+        source_residual_detection_profile="english_source_copy",
+        english_source_copy_min_words=2,
+        english_source_copy_min_letters=6,
         residual_escape_sequence_pattern="\\\\[abc]",
         write_back_replacement_font_path="fonts/Override.ttf",
     )
@@ -119,8 +122,39 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
     assert setting.text_rules.line_width_count_pattern == "[a-z]"
     assert setting.text_rules.source_text_required_pattern == "[ぁ-ん一-龠]+"
     assert setting.text_rules.source_residual_segment_pattern == "[ぁ-ん]+"
+    assert setting.text_rules.source_residual_detection_profile == "english_source_copy"
+    assert setting.text_rules.english_source_copy_min_words == 2
+    assert setting.text_rules.english_source_copy_min_letters == 6
     assert setting.text_rules.residual_escape_sequence_pattern == "\\\\[abc]"
     assert setting.write_back.replacement_font_path == "fonts/Override.ttf"
+
+
+def test_load_setting_rejects_rust_incompatible_text_rule_regex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """会进入 Rust 原生质检的配置正则必须在加载配置时提前失败。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+
+    with pytest.raises(ValueError, match="text_rules.line_width_count_pattern.*Rust regex"):
+        _ = load_setting(
+            setting_path=ROOT / "setting.example.toml",
+            overrides=SettingOverrides(line_width_count_pattern=r"(?<=a)b"),
+        )
+
+
+def test_load_setting_rejects_python_invalid_text_rule_regex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """配置正则的 Python re 语法也必须在加载配置时提前失败。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+
+    with pytest.raises(ValueError, match="text_rules.line_width_count_pattern.*Python re 无法编译"):
+        _ = load_setting(
+            setting_path=ROOT / "setting.example.toml",
+            overrides=SettingOverrides(line_width_count_pattern="["),
+        )
 
 
 def test_english_language_profile_selects_public_prompt(monkeypatch: pytest.MonkeyPatch) -> None:

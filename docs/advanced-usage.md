@@ -289,7 +289,7 @@ uv run python main.py validate-source-residual-rules --game <游戏标题> --inp
 uv run python main.py import-source-residual-rules --game <游戏标题> --input <工作区>/source-residual-rules.json
 ```
 
-当前源码模块名是 `source_residual`，负责源文残留例外规则解析、校验和检查协作。不要把源文残留检查理解成只服务日文；英文游戏也会按语言档案检查英文残留。
+当前源码模块名是 `source_residual`，负责源文残留例外规则解析、校验和检查协作。不要把源文残留检查理解成只服务日文；英文游戏会按语言档案检查当前原文的大段复制残留，不把单字母、单个词或短缩写直接当作漏翻。
 
 ## 写进游戏文件
 

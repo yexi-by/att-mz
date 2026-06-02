@@ -11,12 +11,17 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Protocol, cast
 
+from app.native_contract import NATIVE_CONTRACT_VERSION, ensure_native_contract_version
 from app.rmmz.schema import COMMON_EVENTS_FILE_NAME, MAP_PATTERN, PLUGINS_FILE_NAME, TROOPS_FILE_NAME, SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 
 
 class NativeModule(Protocol):
     """PyO3 扩展暴露给 Python 的最小接口。"""
+
+    def native_contract_version(self) -> int:
+        """返回 Rust/Python JSON 契约版本。"""
+        raise NotImplementedError
 
     def collect_note_tag_sources(self, payload_json: str) -> str:
         """运行 Rust 多线程 Note 标签来源扫描。"""
@@ -241,6 +246,7 @@ def _load_native_module() -> NativeModule:
         native_module = import_module("app._native")
     except ImportError as error:
         raise RuntimeError("Rust 原生扩展不可用，请先执行 uv run maturin develop") from error
+    ensure_native_contract_version(cast(object, native_module))
     return cast(NativeModule, cast(object, native_module))
 
 
@@ -448,6 +454,9 @@ def build_native_text_rules_payload(text_rules: TextRules) -> JsonObject:
         "source_residual_label": setting.source_residual_label,
         "allowed_source_residual_terms": [term for term in setting.allowed_source_residual_terms],
         "source_residual_terms_ignore_case": setting.source_residual_terms_ignore_case,
+        "source_residual_detection_profile": setting.source_residual_detection_profile,
+        "english_source_copy_min_words": setting.english_source_copy_min_words,
+        "english_source_copy_min_letters": setting.english_source_copy_min_letters,
         "line_width_count_pattern": setting.line_width_count_pattern,
         "residual_escape_sequence_pattern": setting.residual_escape_sequence_pattern,
         "long_text_line_width_limit": setting.long_text_line_width_limit,
@@ -455,6 +464,7 @@ def build_native_text_rules_payload(text_rules: TextRules) -> JsonObject:
 
 
 __all__ = [
+    "NATIVE_CONTRACT_VERSION",
     "NativeQualityDetails",
     "NativeQualityCounts",
     "collect_native_font_replacements",

@@ -43,6 +43,10 @@ mz = [357]
 replacement_font_path = "fonts/NotoSansSC-Regular.ttf"
 
 [text_rules]
+# 正则引擎契约：
+# line_width_count_pattern、source_residual_segment_pattern、residual_escape_sequence_pattern
+# 会进入 Rust 原生检查，必须同时兼容 Python re 与 Rust regex。
+# source_text_required_pattern 当前只在 Python 侧使用，只承诺 Python re。
 strip_wrapping_punctuation_pairs = [["「", "」"]]
 preserve_wrapping_punctuation_pairs = [["「", "」"], ["『", "』"], ["（", "）"]]
 line_split_punctuations = [
@@ -58,4 +62,8 @@ source_text_required_pattern = "[\\u3040-\\u309F\\u30A0-\\u30FF\\u3400-\\u4DBF\\
 source_text_exclusion_profile = "none"
 source_residual_segment_pattern = "[\\u3040-\\u309F\\u30A0-\\u30FF]+"
 source_residual_terms_ignore_case = false
+source_residual_detection_profile = "japanese_strict"
+# 英文语言档案会覆盖为 english_source_copy，只报告译文连续复制当前原文的大段英文。
+english_source_copy_min_words = 4
+english_source_copy_min_letters = 12
 residual_escape_sequence_pattern = "\\\\[nrt]"

@@ -10,6 +10,7 @@ from typing import ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from app.regex_contract import validate_mv_virtual_namebox_regex_contract
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.game_data import EventCommand
 from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value
@@ -52,6 +53,7 @@ class MvVirtualNameboxRule:
     @classmethod
     def from_record(cls, record: MvVirtualNameboxRuleRecord) -> "MvVirtualNameboxRule":
         """从数据库记录创建运行时规则。"""
+        validate_mv_virtual_namebox_regex_contract((record,))
         compiled_pattern = re.compile(record.pattern_text)
         validate_compiled_rule(
             rule_name=record.rule_name,
@@ -179,14 +181,6 @@ def build_mv_virtual_namebox_rule_records(
         if spec.name in seen_names:
             raise ValueError(f"MV 虚拟名字框规则名重复: {spec.name}")
         seen_names.add(spec.name)
-        pattern = re.compile(spec.pattern)
-        validate_compiled_rule(
-            rule_name=spec.name,
-            pattern=pattern,
-            speaker_group=spec.speaker_group,
-            body_group=spec.body_group,
-            render_template=spec.render_template,
-        )
         records.append(
             MvVirtualNameboxRuleRecord(
                 rule_order=index,
@@ -197,6 +191,16 @@ def build_mv_virtual_namebox_rule_records(
                 speaker_policy=spec.speaker_policy,
                 render_template=spec.render_template,
             )
+        )
+    validate_mv_virtual_namebox_regex_contract(tuple(records))
+    for record in records:
+        pattern = re.compile(record.pattern_text)
+        validate_compiled_rule(
+            rule_name=record.rule_name,
+            pattern=pattern,
+            speaker_group=record.speaker_group,
+            body_group=record.body_group,
+            render_template=record.render_template,
         )
     return records
 

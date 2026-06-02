@@ -122,7 +122,7 @@ pub(super) fn collect_residual_detail(
         &rules.allowed_source_residual_terms,
         rules.source_residual_terms_ignore_case,
     );
-    match check_source_residual(&checked_lines, rules) {
+    match check_source_residual(&item.original_lines, &checked_lines, rules) {
         Ok(()) => None,
         Err(reason) => {
             let mut detail = base_detail(item);
@@ -283,7 +283,14 @@ fn mask_case_insensitive_term(text: &str, term: &str) -> String {
         .to_string()
 }
 
-fn check_source_residual(lines: &[String], rules: &CompiledRules) -> Result<(), String> {
+fn check_source_residual(
+    original_lines: &[String],
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<(), String> {
+    if rules.source_residual_detection_profile == "english_source_copy" {
+        return check_english_source_copy_residual(original_lines, lines, rules);
+    }
     for (index, line) in lines.iter().enumerate() {
         let cleaned_line = strip_non_content_for_residual(line, rules);
         let segments: Vec<String> = rules
@@ -332,6 +339,114 @@ fn check_source_residual(lines: &[String], rules: &CompiledRules) -> Result<(), 
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct ResidualToken {
+    text: String,
+    normalized: String,
+}
+
+fn check_english_source_copy_residual(
+    original_lines: &[String],
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<(), String> {
+    let original_text = original_lines
+        .iter()
+        .map(|line| strip_non_content_for_residual(line, rules))
+        .collect::<Vec<String>>()
+        .join("\n");
+    let original_tokens = collect_english_residual_tokens(&original_text, rules);
+    if original_tokens.is_empty() {
+        return Ok(());
+    }
+    let original_token_values = original_tokens
+        .iter()
+        .map(|token| token.normalized.clone())
+        .collect::<Vec<String>>();
+    for (index, line) in lines.iter().enumerate() {
+        let cleaned_line = strip_non_content_for_residual(line, rules);
+        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules);
+        let copied_segments =
+            find_english_source_copy_segments(&original_token_values, &translation_tokens, rules);
+        if !copied_segments.is_empty() {
+            return Err(format!(
+                "发现{}残留(第 {} 行): {:?}",
+                rules.source_residual_label,
+                index + 1,
+                copied_segments
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_english_residual_tokens(text: &str, rules: &CompiledRules) -> Vec<ResidualToken> {
+    rules
+        .source_residual_segment_re
+        .find_iter(text)
+        .filter_map(|matched| {
+            let value = matched.as_str();
+            if !has_ascii_letter(value) {
+                return None;
+            }
+            let normalized = if rules.source_residual_terms_ignore_case {
+                value.to_ascii_lowercase()
+            } else {
+                value.to_string()
+            };
+            Some(ResidualToken {
+                text: value.to_string(),
+                normalized,
+            })
+        })
+        .collect()
+}
+
+fn find_english_source_copy_segments(
+    original_tokens: &[String],
+    translation_tokens: &[ResidualToken],
+    rules: &CompiledRules,
+) -> Vec<String> {
+    let mut copied_segments = Vec::new();
+    let mut start = 0usize;
+    while start < translation_tokens.len() {
+        let mut best_end = 0usize;
+        let first_candidate_end = start + rules.english_source_copy_min_words;
+        if first_candidate_end <= translation_tokens.len() {
+            for end in first_candidate_end..=translation_tokens.len() {
+                let candidate_tokens = &translation_tokens[start..end];
+                let letter_count = candidate_tokens
+                    .iter()
+                    .map(|token| ascii_letter_count(&token.text))
+                    .sum::<usize>();
+                if letter_count < rules.english_source_copy_min_letters {
+                    continue;
+                }
+                let candidate_values = candidate_tokens
+                    .iter()
+                    .map(|token| token.normalized.clone())
+                    .collect::<Vec<String>>();
+                if contains_token_sequence(original_tokens, &candidate_values) {
+                    best_end = end;
+                }
+            }
+        }
+        if best_end > 0 {
+            copied_segments.push(
+                translation_tokens[start..best_end]
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(" "),
+            );
+            start = best_end;
+            continue;
+        }
+        start += 1;
+    }
+    copied_segments
+}
+
 fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> String {
     let stripped_placeholders = PLACEHOLDER_RE.replace_all(text, "");
     rules
@@ -343,4 +458,28 @@ fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> String {
 fn has_non_source_content(text: &str, rules: &CompiledRules) -> bool {
     let text_without_source = rules.source_residual_segment_re.replace_all(text, "");
     text_without_source.chars().any(char::is_alphanumeric)
+}
+
+fn has_ascii_letter(text: &str) -> bool {
+    text.chars()
+        .any(|char_value| char_value.is_ascii_alphabetic())
+}
+
+fn ascii_letter_count(text: &str) -> usize {
+    text.chars()
+        .filter(|char_value| char_value.is_ascii_alphabetic())
+        .count()
+}
+
+fn contains_token_sequence(source_tokens: &[String], candidate_tokens: &[String]) -> bool {
+    if candidate_tokens.is_empty() || candidate_tokens.len() > source_tokens.len() {
+        return false;
+    }
+    let candidate_len = candidate_tokens.len();
+    for start in 0..=(source_tokens.len() - candidate_len) {
+        if &source_tokens[start..start + candidate_len] == candidate_tokens {
+            return true;
+        }
+    }
+    false
 }

@@ -1142,6 +1142,12 @@ def test_translate_command_accepts_source_residual_override_names() -> None:
             "よ",
             "--source-residual-segment-pattern",
             "[ぁ-ん]+",
+            "--source-residual-detection-profile",
+            "english_source_copy",
+            "--english-source-copy-min-words",
+            "2",
+            "--english-source-copy-min-letters",
+            "6",
         ]
     )
     overrides = build_setting_overrides(args)
@@ -1149,6 +1155,9 @@ def test_translate_command_accepts_source_residual_override_names() -> None:
     assert overrides.source_residual_allowed_chars == ["ー"]
     assert overrides.source_residual_allowed_tail_chars == ["よ"]
     assert overrides.source_residual_segment_pattern == "[ぁ-ん]+"
+    assert overrides.source_residual_detection_profile == "english_source_copy"
+    assert overrides.english_source_copy_min_words == 2
+    assert overrides.english_source_copy_min_letters == 6
 
 
 def test_write_file_commands_reject_translation_override_names() -> None:

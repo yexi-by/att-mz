@@ -329,6 +329,12 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
     """工作区 schema reference 承载外部 JSON 契约。"""
     text = read(DEV_REFERENCES / "workspace-schema.md")
     for phrase in [
+        "## 规则匹配语法",
+        "必须同时通过 Python `re` 和 Rust `fancy-regex` 预检",
+        "命名分组统一使用 Python 风格 `(?P<name>...)`",
+        "必须同时通过 Python `re` 和 Rust `regex` 预检",
+        "`source_text_required_pattern` 当前只承诺 Python `re`",
+        "Note 标签规则的文件键是 `fnmatch` 风格文件通配模式",
         "mv-virtual-namebox-rules.json",
         "placeholder-rules.json",
         "structured-placeholder-rules.json",
@@ -357,6 +363,106 @@ def test_workspace_schema_reference_defines_json_contracts() -> None:
         "禁止在 `pending-translations.json` 内新增例外字段",
     ]:
         assert phrase in text
+
+
+def test_rule_matching_syntax_contract_is_synced_between_skill_variants() -> None:
+    """开发版和发行版 Skill 同步声明用户可写匹配语法。"""
+    reference_expectations = {
+        "cli-command-contract.md": [
+            "用户可写正则会在 validate/import、工作区验收和读取当前游戏已保存规则时提前预检",
+            "普通占位符、结构化占位符和 MV 虚拟名字框规则必须同时兼容 Python `re` 与 Rust `fancy-regex`",
+            "源文残留结构规则和会进入 Rust 的 `[text_rules]` 正则必须同时兼容 Python `re` 与 Rust `regex`",
+            "Note 标签文件键是 `fnmatch` 通配模式，不是正则",
+        ],
+        "placeholder-rules.md": [
+            "## 正则语法契约",
+            "必须同时能被 Python `re` 和 Rust `fancy-regex` 编译",
+            "命名分组统一使用 Python 风格 `(?P<name>...)`",
+        ],
+        "structured-placeholder-rules.md": [
+            "## 正则语法契约",
+            "必须同时能被 Python `re` 和 Rust `fancy-regex` 编译",
+            "所有 `translatable_group` 和 `protected_groups` 必须来自这种命名分组",
+        ],
+        "mv-virtual-namebox-rules.md": [
+            "必须同时能被 Python `re` 和 Rust `fancy-regex` 编译",
+            "`speaker_group` 和 `body_group` 必须对应这种写法",
+            "`mv_virtual_namebox_rules_invalid`",
+        ],
+        "workspace-schema.md": [
+            "必须同时通过 Python `re` 和 Rust `fancy-regex` 预检",
+            "必须同时通过 Python `re` 和 Rust `regex` 预检",
+            "`source_text_required_pattern` 当前只承诺 Python `re`",
+            "Note 标签规则的文件键是 `fnmatch` 风格文件通配模式",
+        ],
+        "failure-recovery.md": [
+            "`structured_placeholder_rules_invalid`",
+            "`mv_virtual_namebox_rules_invalid`",
+            "Rust `fancy-regex`",
+            "Rust `regex`",
+        ],
+        "note-tag-rules-agent-task.md": [
+            "文件键可用 `Map*.json` 这类 `fnmatch` 通配模式，不是正则",
+            "不支持标签正则",
+        ],
+        "external-rules-workflow.md": [
+            "格式为 `{data文件名或fnmatch文件通配模式: [note标签名, ...]}`",
+            "文件键可用 `Map*.json` 通配，不是正则",
+        ],
+    }
+
+    for references in (DEV_REFERENCES, RELEASE_REFERENCES):
+        for reference_name, phrases in reference_expectations.items():
+            text = read(references / reference_name)
+            for phrase in phrases:
+                assert phrase in text
+
+
+def test_setting_example_documents_text_rule_regex_engines() -> None:
+    """配置模板说明进入 Rust 的 text_rules 正则语法边界。"""
+    text = read(ROOT / "setting.example.toml")
+    for phrase in [
+        "line_width_count_pattern、source_residual_segment_pattern、residual_escape_sequence_pattern",
+        "必须同时兼容 Python re 与 Rust regex",
+        "source_text_required_pattern 当前只在 Python 侧使用，只承诺 Python re",
+        'source_residual_detection_profile = "japanese_strict"',
+        "英文语言档案会覆盖为 english_source_copy",
+        "english_source_copy_min_words = 4",
+        "english_source_copy_min_letters = 12",
+    ]:
+        assert phrase in text
+
+
+def test_english_source_residual_contract_uses_source_copy_not_word_lists() -> None:
+    """Skill 与项目规范不得把英文单词、缩写或专名硬判为源文残留。"""
+    forbidden_phrases = [
+        "英文游戏默认允许少量 UI 缩写",
+        "专名必须通过术语表或本规则显式放行",
+    ]
+    checked_paths = [
+        PROJECT_AGENTS,
+        DEV_REFERENCES / "workspace-schema.md",
+        RELEASE_REFERENCES / "workspace-schema.md",
+        DEV_REFERENCES / "failure-recovery.md",
+        RELEASE_REFERENCES / "failure-recovery.md",
+        DEV_REFERENCES / "cli-command-contract.md",
+        RELEASE_REFERENCES / "cli-command-contract.md",
+        DEV_REFERENCES / "rpg-maker-mv-mz-world-knowledge.md",
+        RELEASE_REFERENCES / "rpg-maker-mv-mz-world-knowledge.md",
+        ROOT / "docs" / "advanced-usage.md",
+    ]
+    combined_text = "\n".join(read(path) for path in checked_paths)
+
+    for phrase in forbidden_phrases:
+        assert phrase not in combined_text
+    for phrase in [
+        "LLM 翻译日文时漏翻常表现为假名、片假名等源语言字符残留",
+        "LLM 翻译英文时，单字母、单个英文词、短缩写和专名形态不能可靠证明漏翻",
+        "译文是否连续复制当前原文的大段英文",
+        "英文游戏不靠单字母、单个词、短缩写或专名形态判断漏翻",
+        "英文残留检查偏高精度，主要报告译文连续复制当前原文的大段英文",
+    ]:
+        assert phrase in combined_text
 
 
 def test_mv_virtual_namebox_reference_warns_about_combo_speaker_keys() -> None:
@@ -414,7 +520,8 @@ def test_external_rule_references_define_second_round_contracts() -> None:
         "不读取项目源码、数据库或程序内部对象",
         "`<工作区>/note-tag-candidates.json`",
         "唯一可写文件：`<工作区>/note-tag-rules.json`",
-        "格式为 `{data文件名或文件模式: [note标签名, ...]}`",
+        "格式为 `{data文件名或fnmatch文件通配模式: [note标签名, ...]}`",
+        "文件键可用 `Map*.json` 这类 `fnmatch` 通配模式，不是正则",
         "合法空结果是 `{}`",
         "validate-note-tag-rules",
         "不要直接改游戏 `data/*.json` 的 `note` 字段",
@@ -481,12 +588,12 @@ def test_plugin_source_reference_allows_read_only_source_cross_check() -> None:
             "不扫描 `js` 根目录，不递归子目录，不读取 `data` 目录",
             "不读取 A.T.T MZ 项目源码或数据库",
             "不修改 JS 源码，不写回游戏文件，不直接改数据库",
-                "源码注释、插件头、相邻 key、对象/数组结构和调用函数只能用于判断语义，不能写进规则文件",
-                "默认使用 `--view translation-source`",
-                "`audit-active-runtime` 审计当前运行文件",
-                "默认审计不是补译清单",
-            ]:
-                assert phrase in text
+            "源码注释、插件头、相邻 key、对象/数组结构和调用函数只能用于判断语义，不能写进规则文件",
+            "默认使用 `--view translation-source`",
+            "`audit-active-runtime` 审计当前运行文件",
+            "默认审计不是补译清单",
+        ]:
+            assert phrase in text
 
 
 def test_nonstandard_data_reference_defines_side_branch_contract() -> None:
@@ -513,6 +620,9 @@ def test_placeholder_reference_defines_scope_and_mixed_protocol_strategy() -> No
     """普通占位符 reference 承载作用域和混合协议处理策略。"""
     text = read(DEV_REFERENCES / "placeholder-rules.md")
     for phrase in [
+        "## 正则语法契约",
+        "必须同时能被 Python `re` 和 Rust `fancy-regex` 编译",
+        "命名分组统一使用 Python 风格 `(?P<name>...)`",
         "只作用于当前已经进入正文翻译集合的文本",
         "已导入插件参数规则命中的文本",
         "已导入事件指令规则命中的文本",
@@ -541,6 +651,9 @@ def test_structured_placeholder_reference_defines_contract() -> None:
     text = read(DEV_REFERENCES / "structured-placeholder-rules.md")
     for phrase in [
         "# 结构化占位符规则",
+        "## 正则语法契约",
+        "必须同时能被 Python `re` 和 Rust `fancy-regex` 编译",
+        "命名分组统一使用 Python 风格 `(?P<name>...)`",
         "普通正则占位符规则并列",
         "translatable_group",
         "protected_groups",
@@ -587,6 +700,19 @@ def test_agent_rules_forbid_unconditional_candidate_hard_blocks() -> None:
         assert phrase in text
 
 
+def test_agent_rules_forbid_patch_style_compatibility() -> None:
+    """项目规范固定长期结构优先，禁止补丁式兼容。"""
+    text = read(PROJECT_AGENTS)
+    for phrase in [
+        "长期结构优先",
+        "严禁为了短期稳定堆叠补丁式兼容",
+        "允许破坏性重构、删除废弃入口和调整内部边界",
+        "旧数据库或旧规则不兼容时必须显式失败",
+        "禁止通过旁路 `if/else`、字符串识别、吞异常、隐式兜底或双事实来源继续运行",
+    ]:
+        assert phrase in text
+
+
 def test_rule_review_source_contract_forbids_report_driven_state() -> None:
     """候选审查源码不得从渲染报告反推业务状态。"""
     critical_sources = [
@@ -613,6 +739,26 @@ def test_rule_review_source_contract_forbids_report_driven_state() -> None:
     assert "sampled_details" in decision_text
 
 
+def test_regex_contract_source_uses_typed_errors_not_message_matching() -> None:
+    """规则契约错误不得再靠中文错误字符串反推业务类型。"""
+    common_text = read(ROOT / "app" / "agent_toolkit" / "services" / "common.py")
+    regex_contract_text = read(ROOT / "app" / "regex_contract.py")
+    for forbidden in [
+        "_text_rules_load_error_issue",
+        '"普通占位符规则" in message',
+        '"结构化占位符规则" in message',
+        '"MV 虚拟名字框规则" in message',
+        '"源文残留" in message',
+    ]:
+        assert forbidden not in common_text
+    for required in [
+        "class RegexContractIssue",
+        "class RegexContractValidationError",
+        "issue_code",
+    ]:
+        assert required in regex_contract_text
+
+
 def test_failure_and_feedback_references_define_recovery_loops() -> None:
     """失败恢复和试玩反馈 references 承载修复闭环。"""
     failure_text = read(DEV_REFERENCES / "failure-recovery.md")
@@ -625,7 +771,12 @@ def test_failure_and_feedback_references_define_recovery_loops() -> None:
         "reset-translations",
         "禁止用它掩盖整句漏翻",
         "`allowed_terms` 必须是非空字符串数组",
-        "存在于正则里的 `check_group`",
+        "两边都能识别的 `check_group`",
+        "`structured_placeholder_rules_invalid`",
+        "`mv_virtual_namebox_rules_invalid`",
+        "Rust `fancy-regex`",
+        "Rust `regex`",
+        "文件模式是否使用 `Map*.json` 这类通配而不是正则",
     ]:
         assert phrase in failure_text
 

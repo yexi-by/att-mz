@@ -52,6 +52,7 @@ from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     GameData,
     NoteTagTextRuleRecord,
+    MvVirtualNameboxRuleRecord,
     PlaceholderRuleRecord,
     PluginTextRuleRecord,
     PluginSourceRuntimeWriteMapRecord,
@@ -1375,6 +1376,193 @@ async def test_validate_placeholder_rules_blocks_translatable_text_loss() -> Non
     safe_error_codes = {error.code for error in safe_report.errors}
     assert "placeholder_rule_loses_translatable_text" in unsafe_error_codes
     assert "placeholder_rule_loses_translatable_text" not in safe_error_codes
+
+
+@pytest.mark.asyncio
+async def test_validate_placeholder_rules_rejects_rust_incompatible_regex() -> None:
+    """普通占位符规则不能先通过 Python 校验、再到 Rust 质检阶段失败。"""
+    service = AgentToolkitService(setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_placeholder_rules(
+        game_title=None,
+        custom_placeholder_rules_text=json.dumps(
+            {r"(?a:@PLUGIN\[[^\]]+\])": "[CUSTOM_PLUGIN_MARKER_{index}]"},
+            ensure_ascii=False,
+        ),
+        sample_texts=["@PLUGIN[name]"],
+    )
+
+    assert report.status == "error"
+    assert "placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_validate_structured_placeholder_rules_rejects_rust_incompatible_regex(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """结构化占位符规则导入前必须通过 Rust fancy-regex 预检。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "INLINE_LABEL",
+                    "type": "paired_shell",
+                    "pattern": r"(?a:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",
+                        "suffix": "[CUSTOM_INLINE_LABEL_SUFFIX_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=["<label>薬草</label>"],
+    )
+
+    assert report.status == "error"
+    assert "structured_placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_validate_source_residual_rules_rejects_rust_incompatible_structural_regex(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """源文残留结构规则导入前必须通过 Rust regex 预检。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "position_rules": {},
+            "structural_rules": [
+                {
+                    "pattern": r"(?<=<label>)(?P<visible>[^<]+)(?=</label>)",
+                    "allowed_terms": ["label"],
+                    "check_group": "visible",
+                    "reason": "protocol_label",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.validate_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+
+    assert report.status == "error"
+    assert "source_residual_rules_invalid" in {error.code for error in report.errors}
+    assert "Rust regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_current_game_reports_incompatible_saved_placeholder_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧数据库里的不兼容普通占位符规则必须在公开命令中显式报错。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_placeholder_rules(
+            [
+                PlaceholderRuleRecord(
+                    pattern_text=r"(?a:@PLUGIN\[[^\]]+\])",
+                    placeholder_template="[CUSTOM_PLUGIN_MARKER_{index}]",
+                )
+            ]
+        )
+
+    doctor_report = await service.doctor(game_title="テストゲーム", check_llm=False)
+    scope_report = await service.text_scope(game_title="テストゲーム")
+    audit_report = await service.audit_coverage(game_title="テストゲーム")
+    quality_report = await service.quality_report(game_title="テストゲーム")
+
+    for report in (doctor_report, scope_report, audit_report, quality_report):
+        assert report.status == "error"
+        assert "placeholder_rules_invalid" in {error.code for error in report.errors}
+        assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_current_game_reports_incompatible_saved_mv_virtual_namebox_rules(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧数据库里的不兼容 MV 虚拟名字框规则必须在公开命令中显式报错。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_mv_virtual_namebox_rules(
+            [
+                MvVirtualNameboxRuleRecord(
+                    rule_order=0,
+                    rule_name="bad-ascii-flag",
+                    pattern_text=r"(?a:(?P<speaker>[^:：]+))[:：](?P<body>.*)",
+                    speaker_group="speaker",
+                    body_group="body",
+                    speaker_policy="translate",
+                    render_template="{speaker}：{body}",
+                )
+            ]
+        )
+
+    doctor_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
+    scope_report = await service.text_scope(game_title="MVテストゲーム")
+    audit_report = await service.audit_coverage(game_title="MVテストゲーム")
+    quality_report = await service.quality_report(game_title="MVテストゲーム")
+
+    for report in (doctor_report, scope_report, audit_report, quality_report):
+        assert report.status == "error"
+        assert "mv_virtual_namebox_rules_invalid" in {error.code for error in report.errors}
+        assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_current_game_reports_saved_mv_virtual_namebox_non_python_named_groups(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧 MV 虚拟名字框规则使用非 Python 命名分组时也必须返回稳定错误码。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_mv_virtual_namebox_rules(
+            [
+                MvVirtualNameboxRuleRecord(
+                    rule_order=0,
+                    rule_name="bad-named-group",
+                    pattern_text=r"(?<speaker>[^:：]+)[:：](?<body>.*)",
+                    speaker_group="speaker",
+                    body_group="body",
+                    speaker_policy="translate",
+                    render_template="{speaker}：{body}",
+                )
+            ]
+        )
+
+    report = await service.text_scope(game_title="MVテストゲーム")
+
+    assert report.status == "error"
+    assert "mv_virtual_namebox_rules_invalid" in {error.code for error in report.errors}
+    assert "Python re" in report.errors[0].message
 
 
 @pytest.mark.asyncio
@@ -4973,6 +5161,94 @@ async def test_manual_pending_translation_export_and_import(
         quality_errors = await session.read_translation_quality_errors(run_record.run_id)
     translated_by_path = {item.location_path: item for item in translated_items}
     assert translated_by_path[target_path].translation_lines == ["你好"]
+    assert quality_errors == []
+
+
+@pytest.mark.asyncio
+async def test_manual_quality_fix_import_uses_saved_item_fast_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """质量修复导入已有译文时不应为了少量路径重建完整文本范围。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """质量修复快路径不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("质量修复导入不应加载完整游戏数据")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    target_path = "CommonEvents.json/1/0"
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["こんにちは"],
+                )
+            ]
+        )
+        run_record = await session.start_translation_run(
+            total_extracted=10,
+            pending_count=8,
+            deduplicated_count=10,
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    translation_lines=["こんにちは"],
+                    error_type="源文残留",
+                    error_detail=["发现日文残留"],
+                    model_response="",
+                )
+            ],
+        )
+    input_path = tmp_path / "quality-fix.json"
+    _ = input_path.write_text(
+        json.dumps(
+            {
+                target_path: {
+                    "item_type": "long_text",
+                    "role": "アリス",
+                    "original_lines": ["こんにちは"],
+                    "translation_lines": ["你好"],
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    import_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert import_report.status == "ok"
+    assert import_report.summary["scope_mode"] == "saved_quality_errors"
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+        quality_errors = await session.read_translation_quality_errors(run_record.run_id)
+    translated_by_path = {item.location_path: item for item in translated_items}
+    assert translated_by_path[target_path].translation_lines == ["你好"]
+    assert translated_by_path[target_path].source_line_paths == ["CommonEvents.json/1/1"]
     assert quality_errors == []
 
 

@@ -12,6 +12,7 @@ from typing import ClassVar, cast
 import aiofiles
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from app.regex_contract import validate_source_residual_regex_contract
 from app.rmmz.schema import SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import TextRules, coerce_json_value
 
@@ -116,9 +117,11 @@ class SourceResidualRuleSet:
                 structural_records.append(_validate_structural_record(record))
                 continue
             raise ValueError(f"源文残留例外规则类型无效: {record.rule_id}: {record.rule_type}")
+        structural_record_tuple = tuple(structural_records)
+        validate_source_residual_regex_contract(structural_record_tuple)
         return cls(
             records_by_path={record.location_path: record for record in position_records},
-            structural_records=tuple(structural_records),
+            structural_records=structural_record_tuple,
         )
 
     def allowed_terms_for_path(self, location_path: str) -> list[str]:
@@ -183,7 +186,10 @@ def check_source_residual_for_item(
 ) -> None:
     """按逐位置例外和结构性协议词例外检查单条译文源文残留。"""
     if rule_set is None:
-        text_rules.check_source_residual(item.translation_lines)
+        text_rules.check_source_residual(
+            item.translation_lines,
+            original_lines=item.original_lines,
+        )
         return
     masked_lines = text_rules.mask_source_residual_terms(
         item.translation_lines,
@@ -194,7 +200,7 @@ def check_source_residual_for_item(
         records=rule_set.structural_records,
         ignore_case=text_rules.setting.source_residual_terms_ignore_case,
     )
-    text_rules.check_source_residual(masked_lines)
+    text_rules.check_source_residual(masked_lines, original_lines=item.original_lines)
 
 
 def _build_position_records(
@@ -254,6 +260,7 @@ def _build_structural_records(
                 reason=spec.reason,
             )
         )
+    validate_source_residual_regex_contract(tuple(records))
     return records
 
 

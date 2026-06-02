@@ -74,6 +74,21 @@ pub(crate) static MAP_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, String> {
+    let source_residual_detection_profile = match rules.source_residual_detection_profile.as_str() {
+        "japanese_strict" | "english_source_copy" => {
+            rules.source_residual_detection_profile.clone()
+        }
+        unknown => {
+            return Err(format!("Rust 源文残留检测模式无效: {unknown}"));
+        }
+    };
+    if rules.english_source_copy_min_words == 0 {
+        return Err("Rust 英文源文复制残留最少连续词数必须大于 0".to_string());
+    }
+    if rules.english_source_copy_min_letters == 0 {
+        return Err("Rust 英文源文复制残留最少拉丁字母数必须大于 0".to_string());
+    }
+
     let mut custom_placeholder_rules = Vec::new();
     for rule in rules.custom_placeholder_rules {
         let pattern = FancyRegex::new(&rule.pattern_text).map_err(|error| {
@@ -136,6 +151,9 @@ pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, Str
         source_residual_allowed_tail_chars: collect_chars(rules.source_residual_allowed_tail_chars),
         allowed_source_residual_terms: rules.allowed_source_residual_terms,
         source_residual_terms_ignore_case: rules.source_residual_terms_ignore_case,
+        source_residual_detection_profile,
+        english_source_copy_min_words: rules.english_source_copy_min_words,
+        english_source_copy_min_letters: rules.english_source_copy_min_letters,
         source_residual_label: rules.source_residual_label,
         source_residual_segment_re: Regex::new(&rules.source_residual_segment_pattern)
             .map_err(|error| format!("Rust 源文残留正则无效: {error}"))?,

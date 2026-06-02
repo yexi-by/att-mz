@@ -12,6 +12,7 @@ from app.config.custom_placeholder_rules import (
 )
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
+from app.note_tag_text.sources import note_file_pattern_matches
 from app.rmmz.control_codes import (
     CustomPlaceholderRule,
     LITERAL_ESCAPE_PLACEHOLDERS,
@@ -198,6 +199,20 @@ def test_custom_rule_can_fully_protect_long_candidate_prefix() -> None:
     ] == []
 
 
+def test_custom_placeholder_rules_reject_python_only_regex_before_native_use() -> None:
+    """普通占位符规则必须同时能被 Python re 和 Rust fancy-regex 编译。"""
+    python_only_rule = CustomPlaceholderRule.create(
+        r"(?a:@PLUGIN\[[^\]]+\])",
+        "[CUSTOM_PLUGIN_MARKER_{index}]",
+    )
+
+    with pytest.raises(ValueError, match="普通占位符规则.*Rust fancy-regex"):
+        _ = TextRules.from_setting(
+            TextRulesSetting(),
+            custom_placeholder_rules=(python_only_rule,),
+        )
+
+
 def test_custom_rule_covering_nested_candidate_counts_as_covered() -> None:
     """自定义规则覆盖嵌套参数整体时，半截扫描候选也算已保护。"""
     rules = TextRules.from_setting(
@@ -211,6 +226,26 @@ def test_custom_rule_covering_nested_candidate_counts_as_covered() -> None:
     )
 
     assert rules.iter_unprotected_control_sequence_candidates(r"\nn[\v[527]]こんにちは") == []
+
+
+def test_structured_placeholder_rules_reject_python_only_regex_before_native_use() -> None:
+    """结构化占位符规则必须在导入阶段暴露 Rust fancy-regex 不兼容语法。"""
+    python_only_rule = StructuredPlaceholderRule.create(
+        rule_name="INLINE_LABEL",
+        rule_type="paired_shell",
+        pattern_text=r"(?a:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
+        translatable_group="text",
+        protected_groups={
+            "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",
+            "suffix": "[CUSTOM_INLINE_LABEL_SUFFIX_{index}]",
+        },
+    )
+
+    with pytest.raises(ValueError, match="结构化占位符规则.*Rust fancy-regex"):
+        _ = TextRules.from_setting(
+            TextRulesSetting(),
+            structured_placeholder_rules=(python_only_rule,),
+        )
 
 
 def test_text_rules_filter_resource_and_japanese_residual() -> None:
@@ -256,7 +291,6 @@ def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> No
             source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
             source_text_exclusion_profile="english_protocol_noise",
             source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-            allowed_source_residual_terms=["HP", "MP", "TP", "OK"],
             source_residual_terms_ignore_case=True,
         )
     )
@@ -297,22 +331,66 @@ def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> No
 
 
 def test_english_source_residual_allows_default_ui_abbreviations() -> None:
-    """英文源文残留会拦截漏翻句子，并允许默认 UI 缩写保留。"""
+    """英文档案不能依赖内置英文词表，应按源文复制片段判断残留。"""
+    setting = build_text_rules_setting_for_language_profile("en")
+    rules = TextRules.from_setting(setting)
+    assert setting.allowed_source_residual_terms == []
+    assert setting.source_residual_detection_profile == "english_source_copy"
+
+    allowed_item = TranslationItem(
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        original_lines=["Press the red switch before opening the old gate."],
+        translation_lines=["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"],
+    )
+    check_source_residual_for_item(item=allowed_item, text_rules=rules, rule_set=None)
+
+    leaked_item = allowed_item.model_copy(
+        update={
+            "translation_lines": ["不要 Press the red switch before opening 继续。"],
+        }
+    )
+    with pytest.raises(ValueError, match="英文残留") as residual_error:
+        check_source_residual_for_item(item=leaked_item, text_rules=rules, rule_set=None)
+    residual_message = str(residual_error.value)
+    assert "Press the red switch before opening" in residual_message
+    assert "Alice" not in residual_message
+
+
+def test_english_source_copy_thresholds_are_configurable() -> None:
+    """英文源文复制残留阈值来自配置，不靠写死词表或特殊单词。"""
+    default_rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
+    strict_rules = TextRules.from_setting(
+        build_text_rules_setting_for_language_profile("en").model_copy(
+            update={
+                "english_source_copy_min_words": 2,
+                "english_source_copy_min_letters": 6,
+            }
+        )
+    )
+    item = TranslationItem(
+        location_path="Map001.json/1/0/1",
+        item_type="short_text",
+        original_lines=["Open the ancient gate."],
+        translation_lines=["打开 Open the 门。"],
+    )
+
+    check_source_residual_for_item(item=item, text_rules=default_rules, rule_set=None)
+    with pytest.raises(ValueError, match="英文残留"):
+        check_source_residual_for_item(item=item, text_rules=strict_rules, rule_set=None)
+
+
+def test_english_source_residual_without_original_checks_long_runs() -> None:
+    """当前运行文件缺少原文上下文时，英文长句残留不能被静默放行。"""
     rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
 
-    with pytest.raises(ValueError, match="英文残留"):
-        rules.check_source_residual(["Are you really going in there?"])
+    rules.check_source_residual(
+        ["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"]
+    )
+    with pytest.raises(ValueError, match="Press the red switch before opening") as error_info:
+        rules.check_source_residual(["不要 Press the red switch before opening 继续。"])
 
-    with pytest.raises(ValueError, match="英文残留") as residual_error:
-        rules.check_source_residual(["你好 Alice"])
-    residual_message = str(residual_error.value)
-    assert "Alice" in residual_message
-    assert "'A', 'l'" not in residual_message
-
-    rules.check_source_residual(["HP 恢复 10 点"])
-    rules.check_source_residual(["OK"])
-    rules.check_source_residual(["BGM 已切换"])
-    rules.check_source_residual(["NPC 的 ATK 提升 3 点"])
+    assert "Alice" not in str(error_info.value)
 
 
 def test_structural_source_residual_rule_only_masks_protocol_terms() -> None:
@@ -372,14 +450,13 @@ def test_structural_source_residual_rule_only_masks_protocol_terms() -> None:
 
 
 def test_structural_source_residual_rule_respects_ignore_case() -> None:
-    """英文结构性协议词例外遵守源文残留大小写忽略配置。"""
+    """英文结构性协议词例外遵守大小写忽略，但显示文本仍按源文复制检查。"""
     rules = TextRules.from_setting(
-        TextRulesSetting(
-            source_language="en",
-            source_residual_label="英文",
-            source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-            source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-            source_residual_terms_ignore_case=True,
+        build_text_rules_setting_for_language_profile("en").model_copy(
+            update={
+                "english_source_copy_min_words": 3,
+                "english_source_copy_min_letters": 10,
+            }
         )
     )
     rule_set = SourceResidualRuleSet.from_records(
@@ -397,11 +474,11 @@ def test_structural_source_residual_rule_respects_ignore_case() -> None:
     protocol_only_item = TranslationItem(
         location_path="CommonEvents.json/1/0",
         item_type="short_text",
-        original_lines=["LABEL:Hello"],
+        original_lines=["LABEL:Open the ancient gate"],
         translation_lines=["label:你好"],
     )
     leaked_visible_item = protocol_only_item.model_copy(
-        update={"translation_lines": ["label:label"]}
+        update={"translation_lines": ["label:Open the ancient gate"]}
     )
 
     check_source_residual_for_item(
@@ -447,6 +524,20 @@ def test_structural_source_residual_rule_rejects_corrupt_records() -> None:
             ]
         )
 
+    with pytest.raises(ValueError, match="结构性源文残留规则.*Rust regex"):
+        _ = SourceResidualRuleSet.from_records(
+            [
+                SourceResidualRuleRecord(
+                    rule_id="structural:rust_incompatible",
+                    rule_type="structural",
+                    pattern_text=r"(?<=<label>)(?P<visible>[^<]+)(?=</label>)",
+                    allowed_terms=["label"],
+                    check_group="visible",
+                    reason="broken",
+                )
+            ]
+        )
+
 
 def test_position_source_residual_rule_rejects_corrupt_records() -> None:
     """数据库里的损坏位置例外规则不能被静默忽略。"""
@@ -475,6 +566,12 @@ def test_position_source_residual_rule_rejects_corrupt_records() -> None:
                 )
             ]
         )
+
+
+def test_note_tag_file_pattern_uses_fnmatch_glob_not_regex() -> None:
+    """Note 标签文件键是 fnmatch 风格通配模式，不是正则表达式。"""
+    assert note_file_pattern_matches(file_name="Map001.json", file_pattern="Map*.json")
+    assert not note_file_pattern_matches(file_name="Map001.json", file_pattern=r"Map\d+\.json")
 
 
 def test_text_rules_keep_book_title_quote_during_extraction() -> None:
