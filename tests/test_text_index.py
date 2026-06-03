@@ -8,13 +8,14 @@ from typing import cast
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
+from app.config import SettingOverrides
 from app.config.schemas import TextRulesSetting
 from app.persistence import GameRegistry
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import load_game_data_for_view
 from app.rmmz.schema import PlaceholderRuleRecord
 from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_object
-from app.text_index import detect_text_index_invalidations, rebuild_text_index
+from app.text_index import collect_text_index_rules_fingerprint, detect_text_index_invalidations, rebuild_text_index
 from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 
@@ -185,3 +186,35 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
         assert metadata is not None
         assert metadata.item_count == indexed_count
         assert len(await session.read_text_index_items()) == indexed_count
+
+
+@pytest.mark.asyncio
+async def test_quality_report_rebuilds_text_index_with_command_setting_overrides(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量报告自动重建索引时必须应用本次命令传入的 setting overrides。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    overrides = SettingOverrides(source_residual_allowed_chars=["カ"])
+
+    report = await service.quality_report(
+        game_title="テストゲーム",
+        setting_overrides=overrides,
+    )
+
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+    async with await registry.open_game("テストゲーム") as session:
+        metadata = await session.read_text_index_metadata()
+        setting = load_setting(
+            EXAMPLE_SETTING_PATH,
+            overrides=overrides,
+            source_language=session.source_language,
+        )
+        expected_fingerprint = await collect_text_index_rules_fingerprint(
+            session=session,
+            text_rules=TextRules.from_setting(setting.text_rules),
+        )
+    assert metadata is not None
+    assert metadata.rules_fingerprint == expected_fingerprint

@@ -409,7 +409,7 @@ def _decision_reviewed_empty(decision: RuleReviewDecision | None) -> bool:
     return (
         decision is not None
         and decision.reviewed_empty is True
-        and decision.confirmation_status in {"confirmed", "confirmed_legacy_hash"}
+        and decision.confirmation_status == "confirmed"
     )
 
 

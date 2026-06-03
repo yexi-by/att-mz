@@ -25,6 +25,7 @@ from app.plugin_source_text import (
 )
 from app.rmmz import load_active_game_data, load_game_data
 from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, PluginSourceTextRuleRecord, TranslationItem
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
@@ -40,6 +41,18 @@ def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:
         f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
         encoding="utf-8",
     )
+
+
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
 
 
 @pytest.mark.asyncio
@@ -257,6 +270,7 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
     assert [item.original_lines for item in items] == [["プラグイン直書き"]]
 
     items[0].translation_lines = ["插件直写"]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     _ = write_plugin_source_text(
         game_data,
@@ -347,6 +361,7 @@ async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_
         else:
             item.translation_lines = ["短"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     runtime_write_maps = write_plugin_source_text(
         game_data,
@@ -413,6 +428,7 @@ async def test_plugin_source_write_back_treats_runtime_map_as_optional(
     ].translation_items[0]
     item.translation_lines = ["插件直写"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     runtime_write_maps = write_plugin_source_text(
         game_data,
@@ -559,6 +575,7 @@ async def test_plugin_source_write_back_scans_changed_file_for_runtime_write_map
     ].translation_items
     for index, item in enumerate(items):
         item.translation_lines = [f"写回文本{index}"]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     runtime_write_maps = write_plugin_source_text(
         game_data,
@@ -582,6 +599,7 @@ async def test_data_write_back_ignores_plugin_source_location_paths(minimal_game
         translation_lines=["插件直写"],
     )
 
+    _create_test_source_snapshot(game_data)
     with pytest.raises(ValueError, match="插件源码文件不存在"):
         write_data_text(game_data, [item], text_rules=TextRules.from_setting(TextRulesSetting()))
 
@@ -743,6 +761,7 @@ async def test_active_runtime_audit_reports_excluded_residual_and_plugin_control
     text_rules = TextRules.from_setting(TextRulesSetting())
     game_data = await load_game_data(minimal_game_dir)
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     _ = write_plugin_source_text(game_data, [], text_rules=text_rules)
     audit = audit_active_runtime_plugin_source(
@@ -916,6 +935,7 @@ async def test_active_runtime_audit_errors_for_unreviewed_source_candidate(
     text_rules = TextRules.from_setting(TextRulesSetting())
     game_data = await load_game_data(minimal_game_dir)
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     _ = write_plugin_source_text(game_data, [], text_rules=text_rules)
     audit = audit_active_runtime_plugin_source(
@@ -946,6 +966,7 @@ async def test_active_runtime_audit_reports_current_runtime_control_risk(
     text_rules = TextRules.from_setting(TextRulesSetting())
     game_data = await load_game_data(minimal_game_dir)
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     _ = write_plugin_source_text(game_data, [], text_rules=text_rules)
     game_data.writable_plugin_source_files["HardcodedText.js"] = "const Messages = { protocol: '\\\\ii[1]' };\n"
@@ -1038,6 +1059,7 @@ async def test_plugin_source_write_back_requires_native_ast(
 
     monkeypatch.setattr("app.native_write_plan._load_native_module", missing_native_module)
 
+    _create_test_source_snapshot(game_data)
     with pytest.raises(ValueError, match="Rust 原生扩展不可用"):
         _ = write_plugin_source_text(
             game_data,
@@ -1083,6 +1105,7 @@ async def test_plugin_source_partial_backup_keeps_unmodified_files_visible(minim
     ].translation_items[0]
     item.translation_lines = ["第一个正文"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     _ = write_plugin_source_text(
         game_data,
@@ -1581,8 +1604,9 @@ async def test_quality_report_errors_when_high_risk_plugin_source_review_is_inco
         setting_path=EXAMPLE_SETTING_PATH,
     ).quality_report(game_title="テストゲーム")
 
+    assert report.status == "error"
     assert "plugin_source_review_incomplete" in {error.code for error in report.errors}
-    assert report.summary["plugin_source_unreviewed_count"] == 300
+    assert any("300" in error.message for error in report.errors)
 
 
 @pytest.mark.asyncio
@@ -1825,12 +1849,12 @@ async def test_import_plugin_source_rules_replaces_stale_existing_rule(
 
 
 @pytest.mark.asyncio
-async def test_quality_report_does_not_scan_plugin_source_before_branch_started(
+async def test_quality_report_scans_high_risk_plugin_source_before_branch_started(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未启动插件源码支线时，质量报告不主动解析插件源码候选。"""
+    """未启动插件源码支线时，质量报告也必须由 gate 自己识别高风险源码。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
@@ -1863,12 +1887,14 @@ async def test_quality_report_does_not_scan_plugin_source_before_branch_started(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
 
-    _ = await AgentToolkitService(
+    report = await AgentToolkitService(
         game_registry=registry,
         setting_path=EXAMPLE_SETTING_PATH,
     ).quality_report(game_title="テストゲーム")
 
-    assert scan_count == 0
+    assert scan_count >= 1
+    assert report.status == "error"
+    assert "plugin_source_text_high_risk" in {error.code for error in report.errors}
 
 
 @pytest.mark.asyncio

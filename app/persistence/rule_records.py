@@ -105,7 +105,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         path_template,
                     ),
                 )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_plugin_source_text_rules(self) -> list[PluginSourceTextRuleRecord]:
         """读取当前游戏保存的插件源码文本规则。"""
@@ -162,7 +162,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         "excluded",
                     ),
                 )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_nonstandard_data_text_rules(self) -> list[NonstandardDataTextRuleRecord]:
         """读取当前游戏保存的非标准 data 文件文本规则。"""
@@ -237,7 +237,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         "excluded",
                     ),
                 )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_note_tag_text_rules(self) -> list[NoteTagTextRuleRecord]:
         """读取当前游戏保存的 Note 标签文本规则。"""
@@ -269,7 +269,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         tag_name,
                     ),
                 )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_event_command_text_rules(self) -> list[EventCommandTextRuleRecord]:
         """读取当前游戏保存的事件指令文本规则。"""
@@ -331,7 +331,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                     INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
                     (group_key, path_template),
                 )
-        await self.connection.commit()
+        await self.commit()
 
     async def replace_placeholder_rules(
         self,
@@ -344,7 +344,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                 INSERT_PLACEHOLDER_RULE,
                 (rule.pattern_text, rule.placeholder_template),
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_placeholder_rules(self) -> list[PlaceholderRuleRecord]:
         """读取当前游戏专用自定义占位符规则。"""
@@ -384,7 +384,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                         placeholder_template,
                     ),
                 )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_structured_placeholder_rules(self) -> list[StructuredPlaceholderRuleRecord]:
         """读取当前游戏专用结构化占位符规则。"""
@@ -430,7 +430,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                     rule.reason,
                 ),
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_source_residual_rules(self) -> list[SourceResidualRuleRecord]:
         """读取当前游戏专用源文残留例外规则。"""
@@ -471,7 +471,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
                     rule.render_template,
                 ),
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_mv_virtual_namebox_rules(self) -> list[MvVirtualNameboxRuleRecord]:
         """读取当前游戏专用 MV 虚拟名字框规则。"""
@@ -510,12 +510,12 @@ class RuleRecordSessionMixin(SessionMixinBase):
                 current_timestamp_text(),
             ),
         )
-        await self.connection.commit()
+        await self.commit()
 
     async def delete_rule_review_state(self, *, rule_domain: RuleReviewDomain) -> None:
         """删除某类外部规则的空结果审查状态。"""
         _ = await self.connection.execute(DELETE_RULE_REVIEW_STATE, (rule_domain,))
-        await self.connection.commit()
+        await self.commit()
 
     async def read_rule_review_state(
         self,

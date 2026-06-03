@@ -12,7 +12,6 @@ from .common import (
     QualityProgressCallbacks,
     TextRules,
     TextScopeService,
-    TranslationErrorItem,
     TranslationItem,
     _build_manual_translation_template_entry,
     _build_translation_line_break_count_detail,
@@ -146,7 +145,7 @@ class ManualTranslationAgentMixin:
         errors: list[AgentIssue] = []
         invalid_items: JsonArray = []
         valid_items: list[TranslationItem] = []
-        scope_mode = "saved_quality_errors"
+        scope_mode = "text_index"
         text_index_status = ""
         text_index_rebuild_summary: JsonObject = {}
         rebuild_warnings: list[AgentIssue] = []
@@ -179,84 +178,48 @@ class ManualTranslationAgentMixin:
             )
             payload_paths = {str(location_path) for location_path in payload}
             translated_items = await session.read_translated_items_by_paths(sorted(payload_paths))
-            translated_items_by_path = {item.location_path: item for item in translated_items}
+            _ = translated_items
             latest_run = await session.read_latest_translation_run()
-            latest_quality_error_paths: set[str] = set()
-            latest_quality_errors_by_path: dict[str, TranslationErrorItem] = {}
-            if latest_run is not None:
-                latest_quality_error_items = await session.read_translation_quality_errors_by_paths(
-                    latest_run.run_id,
-                    payload_paths,
-                )
-                latest_quality_errors_by_path = {
-                    item.location_path: item
-                    for item in latest_quality_error_items
-                }
-                latest_quality_error_paths = set(latest_quality_errors_by_path)
-            can_use_saved_quality_error_scope = (
-                not payload_paths
-                or (
-                    latest_run is not None
-                    and payload_paths <= latest_quality_error_paths
-                )
+            index_invalidations = await detect_text_index_invalidations(
+                session=session,
+                text_rules=text_rules,
             )
-            if can_use_saved_quality_error_scope:
-                active_items = {}
-                for location_path in payload_paths:
-                    translated_item = translated_items_by_path.get(location_path)
-                    if translated_item is not None:
-                        active_items[location_path] = translated_item
-                        continue
-                    quality_error_item = latest_quality_errors_by_path[location_path]
-                    active_items[location_path] = TranslationItem(
-                        location_path=quality_error_item.location_path,
-                        item_type=quality_error_item.item_type,
-                        role=quality_error_item.role,
-                        original_lines=list(quality_error_item.original_lines),
-                        translation_lines=list(quality_error_item.translation_lines),
-                    )
-            else:
-                scope_mode = "text_index"
-                index_invalidations = await detect_text_index_invalidations(
-                    session=session,
-                    text_rules=text_rules,
+            if index_invalidations:
+                invalidation_details: JsonArray = [
+                    {
+                        "reason_key": item.reason_key,
+                        "detail": item.detail,
+                        "created_at": item.created_at,
+                    }
+                    for item in index_invalidations
+                ]
+                text_index_status = (
+                    "cold_rebuilt"
+                    if any(item.reason_key == "text_index_missing" for item in index_invalidations)
+                    else "stale_rebuilt"
                 )
-                if index_invalidations:
-                    invalidation_details: JsonArray = [
-                        {
-                            "reason_key": item.reason_key,
-                            "detail": item.detail,
-                            "created_at": item.created_at,
-                        }
-                        for item in index_invalidations
-                    ]
-                    text_index_status = (
-                        "cold_rebuilt"
-                        if any(item.reason_key == "text_index_missing" for item in index_invalidations)
-                        else "stale_rebuilt"
+                rebuild_report = await self.rebuild_text_index(game_title=game_title)
+                text_index_rebuild_summary = dict(rebuild_report.summary)
+                if rebuild_report.status == "error":
+                    text_index_status = "rebuild_failed"
+                    return AgentReport.from_parts(
+                        errors=rebuild_report.errors,
+                        warnings=rebuild_report.warnings,
+                        summary=import_summary(imported_count=0, error_count=len(rebuild_report.errors)),
+                        details={
+                            "text_index_invalidations": invalidation_details,
+                            "text_index_rebuild": rebuild_report.details,
+                        },
                     )
-                    rebuild_report = await self.rebuild_text_index(game_title=game_title)
-                    text_index_rebuild_summary = dict(rebuild_report.summary)
-                    if rebuild_report.status == "error":
-                        text_index_status = "rebuild_failed"
-                        return AgentReport.from_parts(
-                            errors=rebuild_report.errors,
-                            warnings=rebuild_report.warnings,
-                            summary=import_summary(imported_count=0, error_count=len(rebuild_report.errors)),
-                            details={
-                                "text_index_invalidations": invalidation_details,
-                                "text_index_rebuild": rebuild_report.details,
-                            },
-                        )
-                    rebuild_warnings.extend(rebuild_report.warnings)
-                else:
-                    text_index_status = "used"
-                index_records = await session.read_text_index_items_by_paths(sorted(payload_paths))
-                active_items = {
-                    record.location_path: text_index_item_to_translation_item(record)
-                    for record in index_records
-                    if record.writable
-                }
+                rebuild_warnings.extend(rebuild_report.warnings)
+            else:
+                text_index_status = "used"
+            index_records = await session.read_text_index_items_by_paths(sorted(payload_paths))
+            active_items = {
+                record.location_path: text_index_item_to_translation_item(record)
+                for record in index_records
+                if record.writable
+            }
             source_residual_rules = await session.read_source_residual_rules()
 
             for location_path, raw_entry in payload.items():
@@ -324,10 +287,7 @@ class ManualTranslationAgentMixin:
             if latest_run is not None:
                 remaining_quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
-                if scope_mode == "text_index":
-                    has_pending_items = await session.count_pending_text_index_items() > 0
-                else:
-                    has_pending_items = latest_run.pending_count > 0
+                has_pending_items = await session.count_pending_text_index_items() > 0
                 if not has_pending_items and remaining_quality_error_count == 0 and not llm_failures:
                     await session.write_translation_run(
                         latest_run.model_copy(

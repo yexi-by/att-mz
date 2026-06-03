@@ -73,7 +73,9 @@ timeout = 600
 
 `base_url`、`api_key`、`model` 这三个值你的 API 服务商会提供。常用的服务商有阿里云百炼、DeepSeek、硅基流动、OpenRouter 等。不知道填什么的话，直接问你的 Agent：「我的 API 服务商是 xxx，帮我填好 A.T.T MZ 的模型配置」。
 
-> 💡 如果你习惯用源码运行，看 [进阶教学与源码编译](docs/advanced-usage.md)。普通使用不需要。
+临时覆盖模型地址和 Key 时，只使用当前环境变量：`ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。旧项目前缀的环境变量不会作为成功配置入口。
+
+> 💡 如果你习惯用源码运行，看仓库里的 [进阶教学与源码编译](https://github.com/yexi-by/att-mz/blob/main/docs/advanced-usage.md)。普通使用不需要。
 
 ## 📂 第三步：用 Agent 打开你的游戏目录
 

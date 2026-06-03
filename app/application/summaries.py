@@ -86,6 +86,11 @@ class TextTranslationSummary:
     total_pending_count: int | None = None
     text_index_status: str = ""
     text_index_rebuild_summary: JsonObject | None = None
+    stopped: bool = False
+    cancelled_unsent_batch_count: int = 0
+    cancelled_unsent_item_count: int = 0
+    sent_after_stop_completed_batch_count: int = 0
+    sent_after_stop_completed_item_count: int = 0
 
     @property
     def is_blocked(self) -> bool:

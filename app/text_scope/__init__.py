@@ -10,6 +10,7 @@ from .models import (
     TextScopeEntry,
     TextScopeResult,
     TextScopeRuleHit,
+    TextScopeSnapshot,
     TextSourceType,
     WriteBackProbeError,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "TextScopeEntry",
     "TextScopeResult",
     "TextScopeRuleHit",
+    "TextScopeSnapshot",
     "TextScopeService",
     "TextSourceType",
     "WriteBackProbeError",

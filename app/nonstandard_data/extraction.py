@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from app.plugin_text.paths import ResolvedLeaf, expand_rule_to_leaf_paths
+from app.json_path_protocol import ResolvedLeaf, expand_rule_to_leaf_paths
 from app.rmmz.loader import resolve_data_source_dir
 from app.rmmz.schema import GameData, NonstandardDataTextRuleRecord, TranslationData, TranslationItem
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction

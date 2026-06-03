@@ -3,6 +3,7 @@
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
 import time
+from dataclasses import dataclass
 from typing import cast
 
 from .common import (
@@ -89,6 +90,48 @@ from app.text_index import detect_text_index_invalidations
 from app.text_index import collect_text_index_external_rule_gate_errors
 
 
+@dataclass(frozen=True, slots=True)
+class QualityGateResult:
+    """质量 gate 的结构化问题明细和计数字段。"""
+
+    source_residual_items: JsonArray
+    text_structure_items: JsonArray
+    placeholder_risk_items: JsonArray
+    overwide_line_items: JsonArray
+    write_back_protocol_items: JsonArray
+
+    @classmethod
+    def empty(cls) -> "QualityGateResult":
+        """构造没有质量问题的 gate 结果。"""
+        return cls(
+            source_residual_items=[],
+            text_structure_items=[],
+            placeholder_risk_items=[],
+            overwide_line_items=[],
+            write_back_protocol_items=[],
+        )
+
+    def summary_fields(self) -> JsonObject:
+        """返回 Agent summary 中的质量计数字段。"""
+        return {
+            "source_residual_count": len(self.source_residual_items),
+            "text_structure_count": len(self.text_structure_items),
+            "placeholder_risk_count": len(self.placeholder_risk_items),
+            "overwide_line_count": len(self.overwide_line_items),
+            "write_back_protocol_count": len(self.write_back_protocol_items),
+        }
+
+    def detail_fields(self) -> JsonObject:
+        """返回 Agent details 中的质量明细字段。"""
+        return {
+            "source_residual_items": self.source_residual_items,
+            "text_structure_items": self.text_structure_items,
+            "placeholder_risk_items": self.placeholder_risk_items,
+            "overwide_line_items": self.overwide_line_items,
+            "write_back_protocol_items": self.write_back_protocol_items,
+        }
+
+
 def _empty_quality_report(
     *,
     errors: list[AgentIssue],
@@ -105,6 +148,7 @@ def _empty_quality_report(
     latest_run_status: str = "",
 ) -> AgentReport:
     """构造质量报告规则契约失败时的稳定空报告。"""
+    quality_gate_result = QualityGateResult.empty()
     return AgentReport.from_parts(
         errors=errors,
         warnings=[],
@@ -132,20 +176,12 @@ def _empty_quality_report(
             "quality_error_count": 0,
             "run_quality_error_count": 0,
             "model_response_error_count": 0,
-            "source_residual_count": 0,
-            "text_structure_count": 0,
-            "placeholder_risk_count": 0,
-            "overwide_line_count": 0,
-            "write_back_protocol_count": 0,
+            **quality_gate_result.summary_fields(),
             "writable_translation_count": 0,
             "write_back_probe_enabled": include_write_probe,
         },
         details={
-            "source_residual_items": [],
-            "text_structure_items": [],
-            "placeholder_risk_items": [],
-            "overwide_line_items": [],
-            "write_back_protocol_items": [],
+            **quality_gate_result.detail_fields(),
         },
     )
 
@@ -1004,6 +1040,7 @@ class QualityAgentMixin:
         if blocking_errors:
             set_progress(8, 8)
             set_status("检查没通过，停止导出质量修复表")
+            quality_gate_result = QualityGateResult.empty()
             return AgentReport.from_parts(
                 errors=blocking_errors,
                 warnings=[],
@@ -1013,11 +1050,7 @@ class QualityAgentMixin:
                     "quality_error_items_count": 0,
                     "quality_error_category_counts": _build_quality_error_category_counts([]),
                     "quality_error_count": 0,
-                    "source_residual_count": 0,
-                    "text_structure_count": 0,
-                    "placeholder_risk_count": 0,
-                    "overwide_line_count": 0,
-                    "write_back_protocol_count": 0,
+                    **quality_gate_result.summary_fields(),
                     "write_back_probe_enabled": scope.write_back_probe_enabled,
                 },
                 details={
@@ -1041,6 +1074,7 @@ class QualityAgentMixin:
         if source_residual_rule_errors:
             set_progress(8, 8)
             set_status("源文残留规则检查没通过，停止导出质量修复表")
+            quality_gate_result = QualityGateResult.empty()
             return AgentReport.from_parts(
                 errors=source_residual_rule_errors,
                 warnings=[],
@@ -1050,11 +1084,7 @@ class QualityAgentMixin:
                     "quality_error_items_count": len(quality_error_items),
                     "quality_error_category_counts": _build_quality_error_category_counts(quality_error_items),
                     "quality_error_count": len(quality_error_items),
-                    "source_residual_count": 0,
-                    "text_structure_count": 0,
-                    "placeholder_risk_count": 0,
-                    "overwide_line_count": 0,
-                    "write_back_protocol_count": 0,
+                    **quality_gate_result.summary_fields(),
                     "write_back_probe_enabled": scope.write_back_probe_enabled,
                 },
                 details={},
@@ -1348,6 +1378,13 @@ class QualityAgentMixin:
         llm_failure_counts = Counter(failure.category for failure in llm_failures)
         plugin_source_summary = _plugin_source_quality_summary(plugin_source_review)
         plugin_source_details = _plugin_source_quality_details(plugin_source_unreviewed_details)
+        quality_gate_result = QualityGateResult(
+            source_residual_items=residual_items,
+            text_structure_items=text_structure_items,
+            placeholder_risk_items=placeholder_risk_items,
+            overwide_line_items=overwide_line_items,
+            write_back_protocol_items=[],
+        )
         set_progress(total_progress_steps, total_progress_steps)
         set_status("质量报告已完成")
         stage_timings["total"] = _elapsed_ms(overall_started)
@@ -1380,11 +1417,7 @@ class QualityAgentMixin:
                 "quality_error_count": len(quality_error_items),
                 "run_quality_error_count": run_quality_error_count,
                 "model_response_error_count": sum(1 for item in quality_error_items if item.model_response.strip()),
-                "source_residual_count": len(residual_items),
-                "text_structure_count": len(text_structure_items),
-                "placeholder_risk_count": len(placeholder_risk_items),
-                "overwide_line_count": len(overwide_line_items),
-                "write_back_protocol_count": 0,
+                **quality_gate_result.summary_fields(),
                 "writable_translation_count": len(translated_paths & writable_paths),
                 "write_back_probe_enabled": False,
                 "text_index_status": "used",
@@ -1396,11 +1429,7 @@ class QualityAgentMixin:
                 "error_type_counts": dict(error_type_counts),
                 "llm_failure_counts": dict(llm_failure_counts),
                 "quality_error_items": quality_error_details,
-                "source_residual_items": residual_items,
-                "text_structure_items": text_structure_items,
-                "placeholder_risk_items": placeholder_risk_items,
-                "overwide_line_items": overwide_line_items,
-                "write_back_protocol_items": [],
+                **quality_gate_result.detail_fields(),
                 **plugin_source_details,
                 "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_nonstandard_data_files),
                 "coverage": {
@@ -1480,6 +1509,7 @@ class QualityAgentMixin:
                 set_status("文本范围索引不可用，自动重建索引")
                 rebuild_report = await self.rebuild_text_index(
                     game_title=game_title,
+                    setting_overrides=setting_overrides,
                     callbacks=(set_progress, advance_progress, set_status),
                 )
                 if rebuild_report.status == "error":
@@ -1500,6 +1530,44 @@ class QualityAgentMixin:
                         },
                         details={
                             "text_index_invalidations": invalidation_details,
+                            "text_index_rebuild": rebuild_report.details,
+                        },
+                    )
+                post_rebuild_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
+                )
+                if post_rebuild_invalidations:
+                    set_progress(1, 1)
+                    set_status("文本范围索引重建后仍与本次配置不匹配，质量报告已停止")
+                    return AgentReport.from_parts(
+                        errors=[
+                            issue(
+                                "text_index_rebuild_mismatch",
+                                "文本范围索引重建后仍不匹配本次命令配置，不能使用错配索引生成质量报告",
+                            )
+                        ],
+                        warnings=rebuild_report.warnings,
+                        summary={
+                            "extractable_count": 0,
+                            "translated_count": 0,
+                            "pending_count": 0,
+                            "source_language": session.source_language,
+                            "target_language": session.target_language,
+                            "write_back_probe_enabled": include_write_probe,
+                            "text_index_status": "rebuild_failed",
+                            "text_index_rebuild_summary": rebuild_report.summary,
+                        },
+                        details={
+                            "text_index_invalidations": invalidation_details,
+                            "post_rebuild_invalidations": [
+                                {
+                                    "reason_key": item.reason_key,
+                                    "detail": item.detail,
+                                    "created_at": item.created_at,
+                                }
+                                for item in post_rebuild_invalidations
+                            ],
                             "text_index_rebuild": rebuild_report.details,
                         },
                     )
@@ -1655,6 +1723,7 @@ class QualityAgentMixin:
             warnings.extend(coverage_report.warnings)
             errors.extend(source_residual_rule_errors)
             errors.extend(workflow_gate_agent_errors)
+            quality_gate_result = QualityGateResult.empty()
             set_progress(1, 1)
             set_status("覆盖审计未通过，质量报告已停止")
             return AgentReport.from_parts(
@@ -1685,11 +1754,7 @@ class QualityAgentMixin:
                     "quality_error_count": len(quality_error_items),
                     "run_quality_error_count": run_quality_error_count,
                     "model_response_error_count": sum(1 for item in quality_error_items if item.model_response.strip()),
-                    "source_residual_count": 0,
-                    "text_structure_count": 0,
-                    "placeholder_risk_count": 0,
-                    "overwide_line_count": 0,
-                    "write_back_protocol_count": 0,
+                    **quality_gate_result.summary_fields(),
                     "writable_translation_count": len(translated_paths & writable_paths),
                     "write_back_probe_enabled": scope.write_back_probe_enabled,
                 },
@@ -1697,11 +1762,7 @@ class QualityAgentMixin:
                     "error_type_counts": dict(Counter(item.error_type for item in quality_error_items)),
                     "llm_failure_counts": dict(Counter(failure.category for failure in llm_failures)),
                     "quality_error_items": [_build_translation_error_quality_detail(item) for item in quality_error_items],
-                    "source_residual_items": [],
-                    "text_structure_items": [],
-                    "placeholder_risk_items": [],
-                    "overwide_line_items": [],
-                    "write_back_protocol_items": [],
+                    **quality_gate_result.detail_fields(),
                     **plugin_source_details,
                     "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_nonstandard_data_files),
                     "coverage": coverage_report.details,
@@ -1736,11 +1797,28 @@ class QualityAgentMixin:
             text_rules=text_rules,
             writable_paths=writable_paths,
         )
-        residual_items: JsonArray = []
-        text_structure_items: JsonArray = []
-        placeholder_risk_items: JsonArray = []
-        overwide_line_items: JsonArray = []
-        write_back_protocol_items: JsonArray = []
+        native_quality_details = collect_agent_service_native_quality_details(
+            items=active_translated_items,
+            text_rules=text_rules,
+            source_residual_rules=source_residual_rules,
+        )
+        write_back_protocol_items = collect_agent_service_native_write_protocol_details(
+            game_data=game_data.data,
+            plugins_js=[plugin for plugin in game_data.plugins_js],
+            items=active_translated_items,
+        )
+        quality_gate_result = QualityGateResult(
+            source_residual_items=native_quality_details.source_residual_items,
+            text_structure_items=native_quality_details.text_structure_items,
+            placeholder_risk_items=native_quality_details.placeholder_risk_items,
+            overwide_line_items=native_quality_details.overwide_line_items,
+            write_back_protocol_items=write_back_protocol_items,
+        )
+        residual_items = quality_gate_result.source_residual_items
+        text_structure_items = quality_gate_result.text_structure_items
+        placeholder_risk_items = quality_gate_result.placeholder_risk_items
+        overwide_line_items = quality_gate_result.overwide_line_items
+        write_back_protocol_items = quality_gate_result.write_back_protocol_items
         advance_progress(len(active_translated_items) * 4 + protocol_probe_count)
         set_status("整理源文残留")
         residual_count = len(residual_items)
@@ -1815,11 +1893,7 @@ class QualityAgentMixin:
                 "quality_error_count": len(quality_error_items),
                 "run_quality_error_count": run_quality_error_count,
                 "model_response_error_count": model_response_count,
-                "source_residual_count": residual_count,
-                "text_structure_count": len(text_structure_items),
-                "placeholder_risk_count": len(placeholder_risk_items),
-                "overwide_line_count": len(overwide_line_items),
-                "write_back_protocol_count": len(write_back_protocol_items),
+                **quality_gate_result.summary_fields(),
                 "writable_translation_count": len(translated_paths & writable_paths),
                 "write_back_probe_enabled": scope.write_back_probe_enabled,
                 "write_back_gate": write_back_gate_summary,
@@ -1828,11 +1902,7 @@ class QualityAgentMixin:
                 "error_type_counts": dict(error_type_counts),
                 "llm_failure_counts": dict(llm_failure_counts),
                 "quality_error_items": quality_error_details,
-                "source_residual_items": residual_items,
-                "text_structure_items": text_structure_items,
-                "placeholder_risk_items": placeholder_risk_items,
-                "overwide_line_items": overwide_line_items,
-                "write_back_protocol_items": write_back_protocol_items,
+                **quality_gate_result.detail_fields(),
                 **plugin_source_details,
                 "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_nonstandard_data_files),
                 "coverage": coverage_report.details,

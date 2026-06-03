@@ -39,6 +39,7 @@ from app.application.flow_gate import (
     ensure_empty_rule_confirmed,
     note_tag_rule_scope_hash_for_text_rules,
 )
+from app.persistence import RuleImportUnitOfWork
 from app.plugin_source_text import (
     PluginSourceTextExtraction,
     build_plugin_source_rule_records_from_import,
@@ -207,17 +208,18 @@ class RuleValidationAgentMixin:
                 if rule_errors:
                     messages = "；".join(_format_mv_namebox_rule_error(error_detail) for error_detail in rule_errors)
                     raise RuntimeError(messages)
-                await session.replace_mv_virtual_namebox_rules(records)
-                if records:
-                    await session.delete_rule_review_state(rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
-                else:
-                    await session.replace_rule_review_state(
-                        rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-                        scope_hash=mv_virtual_namebox_rule_scope_hash(
-                            mv_virtual_namebox_candidate_details(game_data)
-                        ),
-                        reviewed_empty=True,
-                    )
+                async with RuleImportUnitOfWork(session):
+                    await session.replace_mv_virtual_namebox_rules(records)
+                    if records:
+                        await session.delete_rule_review_state(rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
+                    else:
+                        await session.replace_rule_review_state(
+                            rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+                            scope_hash=mv_virtual_namebox_rule_scope_hash(
+                                mv_virtual_namebox_candidate_details(game_data)
+                            ),
+                            reviewed_empty=True,
+                        )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则导入失败: {type(error).__name__}: {error}")],
@@ -378,28 +380,29 @@ class RuleValidationAgentMixin:
                 stale_paths = sorted(old_note_paths - new_note_paths)
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
-                if stale_paths:
-                    stale_items = await session.read_translated_items_by_paths(stale_paths)
-                    backup = await write_rule_import_translation_backup(
-                        game_title=game_title,
-                        domain="note-tag-rules",
-                        items=stale_items,
-                    )
-                    if backup is not None:
-                        deleted_translation_backup_path = backup.backup_path
-                    deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
-                await session.replace_note_tag_text_rules(records)
-                if records:
-                    await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
-                else:
-                    await session.replace_rule_review_state(
-                        rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                        scope_hash=note_tag_rule_scope_hash_for_text_rules(
-                            game_data=game_data,
-                            text_rules=text_rules,
-                        ),
-                        reviewed_empty=True,
-                    )
+                async with RuleImportUnitOfWork(session):
+                    if stale_paths:
+                        stale_items = await session.read_translated_items_by_paths(stale_paths)
+                        backup = await write_rule_import_translation_backup(
+                            game_title=game_title,
+                            domain="note-tag-rules",
+                            items=stale_items,
+                        )
+                        if backup is not None:
+                            deleted_translation_backup_path = backup.backup_path
+                        deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
+                    await session.replace_note_tag_text_rules(records)
+                    if records:
+                        await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
+                    else:
+                        await session.replace_rule_review_state(
+                            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+                            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                                game_data=game_data,
+                                text_rules=text_rules,
+                            ),
+                            reviewed_empty=True,
+                        )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
@@ -713,31 +716,32 @@ class RuleValidationAgentMixin:
                 stale_paths = sorted(old_paths - new_paths)
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
-                if stale_paths:
-                    stale_path_set = set(stale_paths)
-                    stale_items = [
-                        item
-                        for item in old_translated_items
-                        if item.location_path in stale_path_set
-                    ]
-                    backup = await write_rule_import_translation_backup(
-                        game_title=game_title,
-                        domain="plugin-source-rules",
-                        items=stale_items,
-                    )
-                    if backup is not None:
-                        deleted_translation_backup_path = backup.backup_path
-                    deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
-                await session.replace_plugin_source_text_rules(records)
-                await session.clear_plugin_source_runtime_write_maps()
-                if records:
-                    await session.delete_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN)
-                else:
-                    await session.replace_rule_review_state(
-                        rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
-                        scope_hash=plugin_source_rule_scope_hash(game_data),
-                        reviewed_empty=True,
-                    )
+                async with RuleImportUnitOfWork(session):
+                    if stale_paths:
+                        stale_path_set = set(stale_paths)
+                        stale_items = [
+                            item
+                            for item in old_translated_items
+                            if item.location_path in stale_path_set
+                        ]
+                        backup = await write_rule_import_translation_backup(
+                            game_title=game_title,
+                            domain="plugin-source-rules",
+                            items=stale_items,
+                        )
+                        if backup is not None:
+                            deleted_translation_backup_path = backup.backup_path
+                        deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
+                    await session.replace_plugin_source_text_rules(records)
+                    await session.clear_plugin_source_runtime_write_maps()
+                    if records:
+                        await session.delete_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN)
+                    else:
+                        await session.replace_rule_review_state(
+                            rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
+                            scope_hash=plugin_source_rule_scope_hash(game_data),
+                            reviewed_empty=True,
+                        )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],

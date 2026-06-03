@@ -1,7 +1,7 @@
 """事件指令文本规则驱动提取模块。"""
 
 from app.event_command_text.importer import command_matches_filters
-from app.plugin_text.paths import (
+from app.json_path_protocol import (
     expand_rule_to_leaf_paths,
     jsonpath_to_event_command_location_path,
     resolve_event_command_leaves,

@@ -15,7 +15,7 @@
 7. 涉及数据库时读 [持久化层](persistence.md)。
 8. 涉及 Rust 加速能力时读 [原生核心](native-core.md)。
 9. 提交、发布或补测试前读 [发布与测试](release-and-tests.md)。
-10. 准备大范围破坏性重构前读 [超重型破坏性重构前 Review 指南](pre-heavy-refactor-review.md)。
+10. 准备大范围破坏性重构前读归档中的 [超重型破坏性重构前 Review 指南](../archive/2026-heavy-refactor/pre-heavy-refactor-review.md)。
 
 ## 模块导航
 
@@ -30,7 +30,7 @@
 | [持久化层](persistence.md) | `app.persistence` | 多游戏数据库、会话和记录读写如何组织 |
 | [原生核心](native-core.md) | `rust/`、`app.native_quality` | PyO3 入口和 Rust 质量检查如何提供加速能力 |
 | [发布与测试](release-and-tests.md) | `.github`、`scripts`、`skills`、`prompts`、`tests` | 发行包如何构建、Skill 如何区分、测试如何验收 |
-| [超重型破坏性重构前 Review 指南](pre-heavy-refactor-review.md) | 全项目结构、主流程、事实来源、公共抽象、测试和文档契约 | 大范围重构前先审哪些结构债、旧路径和重复逻辑 |
+| [超重型破坏性重构前 Review 指南](../archive/2026-heavy-refactor/pre-heavy-refactor-review.md) | 全项目结构、主流程、事实来源、公共抽象、测试和文档契约 | 大范围重构前先审哪些结构债、旧路径和重复逻辑 |
 
 ## Review 记录
 

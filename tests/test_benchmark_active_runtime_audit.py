@@ -59,7 +59,7 @@ def test_parse_args_reads_cache_thresholds(tmp_path: Path) -> None:
 
 
 def test_parse_args_reads_register_sample_mode(tmp_path: Path) -> None:
-    """当前运行审计性能脚本支持在临时目录注册样本副本。"""
+    """当前运行审计性能脚本支持在临时工作目录注册样本副本。"""
     sample = tmp_path / "sample"
 
     options = parse_args([
@@ -357,7 +357,7 @@ def test_prepare_registered_benchmark_cleans_temp_when_add_game_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """重新注册样本准备失败时清理临时目录。"""
+    """重新注册样本准备失败时清理临时工作目录。"""
     sample = tmp_path / "sample"
     data_dir = sample / "data"
     js_dir = sample / "js"
@@ -367,7 +367,7 @@ def test_prepare_registered_benchmark_cleans_temp_when_add_game_fails(
     temp_root = tmp_path / "audit-temp"
 
     def fake_mkdtemp(*, prefix: str) -> str:
-        """返回可断言的临时目录路径。"""
+        """返回可断言的临时工作目录路径。"""
         assert prefix == "att_mz_rebuild_benchmark_"
         temp_root.mkdir()
         return str(temp_root)
@@ -470,7 +470,7 @@ def test_main_returns_nonzero_on_cache_threshold_failure_and_cleans_temp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """当前运行审计缓存阈值失败时返回非 0，并清理临时目录。"""
+    """当前运行审计缓存阈值失败时返回非 0，并清理临时工作目录。"""
     temp_root = tmp_path / "audit-bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -496,7 +496,7 @@ def test_main_returns_nonzero_on_cache_threshold_failure_and_cleans_temp(
     monkeypatch.setattr(active_runtime_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: ActiveRuntimeAuditBenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     monkeypatch.setattr(
@@ -548,7 +548,7 @@ def test_main_keep_temp_skips_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """当前运行审计性能脚本保留临时目录时不执行删除。"""
+    """当前运行审计性能脚本保留临时工作目录时不执行删除。"""
     temp_root = tmp_path / "audit-bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -574,7 +574,7 @@ def test_main_keep_temp_skips_cleanup(
     monkeypatch.setattr(active_runtime_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: ActiveRuntimeAuditBenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     monkeypatch.setattr(
@@ -620,7 +620,7 @@ def test_main_cleans_temp_and_reports_json_when_run_raises(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """当前运行审计脚本运行阶段异常时仍清理临时目录。"""
+    """当前运行审计脚本运行阶段异常时仍清理临时工作目录。"""
     temp_root = tmp_path / "audit-bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -646,7 +646,7 @@ def test_main_cleans_temp_and_reports_json_when_run_raises(
     monkeypatch.setattr(active_runtime_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: ActiveRuntimeAuditBenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     def fake_run_benchmark(

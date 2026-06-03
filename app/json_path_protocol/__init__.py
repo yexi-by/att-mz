@@ -271,7 +271,7 @@ def jsonpath_to_path_parts(path: str) -> list[str | int]:
     return parts
 
 
-def jsonpath_to_location_path(*, json_path: str, plugin_index: int) -> str:
+def jsonpath_to_plugin_location_path(*, json_path: str, plugin_index: int) -> str:
     """把插件级 JSONPath 转成回写使用的 `location_path`。"""
     path_parts = jsonpath_to_path_parts(json_path)
     if not path_parts or path_parts[0] != "parameters":
@@ -361,7 +361,7 @@ __all__: list[str] = [
     "expand_rule_to_leaf_paths",
     "jsonpath_matches_template",
     "jsonpath_template_is_ancestor",
-    "jsonpath_to_location_path",
+    "jsonpath_to_plugin_location_path",
     "jsonpath_to_event_command_location_path",
     "jsonpath_to_path_parts",
     "resolve_event_command_leaves",

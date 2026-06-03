@@ -4,7 +4,7 @@
 
 ## 常见文件
 
-- `manifest.json`：工作区清理清单和基础信息。
+- `manifest.json`：本轮工作区的唯一交换边界，记录 `files`、`generated`、`layout` 和 `workflow`。目录里存在但未列入 `manifest.files` 的旧文件不属于本轮输入，`validate-agent-workspace` 不会据此启用插件源码或非标准 data 支线，`cleanup-agent-workspace` 也只清理 `manifest.files` 记录的文件并提示旧文件不会参与本轮验收。
 - `mv-virtual-namebox-candidates.json`：MV 专用候选摘要，列出 `101` 后首条非空 `401` 文本；MZ 工作区没有此文件。
 - `mv-virtual-namebox-rules.json`：MV 专用虚拟名字框规则。合法空结构是 `{ "rules": [] }`。
 - `placeholder-candidates.json`：初始候选控制符报告，只供主代理参考。
@@ -31,6 +31,8 @@
 - `note-tag-rules.json`：Note 标签规则草稿。合法空结构是 `{}`。
 
 `prepare-agent-workspace` 会优先把 CLI 已保存到当前游戏状态里的字段译名表、正文术语表、MV 虚拟名字框规则、插件规则、事件指令规则、Note 标签规则、非标准 data 规则、普通占位符规则和结构化占位符规则回填到工作区。插件源码规则和非标准 data 规则只在高风险或支线已启动时回填。
+
+工作区目录本身不是事实来源；本轮 `manifest.files` 才是 Agent、CLI 校验和清理命令共同认可的输入集合。复用旧工作区时，旧的 `plugin-source-rules.json`、`nonstandard-data-rules.json` 或 `nonstandard-data/` 只有在当前 manifest 明确列出时才参与本轮验收。
 
 ## 报告明细模式
 

@@ -117,6 +117,7 @@ class ActiveRuntimePluginSourceAudit:
     def summary_json(self) -> JsonObject:
         """转换成质量报告摘要字段。"""
         counts = self.issue_counts
+        default_count = 0
         summary: JsonObject = {
             "active_runtime_scanned_file_count": self.scanned_file_count,
             "active_runtime_active_file_count": self.active_file_count,
@@ -127,10 +128,10 @@ class ActiveRuntimePluginSourceAudit:
             "active_runtime_issue_count": len(self.issues),
             "active_runtime_blocking_issue_count": sum(1 for issue in self.issues if issue.blocking),
             "active_runtime_warning_issue_count": sum(1 for issue in self.issues if not issue.blocking),
-            "active_runtime_read_error_count": counts.get("active_runtime_read_error", 0),
-            "active_runtime_syntax_error_count": counts.get("active_runtime_syntax_error", 0),
-            "active_runtime_source_residual_count": counts.get("active_runtime_source_residual", 0),
-            "active_runtime_placeholder_risk_count": counts.get("active_runtime_placeholder_risk", 0),
+            "active_runtime_read_error_count": counts.get("active_runtime_read_error", default_count),
+            "active_runtime_syntax_error_count": counts.get("active_runtime_syntax_error", default_count),
+            "active_runtime_source_residual_count": counts.get("active_runtime_source_residual", default_count),
+            "active_runtime_placeholder_risk_count": counts.get("active_runtime_placeholder_risk", default_count),
         }
         if self.scan_cache_stats is not None:
             summary.update(self.scan_cache_stats.to_summary_json())

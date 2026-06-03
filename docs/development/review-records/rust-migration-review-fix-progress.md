@@ -12,7 +12,7 @@
 - 写入路径等价：清理旧 Python 写回路径，统一走 handler/native plan，补 `write-back`、`rebuild-active-runtime`、`run-all` 真实路径测试，插件源码 runtime map 保存前做最终 AST 验证。
 - 文本协议与 fail-fast：结构化字段按插件配置、事件参数、Note 标签原字段语义检查；关键布局字段、事件排序路径、启用插件名称、译文行缺失或空白均显式报错。
 - 性能与并发：批量 JS AST 扫描、Rayon 并发、只读文本范围默认不跑写回探针、状态查询快速路径、工作区验收上下文复用、当前运行审计缓存、JSON/deepcopy 减重、sidecar 大文件内容。
-- 大样本验证：使用 `data/db/サキュバスアカデミア.db` 的临时副本和样本副本完成真实 `rebuild-active-runtime` 替换路径验证；原始样本未污染，临时目录已清理。
+- 大样本验证：使用 `data/db/<样本游戏>.db` 的临时副本和样本副本完成真实 `rebuild-active-runtime` 替换路径验证；原始样本未污染，临时工作目录已清理。
 - Skill 线程策略：开发版和发行版 Skill 明确 `ATT_MZ_RUST_THREADS` 没有 4 线程上限，长任务优先按运行主机可用逻辑处理器数量配置。
 
 ## 已删除的过度产物

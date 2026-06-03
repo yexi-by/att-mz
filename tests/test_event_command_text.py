@@ -17,9 +17,22 @@ from app.event_command_text import (
     resolve_event_command_codes,
 )
 from app.rmmz import load_game_data
-from app.rmmz.schema import EventCommandTextRuleRecord, TranslationData, TranslationItem
+from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationData, TranslationItem
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
 from tests._native_write_plan_helper import reset_writable_copies, write_data_text
+
+
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
 
 
 @pytest.mark.asyncio
@@ -251,6 +264,7 @@ async def test_event_command_rule_import_extracts_and_writes_back(
     assert item.original_lines == ["プラグイン台詞"]
 
     item.translation_lines = ["事件指令译文"]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 
@@ -439,6 +453,7 @@ async def test_event_command_nested_write_error_reports_location_path(
     item.location_path = "CommonEvents.json/1/4/parameters/3/missing"
     item.translation_lines = ["事件指令译文"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError) as exc_info:
         write_data_text(game_data, [item])
@@ -500,6 +515,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
 
     translated_message = "\n　" + r"\C[2]任务说明\C[0]\n前往村子。" + "　\n"
     item.translation_lines = [translated_message.strip()]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 
@@ -565,6 +581,7 @@ async def test_event_command_direct_parameter_string_writes_back(
     assert item.original_lines == ["トップパラメータ"]
 
     item.translation_lines = ["顶层参数译文"]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 

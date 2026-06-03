@@ -25,7 +25,7 @@ RELEASE_DIRECTORY_NAME = "att-mz"
 DEFAULT_ZIP_NAME = "att-mz-windows-x86_64.zip"
 RELEASE_SKILL_SOURCE = ROOT / "skills" / "att-mz-release" / "SKILL.md"
 RELEASE_SKILL_REFERENCES_SOURCE = ROOT / "skills" / "att-mz-release" / "references"
-RELEASE_README_SOURCE = ROOT / "docs" / "release-readme.md"
+RELEASE_README_SOURCE = ROOT / "README.md"
 
 
 @dataclass(frozen=True)

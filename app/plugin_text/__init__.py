@@ -7,7 +7,6 @@ from .common import (
     collect_plugin_json_string_leaf_candidates,
     expand_rule_to_leaf_paths,
     extract_plugin_name,
-    jsonpath_to_location_path,
     resolve_plugin_leaves,
 )
 from .extraction import PluginTextExtraction
@@ -32,7 +31,6 @@ __all__: list[str] = [
     "export_plugins_json_file",
     "expand_rule_to_leaf_paths",
     "extract_plugin_name",
-    "jsonpath_to_location_path",
     "load_plugin_rule_import_file",
     "parse_plugin_rule_import_text",
     "resolve_plugin_leaves",

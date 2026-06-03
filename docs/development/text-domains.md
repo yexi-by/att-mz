@@ -51,7 +51,7 @@
 
 ## 测试覆盖
 
-- `tests/test_rmmz_loader_extraction_writeback.py` 覆盖标准数据提取和写入。
+- `tests/test_rmmz_write_plan.py`、`tests/test_write_back_transactions.py` 和 `tests/test_rmmz_post_write_audit.py` 覆盖标准数据提取后的写回计划、写入事务和写后审计。
 - `tests/test_plugin_text.py` 覆盖插件规则和插件文本写入。
 - `tests/test_event_command_text.py` 覆盖事件指令规则。
 - `tests/test_plugin_source_text.py` 覆盖插件源码风险扫描、规则提取和写入。

@@ -53,6 +53,6 @@
 ## 测试覆盖
 
 - `cargo test --manifest-path rust/Cargo.toml` 覆盖 Rust 质量检查、规则错误、写回计划模式、线程配置和结构性边界。
-- `tests/test_agent_toolkit.py` 间接覆盖 Python 调用原生质量检查。
+- `tests/test_agent_toolkit_quality_report.py` 间接覆盖 Python 调用原生质量检查。
 - `tests/test_native_adapters.py` 覆盖 Python 原生适配层错误状态、字段类型和写文件路径归属校验。
-- `tests/test_rmmz_loader_extraction_writeback.py` 间接覆盖写文件前检查、写入协议和字体扫描协作。
+- `tests/test_rmmz_write_plan.py`、`tests/test_write_back_transactions.py` 和 `tests/test_rmmz_font_transaction.py` 间接覆盖写文件前检查、写入协议和字体扫描协作。

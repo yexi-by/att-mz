@@ -4,6 +4,7 @@
 
 import time
 
+from app.application.flow_gate import collect_plugin_source_workflow_gate_errors
 from app.rmmz.text_rules import JsonObject
 from app.text_index import rebuild_text_index as rebuild_persistent_text_index
 
@@ -11,10 +12,12 @@ from .common import (
     AgentReport,
     AgentServiceContext,
     QualityProgressCallbacks,
+    SettingOverrides,
     TextRules,
     TextScopeService,
     _noop_quality_progress_callbacks,
     _text_scope_blocking_errors,
+    issue,
     load_setting,
     native_thread_count,
     rule_contract_issues_to_agent_issues,
@@ -29,6 +32,7 @@ class TextIndexAgentMixin:
         self: AgentServiceContext,
         *,
         game_title: str,
+        setting_overrides: SettingOverrides | None = None,
         callbacks: QualityProgressCallbacks | None = None,
     ) -> AgentReport:
         """重建当前游戏的持久文本范围索引。"""
@@ -53,7 +57,11 @@ class TextIndexAgentMixin:
         set_progress(0, 5)
         set_status("加载配置和规则")
         async with await self.game_registry.open_game(game_title) as session:
-            setting = load_setting(self.setting_path, source_language=session.source_language)
+            setting = load_setting(
+                self.setting_path,
+                overrides=setting_overrides,
+                source_language=session.source_language,
+            )
             custom_rules = await self._resolve_custom_rules(
                 session=session,
                 custom_placeholder_rules_text=None,
@@ -64,14 +72,13 @@ class TextIndexAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            plugin_source_records = await session.read_plugin_source_text_rules()
             advance_progress(1)
             finish_stage("load_config_and_rules")
 
             set_status("加载翻译源视图")
             game_data = await self._load_translation_source_game_data(
                 session,
-                include_plugin_source_files=bool(plugin_source_records),
+                include_plugin_source_files=True,
             )
             translated_items = await session.read_translated_items()
             advance_progress(1)
@@ -124,6 +131,28 @@ class TextIndexAgentMixin:
                     summary=summary,
                     details={},
                 )
+            workflow_gate_errors = await collect_plugin_source_workflow_gate_errors(
+                session=session,
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+            if workflow_gate_errors:
+                set_progress(5, 5)
+                set_status("工作流前置检查没通过，未重建文本范围索引")
+                summary = base_summary()
+                summary.update(
+                    {
+                        "index_status": "not_rebuilt",
+                        "indexed_count": 0,
+                        "include_write_probe": True,
+                    }
+                )
+                return AgentReport.from_parts(
+                    errors=[issue(error.code, error.message) for error in workflow_gate_errors],
+                    warnings=[],
+                    summary=summary,
+                    details={},
+                )
             advance_progress(1)
 
             set_status("写入持久文本范围索引")
@@ -132,6 +161,7 @@ class TextIndexAgentMixin:
                 game_data=game_data,
                 setting=setting,
                 text_rules=text_rules,
+                setting_overrides=setting_overrides,
                 scope=scope,
             )
             advance_progress(1)

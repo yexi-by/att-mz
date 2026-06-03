@@ -6,8 +6,8 @@ from app.event_command_text.importer import command_matches_filters
 from app.note_tag_text.parser import iter_note_tag_matches
 from app.note_tag_text.sources import collect_note_tag_sources, note_file_pattern_matches
 from app.nonstandard_data import NonstandardDataTextExtraction
+from app.json_path_protocol import jsonpath_to_event_command_location_path, resolve_event_command_leaves
 from app.plugin_text.common import expand_rule_to_leaf_paths, jsonpath_to_location_path, resolve_plugin_leaves
-from app.plugin_text.paths import jsonpath_to_event_command_location_path, resolve_event_command_leaves
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,

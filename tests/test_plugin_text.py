@@ -19,9 +19,30 @@ from app.plugin_text import (
     resolve_plugin_leaves,
 )
 from app.rmmz import load_game_data
-from app.rmmz.schema import PluginTextRuleRecord
+from app.rmmz.schema import GameData, PluginTextRuleRecord
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from tests._native_write_plan_helper import reset_writable_copies, write_plugin_text
+
+
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
+
+
+def _write_current_plugins_js(game_data: GameData) -> None:
+    """把测试中修改后的插件配置写成真实注册输入。"""
+    _ = game_data.layout.plugins_path.write_text(
+        f"var $plugins = {json.dumps(game_data.plugins_js, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.asyncio
@@ -327,6 +348,7 @@ async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_di
         else:
             item.translation_lines = ["嵌套译文"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_plugin_text(game_data, items)
 
@@ -354,6 +376,7 @@ async def test_plugin_text_write_back_rejects_internal_placeholder_leak(minimal_
     ].translation_items[0]
     item.translation_lines = ["插件译文[RMMZ_TEXT_COLOR_0]"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError, match="译文残留项目内部占位符"):
         write_plugin_text(game_data, [item])
@@ -392,6 +415,8 @@ async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_g
 
     translated_note = "\n　" + r"\C[2]目标人物的位置\C[0]\n前往村子中央。" + "　\n"
     item.translation_lines = [translated_note.strip()]
+    _write_current_plugins_js(game_data)
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_plugin_text(game_data, [item])
 

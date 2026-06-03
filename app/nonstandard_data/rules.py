@@ -9,7 +9,7 @@ from typing import ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from app.plugin_text.paths import (
+from app.json_path_protocol import (
     ResolvedLeaf,
     expand_rule_to_leaf_paths,
     jsonpath_to_path_parts,

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import cast
 
-from app.plugin_text.paths import expand_rule_to_leaf_paths
+from app.json_path_protocol import expand_rule_to_leaf_paths
 from app.rmmz.loader import resolve_data_source_dir
 from app.rmmz.schema import GameLayout, NonstandardDataTextRuleRecord
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, coerce_json_value

@@ -7,7 +7,7 @@ from typing import ClassVar, cast
 import aiofiles
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from app.plugin_text.paths import (
+from app.json_path_protocol import (
     build_json_string_leaf_path_hint,
     expand_rule_to_leaf_paths,
     resolve_event_command_leaves,

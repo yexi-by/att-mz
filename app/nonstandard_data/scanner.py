@@ -12,7 +12,7 @@ from typing import cast
 
 import aiofiles
 
-from app.plugin_text.paths import ResolvedLeaf, quote_jsonpath_key
+from app.json_path_protocol import ResolvedLeaf, quote_jsonpath_key
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import resolve_data_source_dir
 from app.rmmz.schema import FIXED_FILE_NAMES, GameLayout, MAP_PATTERN

@@ -6,7 +6,7 @@
 
 - 当前分支与 `main` 指向同一提交，迁移变更主要位于未提交工作区和未跟踪文件中。
 - 工具链检查通过：`uv run basedpyright` 为 0 error、0 warning；`uv run pytest` 为 454 passed；`cargo fmt --manifest-path rust/Cargo.toml -- --check`、`cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings`、`cargo test --manifest-path rust/Cargo.toml` 均通过，Rust 测试 33 passed。
-- 动态样本已验证：`D:\h-game\测试样本\已汉化\テイルズ・テイルス` 的临时副本可以注册和扫描，但存在规则与占位符阻断；临时目录已删除。
+- 动态样本已验证：`<样本游戏目录>` 的临时副本可以注册和扫描，但存在规则与占位符阻断；临时工作目录已删除。
 - 当前不建议合入。阻断原因是写入前质量 gate 和写回外部契约出现实质退化，动态样本已复现 `quality-report` 失败但 `write-back`、`rebuild-active-runtime` 返回 `ok`。
 
 以上结论为 review 阶段记录；修复执行后的状态、命令和剩余风险见下一节。
@@ -49,13 +49,13 @@ uv run pytest
 
 动态样本回归：
 
-- 样本源：`D:\h-game\测试样本\已汉化\頽廃のシスター`。
-- 临时副本：`C:\Users\夜袭\AppData\Local\Temp\att-mz-dynamic-fix-74a4173ae66d4c83b8b50cbe0f50529c\game`。
-- 临时 `ATT_MZ_HOME`：同一临时目录下的 `home`。
+- 样本源：`<样本游戏目录>`。
+- 临时副本：`<系统临时工作目录>`。
+- 临时 `ATT_MZ_HOME`：同一临时工作目录下的 `home`。
 - 执行命令：`add-game`、`doctor --no-check-llm`、`scan-placeholder-candidates`、`text-scope`、`quality-report`、`write-back`、`rebuild-active-runtime`、`translate --max-items 3 --max-batches 1 --time-limit-seconds 300 --translation-worker-count 1`。
 - 结果：`quality-report` 退出码 1，`status=error`，`code=coverage_missing_translation`，报告 12577 条当前可写文本还没成功保存译文；`write-back`、`rebuild-active-runtime`、`translate` 均退出码 1，`status=error`，`code=business_error`，在模型调用和写文件前停止。
 - 写入校验：`data/System.json` 和 `js/plugins.js` 哈希未变化。
-- 清理校验：临时目录已删除，`Exists=false`。
+- 清理校验：临时工作目录已删除，`Exists=false`。
 
 剩余风险：
 
@@ -299,13 +299,13 @@ uv run pytest
 
 ## 第 6 轮：动态样本 Review
 
-### R6-1 [P0] 真实样本复现 gate 退化
+### R6-1 [P0] 外部样本复现 gate 退化
 
 发现：同一个临时样本中，`quality-report` 返回 `error`，但 `write-back` 返回 `ok`。
 
 证据：
-- 样本源：`D:\h-game\测试样本\已汉化\テイルズ・テイルス`。
-- 样本只复制到临时目录运行，临时目录已删除。
+- 样本源：`<样本游戏目录>`。
+- 样本只复制到临时工作目录运行，临时工作目录已删除。
 - `quality-report` 退出码 1，`status=error`，`pending_count=4321`，并报告术语、插件规则、事件指令规则、Note 标签规则、占位符规则缺失。
 - 同一状态下 `write-back` 退出码 0，`status=ok`，写入计数为 0。
 
@@ -352,7 +352,7 @@ uv run pytest
 
 ### R6-5 [P2] 非目标引擎样本已跳过
 
-发现：`D:\h-game\测试样本\未汉化` 下若干候选不是目标 MV/MZ 引擎。
+发现：`<未筛选样本目录>` 下若干候选不是目标 MV/MZ 引擎。
 
 证据：
 - `FantasMv941` 为 RGSS 形态，包含 `Game.rgssad`。
@@ -393,7 +393,7 @@ uv run python main.py translate --game-path <临时游戏副本> --max-items 3 -
 
 动态样本清理：
 
-- 临时目录：`C:\Users\夜袭\AppData\Local\Temp\att-mz-dynamic-review-27126d32ae424ccf987165c8550719f8`
+- 临时工作目录：`<系统临时工作目录>`
 - 清理校验：`Exists=false`
 
 ## 修复优先级建议
@@ -403,4 +403,3 @@ uv run python main.py translate --game-path <临时游戏副本> --max-items 3 -
 3. 补 Rust plan 等价问题：标准 data 白名单、manifest 校验、插件配置解析、替换后 AST 审计、文本协议外壳校验。
 4. 补 native 边界问题：路径 containment、`status=error` 解析、线程配置接入。
 5. 用动态样本和新增测试固定回归，确保工具链通过同时覆盖外部命令语义。
-

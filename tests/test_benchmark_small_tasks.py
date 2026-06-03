@@ -163,9 +163,9 @@ def test_run_benchmark_records_all_small_task_commands(
 
     assert captured_env["ATT_MZ_HOME"] == str(prepared.app_home)
     assert captured_env["ATT_MZ_RUST_THREADS"] == "4"
-    assert captured_env["RPG_MAKER_TOOLS_LLM_BASE_URL"].startswith("http://127.0.0.1:")
-    assert captured_env["RPG_MAKER_TOOLS_LLM_BASE_URL"].endswith("/v1")
-    assert captured_env["RPG_MAKER_TOOLS_LLM_API_KEY"] == "att-mz-benchmark-fake-key"
+    assert captured_env["ATT_MZ_LLM_BASE_URL"].startswith("http://127.0.0.1:")
+    assert captured_env["ATT_MZ_LLM_BASE_URL"].endswith("/v1")
+    assert captured_env["ATT_MZ_LLM_API_KEY"] == "att-mz-benchmark-fake-key"
     assert [task["task"] for task in cast(list[dict[str, object]], result["tasks"])] == list(
         small_tasks_benchmark.TASK_ORDER
     )

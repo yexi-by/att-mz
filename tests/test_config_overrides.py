@@ -386,6 +386,20 @@ default_command_codes = [357]
     assert setting.llm.model == "file-model"
 
 
+def test_load_setting_rejects_legacy_llm_environment_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧模型环境变量不再作为成功配置入口。"""
+    setting_path = _write_minimal_setting(tmp_path, request_body_extra_text="")
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    monkeypatch.setenv("RPG_MAKER_TOOLS_LLM_BASE_URL", "https://legacy.example.com")
+
+    with pytest.raises(ValueError, match="ATT_MZ_LLM_BASE_URL.*ATT_MZ_LLM_API_KEY"):
+        _ = load_setting(setting_path=setting_path)
+
+
 def test_load_setting_accepts_llm_request_body_extra_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -31,6 +30,7 @@ from app.rmmz.schema import (
     PluginSourceTextRuleRecord,
     TranslationItem,
 )
+from app.rmmz.source_snapshot import validate_source_snapshot_files
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, get_default_text_rules
 from app.terminology import TerminologyRegistry
 
@@ -119,7 +119,7 @@ def write_game_files(
 ) -> None:
     """测试专用磁盘替换入口。"""
     _ = game_root
-    _ensure_source_snapshot(game_data)
+    _require_source_snapshot(game_data)
     files: list[tuple[Path, str]] = []
     for file_name, value in sorted(game_data.writable_data.items()):
         if file_name == PLUGINS_FILE_NAME:
@@ -153,7 +153,7 @@ def _apply_native_write_plan(
     plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None = None,
 ) -> NativeWriteBackPlan:
     """创建测试数据库并调用 Rust 写回计划。"""
-    _ensure_source_snapshot(game_data)
+    _require_source_snapshot(game_data)
     db_path = _write_temp_db(
         content_root=game_data.layout.content_root,
         items=items,
@@ -361,27 +361,15 @@ def _insert_plugin_source_text_rules(
     )
 
 
-def _ensure_source_snapshot(game_data: GameData) -> None:
-    """确保 Rust 写回计划需要的可信源快照存在。"""
-    layout = game_data.layout
-    if not layout.data_origin_dir.exists():
-        _ = shutil.copytree(layout.data_dir, layout.data_origin_dir)
-    if not layout.plugins_origin_path.exists():
-        layout.plugins_origin_path.parent.mkdir(parents=True, exist_ok=True)
-        _ = layout.plugins_path.write_text(
-            f"var $plugins = {json.dumps(game_data.plugins_js, ensure_ascii=False, indent=2)};\n",
-            encoding="utf-8",
-        )
-        _ = shutil.copy2(layout.plugins_path, layout.plugins_origin_path)
-    active_source_dir = layout.js_dir / "plugins"
-    layout.plugin_source_origin_dir.mkdir(parents=True, exist_ok=True)
-    if active_source_dir.is_dir():
-        for source_path in sorted(active_source_dir.glob("*.js"), key=lambda path: path.name):
-            if not source_path.is_file():
-                continue
-            origin_path = layout.plugin_source_origin_dir / source_path.name
-            if not origin_path.exists():
-                _ = shutil.copy2(source_path, origin_path)
+def _require_source_snapshot(game_data: GameData) -> None:
+    """测试写回入口只能使用注册流程已经创建的可信源快照。"""
+    try:
+        validate_source_snapshot_files(game_data.layout)
+    except Exception as error:
+        raise FileNotFoundError(
+            "缺少可信源快照，测试写回不能把当前运行文件自动补成源文；"
+            + "请先通过 register_game/add-game 创建可信源快照后再写回"
+        ) from error
 
 
 def _apply_plan_to_memory(

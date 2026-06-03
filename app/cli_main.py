@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import argparse
-import json
 import sys
 import time
 import warnings
@@ -64,7 +63,9 @@ from app.cli import (  # noqa: E402
     format_namespace,
 )
 from app.application.errors import ApplicationBusinessError  # noqa: E402
+from app.agent_toolkit import AgentReportEnvelope  # noqa: E402
 from app.observability import logger, resolve_log_file_path, setup_logger  # noqa: E402
+from app.rmmz.json_types import JsonObject  # noqa: E402
 
 
 def format_exception_summary(error: BaseException) -> str:
@@ -106,28 +107,13 @@ def raw_flag_enabled(argv: Sequence[str], flag: str) -> bool:
     return flag in argv
 
 
-def print_json_error(*, code: str, message: str, detail: str = "") -> None:
-    """向 stdout 输出统一结构的 JSON 错误报告。
-
-    CLI 必须保证 stdout 可被外部 Agent 直接解析。命令执行过程中
-    即使出现业务错误或未知异常，也要返回和正常报告相同的外层结构。
-    """
-    details: dict[str, str] = {}
+def print_error_report(*, code: str, message: str, detail: str = "") -> None:
+    """通过统一 envelope 向 stdout 输出顶层 CLI 错误报告。"""
+    details: JsonObject = {}
     if detail:
         details["detail"] = detail
-    payload = {
-        "status": "error",
-        "errors": [
-            {
-                "code": code,
-                "message": message,
-            }
-        ],
-        "warnings": [],
-        "summary": {},
-        "details": details,
-    }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    report = AgentReportEnvelope.from_error(code=code, message=message, details=details)
+    print(report.to_json_text())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -148,7 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         setup_logger(
             level="DEBUG" if raw_flag_enabled(raw_argv, "--debug") else "INFO",
         )
-        print_json_error(code="argument_error", message=error_message)
+        print_error_report(code="argument_error", message=error_message)
         logger.error(f"[tag.failure]命令参数错误[/tag.failure]：{error_message}")
         return 2
 
@@ -175,23 +161,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CliBusinessError as error:
         exit_code = 1
         status = "失败"
-        print_json_error(code="business_error", message=str(error))
+        print_error_report(code="business_error", message=str(error))
         logger.error(f"[tag.failure]命令执行失败[/tag.failure]：{error}")
     except ApplicationBusinessError as error:
         exit_code = 1
         status = "失败"
-        print_json_error(code="business_error", message=str(error))
+        print_error_report(code="business_error", message=str(error))
         logger.error(f"[tag.failure]命令执行失败[/tag.failure]：{error}")
     except KeyboardInterrupt:
         exit_code = 130
         status = "中断"
-        print_json_error(code="keyboard_interrupt", message="用户中断运行")
+        print_error_report(code="keyboard_interrupt", message="用户中断运行")
         logger.warning("[tag.warning]用户中断运行[/tag.warning]")
     except Exception as error:
         exit_code = 1
         status = "异常"
         summary = format_exception_summary(error)
-        print_json_error(
+        print_error_report(
             code="unexpected_error",
             message=summary,
             detail=f"完整 traceback 已写入 {log_file_path}",

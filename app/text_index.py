@@ -3,12 +3,14 @@
 import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import asdict
 from typing import cast
 
 from app.application.flow_gate import (
     event_command_rule_scope_hash_for_setting,
     note_tag_rule_scope_hash_for_text_rules,
 )
+from app.config import SettingOverrides
 from app.config.schemas import Setting
 from app.persistence import TargetGameSession
 from app.persistence.records import TextIndexInvalidationRecord, TextIndexItemRecord, TextIndexMetadata
@@ -39,7 +41,7 @@ from app.rule_review import (
     plugin_rule_scope_hash,
 )
 from app.rule_review_decision import WorkflowGateIssue, build_empty_rule_review_decision
-from app.text_scope import TextScopeResult, TextScopeService, TextSourceType
+from app.text_scope import TextScopeResult, TextScopeService, TextScopeSnapshot, TextSourceType
 
 
 async def rebuild_text_index(
@@ -48,6 +50,7 @@ async def rebuild_text_index(
     game_data: GameData,
     setting: Setting,
     text_rules: TextRules,
+    setting_overrides: SettingOverrides | None = None,
     scope: TextScopeResult | None = None,
     include_write_probe: bool = False,
 ) -> TextIndexMetadata:
@@ -59,15 +62,22 @@ async def rebuild_text_index(
             text_rules=text_rules,
             include_write_probe=include_write_probe,
         )
-    source_snapshot_fingerprint = await collect_source_snapshot_fingerprint(session)
+    source_snapshot_records = await session.read_source_snapshot_records()
+    source_snapshot_fingerprint = source_snapshot_records_fingerprint(source_snapshot_records)
     rules_fingerprint = await collect_text_index_rules_fingerprint(
         session=session,
         text_rules=text_rules,
     )
+    snapshot = TextScopeSnapshot.from_scope(
+        scope=scope,
+        rules_fingerprint=rules_fingerprint,
+        setting_overrides=setting_overrides_payload(setting_overrides),
+        source_manifest=source_snapshot_records_payload(source_snapshot_records),
+    )
     items = build_text_index_items_from_scope(
         scope=scope,
         source_snapshot_fingerprint=source_snapshot_fingerprint,
-        rules_fingerprint=rules_fingerprint,
+        rules_fingerprint=snapshot.rules_fingerprint,
     )
     metadata = TextIndexMetadata(
         source_snapshot_fingerprint=source_snapshot_fingerprint,
@@ -245,18 +255,36 @@ async def collect_source_snapshot_fingerprint(session: TargetGameSession) -> str
     return source_snapshot_records_fingerprint(records)
 
 
+def setting_overrides_payload(overrides: SettingOverrides | None) -> JsonObject:
+    """把本次命令配置覆盖转换为快照 payload。"""
+    if overrides is None or not overrides.has_any():
+        return {}
+    payload: JsonObject = {}
+    raw_payload = cast(dict[str, object], asdict(overrides))
+    for key, raw_value in raw_payload.items():
+        if key == "text_translation_rpm" and not overrides.text_translation_rpm_is_set:
+            continue
+        if raw_value is None:
+            continue
+        payload[key] = coerce_json_value(raw_value)
+    return payload
+
+
+def source_snapshot_records_payload(records: list[SourceSnapshotFileRecord]) -> JsonArray:
+    """把可信源快照 manifest 转换为稳定 JSON payload。"""
+    return [
+        {
+            "relative_path": record.relative_path,
+            "sha256": record.sha256,
+            "byte_size": record.byte_size,
+        }
+        for record in sorted(records, key=lambda item: item.relative_path)
+    ]
+
+
 def source_snapshot_records_fingerprint(records: list[SourceSnapshotFileRecord]) -> str:
     """对可信源快照 manifest 的结构化内容生成稳定指纹。"""
-    return stable_json_fingerprint(
-        [
-            {
-                "relative_path": record.relative_path,
-                "sha256": record.sha256,
-                "byte_size": record.byte_size,
-            }
-            for record in sorted(records, key=lambda item: item.relative_path)
-        ]
-    )
+    return stable_json_fingerprint(source_snapshot_records_payload(records))
 
 
 async def collect_text_index_rules_fingerprint(

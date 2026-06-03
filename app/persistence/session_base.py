@@ -16,3 +16,7 @@ class SessionMixinBase:
     def db_path(self) -> Path:
         """返回当前会话绑定的数据库路径。"""
         raise NotImplementedError
+
+    async def commit(self) -> None:
+        """提交当前会话写入；事务内由外层 UnitOfWork 统一提交。"""
+        raise NotImplementedError

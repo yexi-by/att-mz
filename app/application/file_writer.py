@@ -10,13 +10,94 @@ from app.rmmz.text_rules import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
-class _WriteOperation:
+class WriteOperation:
     """单个目标文件写入操作。"""
 
     target_path: Path
     content: str | None
     source_path: Path | None
     temp_dir: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplacedTarget:
+    """已替换文件的回滚信息。"""
+
+    target_path: Path
+    backup_path: Path | None
+
+
+class WriteFileTransaction:
+    """可延迟提交的文件替换事务。
+
+    文件系统没有真正的事务能力；本类在写入前保存原文件备份，调用方可在
+    写后审计或数据库写入失败时显式回滚已替换文件。
+    """
+
+    def __init__(self, *, rollback_dir_parent: Path) -> None:
+        """初始化文件事务并创建本次回滚目录。"""
+        self._rollback_dir: Path = Path(tempfile.mkdtemp(prefix="att_mz_rollback_", dir=rollback_dir_parent))
+        self._replaced_targets: list[_ReplacedTarget] = []
+        self._operation_index: int = 0
+        self._closed: bool = False
+
+    def apply(self, *, operations: list[WriteOperation]) -> None:
+        """应用一组文件替换；任一失败时回滚此前所有替换。"""
+        self._ensure_open()
+        try:
+            for operation in operations:
+                self._apply_one(operation)
+        except Exception:
+            self.rollback()
+            raise
+
+    def commit(self) -> None:
+        """确认文件替换成功，删除回滚备份。"""
+        if self._closed:
+            return
+        self._closed = True
+        cleanup_path(self._rollback_dir)
+
+    def rollback(self) -> None:
+        """恢复所有已替换文件。"""
+        if self._closed:
+            return
+        for replaced_target in reversed(self._replaced_targets):
+            if replaced_target.backup_path is None:
+                replaced_target.target_path.unlink(missing_ok=True)
+            elif replaced_target.backup_path.exists():
+                replaced_target.target_path.parent.mkdir(parents=True, exist_ok=True)
+                _ = replaced_target.backup_path.replace(replaced_target.target_path)
+        self._closed = True
+        cleanup_path(self._rollback_dir)
+
+    def _apply_one(self, operation: WriteOperation) -> None:
+        """替换单个文件并记录回滚备份。"""
+        if (operation.content is None) == (operation.source_path is None):
+            raise RuntimeError("文件替换操作必须且只能包含文本内容或 sidecar 文件路径")
+        backup_path: Path | None = None
+        if operation.target_path.exists():
+            backup_path = self._rollback_dir / f"{self._operation_index}_{operation.target_path.name}"
+            _ = shutil.copy2(operation.target_path, backup_path)
+        self._operation_index += 1
+        if operation.source_path is not None:
+            replace_text_file_from_path(
+                target_path=operation.target_path,
+                source_path=operation.source_path,
+                temp_dir=operation.temp_dir,
+            )
+        elif operation.content is not None:
+            replace_text_file(
+                target_path=operation.target_path,
+                content=operation.content,
+                temp_dir=operation.temp_dir,
+            )
+        self._replaced_targets.append(_ReplacedTarget(operation.target_path, backup_path))
+
+    def _ensure_open(self) -> None:
+        """确认当前文件事务尚未提交或回滚。"""
+        if self._closed:
+            raise RuntimeError("文件事务已经结束，不能继续写入")
 
 
 def write_planned_text_files(
@@ -26,7 +107,7 @@ def write_planned_text_files(
 ) -> None:
     """按 Rust 生成计划事务性替换文本文件。"""
     operations = [
-        _WriteOperation(
+        WriteOperation(
             target_path=target_path,
             content=content,
             source_path=None,
@@ -47,7 +128,7 @@ def write_planned_text_file_sources(
 ) -> None:
     """按 Rust 计划替换文本文件，支持内容 sidecar 文件以避免大 JSON 文本。"""
     operations = [
-        _WriteOperation(
+        WriteOperation(
             target_path=target_path,
             content=content,
             source_path=source_path,
@@ -63,44 +144,15 @@ def write_planned_text_file_sources(
 
 def replace_write_operations_transactionally(
     *,
-    operations: list[_WriteOperation],
+    operations: list[WriteOperation],
     rollback_dir_parent: Path,
 ) -> None:
     """逐文件替换生成物；任一失败时恢复已替换文件。"""
     if not operations:
         return
-    rollback_dir = Path(tempfile.mkdtemp(prefix="att_mz_rollback_", dir=rollback_dir_parent))
-    replaced_targets: list[tuple[Path, Path | None]] = []
-    try:
-        for index, operation in enumerate(operations):
-            backup_path: Path | None = None
-            if operation.target_path.exists():
-                backup_path = rollback_dir / f"{index}_{operation.target_path.name}"
-                _ = shutil.copy2(operation.target_path, backup_path)
-            if (operation.content is None) == (operation.source_path is None):
-                raise RuntimeError("文件替换操作必须且只能包含文本内容或 sidecar 文件路径")
-            if operation.source_path is not None:
-                replace_text_file_from_path(
-                    target_path=operation.target_path,
-                    source_path=operation.source_path,
-                    temp_dir=operation.temp_dir,
-                )
-            elif operation.content is not None:
-                replace_text_file(
-                    target_path=operation.target_path,
-                    content=operation.content,
-                    temp_dir=operation.temp_dir,
-                )
-            replaced_targets.append((operation.target_path, backup_path))
-    except Exception:
-        for target_path, backup_path in reversed(replaced_targets):
-            if backup_path is None:
-                target_path.unlink(missing_ok=True)
-            elif backup_path.exists():
-                _ = backup_path.replace(target_path)
-        raise
-    finally:
-        cleanup_path(rollback_dir)
+    transaction = WriteFileTransaction(rollback_dir_parent=rollback_dir_parent)
+    transaction.apply(operations=operations)
+    transaction.commit()
 
 
 def replace_json_file(*, target_path: Path, data: JsonValue, temp_dir: Path) -> None:
@@ -162,7 +214,7 @@ def replace_text_file_from_path(*, target_path: Path, source_path: Path, temp_di
 
 
 def cleanup_path(target_path: Path) -> None:
-    """清理临时目录或临时文件。"""
+    """清理临时工作目录或临时文件。"""
     if target_path.is_dir():
         shutil.rmtree(target_path, ignore_errors=True)
     elif target_path.exists():
@@ -170,6 +222,8 @@ def cleanup_path(target_path: Path) -> None:
 
 
 __all__: list[str] = [
+    "WriteFileTransaction",
+    "WriteOperation",
     "cleanup_path",
     "replace_json_file",
     "replace_plugins_file",

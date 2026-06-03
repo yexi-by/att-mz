@@ -127,6 +127,22 @@ async def collect_workflow_gate_errors(
     return errors
 
 
+async def collect_plugin_source_workflow_gate_errors(
+    *,
+    session: TargetGameSession,
+    game_data: GameData,
+    text_rules: TextRules,
+    plugin_source_scan: PluginSourceScan | None = None,
+) -> list[WorkflowGateIssue]:
+    """收集插件源码高风险支线的同源门禁错误。"""
+    return await _plugin_source_rule_gate_errors(
+        session=session,
+        game_data=game_data,
+        text_rules=text_rules,
+        scan=plugin_source_scan,
+    )
+
+
 async def collect_external_text_rule_gate_errors(
     *,
     session: TargetGameSession,
@@ -486,8 +502,6 @@ async def _plugin_source_rule_gate_errors(
 ) -> list[WorkflowGateIssue]:
     """高风险插件源码文本必须先确认并导入源码规则。"""
     records = await session.read_plugin_source_text_rules()
-    if scan is None and not records:
-        return []
     if scan is None:
         scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
@@ -510,7 +524,7 @@ async def _plugin_source_rule_gate_errors(
             WorkflowGateIssue(
                 code="plugin_source_text_high_risk",
                 message=(
-                    "发现大量插件源码文本候选，可能有玩家可见正文存放在 js/plugins 源码文件中；"
+                    "发现高风险插件源码文本候选，可能有玩家可见正文存放在 js/plugins 源码文件中；"
                     "正文翻译已暂停，请先确认并完成插件源码 AST 分析支线，导入插件源码规则后再继续"
                 ),
             )
@@ -703,7 +717,6 @@ async def _build_candidate_review_decision(
         reviewed_code=reviewed_code,
         reviewed_message=reviewed_message,
         custom_rules_supplied=custom_placeholder_rules_supplied,
-        legacy_scope_hashes=_legacy_placeholder_scope_hashes(coverage),
     )
 
 
@@ -785,18 +798,6 @@ def _count_uncovered_structured_details(details: JsonArray) -> int:
         for detail in details
         if isinstance(detail, dict) and detail.get("covered") is not True
     )
-
-
-def _legacy_placeholder_scope_hashes(coverage: RuleCoverageResult) -> tuple[str, ...]:
-    """兼容旧版从截断报告明细计算出的占位符确认 hash。"""
-    if len(coverage.candidates) <= coverage.sample_limit:
-        return ()
-    sampled_candidates = coverage.candidates[: coverage.sample_limit]
-    if coverage.rule_domain == PLACEHOLDER_RULE_DOMAIN:
-        return (placeholder_rule_scope_hash(sampled_candidates),)
-    if coverage.rule_domain == STRUCTURED_PLACEHOLDER_RULE_DOMAIN:
-        return (structured_placeholder_rule_scope_hash(sampled_candidates),)
-    return ()
 
 
 STRUCTURED_SHELL_CANDIDATE_PATTERNS: tuple[re.Pattern[str], ...] = (

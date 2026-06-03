@@ -407,7 +407,7 @@ def test_main_returns_nonzero_when_threshold_fails_and_cleans_temp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """性能脚本阈值失败时返回非 0，并清理临时目录。"""
+    """性能脚本阈值失败时返回非 0，并清理临时工作目录。"""
     temp_root = tmp_path / "bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -432,7 +432,7 @@ def test_main_returns_nonzero_when_threshold_fails_and_cleans_temp(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     monkeypatch.setattr(rebuild_benchmark, "prepare_benchmark", fake_prepare_benchmark)
@@ -472,7 +472,7 @@ def test_prepare_benchmark_cleans_temp_when_metadata_update_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """准备阶段已创建临时目录后失败时必须清理目录。"""
+    """准备阶段已创建临时工作目录后失败时必须清理目录。"""
     sample = tmp_path / "sample"
     data_dir = sample / "data"
     js_dir = sample / "js"
@@ -491,7 +491,7 @@ def test_prepare_benchmark_cleans_temp_when_metadata_update_fails(
     temp_root = tmp_path / "bench-temp"
 
     def fake_mkdtemp(*, prefix: str) -> str:
-        """返回可断言的临时目录路径。"""
+        """返回可断言的临时工作目录路径。"""
         assert prefix == "att_mz_rebuild_benchmark_"
         temp_root.mkdir()
         return str(temp_root)
@@ -524,7 +524,7 @@ def test_main_reports_unprepared_error_when_prepare_fails_before_temp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """临时目录创建前准备失败时也输出结构化 JSON。"""
+    """临时工作目录创建前准备失败时也输出结构化 JSON。"""
     options = BenchmarkOptions(
         sample_path=tmp_path / "sample",
         game_title="测试游戏",
@@ -541,7 +541,7 @@ def test_main_reports_unprepared_error_when_prepare_fails_before_temp(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """模拟还没创建临时目录就失败。"""
+        """模拟还没创建临时工作目录就失败。"""
         raise FileNotFoundError("源数据库不存在")
 
     monkeypatch.setattr(rebuild_benchmark, "prepare_benchmark", fake_prepare_benchmark)
@@ -616,7 +616,7 @@ def test_main_reports_cleanup_error_without_failing_benchmark(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """临时目录删除失败时报告清理错误，但不改变性能阈值结果。"""
+    """临时工作目录删除失败时报告清理错误，但不改变性能阈值结果。"""
     temp_root = tmp_path / "bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -640,7 +640,7 @@ def test_main_reports_cleanup_error_without_failing_benchmark(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     monkeypatch.setattr(rebuild_benchmark, "prepare_benchmark", fake_prepare_benchmark)
@@ -677,7 +677,7 @@ def test_main_cleans_temp_and_reports_json_when_run_raises(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """运行阶段异常时仍清理临时目录并输出结构化错误。"""
+    """运行阶段异常时仍清理临时工作目录并输出结构化错误。"""
     temp_root = tmp_path / "bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -702,7 +702,7 @@ def test_main_cleans_temp_and_reports_json_when_run_raises(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     def fake_run_benchmark(_options: BenchmarkOptions, _prepared: PreparedBenchmark) -> dict[str, object]:

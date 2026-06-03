@@ -59,7 +59,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ActiveRuntimeAuditBenchmark
     _ = parser.add_argument(
         "--sample",
         required=True,
-        help="性能样本游戏目录；脚本会复制到临时目录后运行",
+        help="性能样本游戏目录；脚本会复制到临时工作目录后运行",
     )
     _ = parser.add_argument(
         "--game",
@@ -500,7 +500,7 @@ def build_unprepared_error_result(
     options: ActiveRuntimeAuditBenchmarkOptions,
     error: Exception,
 ) -> dict[str, object]:
-    """准备出临时目录前失败时返回结构化当前运行审计性能失败结果。"""
+    """准备出临时工作目录前失败时返回结构化当前运行审计性能失败结果。"""
     return {
         "status": "error",
         "game": options.game_title,

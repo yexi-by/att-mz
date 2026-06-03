@@ -70,7 +70,7 @@ class SmallTaskBenchmarkOptions:
 def parse_args(argv: Sequence[str] | None = None) -> SmallTaskBenchmarkOptions:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="计时小任务链路 warm index 性能")
-    _ = parser.add_argument("--sample", required=True, help="性能样本游戏目录；脚本会复制到临时目录后运行")
+    _ = parser.add_argument("--sample", required=True, help="性能样本游戏目录；脚本会复制到临时工作目录后运行")
     _ = parser.add_argument("--game", required=True, help="数据库和 CLI 使用的游戏标题")
     _ = parser.add_argument("--db", default=None, help="源数据库路径；默认使用 data/db/<游戏标题>.db")
     _ = parser.add_argument("--runs", type=int, default=1, help="重复运行次数，默认 1")

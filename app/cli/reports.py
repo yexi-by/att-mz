@@ -83,6 +83,12 @@ def build_run_all_summary_report(
         "success_count": text_summary.success_count,
         "quality_error_count": text_summary.error_count,
         "llm_failure_count": text_summary.llm_failure_count,
+        "blocked_reason": text_summary.blocked_reason or "",
+        "stopped": text_summary.stopped,
+        "cancelled_unsent_batch_count": text_summary.cancelled_unsent_batch_count,
+        "cancelled_unsent_item_count": text_summary.cancelled_unsent_item_count,
+        "sent_after_stop_completed_batch_count": text_summary.sent_after_stop_completed_batch_count,
+        "sent_after_stop_completed_item_count": text_summary.sent_after_stop_completed_item_count,
         "write_back_performed": write_back_performed,
         "write_back_skipped": not write_back_performed,
         "write_back_planned_file_count": 0,
@@ -228,6 +234,12 @@ def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonOb
         "success_count": summary.success_count,
         "quality_error_count": summary.error_count,
         "llm_failure_count": summary.llm_failure_count,
+        "blocked_reason": summary.blocked_reason or "",
+        "stopped": summary.stopped,
+        "cancelled_unsent_batch_count": summary.cancelled_unsent_batch_count,
+        "cancelled_unsent_item_count": summary.cancelled_unsent_item_count,
+        "sent_after_stop_completed_batch_count": summary.sent_after_stop_completed_batch_count,
+        "sent_after_stop_completed_item_count": summary.sent_after_stop_completed_item_count,
     }
     if summary.text_index_status:
         payload["text_index_status"] = summary.text_index_status

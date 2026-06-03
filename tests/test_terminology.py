@@ -12,7 +12,8 @@ from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
 from app.rmmz import DataTextExtraction, load_game_data
-from app.rmmz.schema import MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
+from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.terminology import (
     SpeakerDialogueContext,
@@ -34,6 +35,18 @@ from tests._native_write_plan_helper import reset_writable_copies, write_termino
 def json_dump_text(registry: TerminologyRegistry) -> str:
     """把术语表转成可搜索的测试文本。"""
     return json.dumps(registry.model_dump(mode="json"), ensure_ascii=False)
+
+
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
 
 
 def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
@@ -393,6 +406,7 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     assert registry.speaker_names == {}
     assert summary.sample_file_count == 0
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError, match="MV 术语写回缺少 MV 虚拟名字框规则"):
         _ = write_terminology_text(
@@ -543,6 +557,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     assert "\\N[1]:" not in prompt_text
     assert "案内人「こんにちは」" not in prompt_text
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     written_count = write_terminology_text(
         game_data,
@@ -617,6 +632,7 @@ async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
         ),
     ]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError) as exc_info:
         _ = write_terminology_text(
@@ -757,6 +773,7 @@ async def test_terminology_skips_actor_name_control_variables(
     prompt_index = TerminologyPromptIndex.from_glossary(TerminologyGlossary())
     assert prompt_index.entries == []
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     written_count = write_terminology_text(
         game_data,
@@ -942,6 +959,7 @@ async def test_native_terminology_write_updates_all_supported_fields(
         system_elements={"炎": "火焰"},
     )
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     written_count = write_terminology_text(game_data, registry)
 

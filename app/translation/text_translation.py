@@ -87,7 +87,10 @@ class TextTranslation:
         if self._runner_task is None or self._runner_task.done():
             return
         _ = self._runner_task.cancel()
-        _ = await asyncio.gather(self._runner_task, return_exceptions=True)
+        try:
+            await self._runner_task
+        except asyncio.CancelledError:
+            pass
 
     async def _run_translation(
         self,

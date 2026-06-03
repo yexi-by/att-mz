@@ -8,11 +8,16 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Protocol, cast
 
+from app.native_contract import ensure_native_contract_version
 from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
 
 
 class NativeJavaScriptAstModule(Protocol):
     """PyO3 扩展暴露给 Python 的 JavaScript AST 接口。"""
+
+    def native_contract_version(self) -> int:
+        """返回 Rust/Python JSON 契约版本。"""
+        raise NotImplementedError
 
     def parse_javascript_string_spans(self, payload_json: str) -> str:
         """解析 JavaScript 字符串节点范围。"""
@@ -134,6 +139,7 @@ def parse_native_javascript_string_spans_batch(
 def _load_native_javascript_ast_module() -> NativeJavaScriptAstModule:
     """加载 PyO3 扩展，缺失入口时直接报错。"""
     native_module = import_module("app._native")
+    ensure_native_contract_version(cast(object, native_module))
     if not hasattr(native_module, "parse_javascript_string_spans"):
         raise RuntimeError("Rust 原生扩展缺少 JavaScript AST 解析入口，请重新执行 uv run maturin develop")
     return cast(NativeJavaScriptAstModule, cast(object, native_module))

@@ -35,6 +35,7 @@ from app.application.flow_gate import (
     collect_external_text_rule_gate_errors,
     ensure_empty_rule_import_allowed,
 )
+from app.persistence import RuleImportUnitOfWork
 from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
@@ -295,21 +296,22 @@ class PlaceholderRuleAgentMixin:
                     },
                 )
         async with await self.game_registry.open_game(game_title) as session:
-            await session.replace_placeholder_rules(rule_records)
-            if uncovered_count:
-                await session.replace_rule_review_state(
-                    rule_domain=PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=coverage.scope_hash,
-                    reviewed_empty=not rule_records,
-                )
-            elif rule_records:
-                await session.delete_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
-            else:
-                await session.replace_rule_review_state(
-                    rule_domain=PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=coverage.scope_hash,
-                    reviewed_empty=True,
-                )
+            async with RuleImportUnitOfWork(session):
+                await session.replace_placeholder_rules(rule_records)
+                if uncovered_count:
+                    await session.replace_rule_review_state(
+                        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+                        scope_hash=coverage.scope_hash,
+                        reviewed_empty=not rule_records,
+                    )
+                elif rule_records:
+                    await session.delete_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
+                else:
+                    await session.replace_rule_review_state(
+                        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+                        scope_hash=coverage.scope_hash,
+                        reviewed_empty=True,
+                    )
         warnings = [*validation_report.warnings]
         if not rule_records:
             warnings.append(issue("placeholder_rules_empty", "已导入空普通占位符规则"))
@@ -559,21 +561,22 @@ class PlaceholderRuleAgentMixin:
                     },
                 )
         async with await self.game_registry.open_game(game_title) as session:
-            await session.replace_structured_placeholder_rules(rule_records)
-            if uncovered_count:
-                await session.replace_rule_review_state(
-                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=coverage.scope_hash,
-                    reviewed_empty=not rule_records,
-                )
-            elif rule_records:
-                await session.delete_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
-            else:
-                await session.replace_rule_review_state(
-                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                    scope_hash=coverage.scope_hash,
-                    reviewed_empty=True,
-                )
+            async with RuleImportUnitOfWork(session):
+                await session.replace_structured_placeholder_rules(rule_records)
+                if uncovered_count:
+                    await session.replace_rule_review_state(
+                        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+                        scope_hash=coverage.scope_hash,
+                        reviewed_empty=not rule_records,
+                    )
+                elif rule_records:
+                    await session.delete_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
+                else:
+                    await session.replace_rule_review_state(
+                        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+                        scope_hash=coverage.scope_hash,
+                        reviewed_empty=True,
+                    )
         warnings = [*validation_report.warnings]
         if not rule_records:
             warnings.append(issue("structured_placeholder_rules_empty", "已导入空结构化占位符规则"))

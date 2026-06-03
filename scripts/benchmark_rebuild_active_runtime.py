@@ -52,7 +52,7 @@ class PreparedBenchmark:
 
 
 class BenchmarkPreparationError(RuntimeError):
-    """性能测试准备阶段失败，携带临时目录清理状态。"""
+    """性能测试准备阶段失败，携带临时工作目录清理状态。"""
 
     def __init__(
         self,
@@ -74,7 +74,7 @@ def parse_args(argv: Sequence[str] | None = None) -> BenchmarkOptions:
     _ = parser.add_argument(
         "--sample",
         required=True,
-        help="性能样本游戏目录；脚本会复制到临时目录后运行",
+        help="性能样本游戏目录；脚本会复制到临时工作目录后运行",
     )
     _ = parser.add_argument(
         "--game",
@@ -176,7 +176,7 @@ def build_preparation_error(
     error: Exception,
     context: str,
 ) -> BenchmarkPreparationError:
-    """生成带临时目录清理结果的准备阶段错误。"""
+    """生成带临时工作目录清理结果的准备阶段错误。"""
     cleanup_error: str | None = None
     temp_preserved = keep_temp
     if not keep_temp:
@@ -184,9 +184,9 @@ def build_preparation_error(
         temp_preserved = cleanup_error is not None
     message = f"{context}: {type(error).__name__}: {error}"
     if cleanup_error is not None:
-        message = f"{message}\n清理临时目录失败: {cleanup_error}"
+        message = f"{message}\n清理临时工作目录失败: {cleanup_error}"
     elif temp_preserved:
-        message = f"{message}\n临时目录已保留: {prepared.temp_root}"
+        message = f"{message}\n临时工作目录已保留: {prepared.temp_root}"
     return BenchmarkPreparationError(
         message,
         prepared=prepared,
@@ -600,7 +600,7 @@ def build_unprepared_error_result(
     options: BenchmarkOptions,
     error: Exception,
 ) -> dict[str, object]:
-    """准备出临时目录前失败时返回结构化性能失败结果。"""
+    """准备出临时工作目录前失败时返回结构化性能失败结果。"""
     return {
         "status": "error",
         "game": options.game_title,
@@ -639,7 +639,7 @@ def build_error_result(
 
 
 def remove_tree_with_retries(path: Path) -> str | None:
-    """删除临时目录，处理 Windows 文件句柄短暂占用。"""
+    """删除临时工作目录，处理 Windows 文件句柄短暂占用。"""
     last_error: OSError | None = None
     for _attempt in range(20):
         try:

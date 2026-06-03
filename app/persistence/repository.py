@@ -732,6 +732,7 @@ class TargetGameSession(
         self.record: GameRecord = record
         self.connection: aiosqlite.Connection = connection
         self.game_data: GameData | None = None
+        self._transaction_depth: int = 0
 
     @property
     def game_title(self) -> str:
@@ -797,10 +798,60 @@ class TargetGameSession(
             raise RuntimeError("当前命令尚未加载游戏数据")
         return self.game_data
 
+    @override
+    async def commit(self) -> None:
+        """普通写入立即提交；UnitOfWork 事务内延迟到外层统一提交。"""
+        if self._transaction_depth == 0:
+            await self.connection.commit()
+
+    async def begin_transaction(self) -> None:
+        """开始外层业务事务。"""
+        if self._transaction_depth == 0:
+            _ = await self.connection.execute("BEGIN")
+        self._transaction_depth += 1
+
+    async def commit_transaction(self) -> None:
+        """提交外层业务事务。"""
+        if self._transaction_depth <= 0:
+            raise RuntimeError("没有正在进行的数据库事务")
+        self._transaction_depth -= 1
+        if self._transaction_depth == 0:
+            await self.connection.commit()
+
+    async def rollback_transaction(self) -> None:
+        """回滚外层业务事务。"""
+        if self._transaction_depth > 0:
+            self._transaction_depth = 0
+            await self.connection.rollback()
 
     async def close(self) -> None:
         """关闭当前游戏数据库连接。"""
         await self.connection.close()
+
+
+@dataclass(slots=True)
+class RuleImportUnitOfWork:
+    """规则导入跨表写入事务。"""
+
+    session: TargetGameSession
+
+    async def __aenter__(self) -> "RuleImportUnitOfWork":
+        """进入规则导入事务。"""
+        await self.session.begin_transaction()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """成功时统一提交，失败时回滚全部规则导入写入。"""
+        _ = (exc_value, traceback)
+        if exc_type is None:
+            await self.session.commit_transaction()
+            return
+        await self.session.rollback_transaction()
 
 
 __all__: list[str] = [
@@ -809,6 +860,7 @@ __all__: list[str] = [
     "GameRecord",
     "GameRegistry",
     "RegistryDatabaseIssue",
+    "RuleImportUnitOfWork",
     "LanguageSettings",
     "RuleReviewStateRecord",
     "TargetGameSession",

@@ -132,5 +132,51 @@ class TextScopeResult:
         return [rule.to_json_object() for rule in self.stale_plugin_rules]
 
 
+@dataclass(frozen=True, slots=True)
+class TextScopeSnapshot:
+    """持久 warm index 对应的当前文本范围快照。"""
+
+    active: list[str]
+    writable: list[str]
+    cannot_process_reason: dict[str, str]
+    rules_fingerprint: str
+    setting_overrides: JsonObject
+    source_manifest: JsonArray
+
+    @classmethod
+    def from_scope(
+        cls,
+        *,
+        scope: TextScopeResult,
+        rules_fingerprint: str,
+        setting_overrides: JsonObject,
+        source_manifest: JsonArray,
+    ) -> "TextScopeSnapshot":
+        """从统一文本范围构造可持久索引复用的快照事实。"""
+        return cls(
+            active=sorted(scope.active_paths),
+            writable=sorted(scope.writable_paths),
+            cannot_process_reason={
+                entry.location_path: entry.cannot_process_reason
+                for entry in scope.entries
+                if entry.cannot_process_reason
+            },
+            rules_fingerprint=rules_fingerprint,
+            setting_overrides=dict(setting_overrides),
+            source_manifest=[item for item in source_manifest],
+        )
+
+    def to_json_object(self) -> JsonObject:
+        """转换成报告或诊断使用的 JSON 对象。"""
+        return {
+            "active": [path for path in self.active],
+            "writable": [path for path in self.writable],
+            "cannot_process_reason": dict(self.cannot_process_reason),
+            "rules_fingerprint": self.rules_fingerprint,
+            "setting_overrides": dict(self.setting_overrides),
+            "source_manifest": [item for item in self.source_manifest],
+        }
+
+
 class WriteBackProbeError(RuntimeError):
     """写入协议探针整体不可用。"""

@@ -40,7 +40,7 @@ uv run python scripts/benchmark_rebuild_active_runtime.py `
   --max-post-write-audit-ms 20000
 ```
 
-该命令会复制样本和数据库到临时目录，把临时样本的 `data_origin/*.json` 复制回 `data/*.json`，再计时 `rebuild-active-runtime`，用于验证真实文件替换、Rust 计划、文件替换和写后审计热路径。阈值来自 4 线程大样本基线并留有波动余量；如果硬件、样本规模或线程配置变化，需要先记录新基线，再调整阈值。
+该命令会复制样本和数据库到临时工作目录，把临时样本的 `data_origin/*.json` 复制回 `data/*.json`，再计时 `rebuild-active-runtime`，用于验证真实文件替换、Rust 计划、文件替换和写后审计热路径。阈值来自 4 线程大样本基线并留有波动余量；如果硬件、样本规模或线程配置变化，需要先记录新基线，再调整阈值。
 
 性能门禁结果需要记录样本规模、`rust_threads`、`threshold_failures=[]`、总耗时、Rust 计划耗时、文件替换耗时和写后审计耗时。
 
@@ -63,7 +63,7 @@ uv run python scripts/benchmark_small_tasks.py `
   --max-reset-ms 1000
 ```
 
-该命令会先重建文本范围索引，再依次计时普通 `quality-report`、`translate --max-items`、`import-manual-translations` 和 `reset-translations --input`。脚本默认启动本地假 OpenAI 兼容服务并覆盖临时配置，不消耗真实模型额度；只有显式传入 `--allow-real-llm` 时才使用当前模型配置。结果需要记录每个 task 的 `elapsed_ms`、`return_code`、`report_status`、`report_index_status`、`stage_timings`、`native_thread_count`、`llm_mode=fake`、`threshold_failures=[]`、`command_failures=[]` 和 `command_warnings=[]`。用于该脚本的样本应是可重复的大样本副本，且脚本生成的手动译文能通过当前质量规则；如果样本故意包含质量错误，应先准备专门的合格基线输入，不要把质量错误误判成性能通过。
+该命令会先重建文本范围索引，再依次计时普通 `quality-report`、`translate --max-items`、`import-manual-translations` 和 `reset-translations --input`。脚本默认启动本地假 OpenAI 兼容服务，并通过 `ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY` 覆盖临时配置，不消耗真实模型额度；只有显式传入 `--allow-real-llm` 时才使用当前模型配置。结果需要记录每个 task 的 `elapsed_ms`、`return_code`、`report_status`、`report_index_status`、`stage_timings`、`native_thread_count`、`llm_mode=fake`、`threshold_failures=[]`、`command_failures=[]` 和 `command_warnings=[]`。用于该脚本的样本应是可重复的大样本副本，且脚本生成的手动译文能通过当前质量规则；如果样本故意包含质量错误，应先准备专门的合格基线输入，不要把质量错误误判成性能通过。
 
 ## 协作模块
 

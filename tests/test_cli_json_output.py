@@ -11,7 +11,7 @@ from main import main
 import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
-from app.agent_toolkit import AgentReport
+from app.agent_toolkit import AgentReport, AgentReportEnvelope
 from app.cli import build_parser
 from app.cli import build_progress_reporter
 from app.cli import build_translate_summary_report
@@ -100,7 +100,7 @@ def test_add_game_existing_source_snapshot_reports_business_error(
             _ = source_language
             raise FileExistsError("目标目录已存在可信源快照，请使用干净游戏目录")
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话，避免触碰本机注册表。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -118,7 +118,7 @@ def test_add_game_existing_source_snapshot_reports_business_error(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.registry.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.registry.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(
         [
@@ -215,12 +215,14 @@ def test_json_command_reports_unexpected_error_as_parseable_json(
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
     payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    envelope = AgentReportEnvelope.model_validate(payload)
     errors = payload["errors"]
     assert isinstance(errors, list)
     first_error = errors[0]
     assert isinstance(first_error, dict)
 
     assert exit_code == 1
+    assert envelope.status == "error"
     assert payload["status"] == "error"
     assert first_error["code"] == "unexpected_error"
     assert "CLI 运行开始" not in captured.out
@@ -302,7 +304,7 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
             assert kwargs["game_title"] == "demo"
             raise WorkflowGateError("检查没通过，不能继续写进游戏文件：quality gate 有 error")
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话，避免触碰本机注册表和数据库。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -325,7 +327,7 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
         _ = args
         return "demo"
 
-    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+    async def translate_text_for_run_all_report(**kwargs: object) -> TextTranslationSummary:
         """模拟正文翻译阶段成功。"""
         calls.append("translate")
         _ = kwargs
@@ -338,9 +340,9 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
             error_count=0,
         )
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
     monkeypatch.setattr("app.cli.commands.write_back.resolve_target_game_title", fake_resolve_target_game_title)
-    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", translate_text_for_run_all_report)
 
     with pytest.raises(WorkflowGateError, match="quality gate"):
         _ = await run_all_command(args)
@@ -379,7 +381,7 @@ def test_write_back_json_summary_reports_handler_timing_fields(
                 post_write_audit_ms=17,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -397,7 +399,7 @@ def test_write_back_json_summary_reports_handler_timing_fields(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(["write-back", "--game", "demo"])
 
@@ -447,7 +449,7 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
                 post_write_audit_ms=29,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -465,7 +467,7 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(["rebuild-active-runtime", "--game", "demo"])
 
@@ -501,7 +503,7 @@ def test_write_terminology_json_summary_reports_handler_fields(
                 preserved_translation_count=5,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -519,7 +521,7 @@ def test_write_terminology_json_summary_reports_handler_fields(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(["write-terminology", "--game", "demo"])
 
@@ -557,7 +559,7 @@ def test_run_all_json_summary_reports_translation_and_write_back(
                 skipped_file_count=9,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -575,7 +577,7 @@ def test_run_all_json_summary_reports_translation_and_write_back(
             _ = exc
             _ = traceback
 
-    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+    async def translate_text_for_run_all_report(**kwargs: object) -> TextTranslationSummary:
         """模拟正文翻译阶段成功。"""
         _ = kwargs
         return TextTranslationSummary(
@@ -589,8 +591,8 @@ def test_run_all_json_summary_reports_translation_and_write_back(
             run_id="run-1",
         )
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
-    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", translate_text_for_run_all_report)
 
     exit_code = main(["run-all", "--game", "demo"])
 
@@ -623,7 +625,7 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
             _ = kwargs
             raise AssertionError("skip-write-back 不应调用写回")
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -641,7 +643,7 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
             _ = exc
             _ = traceback
 
-    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+    async def translate_text_for_run_all_report(**kwargs: object) -> TextTranslationSummary:
         """模拟正文翻译阶段成功。"""
         _ = kwargs
         return TextTranslationSummary(
@@ -654,8 +656,8 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
             run_id="run-skip",
         )
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
-    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", translate_text_for_run_all_report)
 
     exit_code = main(["run-all", "--game", "demo", "--skip-write-back"])
 
@@ -681,11 +683,13 @@ def test_unknown_command_reports_json_argument_error(
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
     payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    envelope = AgentReportEnvelope.model_validate(payload)
     errors = ensure_json_array(payload["errors"], "CLI JSON errors")
     first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
     message = first_error["message"]
 
     assert exit_code == 2
+    assert envelope.status == "error"
     assert first_error["code"] == "argument_error"
     assert isinstance(message, str)
     assert "unknown-command" in message

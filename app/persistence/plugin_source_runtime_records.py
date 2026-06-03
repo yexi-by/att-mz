@@ -54,7 +54,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     for record in records
                 ],
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_plugin_source_runtime_write_maps(self) -> list[PluginSourceRuntimeWriteMapRecord]:
         """读取全部插件源码当前运行写回映射。"""
@@ -85,7 +85,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
     async def clear_plugin_source_runtime_write_maps(self) -> None:
         """清空插件源码当前运行写回映射。"""
         _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS)
-        await self.connection.commit()
+        await self.commit()
 
     async def replace_plugin_source_runtime_scan_cache(
         self,
@@ -111,7 +111,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     for record in records
                 ],
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_plugin_source_runtime_scan_cache(self) -> list[PluginSourceRuntimeScanCacheRecord]:
         """读取当前运行插件源码 AST 扫描缓存。"""
@@ -147,7 +147,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
     async def clear_plugin_source_runtime_scan_cache(self) -> None:
         """清空当前运行插件源码 AST 扫描缓存。"""
         _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE)
-        await self.connection.commit()
+        await self.commit()
 
 
 __all__ = ["PluginSourceRuntimeRecordSessionMixin"]

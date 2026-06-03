@@ -532,18 +532,26 @@ class WorkspaceAgentMixin:
         _event_command_codes, event_command_codes_issue = _workspace_event_command_codes_from_manifest(workspace_manifest)
         if event_command_codes_issue is not None:
             errors.append(event_command_codes_issue)
+        plugin_source_rules_in_manifest = _workspace_manifest_includes_path(
+            workspace_manifest,
+            plugin_source_rules_path,
+        )
+        nonstandard_data_rules_in_manifest = _workspace_manifest_includes_path(
+            workspace_manifest,
+            nonstandard_data_rules_path,
+        )
         advance_progress(1)
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
             stored_plugin_source_rules = await session.read_plugin_source_text_rules()
             stored_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
             plugin_source_scan_required = (
-                plugin_source_rules_path.exists()
+                plugin_source_rules_in_manifest
                 or bool(stored_plugin_source_rules)
                 or _manifest_bool(manifest_generated, "plugin_source_high_risk")
             )
             nonstandard_data_scan_required = (
-                nonstandard_data_rules_path.exists()
+                nonstandard_data_rules_in_manifest
                 or bool(stored_nonstandard_data_rules)
                 or _manifest_bool(manifest_generated, "nonstandard_data_high_risk")
             )
@@ -670,54 +678,57 @@ class WorkspaceAgentMixin:
                     warnings.append(plugin_empty_issue)
         else:
             errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
-        if plugin_source_rules_path.exists():
-            if plugin_source_scan is None:
+        if plugin_source_rules_in_manifest:
+            if not plugin_source_rules_path.is_file():
+                errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
+            elif plugin_source_scan is None:
                 raise RuntimeError("插件源码规则文件存在，但工作区验收没有执行插件源码扫描")
-            async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
-                plugin_source_report = _validate_workspace_plugin_source_rules(
-                    rules_text=await file.read(),
-                    game_data=game_data,
-                    text_rules=text_rules,
-                    scan=plugin_source_scan,
-                    translated_paths=translated_paths,
-                )
-            errors.extend(plugin_source_report.errors)
-            plugin_source_warnings = plugin_source_report.warnings
-            plugin_source_reviewed_count = _summary_int(plugin_source_report.summary, "reviewed_selector_count")
-            promoted_plugin_source_warnings: list[AgentIssue] = []
-            kept_plugin_source_warnings: list[AgentIssue] = []
-            for warning in plugin_source_warnings:
-                if warning.code == "plugin_source_review_incomplete" and (
-                    plugin_source_required or plugin_source_reviewed_count > 0
-                ):
-                    promoted_plugin_source_warnings.append(warning)
-                else:
-                    kept_plugin_source_warnings.append(warning)
-            plugin_source_warnings = kept_plugin_source_warnings
-            errors.extend(promoted_plugin_source_warnings)
-            if not plugin_source_required and plugin_source_reviewed_count == 0:
-                plugin_source_warnings = [
-                    warning
-                    for warning in plugin_source_warnings
-                    if warning.code != "plugin_source_rules_empty"
-                ]
-            warnings.extend(plugin_source_warnings)
-            details["plugin_source_rules"] = plugin_source_report.details
-            if plugin_source_reviewed_count == 0:
-                if plugin_source_required:
-                    errors.append(
-                        issue(
-                            "plugin_source_rules_empty_high_risk",
-                            "插件源码风险较高，但工作区没有保存任何已审查的插件源码 selector；请先完成插件源码 AST 审查",
-                        )
+            else:
+                async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
+                    plugin_source_report = _validate_workspace_plugin_source_rules(
+                        rules_text=await file.read(),
+                        game_data=game_data,
+                        text_rules=text_rules,
+                        scan=plugin_source_scan,
+                        translated_paths=translated_paths,
                     )
-                elif plugin_source_started:
-                    errors.append(
-                        issue(
-                            "plugin_source_rules_empty_started",
-                            "插件源码支线已有审查结果，但工作区没有保存任何插件源码 selector；请补全翻译或排除 selector",
+                errors.extend(plugin_source_report.errors)
+                plugin_source_warnings = plugin_source_report.warnings
+                plugin_source_reviewed_count = _summary_int(plugin_source_report.summary, "reviewed_selector_count")
+                promoted_plugin_source_warnings: list[AgentIssue] = []
+                kept_plugin_source_warnings: list[AgentIssue] = []
+                for warning in plugin_source_warnings:
+                    if warning.code == "plugin_source_review_incomplete" and (
+                        plugin_source_required or plugin_source_reviewed_count > 0
+                    ):
+                        promoted_plugin_source_warnings.append(warning)
+                    else:
+                        kept_plugin_source_warnings.append(warning)
+                plugin_source_warnings = kept_plugin_source_warnings
+                errors.extend(promoted_plugin_source_warnings)
+                if not plugin_source_required and plugin_source_reviewed_count == 0:
+                    plugin_source_warnings = [
+                        warning
+                        for warning in plugin_source_warnings
+                        if warning.code != "plugin_source_rules_empty"
+                    ]
+                warnings.extend(plugin_source_warnings)
+                details["plugin_source_rules"] = plugin_source_report.details
+                if plugin_source_reviewed_count == 0:
+                    if plugin_source_required:
+                        errors.append(
+                            issue(
+                                "plugin_source_rules_empty_high_risk",
+                                "插件源码风险较高，但工作区没有保存任何已审查的插件源码 selector；请先完成插件源码 AST 审查",
+                            )
                         )
-                    )
+                    elif plugin_source_started:
+                        errors.append(
+                            issue(
+                                "plugin_source_rules_empty_started",
+                                "插件源码支线已有审查结果，但工作区没有保存任何插件源码 selector；请补全翻译或排除 selector",
+                            )
+                        )
         else:
             if plugin_source_required or plugin_source_started:
                 errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
@@ -732,34 +743,39 @@ class WorkspaceAgentMixin:
                     f"非标准 data 文件文本扫描失败: {type(nonstandard_data_scan_error).__name__}: {nonstandard_data_scan_error}",
                 )
             )
-        elif nonstandard_data_scan is not None and nonstandard_data_rules_path.exists():
-            try:
-                async with aiofiles.open(nonstandard_data_rules_path, "r", encoding="utf-8") as file:
-                    nonstandard_data_rules_text = await file.read()
-                nonstandard_data_import_file = parse_nonstandard_data_rule_import_text(nonstandard_data_rules_text)
-                nonstandard_data_validation = validate_nonstandard_data_rules(
-                    scan=nonstandard_data_scan,
-                    import_file=nonstandard_data_import_file,
-                )
-                if nonstandard_data_validation.skipped_files:
-                    persistent_warnings = _nonstandard_data_skipped_warnings(stored_nonstandard_data_rules)
-                    if persistent_warnings:
-                        warnings.extend(persistent_warnings)
-                    else:
-                        warnings.append(
-                            issue(
-                                "nonstandard_data_files_skipped",
-                                f"已确认跳过 {len(nonstandard_data_validation.skipped_files)} 个非标准 data 文件，后续报告仍会提示这些文件可能残留源文",
-                            )
-                        )
-                details["nonstandard_data_rules"] = nonstandard_data_validation.details
-            except Exception as error:
-                errors.append(
-                    issue(
-                        "nonstandard_data_rules_invalid",
-                        f"非标准 data 文件文本规则不可导入: {type(error).__name__}: {error}",
+        elif nonstandard_data_rules_in_manifest:
+            if not nonstandard_data_rules_path.is_file():
+                errors.append(issue("nonstandard_data_rules_missing", "工作区缺少 nonstandard-data-rules.json"))
+            elif nonstandard_data_scan is None:
+                raise RuntimeError("非标准 data 规则文件存在，但工作区验收没有执行非标准 data 扫描")
+            else:
+                try:
+                    async with aiofiles.open(nonstandard_data_rules_path, "r", encoding="utf-8") as file:
+                        nonstandard_data_rules_text = await file.read()
+                    nonstandard_data_import_file = parse_nonstandard_data_rule_import_text(nonstandard_data_rules_text)
+                    nonstandard_data_validation = validate_nonstandard_data_rules(
+                        scan=nonstandard_data_scan,
+                        import_file=nonstandard_data_import_file,
                     )
-            )
+                    if nonstandard_data_validation.skipped_files:
+                        persistent_warnings = _nonstandard_data_skipped_warnings(stored_nonstandard_data_rules)
+                        if persistent_warnings:
+                            warnings.extend(persistent_warnings)
+                        else:
+                            warnings.append(
+                                issue(
+                                    "nonstandard_data_files_skipped",
+                                    f"已确认跳过 {len(nonstandard_data_validation.skipped_files)} 个非标准 data 文件，后续报告仍会提示这些文件可能残留源文",
+                                )
+                            )
+                    details["nonstandard_data_rules"] = nonstandard_data_validation.details
+                except Exception as error:
+                    errors.append(
+                        issue(
+                            "nonstandard_data_rules_invalid",
+                            f"非标准 data 文件文本规则不可导入: {type(error).__name__}: {error}",
+                        )
+                    )
         elif nonstandard_data_scan is not None and (nonstandard_data_scan.high_risk or nonstandard_data_started):
             errors.append(issue("nonstandard_data_rules_missing", "工作区缺少 nonstandard-data-rules.json"))
         advance_progress(1)
@@ -950,6 +966,11 @@ class WorkspaceAgentMixin:
                 summary={"workspace": str(workspace)},
                 details={},
             )
+        unlisted_paths = _collect_workspace_unlisted_paths(
+            workspace=workspace,
+            manifest_path=manifest_path,
+            manifest_files=files_value,
+        )
         for raw_path in files_value:
             if not isinstance(raw_path, str):
                 continue
@@ -965,11 +986,26 @@ class WorkspaceAgentMixin:
         if manifest_path.exists():
             manifest_path.unlink()
             deleted_count += 1
+        warnings: list[AgentIssue] = []
+        details: JsonObject = {}
+        if unlisted_paths:
+            warnings.append(
+                issue(
+                    "workspace_unlisted_files_ignored",
+                    f"发现 {len(unlisted_paths)} 个 manifest 外旧文件，旧文件不会参与本轮验收；"
+                    + "请确认后手动删除或重新生成工作区",
+                )
+            )
+            details["unlisted_files"] = [str(path) for path in unlisted_paths[:50]]
         return AgentReport.from_parts(
             errors=[],
-            warnings=[],
-            summary={"workspace": str(workspace), "deleted_count": deleted_count},
-            details={},
+            warnings=warnings,
+            summary={
+                "workspace": str(workspace),
+                "deleted_count": deleted_count,
+                "unlisted_file_count": len(unlisted_paths),
+            },
+            details=details,
         )
 
 
@@ -1147,6 +1183,23 @@ async def _read_workspace_manifest(workspace: Path) -> tuple[JsonObject | None, 
         return None, issue("manifest_invalid", f"读取工作区 manifest 失败: {type(error).__name__}: {error}")
 
 
+def _workspace_manifest_includes_path(manifest: JsonObject | None, path: Path) -> bool:
+    """确认路径是否属于本轮 manifest 明确导出的工作区文件。"""
+    if manifest is None:
+        return False
+    try:
+        manifest_files = ensure_json_array(manifest.get("files"), "manifest.files")
+        resolved_path = path.resolve()
+        for raw_path in manifest_files:
+            if not isinstance(raw_path, str):
+                continue
+            if Path(raw_path).resolve() == resolved_path:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _workspace_manifest_generated(manifest: JsonObject | None) -> JsonObject:
     """取出 manifest.generated；manifest 不可用时返回空对象。"""
     if manifest is None:
@@ -1156,6 +1209,41 @@ def _workspace_manifest_generated(manifest: JsonObject | None) -> JsonObject:
     except Exception:
         return {}
     return generated
+
+
+def _collect_workspace_unlisted_paths(
+    *,
+    workspace: Path,
+    manifest_path: Path,
+    manifest_files: JsonArray,
+) -> list[Path]:
+    """列出 manifest.files 之外的工作区旧文件，供 cleanup 报告但不自动删除。"""
+    workspace_root = workspace.resolve()
+    manifest_resolved = manifest_path.resolve()
+    listed_paths: list[Path] = []
+    for raw_path in manifest_files:
+        if not isinstance(raw_path, str):
+            continue
+        listed_path = Path(raw_path).resolve()
+        if _is_path_inside(listed_path, workspace_root):
+            listed_paths.append(listed_path)
+
+    unlisted_paths: list[Path] = []
+    for candidate in sorted(workspace.rglob("*"), key=lambda path: path.as_posix()):
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate == manifest_resolved:
+            continue
+        if any(_path_matches_manifest_entry(resolved_candidate, listed_path) for listed_path in listed_paths):
+            continue
+        unlisted_paths.append(resolved_candidate)
+    return unlisted_paths
+
+
+def _path_matches_manifest_entry(path: Path, listed_path: Path) -> bool:
+    """判断路径是否等于 manifest 条目，或属于 manifest 条目目录内部。"""
+    if path == listed_path:
+        return True
+    return listed_path.is_dir() and _is_path_inside(path, listed_path)
 
 
 def _workspace_event_command_codes_from_manifest(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
 import pytest
 
@@ -55,6 +55,10 @@ class _FakeJavaScriptAstModule:
         """保存待返回的 JSON 对象。"""
         self._payload = payload
 
+    def native_contract_version(self) -> int:
+        """返回当前测试契约版本。"""
+        return native_quality.NATIVE_CONTRACT_VERSION
+
     def parse_javascript_string_spans(self, payload_json: str) -> str:
         """返回测试预置的 AST 扫描结果。"""
         _ = payload_json
@@ -64,6 +68,35 @@ class _FakeJavaScriptAstModule:
         """返回测试预置的批量 AST 扫描结果。"""
         _ = payload_json
         return json.dumps({"files": [{"file_name": "test.js", **self._payload}]}, ensure_ascii=False)
+
+
+class _FakeJavaScriptAstModuleWithoutContract:
+    """模拟旧版 JS AST 扩展：有 AST 入口但没有契约版本函数。"""
+
+    _payload: dict[str, object]
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        """保存待返回的 JSON 对象。"""
+        self._payload = payload
+
+    def parse_javascript_string_spans(self, payload_json: str) -> str:
+        """返回测试预置的 AST 扫描结果。"""
+        _ = payload_json
+        return json.dumps(self._payload, ensure_ascii=False)
+
+    def parse_javascript_string_spans_batch(self, payload_json: str) -> str:
+        """返回测试预置的批量 AST 扫描结果。"""
+        _ = payload_json
+        return json.dumps({"files": [{"file_name": "test.js", **self._payload}]}, ensure_ascii=False)
+
+
+class _FakeJavaScriptAstModuleWithOldContract(_FakeJavaScriptAstModule):
+    """模拟旧版 JS AST 扩展：AST 入口存在但契约版本过低。"""
+
+    @override
+    def native_contract_version(self) -> int:
+        """返回旧契约版本。"""
+        return 1
 
 
 class _FakeQualityModule:
@@ -167,6 +200,27 @@ def test_native_write_plan_rejects_stale_native_contract(monkeypatch: pytest.Mon
             mode="write_back",
             confirm_font_overwrite=False,
         )
+
+
+def test_native_javascript_ast_rejects_stale_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """JS AST 入口必须和其它 Rust 热路径一样拒绝旧原生契约。"""
+    valid_payload: dict[str, object] = {"has_error": False, "spans": list[object]()}
+
+    def import_missing_contract(_name: str) -> object:
+        """返回缺少契约版本函数的旧 JS AST 扩展。"""
+        return _FakeJavaScriptAstModuleWithoutContract(valid_payload)
+
+    monkeypatch.setattr(native_javascript_ast, "import_module", import_missing_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+        _ = native_javascript_ast.parse_native_javascript_string_spans("'文本'")
+
+    def import_old_contract(_name: str) -> object:
+        """返回契约版本过低的旧 JS AST 扩展。"""
+        return _FakeJavaScriptAstModuleWithOldContract(valid_payload)
+
+    monkeypatch.setattr(native_javascript_ast, "import_module", import_old_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+        _ = native_javascript_ast.parse_native_javascript_string_spans("'文本'")
 
 
 def test_native_write_plan_reports_native_error_status(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -39,6 +39,7 @@
 
 ## 测试覆盖
 
-- `tests/test_rmmz_loader_extraction_writeback.py` 覆盖提取、写入和字体相关行为。
+- `tests/test_rmmz_write_plan.py`、`tests/test_write_back_transactions.py`、`tests/test_rmmz_post_write_audit.py` 和 `tests/test_rmmz_file_transaction.py` 覆盖提取后的写回计划、事务、写后审计和文件替换边界。
+- `tests/test_font_replacement_transactions.py` 和 `tests/test_rmmz_font_transaction.py` 覆盖字体替换和字体记录事务边界。
 - `tests/test_translation_cache_context.py` 与 `tests/test_translation_line_alignment.py` 覆盖翻译批次和文本结构。
 - `tests/test_terminology.py` 覆盖术语表导出、导入和写入。

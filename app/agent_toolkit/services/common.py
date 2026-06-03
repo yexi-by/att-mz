@@ -216,6 +216,7 @@ class AgentServiceContext(Protocol):
         self,
         *,
         game_title: str,
+        setting_overrides: SettingOverrides | None = None,
         callbacks: QualityProgressCallbacks | None = None,
     ) -> AgentReport:
         """重建当前游戏的持久文本范围索引。"""

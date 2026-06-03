@@ -45,7 +45,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
                 for translation_item in items
             ]
             _ = await self.connection.executemany(INSERT_TRANSLATION, serialized_items)
-        await self.connection.commit()
+        await self.commit()
 
     async def read_translation_location_paths(self) -> set[str]:
         """读取主翻译表中的全部已完成路径。"""
@@ -113,7 +113,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             )
             if cursor.rowcount > 0:
                 deleted_rows += cursor.rowcount
-        await self.connection.commit()
+        await self.commit()
         return deleted_rows
 
     async def delete_translation_items_except_paths(
@@ -133,7 +133,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             DELETE_TRANSLATION_ITEM_BY_PATH,
             [(path,) for path in stale_paths],
         )
-        await self.connection.commit()
+        await self.commit()
         return len(stale_paths)
 
     async def delete_translation_items_by_paths(
@@ -156,7 +156,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             cursor = await self.connection.execute(sql, tuple(batch))
             if cursor.rowcount > 0:
                 deleted_rows += cursor.rowcount
-        await self.connection.commit()
+        await self.commit()
         return deleted_rows
 
     def _translation_item_from_row(self, row: aiosqlite.Row) -> TranslationItem:
