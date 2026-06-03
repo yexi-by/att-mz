@@ -20,6 +20,7 @@ uv run python main.py <命令> ...
 
 - 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传当前命令必需的定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`，以及已满足前置条件的确认参数。
 - 用户明确指定值、CLI 契约要求显式传入，或 CLI 输出说明默认配置缺失、冲突、不适合当前游戏或当前阶段时，立即改用最小范围覆盖：一次性差异用 CLI 参数，运行时性能差异用环境变量，长期稳定差异再调整本地配置。
+- 模型地址和 API Key 的当前环境变量只使用 `ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`；旧项目前缀的模型环境变量不再作为成功配置入口，出现时按 CLI JSON 错误处理。
 - 不要反复用同一套失败配置重试。确认是配置问题后，先根据 CLI 摘要、工作区文件和用户已给信息自行选择合理覆盖；只有涉及模型密钥、费用风险、写文件许可或多种业务结果都合理时，才停下来问用户。
 - 使用覆盖参数后，后续关联命令必须保持同一语义。例如工作区用显式 `--code` 导出事件指令候选时，导入空事件指令规则也要传同一组 `--code CODE`。
 
@@ -117,7 +118,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描结构化候选覆盖 | 规则命中可解释，覆盖风险已处理或已确认 | 未覆盖且无法确认时修规则，再 validate 和 scan |
 | `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存结构化规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
 
-普通占位符未确认风险时使用 `placeholder_uncovered` error，确认风险后在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中使用 `placeholder_uncovered_reviewed` warning。结构化占位符对应 `structured_placeholder_uncovered` error 和 `structured_placeholder_uncovered_reviewed` warning。旧版本若保存过前 100 个候选样本 hash，当前版本会以 `*_legacy_hash` warning 兼容放行；重新导入对应规则后会升级为完整候选 hash。warning 只表示流程可继续，不表示译文可以改坏协议片段；坏控制符仍会在保存或写文件前成为质量 error。
+普通占位符未确认风险时使用 `placeholder_uncovered` error，确认风险后在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中使用 `placeholder_uncovered_reviewed` warning。结构化占位符对应 `structured_placeholder_uncovered` error 和 `structured_placeholder_uncovered_reviewed` warning。旧版样本确认不再作为当前确认依据；如果候选范围变化或旧确认过期，必须重新导出、审查并导入当前规则。warning 只表示流程可继续，不表示译文可以改坏协议片段；坏控制符仍会在保存或写文件前成为质量 error。
 
 ## 翻译、检查和手动修复
 
