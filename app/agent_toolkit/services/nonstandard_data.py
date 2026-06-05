@@ -13,11 +13,10 @@ from .common import (
 )
 from app.nonstandard_data import (
     build_nonstandard_data_rule_records_from_validation,
-    build_nonstandard_data_scan,
-    export_nonstandard_data_workspace,
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
 )
+from app.nonstandard_data.scanner import build_nonstandard_data_scan, export_nonstandard_data_workspace
 from app.rmmz.game_file_view import GameFileView
 
 

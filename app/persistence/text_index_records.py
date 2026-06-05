@@ -6,27 +6,45 @@ from typing import cast
 
 import aiosqlite
 
-from .records import TextIndexInvalidationRecord, TextIndexItemRecord, TextIndexMetadata
+from .records import (
+    TextIndexDomainSummaryRecord,
+    TextIndexInvalidationRecord,
+    TextIndexItemRecord,
+    TextIndexMetadata,
+    TextIndexRuleHitSummaryRecord,
+    TextIndexScopeSummaryRecord,
+)
 from .rows import decode_string_list, row_int, row_item_type, row_optional_str, row_str
 from .session_base import SessionMixinBase
 from .sql import (
     DELETE_ALL_TEXT_INDEX_INVALIDATIONS,
+    DELETE_ALL_TEXT_INDEX_DOMAIN_SUMMARY,
     DELETE_ALL_TEXT_INDEX_ITEMS,
     DELETE_ALL_TEXT_INDEX_META,
+    DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY,
+    DELETE_ALL_TEXT_INDEX_SCOPE_SUMMARY,
     COUNT_PENDING_TEXT_INDEX_QUALITY_ERRORS,
     COUNT_TEXT_INDEX_TRANSLATED_ITEMS,
+    INSERT_TEXT_INDEX_DOMAIN_SUMMARY,
     INSERT_TEXT_INDEX_INVALIDATION,
     INSERT_TEXT_INDEX_ITEM,
+    INSERT_TEXT_INDEX_RULE_HIT_SUMMARY,
     SELECT_PENDING_TEXT_INDEX_COUNT,
     SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_TYPE_COUNTS,
     SELECT_PENDING_TEXT_INDEX_ITEMS,
+    SELECT_TEXT_INDEX_DOMAIN_SUMMARY,
     SELECT_TEXT_INDEX_INVALIDATIONS,
     SELECT_TEXT_INDEX_ITEM_COUNT,
     SELECT_TEXT_INDEX_ITEMS,
     SELECT_TEXT_INDEX_LOCATION_PATHS,
     SELECT_TEXT_INDEX_META,
+    SELECT_TEXT_INDEX_QUALITY_ERROR_PATHS,
+    SELECT_TEXT_INDEX_RULE_HIT_SUMMARY,
+    SELECT_TEXT_INDEX_SCOPE_SUMMARY,
+    SELECT_WRITABLE_TEXT_INDEX_LOCATION_PATHS,
     TEXT_INDEX_ITEMS_TABLE_NAME,
     TEXT_INDEX_META_KEY,
+    UPSERT_TEXT_INDEX_SCOPE_SUMMARY,
     UPSERT_TEXT_INDEX_META,
 )
 
@@ -43,6 +61,9 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
         *,
         metadata: TextIndexMetadata,
         items: Sequence[TextIndexItemRecord],
+        scope_summary: TextIndexScopeSummaryRecord | None = None,
+        domain_summary: Sequence[TextIndexDomainSummaryRecord] = (),
+        rule_hit_summary: Sequence[TextIndexRuleHitSummaryRecord] = (),
     ) -> None:
         """用一次完整索引重建结果替换旧索引。"""
         if metadata.item_count != len(items):
@@ -51,6 +72,9 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
         _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_INVALIDATIONS)
         _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_META)
         _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_ITEMS)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_SCOPE_SUMMARY)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_DOMAIN_SUMMARY)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY)
         _ = await self.connection.execute(
             UPSERT_TEXT_INDEX_META,
             (
@@ -67,6 +91,49 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
                 INSERT_TEXT_INDEX_ITEM,
                 [self._serialize_text_index_item(item) for item in items],
             )
+        if scope_summary is not None:
+            _ = await self.connection.execute(
+                UPSERT_TEXT_INDEX_SCOPE_SUMMARY,
+                (
+                    TEXT_INDEX_META_KEY,
+                    scope_summary.total_count,
+                    scope_summary.active_count,
+                    scope_summary.writable_count,
+                    scope_summary.unwritable_count,
+                    scope_summary.stale_rule_count,
+                    scope_summary.native_thread_count,
+                ),
+            )
+        if domain_summary:
+            _ = await self.connection.executemany(
+                INSERT_TEXT_INDEX_DOMAIN_SUMMARY,
+                [
+                    (
+                        record.domain,
+                        record.item_count,
+                        record.active_count,
+                        record.writable_count,
+                        record.unwritable_count,
+                        record.inactive_rule_hit_count,
+                    )
+                    for record in domain_summary
+                ],
+            )
+        if rule_hit_summary:
+            _ = await self.connection.executemany(
+                INSERT_TEXT_INDEX_RULE_HIT_SUMMARY,
+                [
+                    (
+                        record.domain,
+                        record.rule_key,
+                        record.hit_count,
+                        record.extractable_count,
+                        record.writable_count,
+                        record.unwritable_count,
+                    )
+                    for record in rule_hit_summary
+                ],
+            )
         await self.connection.commit()
 
     async def clear_text_index(self) -> None:
@@ -74,6 +141,9 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
         _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_INVALIDATIONS)
         _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_META)
         _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_ITEMS)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_SCOPE_SUMMARY)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_DOMAIN_SUMMARY)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY)
         await self.connection.commit()
 
     async def read_text_index_metadata(self) -> TextIndexMetadata | None:
@@ -97,6 +167,53 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
         async with self.connection.execute(SELECT_TEXT_INDEX_ITEMS) as cursor:
             rows = await cursor.fetchall()
         return [self._text_index_item_from_row(row) for row in rows]
+
+    async def read_text_index_scope_summary(self) -> TextIndexScopeSummaryRecord | None:
+        """读取当前文本范围索引的静态范围摘要。"""
+        async with self.connection.execute(SELECT_TEXT_INDEX_SCOPE_SUMMARY, (TEXT_INDEX_META_KEY,)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return TextIndexScopeSummaryRecord(
+            total_count=row_int(row, "total_count", self.db_path),
+            active_count=row_int(row, "active_count", self.db_path),
+            writable_count=row_int(row, "writable_count", self.db_path),
+            unwritable_count=row_int(row, "unwritable_count", self.db_path),
+            stale_rule_count=row_int(row, "stale_rule_count", self.db_path),
+            native_thread_count=row_int(row, "native_thread_count", self.db_path),
+        )
+
+    async def read_text_index_domain_summary(self) -> list[TextIndexDomainSummaryRecord]:
+        """读取当前文本范围索引按来源域汇总的静态事实。"""
+        async with self.connection.execute(SELECT_TEXT_INDEX_DOMAIN_SUMMARY) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            TextIndexDomainSummaryRecord(
+                domain=row_str(row, "domain", self.db_path),
+                item_count=row_int(row, "item_count", self.db_path),
+                active_count=row_int(row, "active_count", self.db_path),
+                writable_count=row_int(row, "writable_count", self.db_path),
+                unwritable_count=row_int(row, "unwritable_count", self.db_path),
+                inactive_rule_hit_count=row_int(row, "inactive_rule_hit_count", self.db_path),
+            )
+            for row in rows
+        ]
+
+    async def read_text_index_rule_hit_summary(self) -> list[TextIndexRuleHitSummaryRecord]:
+        """读取当前文本范围索引按规则命中汇总的静态事实。"""
+        async with self.connection.execute(SELECT_TEXT_INDEX_RULE_HIT_SUMMARY) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            TextIndexRuleHitSummaryRecord(
+                domain=row_str(row, "domain", self.db_path),
+                rule_key=row_str(row, "rule_key", self.db_path),
+                hit_count=row_int(row, "hit_count", self.db_path),
+                extractable_count=row_int(row, "extractable_count", self.db_path),
+                writable_count=row_int(row, "writable_count", self.db_path),
+                unwritable_count=row_int(row, "unwritable_count", self.db_path),
+            )
+            for row in rows
+        ]
 
     async def count_text_index_items(self) -> int:
         """统计当前文本范围索引项数量。"""
@@ -138,6 +255,12 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
             row_str(row, "error_type", self.db_path): row_int(row, "error_count", self.db_path)
             for row in rows
         }
+
+    async def read_text_index_quality_error_paths(self, run_id: str) -> set[str]:
+        """读取当前文本索引范围内指定运行没通过项目检查的定位路径。"""
+        async with self.connection.execute(SELECT_TEXT_INDEX_QUALITY_ERROR_PATHS, (run_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return {row_str(row, "location_path", self.db_path) for row in rows}
 
     async def read_pending_text_index_items(
         self,
@@ -195,6 +318,12 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
         async with self.connection.execute(SELECT_TEXT_INDEX_LOCATION_PATHS) as cursor:
             rows = await cursor.fetchall()
         return {row_str(row, "location_path", self.db_path) for row in rows}
+
+    async def read_writable_text_index_location_paths(self) -> list[str]:
+        """按索引顺序读取当前可写文本范围定位路径。"""
+        async with self.connection.execute(SELECT_WRITABLE_TEXT_INDEX_LOCATION_PATHS) as cursor:
+            rows = await cursor.fetchall()
+        return [row_str(row, "location_path", self.db_path) for row in rows]
 
     async def replace_text_index_invalidations(
         self,

@@ -8,7 +8,7 @@ from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import TextRules
 
 from .models import PluginSourceCandidate, PluginSourceScan
-from .scanner import build_plugin_source_scan
+from .native_scan import build_native_plugin_source_scan
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +42,7 @@ def filter_fresh_plugin_source_text_rules(
     if not rule_records:
         return [], []
     if scan is None:
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     file_scans = {file_scan.file_name: file_scan for file_scan in scan.files}
     fresh_rules: list[PluginSourceTextRuleRecord] = []
     stale_rules: list[StalePluginSourceTextRule] = []

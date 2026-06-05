@@ -9,12 +9,9 @@ from typing import ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from app.json_path_protocol import (
-    ResolvedLeaf,
-    expand_rule_to_leaf_paths,
-    jsonpath_to_path_parts,
-)
-from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value
+from app.json_path_protocol import jsonpath_to_path_parts
+from app.native_scope_index import scan_native_rule_candidates
+from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.schema import NonstandardDataTextRuleRecord
 
 from .scanner import NonstandardDataScan, build_nonstandard_data_file_hash
@@ -97,6 +94,17 @@ class NonstandardDataRuleValidationResult:
         return len(self.translated_candidate_paths) + len(self.excluded_candidate_paths)
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeNonstandardDataRuleCoverage:
+    """Rust 规则覆盖统计结果。"""
+
+    translated_candidate_paths: frozenset[tuple[str, str]]
+    excluded_candidate_paths: frozenset[tuple[str, str]]
+    skipped_files: frozenset[str]
+    unreviewed_candidate_paths: tuple[tuple[str, str], ...]
+    details: JsonObject
+
+
 def parse_nonstandard_data_rule_import_text(raw_text: str) -> NonstandardDataRuleImportFile:
     """解析非标准 data 规则 JSON 文本。"""
     decoded_raw = cast(object, json.loads(raw_text))
@@ -112,95 +120,19 @@ def validate_nonstandard_data_rules(
     import_file: NonstandardDataRuleImportFile,
 ) -> NonstandardDataRuleValidationResult:
     """校验规则结构、路径命中和候选全量归类状态。"""
-    nonstandard_file_names = {file.file_name for file in scan.files}
-    candidate_paths = {
-        (candidate.file_name, candidate.json_path)
-        for candidate in scan.candidates
-    }
-    seen_files: set[str] = set()
-    translated_candidate_paths: set[tuple[str, str]] = set()
-    excluded_candidate_paths: set[tuple[str, str]] = set()
-    skipped_files: set[str] = set()
-    rule_details: JsonArray = []
-
-    for rule in import_file:
-        if rule.file in seen_files:
-            raise ValueError(f"非标准 data 文件规则不能重复声明 file: {rule.file}")
-        seen_files.add(rule.file)
-        if rule.file not in nonstandard_file_names:
-            raise ValueError(f"非标准 data 文件规则指向不存在的文件: {rule.file}")
-        if rule.skipped:
-            skipped_files.add(rule.file)
-            rule_details.append(
-                {
-                    "file": rule.file,
-                    "skipped": True,
-                    "translated_candidate_count": 0,
-                    "excluded_candidate_count": 0,
-                }
-            )
-            continue
-
-        file_leaves = list(scan.leaves_by_file.get(rule.file, ()))
-        translated_hits = _collect_rule_hits(
-            file_name=rule.file,
-            path_templates=rule.paths,
-            leaves=file_leaves,
-            candidate_paths=candidate_paths,
-            require_candidate_hit=True,
-        )
-        excluded_hits = _collect_rule_hits(
-            file_name=rule.file,
-            path_templates=rule.excluded_paths,
-            leaves=file_leaves,
-            candidate_paths=candidate_paths,
-            require_candidate_hit=True,
-        )
-        overlap = translated_hits & excluded_hits
-        if overlap:
-            overlap_preview = _format_path_pairs(overlap)
-            raise ValueError(f"非标准 data 文件规则 paths 与 excluded_paths 命中同一候选: {overlap_preview}")
-        translated_candidate_paths.update(translated_hits)
-        excluded_candidate_paths.update(excluded_hits)
-        rule_details.append(
-            {
-                "file": rule.file,
-                "skipped": False,
-                "translated_candidate_count": len(translated_hits),
-                "excluded_candidate_count": len(excluded_hits),
-                "paths": list(rule.paths),
-                "excluded_paths": list(rule.excluded_paths),
-            }
-        )
-
-    reviewed_paths = translated_candidate_paths | excluded_candidate_paths
-    skipped_candidate_paths = {
-        path_pair
-        for path_pair in candidate_paths
-        if path_pair[0] in skipped_files
-    }
-    unreviewed_candidate_paths = tuple(sorted(candidate_paths - reviewed_paths - skipped_candidate_paths))
-    if unreviewed_candidate_paths:
+    coverage = _evaluate_native_nonstandard_data_rule_coverage(scan=scan, import_file=import_file)
+    if coverage.unreviewed_candidate_paths:
         raise ValueError(
-            f"非标准 data 文件文本候选未全量归类: {_format_path_pairs(set(unreviewed_candidate_paths))}"
+            f"非标准 data 文件文本候选未全量归类: {_format_path_pairs(set(coverage.unreviewed_candidate_paths))}"
         )
 
-    skipped_file_items: JsonArray = [
-        file_name
-        for file_name in sorted(skipped_files)
-    ]
     return NonstandardDataRuleValidationResult(
         rules=tuple(import_file),
-        translated_candidate_paths=frozenset(translated_candidate_paths),
-        excluded_candidate_paths=frozenset(excluded_candidate_paths),
-        skipped_files=frozenset(skipped_files),
-        unreviewed_candidate_paths=unreviewed_candidate_paths,
-        details={
-            "rules": rule_details,
-            "translated_candidates": _path_pairs_to_json_array(translated_candidate_paths),
-            "excluded_candidates": _path_pairs_to_json_array(excluded_candidate_paths),
-            "skipped_files": skipped_file_items,
-        },
+        translated_candidate_paths=coverage.translated_candidate_paths,
+        excluded_candidate_paths=coverage.excluded_candidate_paths,
+        skipped_files=coverage.skipped_files,
+        unreviewed_candidate_paths=coverage.unreviewed_candidate_paths,
+        details=coverage.details,
     )
 
 
@@ -251,32 +183,110 @@ def nonstandard_data_rule_records_to_import_json(
     ]
 
 
-def _collect_rule_hits(
+def _evaluate_native_nonstandard_data_rule_coverage(
     *,
-    file_name: str,
-    path_templates: list[str],
-    leaves: list[ResolvedLeaf],
-    candidate_paths: set[tuple[str, str]],
-    require_candidate_hit: bool,
-) -> set[tuple[str, str]]:
-    """展开一组路径模板并返回命中的候选路径。"""
-    hits: set[tuple[str, str]] = set()
-    for path_template in path_templates:
-        matched_leaf_paths = expand_rule_to_leaf_paths(
-            path_template=path_template,
-            resolved_leaves=leaves,
-        )
-        if not matched_leaf_paths:
-            raise ValueError(f"非标准 data 文件 {file_name} 的路径没有命中字符串叶子: {path_template}")
-        candidate_hits = {
-            (file_name, leaf_path)
-            for leaf_path in matched_leaf_paths
-            if (file_name, leaf_path) in candidate_paths
+    scan: NonstandardDataScan,
+    import_file: NonstandardDataRuleImportFile,
+) -> _NativeNonstandardDataRuleCoverage:
+    """调用 Rust 入口评估非标准 data 规则覆盖统计。"""
+    native_result = scan_native_rule_candidates(
+        {
+            "nonstandard_data_rule_coverage": {
+                "rules": [rule.model_dump(mode="json") for rule in import_file],
+                "files": [
+                    {
+                        "file": nonstandard_file.file_name,
+                        "leaves": [
+                            {
+                                "path": leaf.path,
+                                "value_type": leaf.value_type,
+                            }
+                            for leaf in scan.leaves_by_file.get(nonstandard_file.file_name, ())
+                        ],
+                    }
+                    for nonstandard_file in scan.files
+                ],
+                "candidates": [
+                    {
+                        "file": candidate.file_name,
+                        "json_path": candidate.json_path,
+                    }
+                    for candidate in scan.candidates
+                ],
+            }
         }
-        if require_candidate_hit and not candidate_hits:
-            raise ValueError(f"非标准 data 文件 {file_name} 的路径没有命中源语言自然文本候选: {path_template}")
-        hits.update(candidate_hits)
-    return hits
+    )
+    coverage = ensure_json_object(
+        native_result.scan_summary["nonstandard_data_rule_coverage"],
+        "native_rule_candidates_result.scan_summary.nonstandard_data_rule_coverage",
+    )
+    translated_candidate_paths = _path_pairs_from_json_array(
+        ensure_json_array(coverage["translated_candidates"], "nonstandard_data_rule_coverage.translated_candidates"),
+        "nonstandard_data_rule_coverage.translated_candidates",
+    )
+    excluded_candidate_paths = _path_pairs_from_json_array(
+        ensure_json_array(coverage["excluded_candidates"], "nonstandard_data_rule_coverage.excluded_candidates"),
+        "nonstandard_data_rule_coverage.excluded_candidates",
+    )
+    unreviewed_candidate_paths = tuple(
+        sorted(
+            _path_pairs_from_json_array(
+                ensure_json_array(coverage["unreviewed_candidates"], "nonstandard_data_rule_coverage.unreviewed_candidates"),
+                "nonstandard_data_rule_coverage.unreviewed_candidates",
+            )
+        )
+    )
+    skipped_files = frozenset(
+        _string_array_from_json_array(
+            ensure_json_array(coverage["skipped_files"], "nonstandard_data_rule_coverage.skipped_files"),
+            "nonstandard_data_rule_coverage.skipped_files",
+        )
+    )
+    details: JsonObject = {
+        "rules": ensure_json_array(coverage["rules"], "nonstandard_data_rule_coverage.rules"),
+        "translated_candidates": ensure_json_array(
+            coverage["translated_candidates"],
+            "nonstandard_data_rule_coverage.translated_candidates",
+        ),
+        "excluded_candidates": ensure_json_array(
+            coverage["excluded_candidates"],
+            "nonstandard_data_rule_coverage.excluded_candidates",
+        ),
+        "skipped_files": ensure_json_array(coverage["skipped_files"], "nonstandard_data_rule_coverage.skipped_files"),
+    }
+    return _NativeNonstandardDataRuleCoverage(
+        translated_candidate_paths=frozenset(translated_candidate_paths),
+        excluded_candidate_paths=frozenset(excluded_candidate_paths),
+        skipped_files=skipped_files,
+        unreviewed_candidate_paths=unreviewed_candidate_paths,
+        details=details,
+    )
+
+
+def _path_pairs_from_json_array(items: JsonArray, label: str) -> set[tuple[str, str]]:
+    """读取 native 输出的文件和 JSONPath 对。"""
+    path_pairs: set[tuple[str, str]] = set()
+    for index, raw_item in enumerate(items):
+        item_label = f"{label}[{index}]"
+        item = ensure_json_object(raw_item, item_label)
+        file_name = item.get("file")
+        json_path = item.get("json_path")
+        if not isinstance(file_name, str):
+            raise TypeError(f"{item_label}.file 必须是字符串")
+        if not isinstance(json_path, str):
+            raise TypeError(f"{item_label}.json_path 必须是字符串")
+        path_pairs.add((file_name, json_path))
+    return path_pairs
+
+
+def _string_array_from_json_array(items: JsonArray, label: str) -> list[str]:
+    """读取 native 输出的字符串数组。"""
+    values: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            raise TypeError(f"{label}[{index}] 必须是字符串")
+        values.append(item)
+    return values
 
 
 def _normalize_path_templates(path_templates: list[str]) -> list[str]:
@@ -298,14 +308,6 @@ def _format_path_pairs(path_pairs: set[tuple[str, str]]) -> str:
         f"{file_name}:{json_path}"
         for file_name, json_path in sorted(path_pairs)[:20]
     )
-
-
-def _path_pairs_to_json_array(path_pairs: set[tuple[str, str]]) -> JsonArray:
-    """把文件和 JSONPath 集合转为 JSON 数组。"""
-    return [
-        {"file": file_name, "json_path": json_path}
-        for file_name, json_path in sorted(path_pairs)
-    ]
 
 
 __all__ = [

@@ -44,8 +44,10 @@ async def export_note_tag_candidates_file(
     text_rules: TextRules | None = None,
 ) -> NoteTagCandidateExport:
     """把标准 data Note 标签候选导出为 AgentReport JSON 文件。"""
+    from app.native_note_tag_scan import collect_native_note_tag_candidate_details
+
     rules = text_rules if text_rules is not None else get_default_text_rules()
-    candidates = collect_note_tag_candidates(game_data=game_data, text_rules=rules)
+    candidates = collect_native_note_tag_candidate_details(game_data=game_data, text_rules=rules)
     candidate_count = len(candidates)
     value_count = _candidate_int_sum(candidates, "hit_count")
     translatable_value_count = _candidate_int_sum(candidates, "translatable_hit_count")

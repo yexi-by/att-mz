@@ -11,12 +11,10 @@ from .common import (
     Path,
     QualityProgressCallbacks,
     TextRules,
-    TextScopeService,
     TranslationItem,
     _build_manual_translation_template_entry,
     _build_translation_line_break_count_detail,
     _prepare_manual_translation_item,
-    _text_scope_blocking_errors,
     aiofiles,
     cast,
     coerce_json_value,
@@ -46,7 +44,25 @@ class ManualTranslationAgentMixin:
         """导出还没成功保存译文的条目，供 Agent 手动填写译文。"""
         set_progress, advance_progress, set_status = callbacks or _noop_quality_progress_callbacks()
         set_progress(0, 5)
-        set_status("加载游戏数据和规则")
+        set_status("加载配置和规则")
+        text_index_status = ""
+        text_index_rebuild_summary: JsonObject = {}
+        text_index_invalidation_details: JsonArray = []
+        rebuild_warnings: list[AgentIssue] = []
+
+        def export_summary(*, pending_exported_count: int, pending_total_count: int | None = None) -> JsonObject:
+            summary: JsonObject = {
+                "pending_exported_count": pending_exported_count,
+                "output": str(output_path),
+                "write_back_probe_enabled": include_write_probe,
+                "text_index_status": text_index_status,
+            }
+            if pending_total_count is not None:
+                summary["pending_total_count"] = pending_total_count
+            if text_index_rebuild_summary:
+                summary["text_index_rebuild_summary"] = text_index_rebuild_summary
+            return summary
+
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
             custom_rules = await self._resolve_custom_rules(
@@ -59,44 +75,60 @@ class ManualTranslationAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_translation_source_game_data(session)
-            translated_items = await session.read_translated_items()
             advance_progress(1)
-            set_status("构建当前文本范围")
-            scope = await TextScopeService().build(
+            set_status("检查持久文本范围索引")
+            index_invalidations = await detect_text_index_invalidations(
                 session=session,
-                game_data=game_data,
                 text_rules=text_rules,
-                translated_items=translated_items,
-                include_write_probe=include_write_probe,
             )
-            translated_paths = {item.location_path for item in translated_items}
+            if index_invalidations:
+                text_index_invalidation_details = [
+                    {
+                        "reason_key": item.reason_key,
+                        "detail": item.detail,
+                        "created_at": item.created_at,
+                    }
+                    for item in index_invalidations
+                ]
+                text_index_status = (
+                    "cold_rebuilt"
+                    if any(item.reason_key == "text_index_missing" for item in index_invalidations)
+                    else "stale_rebuilt"
+                )
+                rebuild_report = await self.rebuild_text_index(
+                    game_title=game_title,
+                    include_write_probe=include_write_probe,
+                )
+                text_index_rebuild_summary = dict(rebuild_report.summary)
+                if rebuild_report.status == "error":
+                    text_index_status = "rebuild_failed"
+                    set_progress(5, 5)
+                    set_status("文本范围索引重建失败，停止导出手动填写译文表")
+                    return AgentReport.from_parts(
+                        errors=rebuild_report.errors,
+                        warnings=rebuild_report.warnings,
+                        summary=export_summary(pending_exported_count=0),
+                        details={
+                            "text_index_invalidations": text_index_invalidation_details,
+                            "text_index_rebuild": rebuild_report.details,
+                        },
+                    )
+                rebuild_warnings.extend(rebuild_report.warnings)
+            else:
+                text_index_status = "used"
             advance_progress(1)
-        blocking_errors = _text_scope_blocking_errors(scope)
-        if blocking_errors:
-            set_progress(5, 5)
-            set_status("检查没通过，停止导出手动填写译文表")
-            return AgentReport.from_parts(
-                errors=blocking_errors,
-                warnings=[],
-                summary={
-                    "pending_exported_count": 0,
-                    "output": str(output_path),
-                    "write_back_probe_enabled": scope.write_back_probe_enabled,
-                },
-                details={},
-            )
 
-        set_status("筛选还没成功保存译文")
-        pending_items = [
-            item
-            for translation_data in scope.translation_data_map.values()
-            for item in translation_data.translation_items
-            if item.location_path in scope.writable_paths and item.location_path not in translated_paths
-        ]
-        if limit is not None:
-            pending_items = pending_items[: max(limit, 0)]
-        advance_progress(1)
+            set_status("读取还没成功保存译文的索引条目")
+            pending_total_count = await session.count_pending_text_index_items()
+            if limit is not None and limit <= 0:
+                pending_items: list[TranslationItem] = []
+            else:
+                pending_index_items = await session.read_pending_text_index_items(limit=limit)
+                pending_items = [
+                    text_index_item_to_translation_item(record)
+                    for record in pending_index_items
+                ]
+            advance_progress(1)
 
         set_status("写出手动填写译文表")
         payload: JsonObject = {}
@@ -119,13 +151,12 @@ class ManualTranslationAgentMixin:
         set_status("手动填写译文表已完成")
         return AgentReport.from_parts(
             errors=[],
-            warnings=warnings,
-            summary={
-                "pending_exported_count": len(pending_items),
-                "output": str(output_path),
-                "write_back_probe_enabled": scope.write_back_probe_enabled,
-            },
-            details={},
+            warnings=[*rebuild_warnings, *warnings],
+            summary=export_summary(
+                pending_exported_count=len(pending_items),
+                pending_total_count=pending_total_count,
+            ),
+            details={"text_index_invalidations": text_index_invalidation_details},
         )
 
     async def import_manual_translations(self: AgentServiceContext, *, game_title: str, input_path: Path) -> AgentReport:

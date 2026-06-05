@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 
+from app.native_scope_index import (
+    NativeRuleCandidatesResult,
+    scan_native_rule_candidates as real_scan_native_rule_candidates,
+)
+
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     minimal_game_dir: Path,
@@ -108,6 +113,74 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert "plugin-json-string-leaf-candidates.json" in json.dumps(report.details, ensure_ascii=False)
     assert "note-tag-rules.json" in json.dumps(report.details, ensure_ascii=False)
     assert "structured-placeholder-rules.json" in json.dumps(report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manifest(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """工作区候选 manifest 和草稿共用 native 明细，不再回到旧 scanner。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    native_candidate_marker = r"\NATIVE_DRAFT[1]"
+    native_call_count = 0
+
+    def fake_native_placeholder_details(*args: object, **kwargs: object) -> JsonArray:
+        nonlocal native_call_count
+        _ = (args, kwargs)
+        native_call_count += 1
+        return [
+            {
+                "marker": native_candidate_marker,
+                "count": 1,
+                "sources": ["native-source#0"],
+                "standard_covered": False,
+                "custom_covered": False,
+                "covered": False,
+            }
+        ]
+
+    def forbidden_legacy_placeholder_scan(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("prepare-agent-workspace 普通占位符草稿不应再调用旧 Python scanner")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_details",
+        fake_native_placeholder_details,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.workspace.scan_placeholder_candidates",
+        forbidden_legacy_placeholder_scan,
+        raising=False,
+    )
+
+    report = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+
+    placeholder_manifest = load_json_object(workspace / "placeholder-candidates.json")
+    placeholder_details = ensure_json_object(
+        coerce_json_value(placeholder_manifest["details"]),
+        "placeholder_manifest.details",
+    )
+    candidates = ensure_json_array(
+        placeholder_details["candidates"],
+        "placeholder_manifest.details.candidates",
+    )
+    first_candidate = ensure_json_object(candidates[0], "placeholder_manifest.details.candidates[0]")
+    draft_rules = load_json_object(workspace / "placeholder-rules.json")
+
+    assert report.status == "ok"
+    assert native_call_count == 1
+    assert first_candidate["marker"] == native_candidate_marker
+    assert list(draft_rules) == [r"\\NATIVE_DRAFT\[1\]"]
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
     minimal_game_dir: Path,
@@ -142,7 +215,7 @@ async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
             include_writable_copies=False,
             run_dialogue_probe_check=False,
         )
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "WorkspaceReuse.js")
         candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "WorkspaceReuse.js")
         await session.replace_plugin_source_text_rules(
@@ -161,7 +234,11 @@ async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
         _ = (args, kwargs)
         raise AssertionError("prepare-agent-workspace 不应在文本范围构建中重复扫描插件源码")
 
-    monkeypatch.setattr("app.text_scope.builder.build_plugin_source_scan", forbidden_scope_plugin_source_scan)
+    monkeypatch.setattr(
+        "app.text_scope.builder.build_plugin_source_scan",
+        forbidden_scope_plugin_source_scan,
+        raising=False,
+    )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
     report = await service.prepare_agent_workspace(
@@ -202,6 +279,36 @@ async def test_prepare_agent_workspace_uses_warm_text_index_without_full_scope_b
     draft_count = report.summary["placeholder_rule_draft_count"]
     assert isinstance(draft_count, int)
     assert draft_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_uses_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，工作区验收不再构建完整文本范围。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    _ = await _rebuild_text_index_for_test(service)
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 命中 warm index 时不应构建完整文本范围")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert "terminology_empty_translation" in {error.code for error in report.errors}
+    assert "plugin_rules" in report.details
 @pytest.mark.asyncio
 async def test_validate_agent_workspace_skips_inactive_heavy_branch_scans(
     minimal_game_dir: Path,
@@ -225,17 +332,11 @@ async def test_validate_agent_workspace_skips_inactive_heavy_branch_scans(
     assert not (workspace / "plugin-source-rules.json").exists()
     assert not (workspace / "nonstandard-data-rules.json").exists()
 
-    def forbidden_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
-        """未启动插件源码支线时不应扫描插件源码。"""
-        _ = (args, kwargs)
-        raise AssertionError("validate-agent-workspace 不应扫描未启动的插件源码支线")
-
     async def forbidden_nonstandard_data_scan(*args: object, **kwargs: object) -> NoReturn:
         """未启动非标准 data 支线时不应扫描非标准 data。"""
         _ = (args, kwargs)
         raise AssertionError("validate-agent-workspace 不应扫描未启动的非标准 data 支线")
 
-    monkeypatch.setattr("app.agent_toolkit.services.workspace.build_plugin_source_scan", forbidden_plugin_source_scan)
     monkeypatch.setattr("app.agent_toolkit.services.workspace.build_nonstandard_data_scan", forbidden_nonstandard_data_scan)
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
@@ -244,6 +345,100 @@ async def test_validate_agent_workspace_skips_inactive_heavy_branch_scans(
     assert "plugin_source_rules_missing" not in error_codes
     assert "nonstandard_data_rules_missing" not in error_codes
     assert "nonstandard_data_scan_failed" not in error_codes
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branch(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码支线验收用 Rust 候选事实，不回到旧 Python 插件源码主扫描。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "NativeValidateSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "NativeValidateSource.js").write_text(
+        "Window_Base.prototype.drawText('支线验收候选', 0, 0, 320);\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        game_data = await load_game_data(
+            minimal_game_dir,
+            include_writable_copies=False,
+            run_dialogue_probe_check=False,
+        )
+        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "NativeValidateSource.js")
+        candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "NativeValidateSource.js")
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="NativeValidateSource.js",
+                    file_hash=file_scan.file_hash,
+                    selectors=[candidate.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    native_scan_count = 0
+
+    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        nonlocal native_scan_count
+        native_scan_count += 1
+        return real_scan_native_rule_candidates(payload)
+
+    def forbidden_legacy_plugin_source_scan(*args: object, **kwargs: object) -> PluginSourceScan:
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 不应调用旧 Python 插件源码主扫描")
+
+    def forbidden_write_probe_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 写回探针不应二次扫描插件源码 AST")
+
+    monkeypatch.setattr(
+        "app.plugin_source_text.native_scan.scan_native_rule_candidates",
+        counting_scan_native_rule_candidates,
+    )
+    monkeypatch.setattr(
+        "app.text_scope.builder.build_plugin_source_scan",
+        forbidden_legacy_plugin_source_scan,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.text_scope.write_probe.scan_plugin_source_files_text_strict",
+        forbidden_write_probe_plugin_source_scan,
+        raising=False,
+    )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert native_scan_count == 1
+    assert not any(error.code.startswith("plugin_source_") for error in report.errors)
+    assert report.details["plugin_source_rules"]
+
+
 @pytest.mark.parametrize(
     ("sample_text", "expected_candidate"),
     [
@@ -449,6 +644,30 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     assert mv_validation_details == standalone_mv_namebox_report.details
     assert "mv_virtual_namebox_rules_invalid" not in validation_error_codes
     assert len(mv_validation_rules) == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_agent_workspace_mv_namebox_uses_native_payload(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """MV 工作区候选文件消费 native 虚拟名字框候选 payload。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
+
+    workspace = tmp_path / "mv-workspace"
+    report = await service.prepare_agent_workspace(
+        game_title="MVテストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+
+    mv_namebox_candidates = load_json_object(workspace / "mv-virtual-namebox-candidates.json")
+    assert report.status == "ok"
+    assert mv_namebox_candidates["engine_kind"] == "mv"
+    assert report.summary["mv_virtual_namebox_candidate_count"] == mv_namebox_candidates["candidate_count"]
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_prefills_imported_database_rules(
     minimal_game_dir: Path,
@@ -822,7 +1041,7 @@ async def test_validate_agent_workspace_reports_long_task_stages(
     for expected_status in [
         "读取工作区清单",
         "加载翻译源视图",
-        "抽取当前文本范围",
+        "读取文本范围索引",
         "校验插件规则",
         "校验非标准 data 文件规则",
         "校验结构化占位符规则",

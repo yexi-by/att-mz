@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.config import LLM_API_KEY_ENV_NAME, LLM_BASE_URL_ENV_NAME
 from app.config import SettingOverrides
+from app.utils import config_loader_utils
 from app.utils.config_loader_utils import load_setting
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,6 +128,80 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
     assert setting.text_rules.english_source_copy_min_letters == 6
     assert setting.text_rules.residual_escape_sequence_pattern == "\\\\[abc]"
     assert setting.write_back.replacement_font_path == "fonts/Override.ttf"
+
+
+def test_load_setting_reads_runtime_rust_thread_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rust 线程数必须从 setting.toml 的 runtime 段读取。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        runtime_text='[runtime]\nrust_threads = 8',
+    )
+
+    setting = load_setting(setting_path=setting_path)
+
+    assert setting.runtime.rust_threads == 8
+
+
+@pytest.mark.parametrize(
+    ("runtime_text", "message"),
+    [
+        ("[runtime]\nrust_threads = 0", "runtime.rust_threads"),
+        ("[runtime]\nrust_threads = -1", "runtime.rust_threads"),
+        ('[runtime]\nrust_threads = ""', "runtime.rust_threads"),
+        ('[runtime]\nrust_threads = "4"', "runtime.rust_threads"),
+    ],
+)
+def test_load_setting_rejects_invalid_runtime_rust_thread_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_text: str,
+    message: str,
+) -> None:
+    """Rust 线程数只接受 auto 或正整数。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        runtime_text=runtime_text,
+    )
+
+    with pytest.raises(ValidationError, match=message):
+        _ = load_setting(setting_path=setting_path)
+
+
+def test_load_setting_configures_native_runtime_threads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """配置加载后必须把 Rust 线程设置应用到原生核心。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    configured_values: list[int | str] = []
+
+    def fake_configure_native_runtime_threads(rust_threads: int | str) -> None:
+        configured_values.append(rust_threads)
+
+    monkeypatch.setattr(
+        config_loader_utils,
+        "configure_native_runtime_threads",
+        fake_configure_native_runtime_threads,
+    )
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        runtime_text='[runtime]\nrust_threads = "auto"',
+    )
+
+    _ = load_setting(setting_path=setting_path)
+
+    assert configured_values == ["auto"]
 
 
 def test_load_setting_rejects_rust_incompatible_text_rule_regex(
@@ -459,6 +534,7 @@ def _write_minimal_setting(
     request_body_extra_text: str,
     text_translation_extra: str = "",
     prompt_text: str = MINIMAL_PROMPT_TEMPLATE,
+    runtime_text: str = "",
 ) -> Path:
     """写入只包含配置加载测试所需字段的设置文件。"""
     setting_path = tmp_path / "setting.toml"
@@ -490,6 +566,8 @@ en = "prompt.txt"
 
 [event_command_text]
 default_command_codes = [357]
+
+{runtime_text}
 """,
         encoding="utf-8",
     )

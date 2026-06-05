@@ -12,6 +12,10 @@ timeout = 600
 # }
 # '''
 
+[runtime]
+# auto 使用 Rust 原生核心默认线程数；也可以改成正整数，例如 4。
+rust_threads = "auto"
+
 [translation_context]
 token_size = 1024
 factor = 3.5

@@ -10,9 +10,12 @@ from .common import (
     TextRules,
     TextScopeService,
     _build_coverage_report,
+    build_text_index_coverage_report,
+    build_text_index_text_scope_report,
     _nonstandard_data_skipped_file_names,
     _nonstandard_data_skipped_warnings,
     _string_lines_to_json_array,
+    text_index_records_to_scope,
     _text_scope_blocking_errors,
     issue,
     load_setting,
@@ -20,6 +23,7 @@ from .common import (
 )
 from app.application.flow_gate import collect_placeholder_candidate_review_warnings
 from app.regex_contract import RegexContractValidationError
+from app.text_index import detect_text_index_invalidations
 
 
 class CoverageAgentMixin:
@@ -50,6 +54,47 @@ class CoverageAgentMixin:
                     errors=rule_contract_issues_to_agent_issues(error),
                     include_write_probe=include_write_probe,
                 )
+            if not include_write_probe:
+                index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
+                )
+                if not index_invalidations:
+                    index_records = await session.read_text_index_items()
+                    translated_items = await session.read_translated_items()
+                    nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
+                    index_scope = text_index_records_to_scope(
+                        index_records=index_records,
+                        translated_paths={item.location_path for item in translated_items},
+                    )
+                    placeholder_review_warnings = await collect_placeholder_candidate_review_warnings(
+                        session=session,
+                        scope=index_scope,
+                        text_rules=text_rules,
+                        custom_placeholder_rules_supplied=False,
+                        stage="text_scope",
+                    )
+                    report = build_text_index_text_scope_report(
+                        index_records=index_records,
+                        translated_items=translated_items,
+                    )
+                    skipped_file_names = _nonstandard_data_skipped_file_names(nonstandard_data_rules)
+                    return AgentReport.from_parts(
+                        errors=report.errors,
+                        warnings=[
+                            *report.warnings,
+                            *_nonstandard_data_skipped_warnings(nonstandard_data_rules),
+                            *(issue(warning.code, warning.message) for warning in placeholder_review_warnings),
+                        ],
+                        summary={
+                            **report.summary,
+                            "nonstandard_data_skipped_file_count": len(skipped_file_names),
+                        },
+                        details={
+                            **report.details,
+                            "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_file_names),
+                        },
+                    )
             game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
             nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
@@ -136,6 +181,48 @@ class CoverageAgentMixin:
                 return _empty_audit_coverage_report(
                     errors=rule_contract_issues_to_agent_issues(error),
                 )
+            if not include_write_probe:
+                index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
+                )
+                if not index_invalidations:
+                    index_records = await session.read_text_index_items()
+                    translated_items = await session.read_translated_items()
+                    nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
+                    index_scope = text_index_records_to_scope(
+                        index_records=index_records,
+                        translated_paths={item.location_path for item in translated_items},
+                    )
+                    placeholder_review_warnings = await collect_placeholder_candidate_review_warnings(
+                        session=session,
+                        scope=index_scope,
+                        text_rules=text_rules,
+                        custom_placeholder_rules_supplied=False,
+                        stage="audit_coverage",
+                    )
+                    report = build_text_index_coverage_report(
+                        index_records=index_records,
+                        translated_items=translated_items,
+                    )
+                    skipped_file_names = _nonstandard_data_skipped_file_names(nonstandard_data_rules)
+                    return AgentReport.from_parts(
+                        errors=report.errors,
+                        warnings=[
+                            *report.warnings,
+                            *_nonstandard_data_skipped_warnings(nonstandard_data_rules),
+                            *(issue(warning.code, warning.message) for warning in placeholder_review_warnings),
+                        ],
+                        summary={
+                            **report.summary,
+                            "nonstandard_data_skipped_file_count": len(skipped_file_names),
+                            "text_index_status": "used",
+                        },
+                        details={
+                            **report.details,
+                            "nonstandard_data_skipped_files": _string_lines_to_json_array(skipped_file_names),
+                        },
+                    )
             game_data = await self._load_translation_source_game_data(session)
             translated_items = await session.read_translated_items()
             nonstandard_data_rules = await session.read_nonstandard_data_text_rules()

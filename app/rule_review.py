@@ -5,7 +5,7 @@ import json
 from typing import Literal
 
 from app.plugin_text import build_plugins_file_hash
-from app.plugin_source_text import build_plugin_source_file_hash
+from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonArray, JsonValue

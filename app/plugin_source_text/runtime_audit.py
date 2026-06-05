@@ -21,7 +21,7 @@ from .scanner import (
     PluginSourceFileTextScan,
     PluginSourceStringLiteral,
     build_plugin_source_file_hash,
-    scan_plugin_source_files_text_strict,
+    scan_plugin_source_runtime_files_text_strict,
 )
 from .runtime_mapping import plugin_source_runtime_hash_text
 
@@ -180,7 +180,7 @@ def audit_active_runtime_plugin_source(
     }
     active_missing_file_names = set(enabled_plugin_files) - set(source_files) - set(read_errors)
     active_file_count = len(active_read_error_file_names) + len(active_missing_file_names)
-    batch_scan = plugin_source_batch_scan or scan_plugin_source_files_text_strict(
+    batch_scan = plugin_source_batch_scan or scan_plugin_source_runtime_files_text_strict(
         files=source_files,
         active_file_names=enabled_plugin_files,
     )
@@ -340,10 +340,9 @@ def scan_plugin_source_files_text_strict_with_cache(
         )
 
     if uncached_files:
-        fresh_scan = scan_plugin_source_files_text_strict(
+        fresh_scan = scan_plugin_source_runtime_files_text_strict(
             files=uncached_files,
             active_file_names=active_file_names,
-            text_rules=None,
         )
         file_scans.update(fresh_scan.file_scans)
         syntax_errors.update(fresh_scan.syntax_errors)

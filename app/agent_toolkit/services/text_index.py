@@ -4,7 +4,10 @@
 
 import time
 
-from app.application.flow_gate import collect_plugin_source_workflow_gate_errors
+from app.application.flow_gate import (
+    collect_nonstandard_data_workflow_gate_errors,
+    collect_plugin_source_workflow_gate_errors,
+)
 from app.rmmz.text_rules import JsonObject
 from app.text_index import rebuild_text_index as rebuild_persistent_text_index
 
@@ -33,6 +36,7 @@ class TextIndexAgentMixin:
         *,
         game_title: str,
         setting_overrides: SettingOverrides | None = None,
+        include_write_probe: bool = True,
         callbacks: QualityProgressCallbacks | None = None,
     ) -> AgentReport:
         """重建当前游戏的持久文本范围索引。"""
@@ -91,7 +95,7 @@ class TextIndexAgentMixin:
                     game_data=game_data,
                     text_rules=text_rules,
                     translated_items=translated_items,
-                    include_write_probe=True,
+                    include_write_probe=include_write_probe,
                 )
             except RegexContractValidationError as error:
                 finish_stage("build_text_scope")
@@ -103,7 +107,7 @@ class TextIndexAgentMixin:
                         "index_status": "not_rebuilt",
                         "indexed_count": 0,
                         "index_item_count": 0,
-                        "include_write_probe": True,
+                        "include_write_probe": include_write_probe,
                     }
                 )
                 return AgentReport.from_parts(
@@ -122,7 +126,7 @@ class TextIndexAgentMixin:
                     {
                         "index_status": "not_rebuilt",
                         "indexed_count": 0,
-                        "include_write_probe": True,
+                        "include_write_probe": include_write_probe,
                     }
                 )
                 return AgentReport.from_parts(
@@ -131,11 +135,18 @@ class TextIndexAgentMixin:
                     summary=summary,
                     details={},
                 )
-            workflow_gate_errors = await collect_plugin_source_workflow_gate_errors(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
+            workflow_gate_errors = [
+                *await collect_plugin_source_workflow_gate_errors(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                ),
+                *await collect_nonstandard_data_workflow_gate_errors(
+                    session=session,
+                    game_data=game_data,
+                    text_rules=text_rules,
+                ),
+            ]
             if workflow_gate_errors:
                 set_progress(5, 5)
                 set_status("工作流前置检查没通过，未重建文本范围索引")
@@ -144,7 +155,7 @@ class TextIndexAgentMixin:
                     {
                         "index_status": "not_rebuilt",
                         "indexed_count": 0,
-                        "include_write_probe": True,
+                        "include_write_probe": include_write_probe,
                     }
                 )
                 return AgentReport.from_parts(
@@ -163,6 +174,8 @@ class TextIndexAgentMixin:
                 text_rules=text_rules,
                 setting_overrides=setting_overrides,
                 scope=scope,
+                include_write_probe=include_write_probe,
+                source_branch_workflow_gates_prechecked=True,
             )
             advance_progress(1)
             finish_stage("write_text_index")
@@ -178,7 +191,7 @@ class TextIndexAgentMixin:
                 "source_snapshot_fingerprint": metadata.source_snapshot_fingerprint,
                 "rules_fingerprint": metadata.rules_fingerprint,
                 "created_at": metadata.created_at,
-                "include_write_probe": True,
+                "include_write_probe": include_write_probe,
                 "performance_notes": [
                     "首次重建会完整扫描翻译源视图；后续小任务应复用 warm index。",
                 ],

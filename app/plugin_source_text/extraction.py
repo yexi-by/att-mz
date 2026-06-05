@@ -6,6 +6,7 @@ from app.rmmz.schema import GameData, PluginSourceTextRuleRecord, TranslationDat
 from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .models import PluginSourceScan
+from .native_scan import build_native_plugin_source_scan
 from .scanner import PluginSourceCandidateIndex, build_plugin_source_candidate_index
 from .rules import StalePluginSourceTextRule, filter_fresh_plugin_source_text_rules
 
@@ -117,9 +118,7 @@ class PluginSourceTextExtraction:
     def _scan_for_validation(self) -> PluginSourceScan:
         """读取或创建一次插件源码扫描结果。"""
         if self.scan is None:
-            from .scanner import build_plugin_source_scan
-
-            self.scan = build_plugin_source_scan(
+            self.scan = build_native_plugin_source_scan(
                 game_data=self.game_data,
                 text_rules=self.text_rules,
             )

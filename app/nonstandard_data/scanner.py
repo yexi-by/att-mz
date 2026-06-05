@@ -5,42 +5,32 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 import aiofiles
 
-from app.json_path_protocol import ResolvedLeaf, quote_jsonpath_key
+from app.json_path_protocol import ResolvedLeaf
+from app.native_scope_index import (
+    NativeRuleCandidatesResult,
+    build_native_nonstandard_data_candidates_payload,
+    build_native_nonstandard_data_leaves_payload,
+    scan_native_rule_candidates,
+)
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import resolve_data_source_dir
 from app.rmmz.schema import FIXED_FILE_NAMES, GameLayout, MAP_PATTERN
-from app.rmmz.text_protocol import normalize_visible_text_for_extraction
-from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value
+from app.rmmz.text_rules import (
+    JsonObject,
+    JsonValue,
+    TextRules,
+    coerce_json_value,
+    ensure_json_array,
+    ensure_json_object,
+)
 
 NONSTANDARD_DATA_SOURCE_TYPE = "nonstandard-data"
-STRUCTURAL_FIELD_NAMES: frozenset[str] = frozenset(
-    {
-        "id",
-        "key",
-        "type",
-        "icon",
-        "image",
-        "picture",
-        "file",
-        "filename",
-        "path",
-        "enabled",
-        "enable",
-        "visible",
-        "switch",
-        "variable",
-        "formula",
-        "condition",
-        "script",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,32 +145,162 @@ async def build_nonstandard_data_scan(
 ) -> NonstandardDataScan:
     """扫描非标准 data 文件并收集源语言自然文本候选。"""
     files = await load_nonstandard_data_files(layout=layout, source_view=source_view)
+    if not files:
+        return NonstandardDataScan(files=(), file_scans=(), candidates=(), leaves_by_file={})
+    native_result = scan_native_rule_candidates(
+        build_native_nonstandard_data_candidates_payload(
+            nonstandard_data_files={file.file_name: file.value for file in files},
+            text_rules=text_rules,
+        )
+    )
+    return _nonstandard_data_scan_from_native(files=files, native_result=native_result)
+
+
+def _nonstandard_data_scan_from_native(
+    *,
+    files: list[NonstandardDataFile],
+    native_result: NativeRuleCandidatesResult,
+) -> NonstandardDataScan:
+    """把 Rust 非标准 data 候选结果还原成当前公开扫描对象。"""
+    file_by_name = {file.file_name: file for file in files}
+    nonstandard_summary = ensure_json_object(
+        native_result.scan_summary["nonstandard_data"],
+        "native_rule_candidates_result.scan_summary.nonstandard_data",
+    )
+    raw_file_summaries = ensure_json_array(
+        nonstandard_summary["files"],
+        "native_rule_candidates_result.scan_summary.nonstandard_data.files",
+    )
     file_scans: list[NonstandardDataFileScan] = []
-    candidates: list[NonstandardDataCandidate] = []
     leaves_by_file: dict[str, tuple[ResolvedLeaf, ...]] = {}
-    for nonstandard_file in files:
-        leaves = tuple(resolve_nonstandard_data_leaves(nonstandard_file.value))
-        leaves_by_file[nonstandard_file.file_name] = leaves
-        file_candidates = [
-            candidate
-            for candidate in _iter_candidates_from_file(
-                nonstandard_file=nonstandard_file,
-                text_rules=text_rules,
-            )
-        ]
+    seen_file_names: set[str] = set()
+    for file_index, raw_file_summary in enumerate(raw_file_summaries):
+        label = f"native_rule_candidates_result.scan_summary.nonstandard_data.files[{file_index}]"
+        file_summary = ensure_json_object(raw_file_summary, label)
+        file_name = _json_str(file_summary, "file", label)
+        if file_name not in file_by_name:
+            raise RuntimeError(f"Rust 非标准 data 摘要引用了未知文件: {file_name}")
+        seen_file_names.add(file_name)
         file_scans.append(
             NonstandardDataFileScan(
-                file_name=nonstandard_file.file_name,
-                string_leaf_count=sum(1 for leaf in leaves if leaf.value_type == "string"),
-                candidate_count=len(file_candidates),
+                file_name=file_name,
+                string_leaf_count=_json_int(file_summary, "string_leaf_count", label),
+                candidate_count=_json_int(file_summary, "candidate_count", label),
             )
         )
-        candidates.extend(file_candidates)
+        raw_leaves = ensure_json_array(file_summary["leaves"], f"{label}.leaves")
+        leaves_by_file[file_name] = tuple(
+            _resolved_leaf_from_native(
+                ensure_json_object(raw_leaf, f"{label}.leaves[{leaf_index}]"),
+                f"{label}.leaves[{leaf_index}]",
+            )
+            for leaf_index, raw_leaf in enumerate(raw_leaves)
+        )
+    missing_file_names = sorted(set(file_by_name) - seen_file_names)
+    if missing_file_names:
+        raise RuntimeError(f"Rust 非标准 data 摘要缺少文件: {', '.join(missing_file_names)}")
+
+    candidates = [
+        _candidate_from_native(
+            ensure_json_object(raw_candidate, f"native_rule_candidates_result.candidates[{candidate_index}]"),
+            f"native_rule_candidates_result.candidates[{candidate_index}]",
+            file_by_name=file_by_name,
+        )
+        for candidate_index, raw_candidate in enumerate(native_result.candidates)
+    ]
     return NonstandardDataScan(
         files=tuple(files),
         file_scans=tuple(file_scans),
         candidates=tuple(candidates),
         leaves_by_file=leaves_by_file,
+    )
+
+
+def resolve_nonstandard_data_file_leaves_native(
+    nonstandard_data_files: dict[str, JsonValue],
+) -> dict[str, tuple[ResolvedLeaf, ...]]:
+    """用 Rust 原生入口展开多个非标准 data 文件叶子。"""
+    if not nonstandard_data_files:
+        return {}
+    native_result = scan_native_rule_candidates(
+        build_native_nonstandard_data_leaves_payload(nonstandard_data_files)
+    )
+    nonstandard_summary = ensure_json_object(
+        native_result.scan_summary["nonstandard_data_leaves"],
+        "native_rule_candidates_result.scan_summary.nonstandard_data_leaves",
+    )
+    raw_file_summaries = ensure_json_array(
+        nonstandard_summary["files"],
+        "native_rule_candidates_result.scan_summary.nonstandard_data_leaves.files",
+    )
+    leaves_by_file: dict[str, tuple[ResolvedLeaf, ...]] = {}
+    for file_index, raw_file_summary in enumerate(raw_file_summaries):
+        label = f"native_rule_candidates_result.scan_summary.nonstandard_data_leaves.files[{file_index}]"
+        file_summary = ensure_json_object(raw_file_summary, label)
+        file_name = _json_str(file_summary, "file", label)
+        if file_name not in nonstandard_data_files:
+            raise RuntimeError(f"Rust 非标准 data leaves 摘要引用了未知文件: {file_name}")
+        raw_leaves = ensure_json_array(file_summary["leaves"], f"{label}.leaves")
+        leaves_by_file[file_name] = tuple(
+            _resolved_leaf_from_native(
+                ensure_json_object(raw_leaf, f"{label}.leaves[{leaf_index}]"),
+                f"{label}.leaves[{leaf_index}]",
+            )
+            for leaf_index, raw_leaf in enumerate(raw_leaves)
+        )
+    missing_file_names = sorted(set(nonstandard_data_files) - set(leaves_by_file))
+    if missing_file_names:
+        raise RuntimeError(f"Rust 非标准 data leaves 摘要缺少文件: {', '.join(missing_file_names)}")
+    return leaves_by_file
+
+
+def _candidate_from_native(
+    candidate: JsonObject,
+    label: str,
+    *,
+    file_by_name: dict[str, NonstandardDataFile],
+) -> NonstandardDataCandidate:
+    """读取 Rust 非标准 data 候选对象。"""
+    domain = _json_str(candidate, "domain", label)
+    if domain != "nonstandard_data":
+        raise RuntimeError(f"Rust 非标准 data 扫描返回了未知 domain: {domain}")
+    file_name = _json_str(candidate, "file", label)
+    if file_name not in file_by_name:
+        raise RuntimeError(f"Rust 非标准 data 候选引用了未知文件: {file_name}")
+    return NonstandardDataCandidate(
+        file_name=file_name,
+        json_path=_json_str(candidate, "json_path", label),
+        source_text=_json_str(candidate, "source_text", label),
+        raw_text=_json_str(candidate, "raw_text", label),
+        field_name=_json_str(candidate, "field_name", label),
+        sibling_field_names=_json_string_tuple(candidate, "sibling_field_names", label),
+        parent_object_keys=_json_string_tuple(candidate, "parent_object_keys", label),
+    )
+
+
+def _resolved_leaf_from_native(leaf: JsonObject, label: str) -> ResolvedLeaf:
+    """读取 Rust 展开的 JSON 叶子。"""
+    value_type = _json_str(leaf, "value_type", label)
+    value = leaf["value"]
+    if value_type == "string":
+        if not isinstance(value, str):
+            raise TypeError(f"{label}.value 必须是字符串")
+    elif value_type == "number":
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise TypeError(f"{label}.value 必须是数字")
+    elif value_type == "boolean":
+        if not isinstance(value, bool):
+            raise TypeError(f"{label}.value 必须是布尔值")
+    elif value_type == "null":
+        if value is not None:
+            raise TypeError(f"{label}.value 必须是 null")
+    else:
+        raise TypeError(f"{label}.value_type 不支持: {value_type}")
+    return ResolvedLeaf(
+        path=_json_str(leaf, "path", label),
+        value=value,
+        value_type=value_type,
+        from_json_string=_json_bool(leaf, "from_json_string", label),
     )
 
 
@@ -222,15 +342,38 @@ def build_nonstandard_data_file_hash(raw_text: str) -> str:
     return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
 
 
-def resolve_nonstandard_data_leaves(value: JsonValue) -> list[ResolvedLeaf]:
-    """递归展开普通 JSON 叶子，不解析字符串里的 JSON 容器。"""
-    leaves: list[ResolvedLeaf] = []
-    _walk_json_value(
-        value=value,
-        current_path="$",
-        leaves=leaves,
-    )
-    return leaves
+def _json_bool(payload: JsonObject, key: str, label: str) -> bool:
+    """读取 JSON 布尔字段。"""
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise TypeError(f"{label}.{key} 必须是布尔值")
+    return value
+
+
+def _json_int(payload: JsonObject, key: str, label: str) -> int:
+    """读取 JSON 整数字段。"""
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label}.{key} 必须是整数")
+    return value
+
+
+def _json_str(payload: JsonObject, key: str, label: str) -> str:
+    """读取 JSON 字符串字段。"""
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise TypeError(f"{label}.{key} 必须是字符串")
+    return value
+
+
+def _json_string_tuple(payload: JsonObject, key: str, label: str) -> tuple[str, ...]:
+    """读取 JSON 字符串数组字段。"""
+    values: list[str] = []
+    for index, item in enumerate(ensure_json_array(payload[key], f"{label}.{key}")):
+        if not isinstance(item, str):
+            raise TypeError(f"{label}.{key}[{index}] 必须是字符串")
+        values.append(item)
+    return tuple(values)
 
 
 async def _read_nonstandard_data_file(file_path: Path) -> NonstandardDataFile:
@@ -254,170 +397,9 @@ async def _read_nonstandard_data_file(file_path: Path) -> NonstandardDataFile:
     )
 
 
-def _iter_candidates_from_file(
-    *,
-    nonstandard_file: NonstandardDataFile,
-    text_rules: TextRules,
-) -> list[NonstandardDataCandidate]:
-    """从单个文件提取源语言自然文本候选。"""
-    candidates: list[NonstandardDataCandidate] = []
-    _walk_candidates(
-        file_name=nonstandard_file.file_name,
-        value=nonstandard_file.value,
-        current_path="$",
-        parent_object_keys=(),
-        field_name="",
-        text_rules=text_rules,
-        candidates=candidates,
-    )
-    return candidates
-
-
-def _walk_candidates(
-    *,
-    file_name: str,
-    value: JsonValue,
-    current_path: str,
-    parent_object_keys: tuple[str, ...],
-    field_name: str,
-    text_rules: TextRules,
-    candidates: list[NonstandardDataCandidate],
-) -> None:
-    """递归扫描源语言自然文本字符串。"""
-    if isinstance(value, dict):
-        keys = tuple(value.keys())
-        for key, child in value.items():
-            _walk_candidates(
-                file_name=file_name,
-                value=child,
-                current_path=f"{current_path}[{quote_jsonpath_key(key)}]",
-                parent_object_keys=keys,
-                field_name=key,
-                text_rules=text_rules,
-                candidates=candidates,
-            )
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            _walk_candidates(
-                file_name=file_name,
-                value=child,
-                current_path=f"{current_path}[{index}]",
-                parent_object_keys=(),
-                field_name="",
-                text_rules=text_rules,
-                candidates=candidates,
-            )
-        return
-    if not isinstance(value, str):
-        return
-    if _is_structural_nonstandard_string(field_name=field_name, value=value):
-        return
-    source_text = normalize_visible_text_for_extraction(
-        value,
-        plain_text_normalizer=text_rules.normalize_extraction_text,
-    )
-    if not text_rules.should_translate_source_text(source_text):
-        return
-    sibling_field_names = tuple(
-        key
-        for key in parent_object_keys
-        if key != field_name
-    )
-    candidates.append(
-        NonstandardDataCandidate(
-            file_name=file_name,
-            json_path=current_path,
-            source_text=source_text,
-            raw_text=value,
-            field_name=field_name,
-            sibling_field_names=sibling_field_names,
-            parent_object_keys=parent_object_keys,
-        )
-    )
-
-
-def _walk_json_value(
-    *,
-    value: JsonValue,
-    current_path: str,
-    leaves: list[ResolvedLeaf],
-) -> None:
-    """递归展开 JSON 叶子。"""
-    if isinstance(value, dict):
-        for key, child in value.items():
-            _walk_json_value(
-                value=child,
-                current_path=f"{current_path}[{quote_jsonpath_key(key)}]",
-                leaves=leaves,
-            )
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            _walk_json_value(value=child, current_path=f"{current_path}[{index}]", leaves=leaves)
-        return
-    if isinstance(value, str):
-        leaves.append(
-            ResolvedLeaf(
-                path=current_path,
-                value=value,
-                value_type="string",
-                from_json_string=False,
-            )
-        )
-        return
-    if isinstance(value, bool):
-        leaves.append(
-            ResolvedLeaf(
-                path=current_path,
-                value=value,
-                value_type="boolean",
-                from_json_string=False,
-            )
-        )
-        return
-    if value is None:
-        leaves.append(
-            ResolvedLeaf(
-                path=current_path,
-                value=None,
-                value_type="null",
-                from_json_string=False,
-            )
-        )
-        return
-    leaves.append(
-        ResolvedLeaf(
-            path=current_path,
-            value=value,
-            value_type="number",
-            from_json_string=False,
-        )
-    )
-
-
 def _is_standard_data_file_name(file_name: str) -> bool:
     """判断是否是 RPG Maker 标准 data JSON 文件。"""
     return file_name in FIXED_FILE_NAMES or MAP_PATTERN.fullmatch(file_name) is not None
-
-
-def _is_structural_nonstandard_string(*, field_name: str, value: str) -> bool:
-    """按字段语义排除显然不是自然文本的非标准 data 字符串。"""
-    normalized_field_name = field_name.strip().lower()
-    stripped_value = value.strip()
-    lowered_value = stripped_value.lower()
-    if normalized_field_name in STRUCTURAL_FIELD_NAMES:
-        return True
-    if lowered_value in {"true", "false", "null", "undefined"}:
-        return True
-    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", stripped_value):
-        return True
-    if re.search(r"(?:^|[\\/])(?:img|audio|fonts|icon|js|data)[\\/]", lowered_value):
-        return True
-    if re.search(r"\.(?:png|jpe?g|webp|gif|ogg|m4a|mp3|wav|webm|json|js|css|html|ttf|otf|woff2?)$", lowered_value):
-        return True
-    return False
-
 
 __all__ = [
     "NONSTANDARD_DATA_SOURCE_TYPE",
@@ -430,5 +412,5 @@ __all__ = [
     "build_nonstandard_data_scan",
     "export_nonstandard_data_workspace",
     "load_nonstandard_data_files",
-    "resolve_nonstandard_data_leaves",
+    "resolve_nonstandard_data_file_leaves_native",
 ]

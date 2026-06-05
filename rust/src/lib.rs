@@ -7,7 +7,7 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-const NATIVE_CONTRACT_VERSION: usize = 2;
+const NATIVE_CONTRACT_VERSION: usize = 9;
 
 #[pyfunction]
 fn native_contract_version() -> usize {
@@ -19,6 +19,11 @@ fn native_thread_count() -> PyResult<usize> {
     native_core::read_configured_thread_count()
         .map(|thread_count| thread_count.unwrap_or_else(rayon::current_num_threads))
         .map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn configure_runtime_threads(rust_threads: Option<usize>) -> PyResult<()> {
+    native_core::configure_runtime_threads(rust_threads).map_err(PyValueError::new_err)
 }
 
 #[pyfunction]
@@ -58,6 +63,30 @@ fn scan_write_protocol_count(py: Python<'_>, payload_json: String) -> PyResult<S
 fn validate_regex_contract(py: Python<'_>, payload_json: String) -> PyResult<String> {
     let result = py.detach(move || {
         native_core::validate_regex_contract_impl(&payload_json).map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn build_scope_index(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::build_scope_index_impl(&payload_json).map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn scan_rule_candidates(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::scan_rule_candidates_impl(&payload_json).map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn evaluate_scope_gate(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::evaluate_scope_gate_impl(&payload_json).map_err(|error| error.to_string())
     });
     result.map_err(PyValueError::new_err)
 }
@@ -122,11 +151,15 @@ fn build_write_back_plan(
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_contract_version, m)?)?;
     m.add_function(wrap_pyfunction!(native_thread_count, m)?)?;
+    m.add_function(wrap_pyfunction!(configure_runtime_threads, m)?)?;
     m.add_function(wrap_pyfunction!(scan_quality, m)?)?;
     m.add_function(wrap_pyfunction!(scan_quality_counts, m)?)?;
     m.add_function(wrap_pyfunction!(scan_write_protocol, m)?)?;
     m.add_function(wrap_pyfunction!(scan_write_protocol_count, m)?)?;
     m.add_function(wrap_pyfunction!(validate_regex_contract, m)?)?;
+    m.add_function(wrap_pyfunction!(build_scope_index, m)?)?;
+    m.add_function(wrap_pyfunction!(scan_rule_candidates, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_scope_gate, m)?)?;
     m.add_function(wrap_pyfunction!(collect_note_tag_sources, m)?)?;
     m.add_function(wrap_pyfunction!(scan_font_replacements, m)?)?;
     m.add_function(wrap_pyfunction!(parse_javascript_string_spans, m)?)?;

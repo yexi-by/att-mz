@@ -75,7 +75,7 @@ timeout = 600
 
 临时覆盖模型地址和 Key 时，只使用当前环境变量：`ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。旧项目前缀的环境变量不会作为成功配置入口。
 
-> 💡 如果你习惯用源码运行，看仓库里的 [进阶教学与源码编译](https://github.com/yexi-by/att-mz/blob/main/docs/advanced-usage.md)。普通使用不需要。
+> 💡 如果你习惯用源码运行，看仓库里的 [进阶教学与源码编译](https://github.com/yexi-by/att-mz/blob/main/docs/guides/advanced-usage.md)。普通使用不需要。
 
 ## 📂 第三步：用 Agent 打开你的游戏目录
 

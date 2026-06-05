@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from app.event_command_text.importer import command_matches_filters
-from app.note_tag_text.parser import iter_note_tag_matches
-from app.note_tag_text.sources import collect_note_tag_sources, note_file_pattern_matches
-from app.nonstandard_data import NonstandardDataTextExtraction
+from app.note_tag_text.sources import note_file_pattern_matches
+from app.nonstandard_data import NonstandardDataTextExtraction, NonstandardDataTextExtractionContext
 from app.json_path_protocol import jsonpath_to_event_command_location_path, resolve_event_command_leaves
 from app.plugin_text.common import expand_rule_to_leaf_paths, jsonpath_to_location_path, resolve_plugin_leaves
 from app.rmmz.commands import iter_all_commands
@@ -17,7 +16,7 @@ from app.rmmz.schema import (
     PluginTextRuleRecord,
 )
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
-from app.rmmz.text_rules import TextRules
+from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, ensure_json_object
 
 from .models import TextScopeRuleHit
 
@@ -131,31 +130,46 @@ def collect_note_tag_rule_hits(
     """展开 Note 标签规则命中的全部字符串值。"""
     hits: list[TextScopeRuleHit] = []
     seen_paths: set[str] = set()
-    all_sources = collect_note_tag_sources(game_data=game_data)
+    native_hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
     for rule in note_tag_rules:
         tag_names = set(rule.tag_names)
-        for source in all_sources:
-            if not note_file_pattern_matches(file_name=source.file_name, file_pattern=rule.file_name):
+        for index, raw_hit in enumerate(native_hit_details):
+            hit = ensure_json_object(raw_hit, f"note_tag_hit_details[{index}]")
+            file_name = _read_note_tag_hit_string(hit, "file_name", f"note_tag_hit_details[{index}]")
+            tag_name = _read_note_tag_hit_string(hit, "tag_name", f"note_tag_hit_details[{index}]")
+            location_path = _read_note_tag_hit_string(hit, "location_path", f"note_tag_hit_details[{index}]")
+            original_text = _read_note_tag_hit_string(hit, "original_text", f"note_tag_hit_details[{index}]")
+            if tag_name not in tag_names:
                 continue
-            for match in iter_note_tag_matches(source.note_text):
-                if match.tag_name not in tag_names or match.value_span is None:
-                    continue
-                location_path = f"{source.location_prefix}/note/{match.tag_name}"
-                if location_path in seen_paths:
-                    continue
-                seen_paths.add(location_path)
-                hits.append(
-                    TextScopeRuleHit(
-                        location_path=location_path,
-                        source_type="note_tag",
-                        rule_source="Note 标签规则",
-                        original_text=normalize_visible_text_for_extraction(
-                            match.value,
-                            plain_text_normalizer=text_rules.normalize_extraction_text,
-                        ),
-                    )
+            if not note_file_pattern_matches(file_name=file_name, file_pattern=rule.file_name):
+                continue
+            if location_path in seen_paths:
+                continue
+            seen_paths.add(location_path)
+            hits.append(
+                TextScopeRuleHit(
+                    location_path=location_path,
+                    source_type="note_tag",
+                    rule_source="Note 标签规则",
+                    original_text=original_text,
                 )
+            )
     return hits
+
+
+def collect_native_note_tag_hit_details(*, game_data: GameData, text_rules: TextRules) -> JsonArray:
+    """延迟调用 native Note 标签逐命中明细，避免 Note 标签包初始化循环。"""
+    from app.native_note_tag_scan import collect_native_note_tag_hit_details as collect_native
+
+    return collect_native(game_data=game_data, text_rules=text_rules)
+
+
+def _read_note_tag_hit_string(hit: JsonObject, field_name: str, label: str) -> str:
+    """读取 native Note 标签逐命中明细中的字符串字段。"""
+    value = hit.get(field_name)
+    if not isinstance(value, str):
+        raise TypeError(f"{label}.{field_name} 必须是字符串")
+    return value
 
 
 def collect_nonstandard_data_rule_hits(
@@ -163,12 +177,14 @@ def collect_nonstandard_data_rule_hits(
     game_data: GameData,
     nonstandard_data_rules: list[NonstandardDataTextRuleRecord],
     text_rules: TextRules,
+    nonstandard_data_context: NonstandardDataTextExtractionContext | None = None,
 ) -> list[TextScopeRuleHit]:
     """展开非标准 data 文件规则命中的全部字符串叶子。"""
     extractor = NonstandardDataTextExtraction(
         game_data=game_data,
         rule_records=nonstandard_data_rules,
         text_rules=text_rules,
+        context=nonstandard_data_context,
     )
     return [
         TextScopeRuleHit(

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from app.native_contract import NATIVE_CONTRACT_VERSION, ensure_native_contract_version
 from app.rmmz.schema import COMMON_EVENTS_FILE_NAME, MAP_PATTERN, PLUGINS_FILE_NAME, TROOPS_FILE_NAME, SourceResidualRuleRecord, TranslationItem
@@ -49,6 +49,10 @@ class NativeModule(Protocol):
 
     def native_thread_count(self) -> int:
         """返回 Rust 当前使用的线程数。"""
+        raise NotImplementedError
+
+    def configure_runtime_threads(self, rust_threads: int | None) -> None:
+        """配置 Rust 当前使用的线程数。"""
         raise NotImplementedError
 
 
@@ -158,6 +162,17 @@ def native_thread_count() -> int:
     native_module = _load_native_module()
     count = native_module.native_thread_count()
     return count
+
+
+def configure_native_runtime_threads(rust_threads: int | Literal["auto"]) -> None:
+    """把配置文件中的 Rust 线程数显式传给原生核心。"""
+    native_module = _load_native_module()
+    if rust_threads == "auto":
+        native_module.configure_runtime_threads(None)
+        return
+    if rust_threads <= 0:
+        raise ValueError("runtime.rust_threads 必须是正整数或 auto")
+    native_module.configure_runtime_threads(rust_threads)
 
 
 def collect_native_write_protocol_details(
@@ -469,6 +484,7 @@ __all__ = [
     "NativeQualityCounts",
     "collect_native_font_replacements",
     "collect_native_note_tag_sources",
+    "configure_native_runtime_threads",
     "collect_native_quality_counts",
     "collect_native_quality_details",
     "collect_native_write_protocol_details",

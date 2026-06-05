@@ -29,12 +29,15 @@ LLM_FAILURES_TABLE_NAME = "llm_failures"
 TRANSLATION_QUALITY_ERRORS_TABLE_NAME = "translation_quality_errors"
 TEXT_INDEX_META_TABLE_NAME = "text_index_meta"
 TEXT_INDEX_ITEMS_TABLE_NAME = "text_index_items"
+TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME = "text_index_scope_summary"
+TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME = "text_index_domain_summary"
+TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME = "text_index_rule_hit_summary"
 TEXT_INDEX_INVALIDATIONS_TABLE_NAME = "text_index_invalidations"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
 TEXT_INDEX_META_KEY = "current"
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 15
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -66,6 +69,9 @@ EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     TRANSLATION_QUALITY_ERRORS_TABLE_NAME,
     TEXT_INDEX_META_TABLE_NAME,
     TEXT_INDEX_ITEMS_TABLE_NAME,
+    TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME,
+    TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME,
+    TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME,
     TEXT_INDEX_INVALIDATIONS_TABLE_NAME,
 )
 
@@ -259,6 +265,47 @@ CREATE_TEXT_INDEX_ITEMS_TABLE = f"""
         source_snapshot_fingerprint TEXT NOT NULL,
         rules_fingerprint           TEXT NOT NULL,
         locator_json                TEXT NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_INDEX_SCOPE_SUMMARY_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME}] (
+        index_key           TEXT PRIMARY KEY,
+        total_count         INTEGER NOT NULL,
+        active_count        INTEGER NOT NULL,
+        writable_count      INTEGER NOT NULL,
+        unwritable_count    INTEGER NOT NULL,
+        stale_rule_count    INTEGER NOT NULL,
+        native_thread_count INTEGER NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_INDEX_DOMAIN_SUMMARY_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME}] (
+        domain                  TEXT PRIMARY KEY,
+        item_count              INTEGER NOT NULL,
+        active_count            INTEGER NOT NULL,
+        writable_count          INTEGER NOT NULL,
+        unwritable_count        INTEGER NOT NULL,
+        inactive_rule_hit_count INTEGER NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_INDEX_RULE_HIT_SUMMARY_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME}] (
+        domain            TEXT NOT NULL,
+        rule_key          TEXT NOT NULL,
+        hit_count         INTEGER NOT NULL,
+        extractable_count INTEGER NOT NULL,
+        writable_count    INTEGER NOT NULL,
+        unwritable_count  INTEGER NOT NULL,
+        PRIMARY KEY (domain, rule_key)
     )
 ;
 """
@@ -732,6 +779,52 @@ INSERT_TEXT_INDEX_ITEM = f"""
 ;
 """
 
+UPSERT_TEXT_INDEX_SCOPE_SUMMARY = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME}]
+    (
+        index_key,
+        total_count,
+        active_count,
+        writable_count,
+        unwritable_count,
+        stale_rule_count,
+        native_thread_count
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_INDEX_DOMAIN_SUMMARY = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME}]
+    (
+        domain,
+        item_count,
+        active_count,
+        writable_count,
+        unwritable_count,
+        inactive_rule_hit_count
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_INDEX_RULE_HIT_SUMMARY = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME}]
+    (
+        domain,
+        rule_key,
+        hit_count,
+        extractable_count,
+        writable_count,
+        unwritable_count
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+;
+"""
+
 INSERT_TEXT_INDEX_INVALIDATION = f"""
 --sql
     INSERT OR REPLACE INTO [{TEXT_INDEX_INVALIDATIONS_TABLE_NAME}]
@@ -755,6 +848,24 @@ DELETE_ALL_TEXT_INDEX_META = f"""
 DELETE_ALL_TEXT_INDEX_ITEMS = f"""
 --sql
     DELETE FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_INDEX_SCOPE_SUMMARY = f"""
+--sql
+    DELETE FROM [{TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_INDEX_DOMAIN_SUMMARY = f"""
+--sql
+    DELETE FROM [{TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY = f"""
+--sql
+    DELETE FROM [{TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME}]
 ;
 """
 
@@ -1042,6 +1153,21 @@ SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN = f"""
 ;
 """
 
+SELECT_TEXT_INDEX_QUALITY_ERROR_PATHS = f"""
+--sql
+    SELECT quality_errors.location_path
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
+    INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+        ON index_items.location_path = quality_errors.location_path
+    LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+        ON translations.location_path = quality_errors.location_path
+    WHERE quality_errors.run_id = ?
+        AND index_items.writable = 1
+        AND translations.location_path IS NULL
+    ORDER BY quality_errors.location_path
+;
+"""
+
 SELECT_TRANSLATION_QUALITY_ERROR_BY_RUN_AND_PATH = f"""
 --sql
     SELECT *
@@ -1094,6 +1220,49 @@ SELECT_TEXT_INDEX_ITEMS = f"""
         locator_json
     FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
     ORDER BY location_path
+;
+"""
+
+SELECT_TEXT_INDEX_SCOPE_SUMMARY = f"""
+--sql
+    SELECT
+        total_count,
+        active_count,
+        writable_count,
+        unwritable_count,
+        stale_rule_count,
+        native_thread_count
+    FROM [{TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME}]
+    WHERE index_key = ?
+    LIMIT 1
+;
+"""
+
+SELECT_TEXT_INDEX_DOMAIN_SUMMARY = f"""
+--sql
+    SELECT
+        domain,
+        item_count,
+        active_count,
+        writable_count,
+        unwritable_count,
+        inactive_rule_hit_count
+    FROM [{TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME}]
+    ORDER BY domain
+;
+"""
+
+SELECT_TEXT_INDEX_RULE_HIT_SUMMARY = f"""
+--sql
+    SELECT
+        domain,
+        rule_key,
+        hit_count,
+        extractable_count,
+        writable_count,
+        unwritable_count
+    FROM [{TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME}]
+    ORDER BY domain, rule_key
 ;
 """
 
@@ -1202,6 +1371,43 @@ SELECT_TEXT_INDEX_LOCATION_PATHS = f"""
 --sql
     SELECT location_path
     FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+;
+"""
+
+SELECT_WRITABLE_TEXT_INDEX_LOCATION_PATHS = f"""
+--sql
+    SELECT location_path
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+    WHERE writable = 1
+    ORDER BY location_path
+;
+"""
+
+COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX = f"""
+--sql
+    SELECT COUNT(*) AS stale_translation_count
+    FROM [{TRANSLATION_TABLE_NAME}] AS translations
+    LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+        ON index_items.location_path = translations.location_path
+        AND index_items.writable = 1
+    WHERE index_items.location_path IS NULL
+;
+"""
+
+SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX = f"""
+--sql
+    SELECT
+        translations.location_path,
+        translations.item_type,
+        translations.role,
+        translations.original_lines,
+        translations.source_line_paths,
+        translations.translation_lines
+    FROM [{TRANSLATION_TABLE_NAME}] AS translations
+    INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+        ON index_items.location_path = translations.location_path
+    WHERE index_items.writable = 1
+    ORDER BY translations.location_path
 ;
 """
 
@@ -1385,8 +1591,11 @@ __all__: list[str] = [
     "CREATE_TRANSLATION_RUNS_TABLE",
     "CREATE_TRANSLATION_TABLE",
     "CREATE_TEXT_INDEX_INVALIDATIONS_TABLE",
+    "CREATE_TEXT_INDEX_DOMAIN_SUMMARY_TABLE",
     "CREATE_TEXT_INDEX_ITEMS_TABLE",
     "CREATE_TEXT_INDEX_META_TABLE",
+    "CREATE_TEXT_INDEX_RULE_HIT_SUMMARY_TABLE",
+    "CREATE_TEXT_INDEX_SCOPE_SUMMARY_TABLE",
     "CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE",
     "CREATE_FIELD_TRANSLATION_TERMS_TABLE",
     "CREATE_TEXT_GLOSSARY_TERMS_TABLE",
@@ -1410,14 +1619,18 @@ __all__: list[str] = [
     "DELETE_ALL_FIELD_TRANSLATION_TERMS",
     "DELETE_ALL_TEXT_GLOSSARY_TERMS",
     "DELETE_ALL_TEXT_INDEX_INVALIDATIONS",
+    "DELETE_ALL_TEXT_INDEX_DOMAIN_SUMMARY",
     "DELETE_ALL_TEXT_INDEX_ITEMS",
     "DELETE_ALL_TEXT_INDEX_META",
+    "DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY",
+    "DELETE_ALL_TEXT_INDEX_SCOPE_SUMMARY",
     "DELETE_ALL_TRANSLATION_QUALITY_ERRORS",
     "DELETE_TRANSLATION_ITEM_BY_PATH",
     "DELETE_TRANSLATION_ITEMS_BY_PREFIX",
     "COUNT_PENDING_TEXT_INDEX_QUALITY_ERRORS",
     "COUNT_TEXT_INDEX_TRANSLATED_ITEMS",
     "COUNT_TRANSLATED_ITEMS",
+    "COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX",
     "EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE_NAME",
     "EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE_NAME",
     "EVENT_COMMAND_TEXT_RULE_PATHS_TABLE_NAME",
@@ -1446,7 +1659,10 @@ __all__: list[str] = [
     "INSERT_FIELD_TRANSLATION_TERM",
     "INSERT_TEXT_GLOSSARY_TERM",
     "INSERT_TEXT_INDEX_INVALIDATION",
+    "INSERT_TEXT_INDEX_DOMAIN_SUMMARY",
     "INSERT_TEXT_INDEX_ITEM",
+    "INSERT_TEXT_INDEX_RULE_HIT_SUMMARY",
+    "UPSERT_TEXT_INDEX_SCOPE_SUMMARY",
     "LLM_FAILURES_TABLE_NAME",
     "LANGUAGE_SETTINGS_KEY",
     "LANGUAGE_SETTINGS_TABLE_NAME",
@@ -1494,6 +1710,7 @@ __all__: list[str] = [
     "SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN",
     "SELECT_TRANSLATION_RUN",
     "SELECT_TRANSLATED_ITEMS",
+    "SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX",
     "SELECT_TRANSLATED_ITEMS_BY_PREFIX",
     "SELECT_TRANSLATED_ITEM_BY_PATH",
     "SELECT_TRANSLATION_PATHS",
@@ -1504,19 +1721,27 @@ __all__: list[str] = [
     "SELECT_PENDING_TEXT_INDEX_COUNT",
     "SELECT_PENDING_TEXT_INDEX_ITEMS",
     "SELECT_TEXT_INDEX_INVALIDATIONS",
+    "SELECT_TEXT_INDEX_DOMAIN_SUMMARY",
     "SELECT_TEXT_INDEX_ITEM_COUNT",
     "SELECT_TEXT_INDEX_ITEMS",
     "SELECT_TEXT_INDEX_ITEM_BY_PATH",
+    "SELECT_TEXT_INDEX_QUALITY_ERROR_PATHS",
     "SELECT_TEXT_INDEX_LOCATION_PATHS",
+    "SELECT_WRITABLE_TEXT_INDEX_LOCATION_PATHS",
     "SELECT_TEXT_INDEX_META",
+    "SELECT_TEXT_INDEX_RULE_HIT_SUMMARY",
+    "SELECT_TEXT_INDEX_SCOPE_SUMMARY",
     "SELECT_FIELD_TRANSLATION_TERMS",
     "SCHEMA_VERSION_KEY",
     "SCHEMA_VERSION_TABLE_NAME",
     "TEXT_GLOSSARY_TERMS_TABLE_NAME",
     "TEXT_INDEX_INVALIDATIONS_TABLE_NAME",
+    "TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME",
     "TEXT_INDEX_ITEMS_TABLE_NAME",
     "TEXT_INDEX_META_KEY",
     "TEXT_INDEX_META_TABLE_NAME",
+    "TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME",
+    "TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME",
     "TERMINOLOGY_BUNDLE_STATE_KEY",
     "TERMINOLOGY_BUNDLE_STATE_TABLE_NAME",
     "TRANSLATION_QUALITY_ERRORS_TABLE_NAME",

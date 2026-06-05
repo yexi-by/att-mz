@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast, override
 
 import pytest
 
-from app import native_javascript_ast, native_quality, native_write_plan
+from app import native_javascript_ast, native_note_tag_scan, native_quality, native_scope_index, native_write_plan
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
-from app.rmmz.schema import TranslationItem
+from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
 
 
@@ -135,6 +136,65 @@ class _FakeQualityModule:
         raise AssertionError("计数路径不应请求完整写入协议明细")
 
 
+class _FakeScopeIndexModule:
+    """返回固定 Scope/Index JSON 的测试模块。"""
+
+    _rule_candidates_payload: dict[str, object]
+    calls: int
+
+    def __init__(self, rule_candidates_payload: dict[str, object]) -> None:
+        """保存待返回的规则候选 JSON 对象。"""
+        self._rule_candidates_payload = rule_candidates_payload
+        self.calls = 0
+
+    def native_contract_version(self) -> int:
+        """返回当前测试契约版本。"""
+        return native_quality.NATIVE_CONTRACT_VERSION
+
+    def build_scope_index(self, payload_json: str) -> str:
+        """本测试不应调用范围索引构建。"""
+        _ = payload_json
+        raise AssertionError("规则候选适配测试不应构建 scope index")
+
+    def scan_rule_candidates(self, payload_json: str) -> str:
+        """返回测试预置的规则候选结果。"""
+        _ = payload_json
+        self.calls += 1
+        return json.dumps(self._rule_candidates_payload, ensure_ascii=False)
+
+    def evaluate_scope_gate(self, payload_json: str) -> str:
+        """本测试不应调用范围门禁。"""
+        _ = payload_json
+        raise AssertionError("规则候选适配测试不应评估 scope gate")
+
+
+class _FakeRuntimeThreadModule(_FakeQualityModule):
+    """记录 Python 传给 Rust 原生核心的线程配置。"""
+
+    configured_values: list[int | None]
+
+    def __init__(self) -> None:
+        super().__init__(
+            {
+                "source_residual_count": 0,
+                "text_structure_count": 0,
+                "placeholder_risk_count": 0,
+                "overwide_line_count": 0,
+            },
+            {"write_protocol_count": 0},
+        )
+        self.configured_values = []
+
+    def configure_runtime_threads(self, rust_threads: int | None) -> None:
+        """记录线程配置。"""
+        self.configured_values.append(rust_threads)
+
+    def native_thread_count(self) -> int:
+        """返回当前记录的线程数。"""
+        configured_value = self.configured_values[-1] if self.configured_values else None
+        return configured_value if configured_value is not None else 7
+
+
 class _MissingNativeContractModule:
     """模拟旧版 Rust 扩展：没有契约版本函数。"""
 
@@ -156,6 +216,11 @@ def _sample_translation_item() -> TranslationItem:
         source_line_paths=["Items.json/1/name"],
         translation_lines=["草药"],
     )
+
+
+def _sample_game_data_for_note_tag_payload() -> GameData:
+    """构造只满足 native Note 标签 payload 的测试 GameData。"""
+    return cast(GameData, cast(object, SimpleNamespace(data={"Items.json": [{"note": "<desc:薬草>"}]})))
 
 
 def _import_missing_native_contract(_name: str) -> object:
@@ -519,6 +584,193 @@ def test_native_quality_counts_parse_count_only_payload(monkeypatch: pytest.Monk
     assert counts.placeholder_risk_count == 3
     assert counts.overwide_line_count == 4
     assert protocol_count == 5
+
+
+def test_native_rule_candidates_requires_scan_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """contract 6 规则候选结果必须包含 scan_summary，不能由 Python 兜底吞掉。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(KeyError):
+        _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
+
+
+def test_collect_native_note_tag_source_details_returns_source_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签来源存在 helper 必须返回独立 source_details 摘要。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {
+                "note_tags": {
+                    "source_details": [
+                        {
+                            "file_name": "Items.json",
+                            "location_prefix": "Items.json/1",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    source_details = native_note_tag_scan.collect_native_note_tag_source_details(
+        game_data=_sample_game_data_for_note_tag_payload(),
+        text_rules=TextRules.from_setting(TextRulesSetting()),
+    )
+
+    assert source_details == [
+        {
+            "file_name": "Items.json",
+            "location_prefix": "Items.json/1",
+        }
+    ]
+
+
+def test_collect_native_note_tag_source_details_requires_source_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧 Rust 扩展缺少 source_details 时不能静默当作无来源。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {"note_tags": {}},
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="source_details 缺失"):
+        _ = native_note_tag_scan.collect_native_note_tag_source_details(
+            game_data=_sample_game_data_for_note_tag_payload(),
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+        )
+
+
+def test_collect_native_note_tag_extraction_details_returns_sources_and_hits_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签正文提取组合 helper 必须一次 native 扫描返回来源和命中。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {
+                "note_tags": {
+                    "source_details": [
+                        {
+                            "file_name": "Items.json",
+                            "location_prefix": "Items.json/1",
+                        }
+                    ],
+                    "hit_details": [
+                        {
+                            "file_name": "Items.json",
+                            "tag_name": "拡張説明",
+                            "location_path": "Items.json/1/note/拡張説明",
+                            "original_text": "薬草の詳細",
+                            "translatable": True,
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    source_details, hit_details = native_note_tag_scan.collect_native_note_tag_extraction_details(
+        game_data=_sample_game_data_for_note_tag_payload(),
+        text_rules=TextRules.from_setting(TextRulesSetting()),
+    )
+
+    assert fake_module.calls == 1
+    assert source_details == [
+        {
+            "file_name": "Items.json",
+            "location_prefix": "Items.json/1",
+        }
+    ]
+    assert hit_details == [
+        {
+            "file_name": "Items.json",
+            "tag_name": "拡張説明",
+            "location_path": "Items.json/1/note/拡張説明",
+            "original_text": "薬草の詳細",
+            "translatable": True,
+        }
+    ]
+
+
+def test_collect_native_note_tag_extraction_details_requires_both_detail_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """组合 helper 缺任一明细字段时必须显式要求重建 native 扩展。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {"note_tags": {"source_details": []}},
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="hit_details 缺失"):
+        _ = native_note_tag_scan.collect_native_note_tag_extraction_details(
+            game_data=_sample_game_data_for_note_tag_payload(),
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+        )
+
+
+def test_native_runtime_thread_config_maps_auto_and_positive_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python adapter 必须把 auto 转成 None，正整数原样传给 Rust。"""
+    fake_module = _FakeRuntimeThreadModule()
+
+    def load_fake_module() -> native_quality.NativeModule:
+        """返回测试用原生运行时模块。"""
+        return cast(native_quality.NativeModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_quality, "_load_native_module", load_fake_module)
+
+    native_quality.configure_native_runtime_threads("auto")
+    native_quality.configure_native_runtime_threads(4)
+
+    assert fake_module.configured_values == [None, 4]
+    assert native_quality.native_thread_count() == 4
 
 
 def test_native_text_rules_payload_includes_source_copy_residual_policy() -> None:

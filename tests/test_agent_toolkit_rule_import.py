@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 
+from app.application.flow_gate import count_note_tag_rule_candidates
+from app.native_note_tag_scan import collect_native_note_tag_candidate_details
+from app.note_tag_text.exporter import collect_note_tag_candidates
+from app.rmmz.text_rules import get_default_text_rules
+from app.rule_review import note_tag_rule_scope_hash_for_candidates
+
 @pytest.mark.asyncio
 async def test_agent_translation_source_load_skips_writable_copies_by_default(
     minimal_game_dir: Path,
@@ -182,6 +188,78 @@ async def test_import_plugin_rules_uses_configured_text_rules(
         await handler.close()
 
     assert summary.imported_rule_count == 1
+
+
+@pytest.mark.asyncio
+async def test_import_plugin_rules_uses_native_plugin_config_context(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件规则导入前覆盖检查和旧译文清理消费 native 插件参数命中事实。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = example_setting_text_with_absolute_prompt_files()
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+
+    def forbidden_old_record_builder(**_kwargs: object) -> list[PluginTextRuleRecord]:
+        raise AssertionError("import-plugin-rules 不能调用旧 Python 插件参数规则扫描构建入口")
+
+    monkeypatch.setattr(
+        "app.application.handler.build_plugin_rule_records_from_import",
+        forbidden_old_record_builder,
+        raising=False,
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    game_data = await load_game_data(minimal_game_dir)
+    old_rule = PluginTextRuleRecord(
+        plugin_index=0,
+        plugin_name="TestPlugin",
+        plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+        path_templates=["$['parameters']['Message']"],
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_plugin_text_rules([old_rule])
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="plugins.js/0/Message",
+                    item_type="short_text",
+                    original_lines=["プラグイン本文"],
+                    translation_lines=["插件正文"],
+                )
+            ]
+        )
+    rules_path = tmp_path / "plugin-rules.json"
+    _ = rules_path.write_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Nested']['text']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+
+    summary = await handler.import_plugin_rules(game_title="テストゲーム", input_path=rules_path)
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+        saved_rules = await session.read_plugin_text_rules()
+
+    assert summary.imported_plugin_count == 1
+    assert summary.imported_rule_count == 1
+    assert summary.deleted_translation_items == 1
+    assert summary.deleted_translation_backup_path
+    assert translated_items == []
+    assert [rule.path_templates for rule in saved_rules] == [["$['parameters']['Nested']['text']"]]
 @pytest.mark.asyncio
 async def test_import_empty_event_command_rules_requires_explicit_empty_confirmation(
     minimal_game_dir: Path,
@@ -291,6 +369,99 @@ async def test_import_empty_event_command_rules_records_cli_code_scope(
         game_data=game_data,
         command_codes=frozenset({999}),
     )
+
+
+@pytest.mark.asyncio
+async def test_import_event_command_rules_uses_native_hit_details_for_stale_cleanup(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """事件指令规则导入清理旧译文时消费 native 命中前缀。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = example_setting_text_with_absolute_prompt_files()
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    stale_item = TranslationItem(
+        location_path="CommonEvents.json/1/4/parameters/3/message",
+        item_type="short_text",
+        original_lines=["プラグイン台詞"],
+        translation_lines=["旧事件指令译文"],
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[
+                        EventCommandParameterFilter(index=0, value="TestPlugin"),
+                        EventCommandParameterFilter(index=1, value="Show"),
+                    ],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.write_translation_items([stale_item])
+
+    rules_path = tmp_path / "event-command-rules.json"
+    _ = rules_path.write_text(
+        json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {"0": "ComplexPlugin", "1": "ShowWindow"},
+                        "paths": [
+                            "$['parameters'][3]['window']['title']",
+                            "$['parameters'][3]['choices'][*]",
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def forbidden_iter_all_commands(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError("事件指令规则导入必须消费 native hit details")
+
+    def forbidden_legacy_prefixes(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError("事件指令规则导入必须消费 native command prefixes")
+
+    monkeypatch.setattr("app.event_command_text.importer.iter_all_commands", forbidden_iter_all_commands)
+    monkeypatch.setattr(
+        TranslationHandler,
+        "_event_command_rule_prefixes",
+        forbidden_legacy_prefixes,
+        raising=False,
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+
+    try:
+        summary = await handler.import_event_command_rules(
+            game_title="テストゲーム",
+            input_path=rules_path,
+        )
+    finally:
+        await handler.close()
+
+    async with await registry.open_game("テストゲーム") as session:
+        translated_paths = await session.read_translation_location_paths()
+        imported_rules = await session.read_event_command_text_rules()
+
+    assert summary.imported_rule_group_count == 1
+    assert summary.imported_path_rule_count == 2
+    assert summary.deleted_translation_items == 1
+    assert summary.deleted_translation_backup_path
+    assert stale_item.location_path not in translated_paths
+    assert imported_rules[0].command_code == 357
+    assert set(imported_rules[0].path_templates) == {
+        "$['parameters'][3]['window']['title']",
+        "$['parameters'][3]['choices'][*]",
+    }
 @pytest.mark.asyncio
 async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     minimal_game_dir: Path,
@@ -408,6 +579,54 @@ async def test_mv_virtual_namebox_rule_commands_validate_import_and_reject_mz(
         records = await session.read_mv_virtual_namebox_rules()
     assert len(records) == 1
     assert records[0].rule_name == "standalone-colon"
+
+
+@pytest.mark.asyncio
+async def test_mv_virtual_namebox_rule_commands_use_native_candidate_context(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """MV 名字框三条命令消费 native 候选和命中事实，不再调用旧 Python 候选扫描。"""
+    mv_common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    mv_common_events = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(mv_common_events_path.read_text(encoding="utf-8")))),
+        "CommonEvents.json",
+    )
+    mv_common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["案内人："]},
+                {"code": 401, "parameters": ["本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _ = mv_common_events_path.write_text(json.dumps(mv_common_events, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    export_report = await service.export_mv_virtual_namebox_candidates(
+        game_title="MVテストゲーム",
+        output_path=tmp_path / "mv-namebox-candidates.json",
+    )
+    validate_report = await service.validate_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_mv_virtual_namebox_rules_text(),
+    )
+    import_report = await service.import_mv_virtual_namebox_rules(
+        game_title="MVテストゲーム",
+        rules_text=_mv_virtual_namebox_rules_text(),
+    )
+
+    assert export_report.status in {"ok", "warning"}
+    assert validate_report.status == "ok"
+    assert validate_report.summary["matched_candidate_count"] == 1
+    assert import_report.status == "ok"
+    assert import_report.summary["matched_candidate_count"] == 1
 @pytest.mark.asyncio
 async def test_validate_placeholder_rules_blocks_translatable_text_loss() -> None:
     """自定义占位符规则不能把含源语言正文的样本文本整体吞掉。"""
@@ -522,24 +741,34 @@ async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_fi
     assert first_report.summary["active_runtime_scan_cache_miss_file_count"] == cached_file_count
     assert first_report.summary["active_runtime_scan_cache_rescan_file_count"] == cached_file_count
 
+    from app.plugin_source_text import runtime_audit as runtime_audit_module
     scan_calls: list[tuple[str, ...]] = []
 
     def counting_scan(
         *,
         files: dict[str, str],
         active_file_names: frozenset[str],
-        text_rules: TextRules | None = None,
     ) -> PluginSourceBatchTextScan:
-        """记录真正进入 AST 扫描的文件。"""
+        """记录真正进入当前运行 Rust-AST 扫描的文件。"""
         scan_calls.append(tuple(sorted(files)))
-        return real_scan_plugin_source_files_text_strict(
+        return real_scan_plugin_source_runtime_files_text_strict(
             files=files,
             active_file_names=active_file_names,
-            text_rules=text_rules,
         )
 
+    def forbidden_legacy_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
+        _ = (args, kwargs)
+        raise AssertionError("当前运行扫描缓存不应调用翻译源 strict scan")
+
+    if hasattr(runtime_audit_module, "scan_plugin_source_files_text_strict"):
+        monkeypatch.setattr(
+            runtime_audit_module,
+            "scan_plugin_source_files_text_strict",
+            forbidden_legacy_strict_scan,
+        )
     monkeypatch.setattr(
-        "app.plugin_source_text.runtime_audit.scan_plugin_source_files_text_strict",
+        runtime_audit_module,
+        "scan_plugin_source_runtime_files_text_strict",
         counting_scan,
     )
     second_report = await service.audit_active_runtime(game_title="テストゲーム")
@@ -690,6 +919,76 @@ async def test_import_placeholder_rules_uses_warm_text_index_without_full_scope_
 
     assert report.status in {"ok", "warning"}
     assert report.summary["imported_rule_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_source_residual_rule_commands_use_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，源文残留规则命令只按规则路径读取索引事实。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        text_index_items = await session.read_text_index_items()
+    target_item = next(
+        item
+        for item in text_index_items
+        if "こんにちは" in "\n".join(item.original_lines)
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=target_item.location_path,
+                    item_type=target_item.item_type,
+                    role=target_item.role,
+                    original_lines=list(target_item.original_lines),
+                    source_line_paths=list(target_item.source_line_paths),
+                    translation_lines=["保存済み"],
+                )
+            ]
+        )
+    rules_text = json.dumps(
+        {
+            "position_rules": {
+                target_item.location_path: {
+                    "allowed_terms": ["保存済み"],
+                    "reason": "saved_translation_term",
+                }
+            },
+            "structural_rules": [],
+        },
+        ensure_ascii=False,
+    )
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("源文残留规则命令命中 warm index 时不应构建完整文本范围")
+
+    async def forbidden_full_translation_read(self: TargetGameSession) -> NoReturn:
+        _ = self
+        raise AssertionError("源文残留规则命令不应全量读取所有已保存译文")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_full_translation_read)
+
+    validate_report = await service.validate_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+    import_report = await service.import_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+
+    assert validate_report.status == "ok"
+    assert validate_report.summary["position_rule_count"] == 1
+    assert import_report.status == "ok"
+    assert import_report.summary["position_rule_count"] == 1
 @pytest.mark.asyncio
 async def test_import_structured_placeholder_rules_saves_separate_records(
     minimal_game_dir: Path,
@@ -1347,6 +1646,69 @@ async def test_structured_placeholder_candidate_review_rejects_legacy_sampled_ha
     assert structured_decision.severity == "error"
     assert structured_decision.code == "structured_placeholder_uncovered"
     assert "structured_placeholder_uncovered" in {error.code for error in errors}
+
+
+def test_structured_placeholder_coverage_result_uses_native_candidate_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结构化占位符覆盖结果必须复用 native 候选明细。"""
+    translation_data_map = {
+        "CommonEvents.json": TranslationData(
+            display_name=None,
+            translation_items=[
+                TranslationItem(
+                    location_path="CommonEvents.json/1/list/0/parameters/0",
+                    item_type="short_text",
+                    original_lines=["<名前: Alraune> trailing text"],
+                )
+            ],
+        )
+    }
+    structured_rule = StructuredPlaceholderRule.create(
+        rule_name="INLINE_NAME",
+        rule_type="paired_shell",
+        pattern_text=r"(?P<open><名前:\s*)(?P<text>[^>\r\n]+)(?P<close>>)",
+        translatable_group="text",
+        protected_groups={
+            "open": "[CUSTOM_INLINE_NAME_OPEN_{index}]",
+            "close": "[CUSTOM_INLINE_NAME_CLOSE_{index}]",
+        },
+    )
+
+    def fake_native_structured_details(*args: object, **kwargs: object) -> JsonArray:
+        """用 sentinel 明细证明覆盖结果消费 native 候选入口。"""
+        _ = (args, kwargs)
+        return [
+            {
+                "location_path": "CommonEvents.json/1/list/0/parameters/0",
+                "line_number": 1,
+                "candidate": "<名前: Alraune>",
+                "covered": True,
+                "matching_rules": ["INLINE_NAME"],
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.application.flow_gate.collect_native_structured_placeholder_candidate_details",
+        fake_native_structured_details,
+    )
+
+    coverage = build_structured_placeholder_coverage_result(
+        translation_data_map=translation_data_map,
+        structured_rules=(structured_rule,),
+        rule_count=1,
+    )
+
+    assert coverage.candidate_count == 1
+    assert coverage.covered_count == 1
+    assert coverage.uncovered_count == 0
+    assert coverage.scope_hash == structured_placeholder_rule_scope_hash(coverage.candidates)
+    detail = ensure_json_object(coverage.candidates[0], "structured placeholder candidate")
+    assert detail["location_path"] == "CommonEvents.json/1/list/0/parameters/0"
+    assert detail["line_number"] == 1
+    assert detail["candidate"] == "<名前: Alraune>"
+    assert detail["covered"] is True
+    assert detail["matching_rules"] == ["INLINE_NAME"]
 @pytest.mark.asyncio
 async def test_placeholder_candidate_review_state_mismatch_blocks_workflow(
     minimal_game_dir: Path,
@@ -1413,6 +1775,55 @@ def test_placeholder_candidate_scan_accepts_custom_span_wrapping_candidate() -> 
     assert count_uncovered_candidates(candidates) == 0
     assert candidates[0].marker == r"\\v[104]"
     assert candidates[0].custom_covered is True
+
+
+def test_normal_placeholder_coverage_result_uses_native_candidate_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通占位符覆盖结果必须复用 native 候选明细。"""
+    translation_data_map = {
+        "Items.json": TranslationData(
+            display_name=None,
+            translation_items=[
+                TranslationItem(
+                    location_path="Items.json/1/description",
+                    item_type="short_text",
+                    original_lines=[r"\F[GuideA] 説明"],
+                )
+            ],
+        )
+    }
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(
+            CustomPlaceholderRule.create(
+                r"\\F\[[^\]\r\n]+\]",
+                "[CUSTOM_FACE_PORTRAIT_{index}]",
+            ),
+        ),
+    )
+
+    def forbidden_python_scan(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        raise AssertionError("build_normal_placeholder_coverage_result 不应调用 Python 普通占位符扫描器")
+
+    monkeypatch.setattr("app.application.flow_gate.scan_placeholder_candidates", forbidden_python_scan, raising=False)
+
+    coverage = build_normal_placeholder_coverage_result(
+        translation_data_map=translation_data_map,
+        text_rules=text_rules,
+        rule_count=1,
+    )
+
+    assert coverage.candidate_count == 1
+    assert coverage.covered_count == 1
+    assert coverage.uncovered_count == 0
+    detail = ensure_json_object(coverage.candidates[0], "placeholder candidate")
+    assert detail["marker"] == r"\F[GuideA]"
+    assert detail["custom_covered"] is True
+    assert detail["covered"] is True
+
+
 @pytest.mark.asyncio
 async def test_build_placeholder_rules_groups_similar_candidates(
     minimal_game_dir: Path,
@@ -1647,6 +2058,71 @@ async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
     rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
     first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
     assert first_rule_detail["translated_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_plugin_rules_uses_native_plugin_config_hit_details(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件规则校验报告消费 native hit_details，不再调用旧提取器。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="plugins.js/0/Nested/text",
+                    item_type="short_text",
+                    original_lines=["ネスト本文"],
+                    translation_lines=["嵌套正文"],
+                )
+            ]
+        )
+
+    class ForbiddenPluginTextExtraction:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("validate-plugin-rules 不能构造旧 PluginTextExtraction")
+
+    def forbidden_old_record_builder(**_kwargs: object) -> list[PluginTextRuleRecord]:
+        raise AssertionError("validate-plugin-rules 不能调用旧 Python 插件参数规则扫描构建入口")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.common.PluginTextExtraction",
+        ForbiddenPluginTextExtraction,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.rule_validation.build_plugin_rule_records_from_import",
+        forbidden_old_record_builder,
+        raising=False,
+    )
+
+    report = await service.validate_plugin_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Nested']['text']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["hit_count"] == 1
+    assert report.summary["translated_count"] == 1
+    rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
+    first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
+    assert first_rule_detail["plugin_index"] == 0
+    assert first_rule_detail["paths"] == ["$['parameters']['Nested']['text']"]
+    assert first_rule_detail["hit_count"] == 1
+    assert first_rule_detail["translated_count"] == 1
 @pytest.mark.asyncio
 async def test_validate_plugin_rules_rejects_english_protocol_value_paths(
     minimal_english_game_dir: Path,
@@ -1805,6 +2281,129 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
     first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
     assert first_rule_detail["translated_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_note_tag_rules_uses_native_candidate_scan(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签规则校验必须用 native 候选摘要完成前置命中检查。"""
+
+    def forbidden_python_record_builder(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-note-tag-rules 不应调用 Python build_note_tag_rule_records_from_import")
+
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = f"<拡張説明:{json.dumps('薬草の詳細', ensure_ascii=False)}>\n<upgrade:1,2,3>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.rule_validation.build_note_tag_rule_records_from_import",
+        forbidden_python_record_builder,
+        raising=False,
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["file_count"] == 1
+    assert report.summary["tag_count"] == 1
+    assert report.summary["hit_count"] == 1
+    rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
+    first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
+    assert first_rule_detail["file_name"] == "Items.json"
+    assert first_rule_detail["tag_names"] == ["拡張説明"]
+
+
+@pytest.mark.asyncio
+async def test_validate_note_tag_rules_keeps_precise_map_file_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """精确地图规则不能被其它地图的 native 聚合候选误放行。"""
+    map001_path = minimal_game_dir / "data" / "Map001.json"
+    raw_map001 = cast(object, json.loads(map001_path.read_text(encoding="utf-8")))
+    map001 = ensure_json_object(coerce_json_value(raw_map001), "Map001.json")
+    map001_events = ensure_json_array(map001["events"], "Map001.json.events")
+    map001_event = ensure_json_object(map001_events[2], "Map001.json.events[2]")
+    map001_event["note"] = "<namePop:123>"
+    _ = map001_path.write_text(json.dumps(map001, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    map002_path = minimal_game_dir / "data" / "Map002.json"
+    raw_map002 = cast(object, json.loads(map002_path.read_text(encoding="utf-8")))
+    map002 = ensure_json_object(coerce_json_value(raw_map002), "Map002.json")
+    map002_events = ensure_json_array(map002["events"], "Map002.json.events")
+    map002_event = ensure_json_object(map002_events[1], "Map002.json.events[1]")
+    map002_event["note"] = "<namePop:導き手>"
+    _ = map002_path.write_text(json.dumps(map002, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"Map001.json": ["namePop"]}, ensure_ascii=False),
+    )
+
+    assert report.status == "error"
+    assert report.summary["file_count"] == 0
+    assert any(
+        issue.code == "note_tag_rules_invalid"
+        and "没有命中玩家可见可翻译文本: Map001.json/namePop" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_note_tag_rules_uses_native_candidate_scan(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签规则导入必须用 native 候选摘要完成导入前命中检查。"""
+
+    def forbidden_python_record_builder(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("import-note-tag-rules 不应调用 Python build_note_tag_rule_records_from_import")
+
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = f"<拡張説明:{json.dumps('薬草の詳細', ensure_ascii=False)}>\n<upgrade:1,2,3>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.rule_validation.build_note_tag_rule_records_from_import",
+        forbidden_python_record_builder,
+        raising=False,
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        rules = await session.read_note_tag_text_rules()
+
+    assert report.status == "ok"
+    assert report.summary["file_count"] == 1
+    assert report.summary["tag_count"] == 1
+    assert rules == [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
 @pytest.mark.asyncio
 async def test_import_empty_note_tag_rules_allows_confirmed_empty_with_candidates(
     minimal_game_dir: Path,
@@ -1845,6 +2444,91 @@ async def test_import_empty_note_tag_rules_allows_confirmed_empty_with_candidate
     assert state.scope_hash == note_tag_rule_scope_hash_for_text_rules(
         game_data=game_data,
         text_rules=text_rules,
+    )
+
+
+@pytest.mark.asyncio
+async def test_note_tag_scope_hash_and_count_use_native_candidate_scan(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签空规则 hash/count 只消费 native 候选摘要，不再触发 Python 候选扫描。"""
+    from app.application import flow_gate
+
+    native_candidates: JsonArray = [
+        {
+            "file_name": "Items.json",
+            "tag_name": "拡張説明",
+            "hit_count": 2,
+            "value_hit_count": 2,
+            "translatable_hit_count": 2,
+            "matched_file_count": 1,
+            "sample_locations": ["Items.json/1/note/拡張説明"],
+            "sample_values": ["薬草の詳細"],
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "PrivateProtocol",
+            "hit_count": 1,
+            "value_hit_count": 1,
+            "translatable_hit_count": 0,
+            "matched_file_count": 1,
+            "sample_locations": ["Items.json/1/note/PrivateProtocol"],
+            "sample_values": [],
+        },
+    ]
+
+    def forbidden_python_note_tag_candidates(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("Note 标签 scope hash/count 不应调用 Python collect_note_tag_candidates")
+
+    def fake_native_note_tag_candidates(*args: object, **kwargs: object) -> JsonArray:
+        _ = (args, kwargs)
+        return native_candidates
+
+    monkeypatch.setattr(
+        flow_gate,
+        "collect_note_tag_candidates",
+        forbidden_python_note_tag_candidates,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        flow_gate,
+        "collect_native_note_tag_candidate_details",
+        fake_native_note_tag_candidates,
+        raising=False,
+    )
+
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
+
+    assert count_note_tag_rule_candidates(game_data=game_data, text_rules=text_rules) == 2
+    assert note_tag_rule_scope_hash_for_text_rules(
+        game_data=game_data,
+        text_rules=text_rules,
+    ) == note_tag_rule_scope_hash_for_candidates(native_candidates)
+
+
+@pytest.mark.asyncio
+async def test_native_note_tag_candidates_match_python_scope_hash_input(
+    minimal_game_dir: Path,
+) -> None:
+    """native Note 标签候选摘要必须保持 Python scope hash 输入等价。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:薬草の詳細>\n<PrivateProtocol:内部コード>\n<upgrade:1,2,3>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
+    python_candidates = collect_note_tag_candidates(game_data=game_data, text_rules=text_rules)
+    native_candidates = collect_native_note_tag_candidate_details(game_data=game_data, text_rules=text_rules)
+
+    assert native_candidates == python_candidates
+    assert note_tag_rule_scope_hash_for_candidates(native_candidates) == note_tag_rule_scope_hash_for_candidates(
+        python_candidates,
     )
 @pytest.mark.asyncio
 async def test_import_note_tag_rules_replaces_stale_existing_rule(
@@ -2061,7 +2745,7 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """事件指令规则报告按规则组统计命中数量，避免把总命中数写到每条规则。"""
+    """事件指令规则报告用 native 明细按规则组统计命中数量。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -2083,15 +2767,10 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
         },
         ensure_ascii=False,
     )
-    extract_call_count = 0
-    real_extract_with_rule_items = EventCommandTextExtraction.extract_all_text_with_rule_items
-
-    def counted_extract_with_rule_items(
-        self: EventCommandTextExtraction,
+    def forbidden_extract_with_rule_items(
+        _self: EventCommandTextExtraction,
     ) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
-        nonlocal extract_call_count
-        extract_call_count += 1
-        return real_extract_with_rule_items(self)
+        raise AssertionError("事件指令规则校验必须消费 native hit details")
 
     def forbidden_extract_all_text(_self: EventCommandTextExtraction) -> dict[str, TranslationData]:
         raise AssertionError("事件指令规则校验不能为每条规则组重复提取")
@@ -2099,7 +2778,7 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
     monkeypatch.setattr(
         EventCommandTextExtraction,
         "extract_all_text_with_rule_items",
-        counted_extract_with_rule_items,
+        forbidden_extract_with_rule_items,
     )
     monkeypatch.setattr(EventCommandTextExtraction, "extract_all_text", forbidden_extract_all_text)
 
@@ -2115,7 +2794,6 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
         for index, raw_detail in enumerate(rule_details)
     ]
     assert hit_counts == [1, 3]
-    assert extract_call_count == 1
 @pytest.mark.asyncio
 async def test_validate_event_command_rules_uses_prefix_read_for_translated_count(
     minimal_game_dir: Path,
@@ -2147,7 +2825,15 @@ async def test_validate_event_command_rules_uses_prefix_read_for_translated_coun
     async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
         raise AssertionError("事件指令规则校验不能全量读取已保存路径")
 
+    def forbidden_event_command_rule_prefixes(**_kwargs: object) -> NoReturn:
+        raise AssertionError("事件指令规则校验必须消费 native command prefixes")
+
     monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.rule_validation._event_command_rule_prefixes",
+        forbidden_event_command_rule_prefixes,
+        raising=False,
+    )
 
     report = await service.validate_event_command_rules(
         game_title="テストゲーム",

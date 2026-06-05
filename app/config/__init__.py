@@ -25,6 +25,8 @@ from .overrides import SettingOverrides, apply_setting_overrides
 from .schemas import (
     EventCommandTextSetting,
     LLMSetting,
+    RuntimeRustThreads,
+    RuntimeSetting,
     Setting,
     StrictBaseModel,
     TextRulesSetting,
@@ -39,6 +41,8 @@ __all__: list[str] = [
     "LLM_API_KEY_ENV_NAME",
     "LLM_BASE_URL_ENV_NAME",
     "LLMSetting",
+    "RuntimeRustThreads",
+    "RuntimeSetting",
     "SettingOverrides",
     "Setting",
     "STRUCTURED_PLACEHOLDER_RULES_FILE_NAME",

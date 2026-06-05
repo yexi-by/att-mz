@@ -48,6 +48,90 @@ fn build_plan_generates_changed_data_file_from_sqlite() {
 }
 
 #[test]
+fn build_plan_reads_allowed_translation_paths_from_text_index_when_payload_omits_them() {
+    let fixture = create_fixture_dir("att_mz_write_plan_allowed_paths_from_text_index");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    create_minimal_text_index_items(
+        &db_path,
+        &[
+            ("System.json/gameTitle", true),
+            ("System.json/switches/1", false),
+        ],
+    );
+    let mut payload = minimal_setting_payload();
+    payload
+        .as_object_mut()
+        .expect("测试配置载荷应为对象")
+        .remove("allowed_translation_paths");
+
+    let output = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &payload.to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect("缺省 allowed_translation_paths 时应从 text index 读取可写范围");
+    let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
+
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["summary"]["data_item_count"], 1);
+    assert!(
+        planned_file_content(&value, "data/System.json").contains("测试标题"),
+        "生成内容应包含 text index 可写范围内的译文",
+    );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn build_plan_rejects_unwritable_text_index_translation_when_payload_omits_allowed_paths() {
+    let fixture = create_fixture_dir("att_mz_write_plan_unwritable_text_index_translation");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    create_minimal_text_index_items(
+        &db_path,
+        &[
+            ("System.json/gameTitle", true),
+            ("System.json/switches/1", false),
+        ],
+    );
+    insert_translation_item(
+        &db_path,
+        "System.json/switches/1",
+        "short_text",
+        "[\"スイッチ\"]",
+        "[]",
+        "[\"不该写入\"]",
+    );
+    let mut payload = minimal_setting_payload();
+    payload
+        .as_object_mut()
+        .expect("测试配置载荷应为对象")
+        .remove("allowed_translation_paths");
+
+    let error = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &payload.to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect_err("不可写 text index 路径上存在译文时必须直接阻断");
+
+    assert!(
+        error.contains("发现已保存译文不在当前可写文本范围内")
+            && error.contains("System.json/switches/1"),
+        "错误文案应说明不可写索引路径上存在已保存译文，实际为 {error}",
+    );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
 fn build_plan_can_externalize_changed_file_content() {
     let fixture = create_fixture_dir("att_mz_write_plan_external_content");
     let game_dir = fixture.join("game");
@@ -1596,8 +1680,8 @@ fn build_plan_rejects_enabled_plugin_without_name() {
 }
 
 #[test]
-fn build_plan_accepts_thread_pool_env_on_write_plan_path() {
-    let fixture = create_fixture_dir("att_mz_write_plan_thread_env");
+fn build_plan_accepts_thread_pool_config_on_write_plan_path() {
+    let fixture = create_fixture_dir("att_mz_write_plan_thread_config");
     let game_dir = fixture.join("game");
     let db_path = fixture.join("game.db");
     create_minimal_game_files(&game_dir);
@@ -1612,7 +1696,7 @@ fn build_plan_accepts_thread_pool_env_on_write_plan_path() {
             false,
         )
     })
-    .expect("写回计划路径应接受 ATT_MZ_RUST_THREADS");
+    .expect("写回计划路径应接受 runtime.rust_threads 配置");
     let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
 
     assert_eq!(value["status"], "ok");
@@ -1897,6 +1981,28 @@ fn create_minimal_database(db_path: &Path) {
             ],
         )
         .expect("测试运行记录应可写入");
+}
+
+fn create_minimal_text_index_items(db_path: &Path, rows: &[(&str, bool)]) {
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    connection
+        .execute_batch(
+            "
+            CREATE TABLE text_index_items (
+                location_path TEXT PRIMARY KEY,
+                writable INTEGER NOT NULL
+            );
+            ",
+        )
+        .expect("测试 text index 表应可创建");
+    for (location_path, writable) in rows {
+        connection
+            .execute(
+                "INSERT INTO text_index_items (location_path, writable) VALUES (?1, ?2)",
+                params![location_path, if *writable { 1 } else { 0 }],
+            )
+            .expect("测试 text index 行应可写入");
+    }
 }
 
 fn insert_translation_item(

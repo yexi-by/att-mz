@@ -11,23 +11,25 @@ from .common import (
     StructuredPlaceholderRule,
     StructuredPlaceholderRuleRecord,
     TextRules,
-    _build_custom_placeholder_rule_draft,
+    _build_custom_placeholder_rule_draft_from_details,
     _build_joined_text_boundary_warnings,
     _build_placeholder_coverage_report_with_context,
     _build_structured_placeholder_coverage_report_with_context,
     _build_unprotected_control_warnings,
     _collect_unprotected_control_warning_samples,
-    _joined_text_boundary_markers,
+    _joined_text_boundary_markers_from_details,
     _validate_placeholder_rules_with_context,
     _validate_structured_placeholder_rules_with_context,
     aiofiles,
-    count_uncovered_candidates,
     issue,
     json,
     load_custom_placeholder_rules_text,
     load_structured_placeholder_rules_text,
     load_setting,
-    scan_placeholder_candidates,
+)
+from app.native_placeholder_scan import (
+    collect_native_placeholder_candidate_details,
+    count_uncovered_placeholder_candidate_details,
 )
 from app.application.flow_gate import (
     build_normal_placeholder_coverage_result,
@@ -449,6 +451,7 @@ class PlaceholderRuleAgentMixin:
             game_title=game_title,
             rules_text=rules_text,
             translation_data_map=translation_data_map,
+            text_rules=text_rules,
             structured_rules=structured_rules,
         )
 
@@ -652,18 +655,26 @@ class PlaceholderRuleAgentMixin:
                 game_data=game_data,
                 text_rules=empty_rules,
             )
-        candidates = scan_placeholder_candidates(translation_data_map, empty_rules)
-        uncovered_count_before_draft = count_uncovered_candidates(candidates)
-        manual_boundary_markers = _joined_text_boundary_markers(candidates)
-        draft_rules = _build_custom_placeholder_rule_draft(candidates)
+        candidate_details = collect_native_placeholder_candidate_details(
+            translation_data_map=translation_data_map,
+            text_rules=empty_rules,
+        )
+        uncovered_count_before_draft = count_uncovered_placeholder_candidate_details(candidate_details)
+        draft_rules = _build_custom_placeholder_rule_draft_from_details(candidate_details)
+        manual_boundary_markers = _joined_text_boundary_markers_from_details(candidate_details)
         draft_custom_rules = load_custom_placeholder_rules_text(json.dumps(draft_rules, ensure_ascii=False))
         draft_text_rules = TextRules.from_setting(
             setting.text_rules,
             custom_placeholder_rules=draft_custom_rules,
             structured_placeholder_rules=structured_rules,
         )
-        draft_preview_candidates = scan_placeholder_candidates(translation_data_map, draft_text_rules)
-        uncovered_count_after_draft_preview = count_uncovered_candidates(draft_preview_candidates)
+        draft_preview_candidate_details = collect_native_placeholder_candidate_details(
+            translation_data_map=translation_data_map,
+            text_rules=draft_text_rules,
+        )
+        uncovered_count_after_draft_preview = count_uncovered_placeholder_candidate_details(
+            draft_preview_candidate_details
+        )
         warnings = _build_unprotected_control_warnings(
             _collect_unprotected_control_warning_samples(translation_data_map, empty_rules),
             empty_rules,
@@ -678,7 +689,7 @@ class PlaceholderRuleAgentMixin:
             errors=[],
             warnings=warnings,
             summary={
-                "candidate_count": len(candidates),
+                "candidate_count": len(candidate_details),
                 "uncovered_count_before_draft": uncovered_count_before_draft,
                 "uncovered_count_after_draft_preview": uncovered_count_after_draft_preview,
                 "draft_rule_count": len(draft_rules),

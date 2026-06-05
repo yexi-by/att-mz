@@ -419,7 +419,7 @@ def prepare_registered_benchmark(options: ActiveRuntimeAuditBenchmarkOptions) ->
     try:
         app_home.mkdir(parents=True)
         shutil.copytree(options.sample_path, game_path)
-        prepare_app_home_assets(app_home)
+        prepare_app_home_assets(app_home, rust_threads=options.rust_threads)
         completed = subprocess.run(
             [
                 "uv",

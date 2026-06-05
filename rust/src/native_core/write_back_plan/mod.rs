@@ -42,12 +42,16 @@ use self::nonstandard_data_writer::{
 use self::note_writer::{is_note_tag_path, write_note_tag_item};
 use self::plugin_config_writer::write_plugin_config_item;
 use self::plugin_source::write_plugin_source_files;
+pub(crate) use self::plugin_source::{
+    candidate_selector_for_span, normalize_visible_text_for_extraction, unescape_js_text,
+};
 use self::quality_gate::{
     assert_saved_translation_quality_passed, quality_gate_items_for_write_plan,
 };
 use self::repository::{
     open_readonly_connection, read_mv_virtual_namebox_rules, read_plugin_source_text_rules,
     read_source_residual_rules, read_terminology_terms, read_translation_items_for_allowed_paths,
+    read_writable_text_index_location_paths,
 };
 use self::terminology::apply_terminology;
 use self::utils::{build_changed_file, externalize_planned_file_contents, is_map_file};
@@ -92,21 +96,19 @@ fn build_write_back_plan_inner(
         .quality_text_rules
         .take()
         .ok_or_else(|| "写回计划缺少 Rust 质检文本规则".to_string())?;
-    let allowed_translation_paths = setting_payload
-        .allowed_translation_paths
-        .as_deref()
-        .ok_or_else(|| {
-            "写回计划缺少 allowed_translation_paths，不能确定当前可写文本范围".to_string()
-        })?;
 
     let mut timings_ms: BTreeMap<String, u128> = BTreeMap::new();
     let layout = resolve_layout(Path::new(game_path))?;
     let connection = open_readonly_connection(Path::new(db_path))?;
+    let allowed_translation_paths = match setting_payload.allowed_translation_paths.take() {
+        Some(paths) => paths,
+        None => read_writable_text_index_location_paths(&connection)?,
+    };
 
     let load_started = Instant::now();
     let mut plugins_js = read_plugins_origin_file(&layout.plugins_origin_path)?;
     let translated_items =
-        read_translation_items_for_allowed_paths(&connection, allowed_translation_paths)?;
+        read_translation_items_for_allowed_paths(&connection, &allowed_translation_paths)?;
     let source_residual_rules = read_source_residual_rules(&connection)?;
     let plugin_source_text_rules = read_plugin_source_text_rules(&connection)?;
     let terminology = read_terminology_terms(&connection)?;

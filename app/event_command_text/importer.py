@@ -96,6 +96,31 @@ def build_event_command_rule_records_from_import(
     return list(records_by_key.values())
 
 
+def build_event_command_rule_records_from_import_shape(
+    *,
+    import_file: EventCommandRuleImportFile,
+) -> list[EventCommandTextRuleRecord]:
+    """把外部事件指令路径映射转换成未扫描校验的数据库记录。"""
+    records_by_key: dict[tuple[int, tuple[tuple[int, str], ...]], EventCommandTextRuleRecord] = {}
+    for command_code_text, specs in import_file.items():
+        command_code = parse_command_code(command_code_text)
+        for spec in specs:
+            record = EventCommandTextRuleRecord(
+                command_code=command_code,
+                parameter_filters=parse_parameter_filters(spec.match),
+                path_templates=normalize_path_templates(spec.paths),
+            )
+            key = event_command_rule_key(record)
+            existing_record = records_by_key.get(key)
+            if existing_record is None:
+                records_by_key[key] = record
+                continue
+            existing_record.path_templates = normalize_path_templates(
+                [*existing_record.path_templates, *record.path_templates]
+            )
+    return list(records_by_key.values())
+
+
 def build_event_command_rule_record(
     *,
     command_snapshots: list[tuple[list[str | int], str, EventCommand]],
@@ -205,6 +230,7 @@ __all__: list[str] = [
     "EventCommandRuleImportFile",
     "EventCommandRuleSpec",
     "build_event_command_rule_records_from_import",
+    "build_event_command_rule_records_from_import_shape",
     "command_matches_filters",
     "event_command_rule_key",
     "load_event_command_rule_import_file",

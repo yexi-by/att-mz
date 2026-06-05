@@ -12,7 +12,8 @@ from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value
 
 from .models import PluginSourceRuleImportEntry, PluginSourceRuleImportFile, PluginSourceScan
-from .scanner import build_plugin_source_file_hash, build_plugin_source_scan
+from .native_scan import build_native_plugin_source_scan
+from .scanner import build_plugin_source_file_hash
 
 RULE_IMPORT_ADAPTER: TypeAdapter[list[PluginSourceRuleImportEntry]] = TypeAdapter(
     list[PluginSourceRuleImportEntry]
@@ -40,7 +41,7 @@ def build_plugin_source_rule_records_from_import(
     if not import_file.rules:
         return []
     if scan is None:
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     file_scans = {file_scan.file_name: file_scan for file_scan in scan.files}
     selectors_by_file = {
         file_scan.file_name: {candidate.selector for candidate in file_scan.candidates}

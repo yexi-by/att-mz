@@ -14,6 +14,7 @@ mod pool;
 mod quality;
 mod regex_contract;
 mod rules;
+mod scope_index;
 mod write_back_plan;
 mod write_protocol;
 
@@ -79,9 +80,29 @@ pub fn validate_regex_contract_impl(payload_json: &str) -> Result<String, String
     regex_contract::validate_regex_contract_impl(payload_json)
 }
 
+/// 构建 Scope/Index Engine 范围索引。
+pub fn build_scope_index_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::build_scope_index_impl(payload_json)
+}
+
+/// 扫描 Scope/Index Engine 规则候选。
+pub fn scan_rule_candidates_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::scan_rule_candidates_impl(payload_json)
+}
+
+/// 评估 Scope/Index Engine 范围门禁。
+pub fn evaluate_scope_gate_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::evaluate_scope_gate_impl(payload_json)
+}
+
 /// 读取原生核心配置的线程数覆盖值。
 pub fn read_configured_thread_count() -> Result<Option<usize>, String> {
     pool::read_configured_thread_count()
+}
+
+/// 配置原生核心线程数覆盖值。
+pub fn configure_runtime_threads(thread_count: Option<usize>) -> Result<(), String> {
+    pool::configure_runtime_threads(thread_count)
 }
 
 #[cfg(test)]

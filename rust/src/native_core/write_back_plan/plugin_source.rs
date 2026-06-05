@@ -409,7 +409,7 @@ pub(super) fn parse_plugin_source_location_path(
     Ok((file_name.to_string(), selector.to_string()))
 }
 
-pub(super) fn candidate_selector_for_span(
+pub(crate) fn candidate_selector_for_span(
     start_index: usize,
     end_index: usize,
     raw_text: &str,
@@ -439,7 +439,7 @@ pub(super) fn escape_js_string_content(text: &str, quote: &str) -> String {
     escaped.replace('"', "\\\"")
 }
 
-pub(super) fn unescape_js_text(text: &str) -> String {
+pub(crate) fn unescape_js_text(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut decoded = String::new();
     let mut index = 0usize;
@@ -465,6 +465,22 @@ pub(super) fn unescape_js_text(text: &str) -> String {
             'f' => decoded.push('\u{000c}'),
             'v' => decoded.push('\u{000b}'),
             '0' => decoded.push('\0'),
+            'x' if has_hex_digits(&chars, index + 2, 2) => {
+                if let Some(decoded_char) = decode_hex_char(&chars, index + 2, index + 4) {
+                    decoded.push(decoded_char);
+                    index += 4;
+                    continue;
+                }
+                decoded.push(escaped);
+            }
+            'u' => {
+                if let Some((decoded_char, next_index)) = decode_unicode_escape(&chars, index + 2) {
+                    decoded.push(decoded_char);
+                    index = next_index;
+                    continue;
+                }
+                decoded.push(escaped);
+            }
             '\n' | '\r' => {
                 index += 2;
                 if escaped == '\r' && index < chars.len() && chars[index] == '\n' {
@@ -479,7 +495,41 @@ pub(super) fn unescape_js_text(text: &str) -> String {
     decoded
 }
 
-pub(super) fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
+fn has_hex_digits(chars: &[char], start_index: usize, count: usize) -> bool {
+    let end_index = start_index + count;
+    end_index <= chars.len()
+        && chars[start_index..end_index]
+            .iter()
+            .all(char::is_ascii_hexdigit)
+}
+
+fn decode_unicode_escape(chars: &[char], start_index: usize) -> Option<(char, usize)> {
+    if start_index < chars.len() && chars[start_index] == '{' {
+        let mut end_index = start_index + 1;
+        while end_index < chars.len() && chars[end_index] != '}' {
+            end_index += 1;
+        }
+        if end_index >= chars.len() || end_index == start_index + 1 {
+            return None;
+        }
+        return decode_hex_char(chars, start_index + 1, end_index)
+            .map(|decoded_char| (decoded_char, end_index + 1));
+    }
+    if !has_hex_digits(chars, start_index, 4) {
+        return None;
+    }
+    decode_hex_char(chars, start_index, start_index + 4)
+        .map(|decoded_char| (decoded_char, start_index + 4))
+}
+
+fn decode_hex_char(chars: &[char], start_index: usize, end_index: usize) -> Option<char> {
+    let hex_text: String = chars[start_index..end_index].iter().collect();
+    u32::from_str_radix(&hex_text, 16)
+        .ok()
+        .and_then(char::from_u32)
+}
+
+pub(crate) fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
     let mut current = raw_text.to_string();
     loop {
         let trimmed = current.trim();

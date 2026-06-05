@@ -99,13 +99,13 @@ pub(crate) struct NativeTextRules {
     pub(crate) long_text_line_width_limit: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NativeCustomPlaceholderRule {
     pub(crate) pattern_text: String,
     pub(crate) placeholder_template: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NativeStructuredPlaceholderRule {
     pub(crate) rule_name: String,
     pub(crate) rule_type: String,

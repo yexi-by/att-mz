@@ -1,4 +1,5 @@
 """RPG Maker 数据加载、可信源和写回业务契约测试夹具。"""
+# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -50,8 +51,8 @@ from app.plugin_text import build_plugin_hash
 from app.plugin_source_text import (
     ActiveRuntimePluginSourceAudit,
     ActiveRuntimePluginSourceIssue,
+    build_native_plugin_source_scan,
     build_plugin_source_rule_records_from_import,
-    build_plugin_source_scan,
     parse_plugin_source_rule_import_text,
 )
 
@@ -384,8 +385,8 @@ __all__ = (
     "build_plugin_hash",
     "ActiveRuntimePluginSourceAudit",
     "ActiveRuntimePluginSourceIssue",
+    "build_native_plugin_source_scan",
     "build_plugin_source_rule_records_from_import",
-    "build_plugin_source_scan",
     "parse_plugin_source_rule_import_text",
     "ActiveRuntimeNonstandardDataAudit",
     "EVENT_COMMAND_TEXT_RULE_DOMAIN",

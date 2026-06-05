@@ -11,11 +11,8 @@ from typing import ClassVar, cast
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from app.regex_contract import validate_mv_virtual_namebox_regex_contract
-from app.rmmz.commands import iter_all_commands
-from app.rmmz.game_data import EventCommand
 from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value
 from app.rmmz.schema import (
-    Code,
     GameData,
     MvVirtualNameboxRuleRecord,
     MvVirtualNameboxSpeakerPolicy,
@@ -284,16 +281,17 @@ def parse_mv_virtual_speaker_line(
     return matches[0]
 
 
-def validate_mv_virtual_namebox_rules_against_game(
+def validate_mv_virtual_namebox_rules_against_candidates(
     *,
     game_data: GameData,
     records: list[MvVirtualNameboxRuleRecord],
+    candidates: list[MvVirtualNameboxCandidate],
 ) -> tuple[JsonArray, JsonArray]:
-    """校验规则在当前游戏样本上的命中冲突和源文重建能力。"""
+    """用已收集候选校验 MV 虚拟名字框规则，不再触发候选扫描。"""
     rules = runtime_mv_virtual_namebox_rules(records)
     errors: JsonArray = []
     details: JsonArray = []
-    for candidate in collect_mv_virtual_namebox_candidates(game_data):
+    for candidate in candidates:
         matching_rules: list[str] = []
         virtual_speakers: list[MvVirtualSpeaker] = []
         for rule in rules:
@@ -371,47 +369,6 @@ def validate_mv_virtual_namebox_rules_against_game(
     return errors, details
 
 
-def collect_mv_virtual_namebox_candidates(game_data: GameData) -> list[MvVirtualNameboxCandidate]:
-    """收集 MV `101` 后首条非空 `401` 候选。"""
-    candidates: list[MvVirtualNameboxCandidate] = []
-    command_snapshots = list(iter_all_commands(game_data))
-    commands_by_prefix: dict[tuple[str | int, ...], list[tuple[list[str | int], EventCommand]]] = {}
-    for path, _display_name, command in command_snapshots:
-        commands_by_prefix.setdefault(tuple(path[:-1]), []).append((path, command))
-    for command_group in commands_by_prefix.values():
-        for index, (path, command) in enumerate(command_group):
-            if command.code != Code.NAME:
-                continue
-            candidate = _candidate_after_name_command(command_group=command_group, start_index=index)
-            if candidate is not None:
-                candidates.append(candidate)
-    return candidates
-
-
-def mv_virtual_namebox_candidate_details(game_data: GameData) -> JsonArray:
-    """生成供外部 Agent 阅读的 MV 虚拟名字框候选摘要。"""
-    details: JsonArray = []
-    for candidate in collect_mv_virtual_namebox_candidates(game_data):
-        following_lines: JsonArray = [line for line in candidate.following_lines[:3]]
-        detail: JsonObject = {
-            "location_path": candidate.location_path,
-            "text": candidate.text,
-            "following_lines": following_lines,
-        }
-        details.append(detail)
-    return details
-
-
-def mv_virtual_namebox_candidates_payload(game_data: GameData) -> JsonObject:
-    """生成 MV 虚拟名字框候选导出 JSON。"""
-    candidates = mv_virtual_namebox_candidate_details(game_data)
-    return {
-        "engine_kind": game_data.layout.engine_kind,
-        "candidate_count": len(candidates),
-        "candidates": candidates,
-    }
-
-
 def mv_virtual_namebox_rule_records_to_import_json(
     records: list[MvVirtualNameboxRuleRecord] | tuple[MvVirtualNameboxRuleRecord, ...],
 ) -> JsonObject:
@@ -429,46 +386,6 @@ def mv_virtual_namebox_rule_records_to_import_json(
             for record in sorted(records, key=lambda item: item.rule_order)
         ]
     }
-
-
-def _candidate_after_name_command(
-    *,
-    command_group: list[tuple[list[str | int], EventCommand]],
-    start_index: int,
-) -> MvVirtualNameboxCandidate | None:
-    """读取单个 `101` 后首条非空 `401`。"""
-    following_lines: list[str] = []
-    next_index = start_index + 1
-    first_path: list[str | int] | None = None
-    first_text: str | None = None
-    while next_index < len(command_group):
-        path, command = command_group[next_index]
-        if command.code != Code.TEXT:
-            break
-        text = _read_first_parameter_text(command)
-        if text is not None and text.strip():
-            following_lines.append(text)
-            if first_text is None:
-                first_path = path
-                first_text = text
-        next_index += 1
-    if first_path is None or first_text is None:
-        return None
-    return MvVirtualNameboxCandidate(
-        location_path="/".join(map(str, first_path)),
-        text=first_text.strip(),
-        following_lines=following_lines[1:],
-    )
-
-
-def _read_first_parameter_text(command: EventCommand) -> str | None:
-    """读取事件指令第一个字符串参数。"""
-    if not command.parameters:
-        return None
-    value = command.parameters[0]
-    if not isinstance(value, str):
-        return None
-    return value
 
 
 def _build_virtual_speaker(
@@ -531,12 +448,9 @@ __all__: list[str] = [
     "MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME",
     "MvVirtualNameboxRuleSpec",
     "MvVirtualSpeaker",
-    "collect_mv_virtual_namebox_candidates",
-    "mv_virtual_namebox_candidates_payload",
-    "mv_virtual_namebox_candidate_details",
     "mv_virtual_namebox_rule_records_to_import_json",
     "parse_mv_virtual_namebox_rule_import_text",
     "parse_mv_virtual_speaker_line",
     "runtime_mv_virtual_namebox_rules",
-    "validate_mv_virtual_namebox_rules_against_game",
+    "validate_mv_virtual_namebox_rules_against_candidates",
 ]

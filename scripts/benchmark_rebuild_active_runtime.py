@@ -150,7 +150,7 @@ def prepare_benchmark(options: BenchmarkOptions) -> PreparedBenchmark:
     try:
         app_home.mkdir(parents=True)
         shutil.copytree(options.sample_path, game_path)
-        prepare_app_home_assets(app_home)
+        prepare_app_home_assets(app_home, rust_threads=options.rust_threads)
         db_path.parent.mkdir(parents=True)
         shutil.copy2(options.source_db_path, db_path)
         update_database_metadata(
@@ -195,17 +195,58 @@ def build_preparation_error(
     )
 
 
-def prepare_app_home_assets(app_home: Path) -> None:
+def prepare_app_home_assets(app_home: Path, rust_threads: int | None = None) -> None:
     """复制运行命令需要的配置和随包资源。"""
     setting_source = ROOT / "setting.toml"
     if not setting_source.is_file():
         setting_source = ROOT / "setting.example.toml"
     ensure_file(setting_source, "配置文件")
-    shutil.copy2(setting_source, app_home / "setting.toml")
+    setting_target = app_home / "setting.toml"
+    shutil.copy2(setting_source, setting_target)
+    write_runtime_threads_setting(setting_target, rust_threads=rust_threads)
     for directory_name in ("fonts", "prompts"):
         source_dir = ROOT / directory_name
         if source_dir.is_dir():
             shutil.copytree(source_dir, app_home / directory_name)
+
+
+def write_runtime_threads_setting(setting_path: Path, rust_threads: int | None) -> None:
+    """把本次性能命令的 Rust 线程数写入临时配置文件。"""
+    value = '"auto"' if rust_threads is None else str(rust_threads)
+    lines = setting_path.read_text(encoding="utf-8-sig").splitlines()
+    output_lines: list[str] = []
+    in_runtime_section = False
+    runtime_section_seen = False
+    rust_threads_written = False
+
+    for line in lines:
+        stripped_line = line.strip()
+        is_section_header = stripped_line.startswith("[") and stripped_line.endswith("]")
+        if is_section_header:
+            if in_runtime_section and not rust_threads_written:
+                output_lines.append(f"rust_threads = {value}")
+                rust_threads_written = True
+            in_runtime_section = stripped_line == "[runtime]"
+            runtime_section_seen = runtime_section_seen or in_runtime_section
+            output_lines.append(line)
+            continue
+
+        if in_runtime_section and stripped_line.startswith("rust_threads"):
+            if not rust_threads_written:
+                output_lines.append(f"rust_threads = {value}")
+                rust_threads_written = True
+            continue
+        output_lines.append(line)
+
+    if in_runtime_section and not rust_threads_written:
+        output_lines.append(f"rust_threads = {value}")
+    if not runtime_section_seen:
+        if output_lines and output_lines[-1] != "":
+            output_lines.append("")
+        output_lines.append("[runtime]")
+        output_lines.append(f"rust_threads = {value}")
+
+    setting_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
 def update_database_metadata(
@@ -558,10 +599,8 @@ def optional_positive_int(value: int | None, label: str) -> int | None:
 
 def build_cli_env(*, app_home: Path, rust_threads: int | None) -> dict[str, str]:
     """构造性能命令环境变量。"""
-    env = {**os.environ, "ATT_MZ_HOME": str(app_home)}
-    if rust_threads is not None:
-        env["ATT_MZ_RUST_THREADS"] = str(rust_threads)
-    return env
+    _ = rust_threads
+    return {**os.environ, "ATT_MZ_HOME": str(app_home)}
 
 
 def main() -> int:

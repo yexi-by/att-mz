@@ -90,6 +90,42 @@ class TextIndexItemRecord:
 
 
 @dataclass(slots=True)
+class TextIndexScopeSummaryRecord:
+    """当前文本范围索引的静态范围摘要。"""
+
+    total_count: int
+    active_count: int
+    writable_count: int
+    unwritable_count: int
+    stale_rule_count: int
+    native_thread_count: int
+
+
+@dataclass(slots=True)
+class TextIndexDomainSummaryRecord:
+    """当前文本范围索引按来源域汇总的静态事实。"""
+
+    domain: str
+    item_count: int
+    active_count: int
+    writable_count: int
+    unwritable_count: int
+    inactive_rule_hit_count: int
+
+
+@dataclass(slots=True)
+class TextIndexRuleHitSummaryRecord:
+    """当前文本范围索引按规则命中汇总的静态事实。"""
+
+    domain: str
+    rule_key: str
+    hit_count: int
+    extractable_count: int
+    writable_count: int
+    unwritable_count: int
+
+
+@dataclass(slots=True)
 class TextIndexInvalidationRecord:
     """文本范围索引失效原因记录。"""
 

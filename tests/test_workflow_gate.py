@@ -56,6 +56,14 @@ def _add_high_risk_plugin_source(game_dir: Path) -> None:
     )
 
 
+def _add_high_risk_nonstandard_data(game_dir: Path) -> None:
+    """给测试游戏追加一个高风险非标准 data 文件。"""
+    _ = (game_dir / "data" / "UnknownPluginData.json").write_text(
+        json.dumps([{"id": 1, "name": "これは未分類です"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 async def _install_non_plugin_source_gate_prerequisites(
     *,
     registry: GameRegistry,
@@ -166,3 +174,23 @@ async def test_rebuild_text_index_blocks_unreviewed_high_risk_plugin_source(
 
     assert report.status == "error"
     assert {error.code for error in report.errors} == {"plugin_source_text_high_risk"}
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_blocks_unreviewed_high_risk_nonstandard_data(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+) -> None:
+    """重建文本索引写入前必须阻断未归类的高风险非标准 data。"""
+    _ = app_home_with_example_setting
+    _add_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title="テストゲーム")
+
+    assert report.status == "error"
+    assert {error.code for error in report.errors} == {"nonstandard_data_high_risk"}

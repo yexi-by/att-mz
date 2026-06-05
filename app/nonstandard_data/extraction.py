@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -15,10 +16,18 @@ from app.rmmz.text_rules import TextRules, coerce_json_value, get_default_text_r
 from .scanner import (
     NonstandardDataFile,
     build_nonstandard_data_file_hash,
-    resolve_nonstandard_data_leaves,
+    resolve_nonstandard_data_file_leaves_native,
 )
 
 NONSTANDARD_DATA_LOCATION_PREFIX = "nonstandard-data"
+
+
+@dataclass(frozen=True, slots=True)
+class NonstandardDataTextExtractionContext:
+    """非标准 data 文本提取在同一轮流程内复用的文件和叶子事实。"""
+
+    files_by_name: dict[str, NonstandardDataFile]
+    leaves_by_file: dict[str, tuple[ResolvedLeaf, ...]]
 
 
 class NonstandardDataTextExtraction:
@@ -29,23 +38,28 @@ class NonstandardDataTextExtraction:
         game_data: GameData,
         rule_records: list[NonstandardDataTextRuleRecord],
         text_rules: TextRules | None = None,
+        context: NonstandardDataTextExtractionContext | None = None,
     ) -> None:
         """初始化非标准 data 文本提取器。"""
         self.game_data: GameData = game_data
         self.rule_records: list[NonstandardDataTextRuleRecord] = rule_records
         self.text_rules: TextRules = text_rules if text_rules is not None else get_default_text_rules()
+        self.context: NonstandardDataTextExtractionContext | None = context
 
     def extract_all_text(self) -> dict[str, TranslationData]:
         """按数据库规则提取非标准 data 文件文本。"""
         if not self.rule_records:
             return {}
-        files_by_name = self._load_nonstandard_files_by_name()
+        context = self._load_context()
         result: dict[str, TranslationData] = {}
         for record in self.rule_records:
             if record.skipped or not record.path_templates:
                 continue
-            nonstandard_file = self._validated_file(record=record, files_by_name=files_by_name)
-            items = self._extract_file_items(record=record, nonstandard_file=nonstandard_file)
+            nonstandard_file = self._validated_file(record=record, files_by_name=context.files_by_name)
+            items = self._extract_file_items(
+                record=record,
+                resolved_leaves=list(context.leaves_by_file[nonstandard_file.file_name]),
+            )
             if not items:
                 continue
             result[nonstandard_data_file_key(record.file_name)] = TranslationData(
@@ -58,14 +72,14 @@ class NonstandardDataTextExtraction:
         """展开规则命中的全部字符串叶子，用于统一文本清单诊断。"""
         if not self.rule_records:
             return []
-        files_by_name = self._load_nonstandard_files_by_name()
+        context = self._load_context()
         hits: list[tuple[str, str]] = []
         seen_paths: set[str] = set()
         for record in self.rule_records:
             if record.skipped:
                 continue
-            nonstandard_file = self._validated_file(record=record, files_by_name=files_by_name)
-            resolved_leaves = resolve_nonstandard_data_leaves(nonstandard_file.value)
+            nonstandard_file = self._validated_file(record=record, files_by_name=context.files_by_name)
+            resolved_leaves = list(context.leaves_by_file[nonstandard_file.file_name])
             string_leaf_map = {
                 leaf.path: leaf.value
                 for leaf in resolved_leaves
@@ -95,22 +109,21 @@ class NonstandardDataTextExtraction:
                                 plain_text_normalizer=self.text_rules.normalize_extraction_text,
                             ),
                         )
-                    )
+            )
         return hits
+
+    def _load_context(self) -> NonstandardDataTextExtractionContext:
+        """读取或复用本轮非标准 data 文件和叶子事实。"""
+        if self.context is not None:
+            return self.context
+        return build_nonstandard_data_text_extraction_context(
+            game_data=self.game_data,
+            rule_records=self.rule_records,
+        )
 
     def _load_nonstandard_files_by_name(self) -> dict[str, NonstandardDataFile]:
         """同步读取翻译源视图里的非标准 data 文件。"""
-        data_dir = resolve_data_source_dir(
-            layout=self.game_data.layout,
-            use_origin_backups=True,
-            require_origin_backups=True,
-        )
-        file_names = {record.file_name for record in self.rule_records}
-        files: dict[str, NonstandardDataFile] = {}
-        for file_name in sorted(file_names):
-            path = data_dir / file_name
-            files[file_name] = _read_nonstandard_data_file(path)
-        return files
+        return _load_nonstandard_files_by_name(game_data=self.game_data, rule_records=self.rule_records)
 
     def _validated_file(
         self,
@@ -131,10 +144,9 @@ class NonstandardDataTextExtraction:
         self,
         *,
         record: NonstandardDataTextRuleRecord,
-        nonstandard_file: NonstandardDataFile,
+        resolved_leaves: list[ResolvedLeaf],
     ) -> list[TranslationItem]:
         """提取单个非标准 data 文件的规则命中项。"""
-        resolved_leaves = resolve_nonstandard_data_leaves(nonstandard_file.value)
         string_leaf_map = {
             leaf.path: leaf.value
             for leaf in resolved_leaves
@@ -216,6 +228,58 @@ def _read_nonstandard_data_file(path: Path) -> NonstandardDataFile:
     )
 
 
+def build_nonstandard_data_text_extraction_context(
+    *,
+    game_data: GameData,
+    rule_records: list[NonstandardDataTextRuleRecord],
+    skip_missing_files: bool = False,
+) -> NonstandardDataTextExtractionContext:
+    """为同一轮非标准 data 文本流程构建可复用的文件和 native leaves 事实。"""
+    files_by_name = _load_nonstandard_files_by_name(
+        game_data=game_data,
+        rule_records=rule_records,
+        skip_missing_files=skip_missing_files,
+    )
+    return NonstandardDataTextExtractionContext(
+        files_by_name=files_by_name,
+        leaves_by_file=_native_leaves_by_file(files_by_name),
+    )
+
+
+def _load_nonstandard_files_by_name(
+    *,
+    game_data: GameData,
+    rule_records: list[NonstandardDataTextRuleRecord],
+    skip_missing_files: bool = False,
+) -> dict[str, NonstandardDataFile]:
+    """同步读取翻译源视图里的非标准 data 文件。"""
+    data_dir = resolve_data_source_dir(
+        layout=game_data.layout,
+        use_origin_backups=True,
+        require_origin_backups=True,
+    )
+    file_names = {record.file_name for record in rule_records}
+    files: dict[str, NonstandardDataFile] = {}
+    for file_name in sorted(file_names):
+        path = data_dir / file_name
+        try:
+            files[file_name] = _read_nonstandard_data_file(path)
+        except RuntimeError:
+            if skip_missing_files:
+                continue
+            raise
+    return files
+
+
+def _native_leaves_by_file(
+    files_by_name: dict[str, NonstandardDataFile],
+) -> dict[str, tuple[ResolvedLeaf, ...]]:
+    """从当前文件值一次性获取 Rust 展开的叶子事实。"""
+    return resolve_nonstandard_data_file_leaves_native(
+        {file_name: nonstandard_file.value for file_name, nonstandard_file in files_by_name.items()}
+    )
+
+
 def _matched_string_leaf_paths(
     *,
     path_template: str,
@@ -235,7 +299,9 @@ def _matched_string_leaf_paths(
 
 __all__ = [
     "NONSTANDARD_DATA_LOCATION_PREFIX",
+    "NonstandardDataTextExtractionContext",
     "NonstandardDataTextExtraction",
+    "build_nonstandard_data_text_extraction_context",
     "nonstandard_data_file_key",
     "nonstandard_data_location_path",
     "parse_nonstandard_data_location_path",

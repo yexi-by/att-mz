@@ -40,7 +40,7 @@ from app.application.flow_gate import (
     event_command_rule_scope_hash_for_setting,
     note_tag_rule_scope_hash_for_text_rules,
 )
-from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
+from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 
 
 class DoctorAgentMixin:
@@ -166,11 +166,14 @@ class DoctorAgentMixin:
                 event_rules = await session.read_event_command_text_rules()
                 note_tag_rules = await session.read_note_tag_text_rules()
                 mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
-                mv_virtual_namebox_candidates = (
-                    mv_virtual_namebox_candidate_details(game_data)
-                    if game_data.layout.engine_kind == "mv"
-                    else []
-                )
+                mv_virtual_namebox_candidate_count = 0
+                mv_virtual_namebox_scope_hash: str | None = None
+                if game_data.layout.engine_kind == "mv":
+                    mv_virtual_namebox_scan = scan_native_mv_virtual_namebox(game_data=game_data)
+                    mv_virtual_namebox_candidate_count = mv_virtual_namebox_scan.candidate_count
+                    mv_virtual_namebox_scope_hash = mv_virtual_namebox_rule_scope_hash(
+                        mv_virtual_namebox_scan.candidate_details
+                    )
                 terminology_registry = await session.read_terminology_registry()
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
@@ -281,7 +284,7 @@ class DoctorAgentMixin:
                         session=session,
                         rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
                         stage="doctor",
-                        scope_hash=mv_virtual_namebox_rule_scope_hash(mv_virtual_namebox_candidates),
+                        scope_hash=mv_virtual_namebox_scope_hash or "",
                         label="MV 虚拟名字框规则",
                         missing_code="mv_virtual_namebox_rules",
                         stale_code="mv_virtual_namebox_rules_review_state_stale",
@@ -324,7 +327,7 @@ class DoctorAgentMixin:
                 summary["stale_plugin_rule_count"] = stale_plugin_rule_count
                 summary["event_command_rule_count"] = sum(len(rule.path_templates) for rule in event_rules)
                 summary["note_tag_rule_count"] = sum(len(rule.tag_names) for rule in note_tag_rules)
-                summary["mv_virtual_namebox_candidate_count"] = len(mv_virtual_namebox_candidates)
+                summary["mv_virtual_namebox_candidate_count"] = mv_virtual_namebox_candidate_count
                 summary["mv_virtual_namebox_rule_count"] = len(mv_virtual_namebox_rules)
                 summary["plugin_rules_reviewed_empty"] = plugin_rules_reviewed_empty
                 summary["plugin_rules_review_state_stale"] = plugin_rules_review_state_stale

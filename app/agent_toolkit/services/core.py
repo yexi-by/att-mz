@@ -13,6 +13,7 @@ from .common import (
     TextRules,
     TextScopeService,
     TranslationData,
+    TranslationItem,
     build_source_residual_rule_records_from_import,
     load_active_runtime_game_data,
     load_game_data_for_view,
@@ -24,6 +25,7 @@ from .common import (
 from app.plugin_source_text import PluginSourceScan
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
+from app.text_index import detect_text_index_invalidations, text_index_item_to_translation_item
 
 
 class CoreAgentMixin:
@@ -114,32 +116,41 @@ class CoreAgentMixin:
         game_title: str,
         rules_text: str,
     ) -> list[SourceResidualRuleRecord]:
-        """解析并按当前游戏提取结果校验源文残留例外规则。"""
+        """解析并按当前索引事实校验源文残留例外规则。"""
         import_file = parse_source_residual_rule_import_text(rules_text)
+        position_paths = sorted(import_file.position_rules)
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            custom_rules = await self._resolve_custom_rules(
-                session=session,
-                custom_placeholder_rules_text=None,
-            )
-            structured_rules = await self._resolve_structured_rules(session=session)
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
-            game_data = await self._load_translation_source_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            active_items = [
-                item
-                for translation_data in translation_data_map.values()
-                for item in translation_data.translation_items
-            ]
-            translated_items = await session.read_translated_items()
+            active_items: list[TranslationItem] = []
+            translated_items: list[TranslationItem] = []
+            if position_paths:
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
+                structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+                text_index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
+                )
+                if text_index_invalidations:
+                    rebuild_report = await self.rebuild_text_index(
+                        game_title=game_title,
+                        include_write_probe=False,
+                    )
+                    if rebuild_report.status == "error":
+                        messages = "；".join(error.message for error in rebuild_report.errors)
+                        if not messages:
+                            messages = "文本范围索引重建失败"
+                        raise RuntimeError(f"源文残留例外规则校验前无法建立文本范围索引: {messages}")
+                index_records = await session.read_text_index_items_by_paths(position_paths)
+                active_items = [text_index_item_to_translation_item(record) for record in index_records]
+                translated_items = await session.read_translated_items_by_paths(position_paths)
         return build_source_residual_rule_records_from_import(
             import_file=import_file,
             active_items=active_items,

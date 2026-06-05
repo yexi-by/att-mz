@@ -1,4 +1,5 @@
 """Agent 工具包业务契约测试夹具。"""
+# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ from app.application.flow_gate import (
     collect_workflow_gate_errors,
     event_command_rule_scope_hash_for_command_codes,
     event_command_rule_scope_hash_for_setting,
+    mv_virtual_namebox_rule_scope_hash_for_game_data,
     normal_placeholder_scope_hash,
     note_tag_rule_scope_hash_for_text_rules,
     structured_placeholder_scope_hash,
@@ -58,12 +60,14 @@ from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_text import build_plugin_hash
 
 from app.plugin_source_text import (
-    PluginSourceBatchTextScan,
     PluginSourceScan,
+    build_native_plugin_source_scan,
+)
+from app.plugin_source_text.scanner import (
+    PluginSourceBatchTextScan,
     build_plugin_source_file_hash,
-    build_plugin_source_scan,
     iter_plugin_source_string_literals,
-    scan_plugin_source_files_text_strict as real_scan_plugin_source_files_text_strict,
+    scan_plugin_source_runtime_files_text_strict as real_scan_plugin_source_runtime_files_text_strict,
 )
 
 from app.plugin_source_text.runtime_mapping import (
@@ -124,8 +128,6 @@ from app.translation import TranslationBatch
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 
 from app.utils.config_loader_utils import load_setting
-
-from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -371,9 +373,7 @@ async def _install_minimal_workflow_gate_prerequisites(
         if game_data.layout.engine_kind == "mv":
             await session.replace_rule_review_state(
                 rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-                scope_hash=mv_virtual_namebox_rule_scope_hash(
-                    mv_virtual_namebox_candidate_details(game_data)
-                ),
+                scope_hash=mv_virtual_namebox_rule_scope_hash_for_game_data(game_data),
                 reviewed_empty=True,
             )
 
@@ -419,6 +419,7 @@ __all__ = (
     "collect_workflow_gate_errors",
     "event_command_rule_scope_hash_for_command_codes",
     "event_command_rule_scope_hash_for_setting",
+    "mv_virtual_namebox_rule_scope_hash_for_game_data",
     "normal_placeholder_scope_hash",
     "note_tag_rule_scope_hash_for_text_rules",
     "structured_placeholder_scope_hash",
@@ -439,10 +440,10 @@ __all__ = (
     "build_plugin_hash",
     "PluginSourceBatchTextScan",
     "PluginSourceScan",
+    "build_native_plugin_source_scan",
     "build_plugin_source_file_hash",
-    "build_plugin_source_scan",
     "iter_plugin_source_string_literals",
-    "real_scan_plugin_source_files_text_strict",
+    "real_scan_plugin_source_runtime_files_text_strict",
     "plugin_source_runtime_hash_lines",
     "plugin_source_runtime_hash_text",
     "CustomPlaceholderRule",
@@ -494,7 +495,6 @@ __all__ = (
     "TranslationBatch",
     "collect_write_back_probe_reasons",
     "load_setting",
-    "mv_virtual_namebox_candidate_details",
     "ROOT",
     "EXAMPLE_SETTING_PATH",
     "example_setting_text_with_absolute_prompt_files",

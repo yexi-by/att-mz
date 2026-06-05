@@ -2,7 +2,769 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from app.agent_toolkit import AgentToolkitService
+from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME
+from app.text_index import rebuild_text_index as rebuild_persistent_text_index
+
 from tests.rmmz_writeback_contract_fixtures import *
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "write_back",
+        "rebuild_active_runtime",
+        "write_terminology",
+    ],
+)
+async def test_write_related_commands_reuse_text_index_scope_gate_without_python_scope_build(
+    mode: str,
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写回相关入口已有 warm index 时不应重新构建 Python 全量文本范围。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+            registry=(
+                TerminologyRegistry(speaker_names={"アリス": "爱丽丝"})
+                if mode == "write_terminology"
+                else None
+            ),
+            glossary=(
+                TerminologyGlossary(terms={"アリス": "爱丽丝"})
+                if mode == "write_terminology"
+                else None
+            ),
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        if mode != "write_terminology":
+            await session.write_translation_items(
+                [
+                    TranslationItem(
+                        location_path=item.location_path,
+                        item_type=item.item_type,
+                        role=item.role,
+                        original_lines=[line for line in item.original_lines],
+                        source_line_paths=[path for path in item.source_line_paths],
+                        translation_lines=[
+                            _translated_test_line_preserving_controls(line, text_rules)
+                            for line in item.original_lines
+                        ],
+                    )
+                    for item in scope.active_items()
+                ]
+            )
+
+    rebuild_report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=setting_path,
+    ).rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """写回前检查应复用持久索引，不应重新构建 Python 全量文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回相关命令不应重新构建 Python 全量文本范围")
+
+    async def forbidden_full_index_rows(*args: object, **kwargs: object) -> NoReturn:
+        """写回前检查应使用 SQL 摘要，不应读取全部 text index rows。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回相关命令不应读取全部 text index rows")
+
+    async def forbidden_rust_scope_gate(*args: object, **kwargs: object) -> NoReturn:
+        """写回前检查应使用 SQL 摘要，不应为 gate 还原 Rust 输入行。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回相关命令不应调用 evaluate_text_index_scope_gate")
+
+    captured_modes: list[str] = []
+    captured_payload_count = 0
+
+    def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
+        """记录 Rust 写回计划输入，并返回不写文件的最小计划。"""
+        nonlocal captured_payload_count
+        captured_modes.append(cast(str, kwargs["mode"]))
+        setting_payload = cast(dict[str, object], kwargs["setting_payload"])
+        captured_payload_count += 1
+        assert "allowed_translation_paths" not in setting_payload
+        return NativeWriteBackPlan(
+            files=[],
+            plugin_source_runtime_write_maps=[],
+            font_replacement_records=[],
+            summary=NativeWriteBackSummary(
+                data_item_count=0,
+                plugin_item_count=0,
+                terminology_written_count=1 if kwargs["mode"] == "write_terminology" else 0,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=0,
+                skipped_file_count=0,
+            ),
+            timings_ms={"total": 1},
+        )
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr(
+        "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_items",
+        forbidden_full_index_rows,
+    )
+    monkeypatch.setattr("app.text_index.evaluate_text_index_scope_gate", forbidden_rust_scope_gate)
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        if mode == "write_back":
+            summary = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+            assert summary.data_item_count == 0
+        elif mode == "rebuild_active_runtime":
+            summary = await handler.rebuild_active_runtime(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+            assert summary.data_item_count == 0
+        else:
+            summary = await handler.write_terminology(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+            assert summary.written_count == 1
+    finally:
+        await handler.close()
+
+    assert captured_modes == [mode]
+    assert captured_payload_count == 1
+
+
+@pytest.mark.asyncio
+async def test_write_back_warm_index_rejects_saved_translation_outside_writable_text_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 写回必须阻止已保存译文落在当前可写索引之外。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    rebuild_report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=setting_path,
+    ).rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="System.json/staleTranslation",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["古いテキスト"],
+                    source_line_paths=[],
+                    translation_lines=["索引外旧译文"],
+                )
+            ]
+        )
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """stale gate 应使用索引 SQL 摘要，不应重建 Python 全量文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index stale gate 不应重建 Python 全量文本范围")
+
+    def forbidden_native_plan(**kwargs: object) -> NoReturn:
+        """stale gate 失败时不应继续生成 Rust 写回计划。"""
+        _ = kwargs
+        raise AssertionError("stale gate 失败时不应继续生成 Rust 写回计划")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_native_plan)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(WriteBackGateError, match="不在当前可写文本范围"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "index_state"),
+    [
+        ("write_back", "missing"),
+        ("write_back", "count_mismatch"),
+        ("write_back", "precheck_missing"),
+        ("rebuild_active_runtime", "missing"),
+        ("rebuild_active_runtime", "count_mismatch"),
+        ("rebuild_active_runtime", "precheck_missing"),
+        ("write_terminology", "missing"),
+        ("write_terminology", "count_mismatch"),
+        ("write_terminology", "precheck_missing"),
+    ],
+)
+async def test_write_related_commands_rebuild_missing_or_stale_text_index_before_fast_gate(
+    mode: str,
+    index_state: str,
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写回相关入口索引缺失或过期时应先重建，再走索引快路径。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+            registry=TerminologyRegistry(speaker_names={"アリス": "爱丽丝"}),
+            glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in scope.active_items()
+            ]
+        )
+
+    if index_state == "count_mismatch":
+        rebuild_report = await AgentToolkitService(
+            game_registry=registry,
+            setting_path=setting_path,
+        ).rebuild_text_index(game_title="テストゲーム")
+        assert rebuild_report.status == "ok"
+        async with await registry.open_game("テストゲーム") as session:
+            _ = await session.connection.execute(
+                f"""
+                DELETE FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+                WHERE location_path = (
+                    SELECT location_path
+                    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+                    ORDER BY location_path
+                    LIMIT 1
+                )
+                """
+            )
+            await session.connection.commit()
+    elif index_state == "precheck_missing":
+        async with await registry.open_game("テストゲーム") as session:
+            _ = await rebuild_persistent_text_index(
+                session=session,
+                game_data=game_data,
+                setting=_setting,
+                text_rules=text_rules,
+                scope=scope,
+                source_branch_workflow_gates_prechecked=False,
+            )
+
+    async def forbidden_workflow_fallback(*args: object, **kwargs: object) -> NoReturn:
+        """自动重建后不应继续执行旧 Python workflow gate fallback。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引自动重建后不应执行旧 Python workflow gate fallback")
+
+    async def forbidden_quality_fallback(*args: object, **kwargs: object) -> NoReturn:
+        """自动重建后不应继续执行旧 Python quality gate fallback。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引自动重建后不应执行旧 Python quality gate fallback")
+
+    async def forbidden_writable_filter(*args: object, **kwargs: object) -> NoReturn:
+        """自动重建后不应继续用 Python scope 过滤可写译文。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引自动重建后不应执行 Python 可写路径 fallback")
+
+    async def forbidden_full_index_rows(*args: object, **kwargs: object) -> NoReturn:
+        """自动重建后写回快路径仍不应读取全部索引行。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引自动重建后不应读取全部 text index rows")
+
+    async def forbidden_rust_scope_gate(*args: object, **kwargs: object) -> NoReturn:
+        """自动重建后写回快路径仍不应还原 Rust scope gate 输入。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引自动重建后不应调用 evaluate_text_index_scope_gate")
+
+    captured_modes: list[str] = []
+    captured_payload_count = 0
+
+    def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
+        """记录 Rust 写回计划输入，并返回不写文件的最小计划。"""
+        nonlocal captured_payload_count
+        captured_modes.append(cast(str, kwargs["mode"]))
+        setting_payload = cast(dict[str, object], kwargs["setting_payload"])
+        captured_payload_count += 1
+        assert "allowed_translation_paths" not in setting_payload
+        return NativeWriteBackPlan(
+            files=[],
+            plugin_source_runtime_write_maps=[],
+            font_replacement_records=[],
+            summary=NativeWriteBackSummary(
+                data_item_count=0,
+                plugin_item_count=0,
+                terminology_written_count=1 if kwargs["mode"] == "write_terminology" else 0,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=0,
+                skipped_file_count=0,
+            ),
+            timings_ms={"total": 1},
+        )
+
+    monkeypatch.setattr("app.application.handler.assert_workflow_gate_passed", forbidden_workflow_fallback)
+    monkeypatch.setattr("app.application.handler.assert_write_back_quality_passed", forbidden_quality_fallback)
+    monkeypatch.setattr(TranslationHandler, "_filter_writable_translation_items", forbidden_writable_filter)
+    monkeypatch.setattr(
+        "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_items",
+        forbidden_full_index_rows,
+    )
+    monkeypatch.setattr("app.text_index.evaluate_text_index_scope_gate", forbidden_rust_scope_gate)
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        if mode == "write_back":
+            summary = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+            assert summary.data_item_count == 0
+        elif mode == "rebuild_active_runtime":
+            summary = await handler.rebuild_active_runtime(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+            assert summary.data_item_count == 0
+        else:
+            summary = await handler.write_terminology(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+            assert summary.written_count == 1
+    finally:
+        await handler.close()
+
+    assert captured_modes == [mode]
+    assert captured_payload_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "write_back",
+        "rebuild_active_runtime",
+        "write_terminology",
+    ],
+)
+async def test_write_related_commands_stop_when_text_index_rebuild_fails_without_fallback(
+    mode: str,
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写回索引自动重建失败时必须显式停止，不应继续旧慢路径或写文件计划。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+            registry=TerminologyRegistry(speaker_names={"アリス": "爱丽丝"}),
+            glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
+        )
+
+    async def fake_rebuild_text_index_for_translation(
+        self: TranslationHandler,
+        *,
+        session: TargetGameSession,
+        setting: Setting,
+        text_rules: TextRules,
+        callbacks: tuple[
+            Callable[[int, int], None],
+            Callable[[int], None],
+            Callable[[str], None],
+        ],
+    ) -> tuple[dict[str, object], str]:
+        """模拟索引重建被 workflow gate 阻断。"""
+        _ = (self, session, setting, text_rules, callbacks)
+        return {"index_status": "not_rebuilt", "indexed_count": 0}, "测试索引重建失败"
+
+    async def forbidden_workflow_fallback(*args: object, **kwargs: object) -> NoReturn:
+        """重建失败后不应继续执行旧 Python workflow gate fallback。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引重建失败后不应执行旧 Python workflow gate fallback")
+
+    async def forbidden_quality_fallback(*args: object, **kwargs: object) -> NoReturn:
+        """重建失败后不应继续执行旧 Python quality gate fallback。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引重建失败后不应执行旧 Python quality gate fallback")
+
+    async def forbidden_writable_filter(*args: object, **kwargs: object) -> NoReturn:
+        """重建失败后不应继续用 Python scope 过滤可写译文。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回索引重建失败后不应执行 Python 可写路径 fallback")
+
+    def forbidden_native_plan(**kwargs: object) -> NoReturn:
+        """重建失败时不应继续生成 Rust 写回计划。"""
+        _ = kwargs
+        raise AssertionError("写回索引重建失败后不应生成 Rust 写回计划")
+
+    monkeypatch.setattr(TranslationHandler, "_rebuild_text_index_for_translation", fake_rebuild_text_index_for_translation)
+    monkeypatch.setattr("app.application.handler.assert_workflow_gate_passed", forbidden_workflow_fallback)
+    monkeypatch.setattr("app.application.handler.assert_write_back_quality_passed", forbidden_quality_fallback)
+    monkeypatch.setattr(TranslationHandler, "_filter_writable_translation_items", forbidden_writable_filter)
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_native_plan)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(WriteBackGateError, match="当前游戏持久文本范围索引自动重建失败: 测试索引重建失败"):
+            if mode == "write_back":
+                _ = await handler.write_back(
+                    game_title="テストゲーム",
+                    callbacks=(lambda _current, _total: None, lambda _count: None),
+                )
+            elif mode == "rebuild_active_runtime":
+                _ = await handler.rebuild_active_runtime(
+                    game_title="テストゲーム",
+                    callbacks=(lambda _current, _total: None, lambda _count: None),
+                )
+            else:
+                _ = await handler.write_terminology(
+                    game_title="テストゲーム",
+                    callbacks=(lambda _current, _total: None, lambda _count: None),
+                )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_write_back_warm_index_rejects_quality_errors_without_python_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 写回质量 gate 应使用索引路径事实，不读取完整质量错误对象。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        active_items = scope.active_items()
+        failed_item = active_items[0]
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in active_items
+                if item.location_path != failed_item.location_path
+            ]
+        )
+        run_record = await session.start_translation_run(
+            total_extracted=len(active_items),
+            pending_count=1,
+            deduplicated_count=1,
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    location_path=failed_item.location_path,
+                    item_type=failed_item.item_type,
+                    role=failed_item.role,
+                    original_lines=[line for line in failed_item.original_lines],
+                    translation_lines=[],
+                    error_type="AI漏翻",
+                    error_detail=["无法解析模型输出"],
+                    model_response="{}",
+                )
+            ],
+        )
+
+    rebuild_report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=setting_path,
+    ).rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 写回质量 gate 不应重建 Python 全量文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index 写回质量 gate 不应重建 Python 全量文本范围")
+
+    async def forbidden_quality_error_object_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 写回质量 gate 不应读取完整质量错误对象。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index 写回质量 gate 不应读取完整质量错误对象")
+
+    def forbidden_native_plan(**kwargs: object) -> NoReturn:
+        """质量 gate 失败时不应继续生成写回计划。"""
+        _ = kwargs
+        raise AssertionError("质量 gate 失败时不应继续生成写回计划")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors_by_paths",
+        forbidden_quality_error_object_read,
+    )
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_native_plan)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        with pytest.raises(WriteBackGateError, match="模型翻了但项目检查没通过"):
+            _ = await handler.write_back(
+                game_title="テストゲーム",
+                callbacks=(lambda _current, _total: None, lambda _count: None),
+            )
+    finally:
+        await handler.close()
+
+
+@pytest.mark.asyncio
+async def test_write_back_warm_index_ignores_quality_error_after_translation_saved(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 写回不应被已经保存译文修复的旧质量错误阻断。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        game_data, _setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+        )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        active_items = scope.active_items()
+        failed_item = active_items[0]
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in active_items
+            ]
+        )
+        run_record = await session.start_translation_run(
+            total_extracted=len(active_items),
+            pending_count=1,
+            deduplicated_count=1,
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    location_path=failed_item.location_path,
+                    item_type=failed_item.item_type,
+                    role=failed_item.role,
+                    original_lines=[line for line in failed_item.original_lines],
+                    translation_lines=[],
+                    error_type="AI漏翻",
+                    error_detail=["无法解析模型输出"],
+                    model_response="{}",
+                )
+            ],
+        )
+
+    rebuild_report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=setting_path,
+    ).rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 写回不应为了已修复质量错误重建 Python 全量文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index 写回不应重建 Python 全量文本范围")
+
+    async def forbidden_quality_error_object_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 写回不应读取完整质量错误对象来判断已修复路径。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index 写回不应读取完整质量错误对象")
+
+    captured_modes: list[str] = []
+
+    def fake_build_native_write_back_plan(**kwargs: object) -> NativeWriteBackPlan:
+        """质量错误已由保存译文修复后应继续生成 Rust 写回计划。"""
+        captured_modes.append(cast(str, kwargs["mode"]))
+        return NativeWriteBackPlan(
+            files=[],
+            plugin_source_runtime_write_maps=[],
+            font_replacement_records=[],
+            summary=NativeWriteBackSummary(
+                data_item_count=0,
+                plugin_item_count=0,
+                terminology_written_count=0,
+                target_font_name=None,
+                source_font_count=0,
+                replaced_font_reference_count=0,
+                font_copied=False,
+                planned_file_count=0,
+                skipped_file_count=0,
+            ),
+            timings_ms={"total": 1},
+        )
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr(
+        "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors_by_paths",
+        forbidden_quality_error_object_read,
+    )
+    monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.data_item_count == 0
+    assert captured_modes == ["write_back"]
+
 
 @pytest.mark.asyncio
 async def test_direct_write_back_delegates_native_quality_to_rust_plan(
@@ -610,7 +1372,7 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
         )
         candidate = next(
             candidate
-            for candidate in build_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates
+            for candidate in build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates
             if candidate.file_name == "HardcodedText.js" and candidate.text == "カテゴリ"
         )
         plugin_source_records = build_plugin_source_rule_records_from_import(

@@ -233,7 +233,6 @@ def test_run_benchmark_records_command_sample_stats_and_return_code(
     result = active_runtime_benchmark.run_benchmark(options, prepared)
 
     assert captured_env["ATT_MZ_HOME"] == str(prepared.app_home)
-    assert captured_env["ATT_MZ_RUST_THREADS"] == "4"
     assert result["command"] == active_runtime_benchmark.audit_active_runtime_command("测试游戏")
     assert result["sample_stats"] == collect_game_sample_stats(prepared.game_path)
     runs = cast(list[dict[str, object]], result["runs"])

@@ -6,7 +6,7 @@
 占位符规则由当前游戏数据库或 CLI 显式输入提供。
 """
 
-from typing import Annotated, ClassVar
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -152,6 +152,19 @@ class WriteBackSetting(StrictBaseModel):
     replacement_font_path: str | None = Field(default=None, title="用户确认覆盖字体后使用的候选字体路径")
 
 
+type RuntimeRustThreads = Literal["auto"] | Annotated[int, Field(gt=0, strict=True)]
+
+
+class RuntimeSetting(StrictBaseModel):
+    """Rust 原生核心运行时配置。"""
+
+    rust_threads: RuntimeRustThreads = Field(
+        default="auto",
+        title="Rust 原生线程数",
+        description="auto 使用 Rayon 默认线程数；正整数使用局部线程池限制并发。",
+    )
+
+
 class TextRulesSetting(StrictBaseModel):
     """可配置的文本判断规则。"""
 
@@ -234,12 +247,15 @@ class Setting(StrictBaseModel):
     text_translation: TextTranslationSetting = Field(title="正文翻译配置")
     event_command_text: EventCommandTextSetting = Field(title="事件指令参数外部规则配置")
     write_back: WriteBackSetting = Field(default_factory=WriteBackSetting, title="写回配置")
+    runtime: RuntimeSetting = Field(default_factory=RuntimeSetting, title="运行时配置")
     text_rules: TextRulesSetting = Field(default_factory=TextRulesSetting, title="文本规则")
 
 
 __all__: list[str] = [
     "EventCommandTextSetting",
     "LLMSetting",
+    "RuntimeRustThreads",
+    "RuntimeSetting",
     "Setting",
     "StrictBaseModel",
     "TextRulesSetting",

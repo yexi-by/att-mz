@@ -108,7 +108,6 @@ def test_public_protocol_docs_use_current_environment_contract() -> None:
         DEV_SKILL_DIR / "references" / "cli-command-contract.md",
         RELEASE_SKILL_DIR / "references" / "cli-command-contract.md",
         ROOT / "README.md",
-        ROOT / "docs" / "development" / "release-and-tests.md",
     ]
     for path in protocol_paths:
         text = _read_text(path)
@@ -126,7 +125,6 @@ def test_public_protocol_docs_do_not_promise_legacy_candidate_hash_compatibility
         RELEASE_SKILL_DIR / "references" / "cli-command-contract.md",
         RELEASE_SKILL_DIR / "references" / "placeholder-rules.md",
         RELEASE_SKILL_DIR / "references" / "structured-placeholder-rules.md",
-        ROOT / "docs" / "advanced-usage.md",
     ]
     for path in protocol_paths:
         text = _read_text(path)

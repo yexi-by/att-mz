@@ -65,6 +65,7 @@ class TranslationItem(BaseModel):
     translation_lines: list[str] = Field(default_factory=list)
     placeholder_map: dict[str, str] = Field(default_factory=dict)
     placeholder_counts: dict[str, int] = Field(default_factory=dict)
+    terminology_owner_terms: list[str] = Field(default_factory=list, exclude=True)
 
     def build_placeholders(self, text_rules: TextRules | None = None) -> None:
         """为原文中的 RM 控制符构建语义化占位符。"""

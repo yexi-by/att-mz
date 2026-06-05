@@ -162,6 +162,175 @@ async def test_build_placeholder_rules_requires_manual_boundary_for_joined_contr
     assert manual_coverage_report.summary["uncovered_count"] == 3
     assert r"\ShakeStop" not in manual_coverage_json
     assert r"\Shake" in manual_coverage_json
+
+
+@pytest.mark.asyncio
+async def test_build_placeholder_rules_uses_native_candidate_details_for_draft(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通占位符草稿生成使用 native 明细，不再依赖旧候选对象。"""
+    native_calls: list[str] = []
+
+    def fake_native_placeholder_details(
+        *,
+        translation_data_map: dict[str, TranslationData],
+        text_rules: TextRules,
+    ) -> JsonArray:
+        """返回只存在于 native 侧的草稿候选。"""
+        _ = (translation_data_map, text_rules)
+        native_calls.append("called")
+        return [
+            {
+                "marker": r"\NATIVEONLY[1]",
+                "count": 1,
+                "sources": ["CommonEvents.json"],
+                "standard_covered": False,
+                "custom_covered": False,
+                "covered": False,
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.placeholder_rules.collect_native_placeholder_candidate_details",
+        fake_native_placeholder_details,
+        raising=False,
+    )
+
+    def empty_placeholder_candidates(
+        translation_data_map: dict[str, TranslationData],
+        text_rules: TextRules,
+    ) -> list[object]:
+        """旧 scanner 残留路径返回空候选，验证草稿不依赖它。"""
+        _ = (translation_data_map, text_rules)
+        return []
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.placeholder_rules.scan_placeholder_candidates",
+        empty_placeholder_candidates,
+        raising=False,
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_external_text_rules(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    output_path = tmp_path / "placeholder-rules.json"
+
+    report = await service.build_placeholder_rules(game_title="English Fixture Game", output_path=output_path)
+    rules = load_json_object(output_path)
+
+    assert native_calls == ["called", "called"]
+    assert rules == {
+        r"(?i)\\NATIVEONLY\d*\[[^\]\r\n]+\]": "[CUSTOM_PLUGIN_NATIVEONLY_MARKER_{index}]",
+    }
+    assert report.summary["candidate_count"] == 1
+    assert report.summary["uncovered_count_before_draft"] == 1
+
+
+@pytest.mark.asyncio
+async def test_build_placeholder_rules_uses_native_details_for_preview_and_boundary(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """草稿预览和手动边界统计也使用 native 明细，不再调用旧 scanner。"""
+    native_calls: list[str] = []
+
+    def fake_native_placeholder_details(
+        *,
+        translation_data_map: dict[str, TranslationData],
+        text_rules: TextRules,
+    ) -> JsonArray:
+        """按调用顺序模拟草稿前和草稿后的 native 候选。"""
+        _ = (translation_data_map, text_rules)
+        if not native_calls:
+            native_calls.append("before")
+            return [
+                {
+                    "marker": r"\NATIVEPREVIEW[1]",
+                    "count": 1,
+                    "sources": ["CommonEvents.json"],
+                    "standard_covered": False,
+                    "custom_covered": False,
+                    "covered": False,
+                },
+                {
+                    "marker": r"\ShakeStop",
+                    "count": 3,
+                    "sources": ["CommonEvents.json"],
+                    "standard_covered": False,
+                    "custom_covered": False,
+                    "covered": False,
+                },
+            ]
+        native_calls.append("after")
+        return [
+            {
+                "marker": r"\NATIVEPREVIEW[1]",
+                "count": 1,
+                "sources": ["CommonEvents.json"],
+                "standard_covered": False,
+                "custom_covered": True,
+                "covered": True,
+            },
+            {
+                "marker": r"\ShakeStop",
+                "count": 3,
+                "sources": ["CommonEvents.json"],
+                "standard_covered": False,
+                "custom_covered": False,
+                "covered": False,
+            },
+        ]
+
+    def forbidden_placeholder_scan(
+        translation_data_map: dict[str, TranslationData],
+        text_rules: TextRules,
+    ) -> NoReturn:
+        """build-placeholder-rules 预览和边界统计不应再调用旧 scanner。"""
+        _ = (translation_data_map, text_rules)
+        raise AssertionError("build-placeholder-rules 预览/手动边界不应再调用旧 Python scanner")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.placeholder_rules.collect_native_placeholder_candidate_details",
+        fake_native_placeholder_details,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.placeholder_rules.scan_placeholder_candidates",
+        forbidden_placeholder_scan,
+        raising=False,
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_external_text_rules(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    output_path = tmp_path / "placeholder-rules.json"
+
+    report = await service.build_placeholder_rules(game_title="English Fixture Game", output_path=output_path)
+    rules = load_json_object(output_path)
+    warning_codes = {warning.code for warning in report.warnings}
+
+    assert native_calls == ["before", "after"]
+    assert rules == {
+        r"(?i)\\NATIVEPREVIEW\d*\[[^\]\r\n]+\]": "[CUSTOM_PLUGIN_NATIVEPREVIEW_MARKER_{index}]",
+    }
+    assert report.summary["candidate_count"] == 2
+    assert report.summary["uncovered_count_before_draft"] == 2
+    assert report.summary["uncovered_count_after_draft_preview"] == 1
+    assert report.summary["manual_boundary_candidate_count"] == 1
+    assert report.details["manual_boundary_candidates"] == [r"\ShakeStop"]
+    assert "placeholder_boundary_needs_review" in warning_codes
 @pytest.mark.asyncio
 async def test_manual_export_and_status_commands_report_long_task_stages(
     minimal_game_dir: Path,
@@ -222,11 +391,10 @@ async def test_manual_export_and_status_commands_report_long_task_stages(
     assert progress_updates[0] == (0, 5)
     assert advanced_steps
     for expected_status in [
-        "加载游戏数据和规则",
-        "构建当前文本范围",
-        "筛选还没成功保存译文",
+        "加载配置和规则",
+        "检查持久文本范围索引",
+        "读取还没成功保存译文的索引条目",
         "手动填写译文表已完成",
-        "文本范围索引不可用，自动重建索引",
         "读取持久文本范围索引",
         "正文翻译状态已完成",
         "调用 Rust 原生质检核心（",
@@ -291,6 +459,58 @@ async def test_note_tag_rule_validation_import_and_pending_export(
     assert "Items.json/1/note/拡張説明" in payload
     assert "Items.json/1/note/ExtendDesc" in payload
     assert "Items.json/2/note/拡張説明" not in payload
+
+
+@pytest.mark.asyncio
+async def test_export_note_tag_candidates_uses_native_candidate_scan(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签候选导出必须消费 native note_tags 候选摘要。"""
+
+    def forbidden_python_note_tag_candidates(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("export-note-tag-candidates 不应调用 Python collect_note_tag_candidates")
+
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = f"<拡張説明:{json.dumps('薬草の詳細', ensure_ascii=False)}>\n<upgrade:1,2,3>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    monkeypatch.setattr(
+        "app.note_tag_text.exporter.collect_note_tag_candidates",
+        forbidden_python_note_tag_candidates,
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    candidates_path = tmp_path / "note-tag-candidates.json"
+
+    candidate_report = await service.export_note_tag_candidates(
+        game_title="テストゲーム",
+        output_path=candidates_path,
+    )
+
+    payload = load_json_object(candidates_path)
+    details = ensure_json_object(coerce_json_value(payload["details"]), "note_tag_candidates.details")
+    candidates = [
+        ensure_json_object(candidate, f"note_tag_candidates[{index}]")
+        for index, candidate in enumerate(ensure_json_array(details["candidates"], "note_tag_candidates"))
+    ]
+    candidates_by_key = {
+        (candidate["file_name"], candidate["tag_name"]): candidate
+        for candidate in candidates
+    }
+    description = candidates_by_key[("Items.json", "拡張説明")]
+    assert candidate_report.status == "ok"
+    assert candidate_report.summary["candidate_tag_count"] == len(candidates)
+    assert description["sample_values"] == ["薬草の詳細"]
+    assert description["sample_locations"] == ["Items.json/1/note/拡張説明"]
+    assert description["translatable_hit_count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_manual_pending_translation_export_and_import(
     minimal_game_dir: Path,
@@ -550,6 +770,85 @@ async def test_manual_pending_import_uses_text_index_without_full_scope_load(
         translated_items = await session.read_translated_items()
     translated_by_path = {item.location_path: item for item in translated_items}
     assert translated_by_path[target_path].translation_lines
+
+
+@pytest.mark.asyncio
+async def test_export_pending_translations_warm_index_uses_sql_limit_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 导出 pending 时必须在 SQLite 层应用 limit，不再构建完整 scope。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index pending 导出不应触碰完整游戏数据加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index pending 导出不应加载完整游戏数据")
+
+    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """warm index pending 导出不应构建完整文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index pending 导出不应构建完整文本范围")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    pending_path = tmp_path / "pending-translations.json"
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(
+        "app.text_scope.TextScopeService.build",
+        forbidden_scope_build,
+    )
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+
+    payload = load_json_object(pending_path)
+    assert export_report.status == "ok"
+    assert export_report.summary["text_index_status"] == "used"
+    assert export_report.summary["pending_exported_count"] == 1
+    assert len(payload) == 1
+
+
+@pytest.mark.asyncio
+async def test_export_pending_translations_cold_rebuilds_missing_text_index_then_uses_limit(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """缺少 text index 时 pending 导出只重建一次索引，再读取受 limit 限制的条目。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+
+    payload = load_json_object(pending_path)
+    rebuild_summary = ensure_json_object(
+        coerce_json_value(export_report.summary["text_index_rebuild_summary"]),
+        "text_index_rebuild_summary",
+    )
+    assert export_report.status == "ok"
+    assert export_report.summary["text_index_status"] == "cold_rebuilt"
+    assert export_report.summary["pending_exported_count"] == 1
+    assert export_report.summary["pending_total_count"] == rebuild_summary["indexed_count"]
+    assert rebuild_summary["index_status"] == "rebuilt"
+    assert rebuild_summary["include_write_probe"] is False
+    assert len(payload) == 1
+
+
 @pytest.mark.asyncio
 async def test_manual_pending_import_cold_rebuilds_missing_text_index(
     minimal_game_dir: Path,
@@ -579,6 +878,8 @@ async def test_manual_pending_import_cold_rebuilds_missing_text_index(
         json.dumps({target_path: target_entry}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.clear_text_index()
 
     import_report = await service.import_manual_translations(
         game_title="テストゲーム",

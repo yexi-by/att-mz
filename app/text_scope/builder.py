@@ -7,12 +7,17 @@ from app.note_tag_text import NoteTagTextExtraction
 from app.nonstandard_data import (
     NONSTANDARD_DATA_LOCATION_PREFIX,
     NonstandardDataTextExtraction,
+    NonstandardDataTextExtractionContext,
+    build_nonstandard_data_text_extraction_context,
 )
 from app.persistence import TargetGameSession
 from app.plugin_text import PluginTextExtraction
-from app.plugin_source_text import PluginSourceTextExtraction, filter_fresh_plugin_source_text_rules
+from app.plugin_source_text import (
+    PluginSourceTextExtraction,
+    build_native_plugin_source_scan,
+    filter_fresh_plugin_source_text_rules,
+)
 from app.plugin_source_text.models import PluginSourceScan
-from app.plugin_source_text.scanner import build_plugin_source_scan
 from app.rmmz import DataTextExtraction
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
@@ -58,15 +63,22 @@ class TextScopeService:
             game_data=game_data,
         )
         event_rules = await session.read_event_command_text_rules()
+        raw_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
+        nonstandard_data_context = build_nonstandard_data_text_extraction_context(
+            game_data=game_data,
+            rule_records=raw_nonstandard_data_rules,
+            skip_missing_files=True,
+        )
         nonstandard_data_rules = _fresh_nonstandard_data_rules_for_scope(
             game_data=game_data,
             text_rules=text_rules,
-            records=await session.read_nonstandard_data_text_rules(),
+            records=raw_nonstandard_data_rules,
+            nonstandard_data_context=nonstandard_data_context,
         )
         plugin_source_rule_records = await session.read_plugin_source_text_rules()
         resolved_plugin_source_scan = plugin_source_scan if plugin_source_rule_records else None
         if plugin_source_rule_records and resolved_plugin_source_scan is None:
-            resolved_plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            resolved_plugin_source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         plugin_source_rules, _stale_plugin_source_rules = filter_fresh_plugin_source_text_rules(
             game_data=game_data,
             rule_records=plugin_source_rule_records,
@@ -88,6 +100,7 @@ class TextScopeService:
             plugin_source_scan=resolved_plugin_source_scan,
             note_tag_rules=note_tag_rules,
             nonstandard_data_rules=nonstandard_data_rules,
+            nonstandard_data_context=nonstandard_data_context,
             mv_virtual_namebox_rules=mv_virtual_namebox_rules,
         )
         active_items = {
@@ -102,6 +115,7 @@ class TextScopeService:
                 write_back_reasons = collect_write_back_probe_reasons(
                     game_data=game_data,
                     active_items=list(active_items.values()),
+                    plugin_source_scan=resolved_plugin_source_scan,
                 )
             except WriteBackProbeError as error:
                 write_back_reasons = {}
@@ -133,6 +147,7 @@ class TextScopeService:
                 game_data=game_data,
                 nonstandard_data_rules=nonstandard_data_rules,
                 text_rules=text_rules,
+                nonstandard_data_context=nonstandard_data_context,
             ),
         ]
         active_paths = set(active_items)
@@ -168,6 +183,7 @@ def build_translation_data_map(
     nonstandard_data_rules: list[NonstandardDataTextRuleRecord],
     mv_virtual_namebox_rules: list[MvVirtualNameboxRuleRecord] | None = None,
     plugin_source_scan: PluginSourceScan | None = None,
+    nonstandard_data_context: NonstandardDataTextExtractionContext | None = None,
 ) -> dict[str, TranslationData]:
     """按同一组规则构建当前可翻译文本集合。"""
     translation_data_map = DataTextExtraction(
@@ -198,7 +214,12 @@ def build_translation_data_map(
     )
     merge_translation_data_map(
         translation_data_map,
-        NonstandardDataTextExtraction(game_data, nonstandard_data_rules, text_rules).extract_all_text(),
+        NonstandardDataTextExtraction(
+            game_data,
+            nonstandard_data_rules,
+            text_rules,
+            context=nonstandard_data_context,
+        ).extract_all_text(),
     )
     return translation_data_map
 
@@ -313,6 +334,7 @@ def _fresh_nonstandard_data_rules_for_scope(
     game_data: GameData,
     text_rules: TextRules,
     records: list[NonstandardDataTextRuleRecord],
+    nonstandard_data_context: NonstandardDataTextExtractionContext,
 ) -> list[NonstandardDataTextRuleRecord]:
     """文本清单构建时跳过已知过期的非标准 data 规则，由 workflow gate 报告原因。"""
     fresh_records: list[NonstandardDataTextRuleRecord] = []
@@ -322,6 +344,7 @@ def _fresh_nonstandard_data_rules_for_scope(
                 game_data=game_data,
                 rule_records=[record],
                 text_rules=text_rules,
+                context=nonstandard_data_context,
             ).collect_rule_hits()
         except RuntimeError:
             continue

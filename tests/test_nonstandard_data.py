@@ -8,26 +8,37 @@ import pytest
 
 from app.agent_toolkit import AgentToolkitService
 from app.application.flow_gate import collect_workflow_gate_errors
+from app.native_scope_index import (
+    NativeRuleCandidatesResult,
+    scan_native_rule_candidates as real_scan_native_rule_candidates,
+)
 from app.nonstandard_data import (
-    build_nonstandard_data_scan,
-    build_nonstandard_data_file_hash,
     NonstandardDataRuleImportFile,
     NonstandardDataRuleValidationResult,
-    NonstandardDataScan,
     NonstandardDataTextExtraction,
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
+)
+from app.nonstandard_data.scanner import (
+    NonstandardDataScan,
+    build_nonstandard_data_file_hash,
+    build_nonstandard_data_scan,
 )
 from app.persistence import GameRegistry
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.loader import load_translation_source_game_data, resolve_game_layout
 from app.rmmz.schema import NonstandardDataTextRuleRecord
-from app.rmmz.text_rules import TextRules
+from app.rmmz.text_rules import JsonObject, TextRules
 from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import write_data_text
 from tests.conftest import EXAMPLE_SETTING_PATH, write_json
+
+
+def _forbid_python_nonstandard_data_leaf_resolver(value: object) -> object:
+    """测试保护：已导入规则链路不能再单独走 Python leaves 展开。"""
+    raise AssertionError(f"unexpected Python nonstandard data leaf resolver call: {type(value).__name__}")
 
 
 def _write_high_risk_nonstandard_data(game_root: Path) -> None:
@@ -53,6 +64,45 @@ async def test_nonstandard_data_scan_reports_high_risk_candidates(minimal_game_d
     assert [candidate.json_path for candidate in scan.candidates] == ["$[0]['name']"]
     assert scan.candidates[0].file_name == "UnknownPluginData.json"
     assert scan.candidates[0].source_text == "これは無視される"
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_data_scan_uses_native_candidate_scan(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非标准 data 扫描用 Rust 候选入口筛选候选和展开叶子。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    layout = resolve_game_layout(minimal_game_dir)
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    native_payloads: list[JsonObject] = []
+
+    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        native_payloads.append(payload)
+        return real_scan_native_rule_candidates(payload)
+
+    monkeypatch.setattr(
+        "app.nonstandard_data.scanner.scan_native_rule_candidates",
+        counting_scan_native_rule_candidates,
+        raising=False,
+    )
+
+    scan = await build_nonstandard_data_scan(
+        layout=layout,
+        source_view=GameFileView.ACTIVE_RUNTIME,
+        text_rules=text_rules,
+    )
+
+    assert len(native_payloads) == 1
+    native_payload = native_payloads[0]
+    assert "nonstandard_data_files" in native_payload
+    assert "text_rules" in native_payload
+    assert [candidate.json_path for candidate in scan.candidates] == ["$[0]['name']"]
+    assert scan.file_scans[0].string_leaf_count == 1
+    assert scan.file_scans[0].candidate_count == 1
+    leaves = scan.leaves_by_file["UnknownPluginData.json"]
+    assert {leaf.path for leaf in leaves} == {"$[0]['id']", "$[0]['name']"}
 
 
 @pytest.mark.asyncio
@@ -215,6 +265,56 @@ async def test_nonstandard_data_rules_validate_full_classification(
     assert validation.rule_count == 1
     assert validation.reviewed_candidate_count == 1
     assert validation.unreviewed_candidate_paths == ()
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_data_rules_validate_uses_native_rule_coverage(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """规则覆盖统计复用 native candidates/leaves，不走 Python 路径模板展开。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    layout = resolve_game_layout(minimal_game_dir)
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    scan = await build_nonstandard_data_scan(
+        layout=layout,
+        source_view=GameFileView.ACTIVE_RUNTIME,
+        text_rules=text_rules,
+    )
+    import_file = parse_nonstandard_data_rule_import_text(
+        json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                    "skipped": False,
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+    native_payloads: list[JsonObject] = []
+
+    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        native_payloads.append(payload)
+        return real_scan_native_rule_candidates(payload)
+
+    monkeypatch.setattr(
+        "app.nonstandard_data.rules.scan_native_rule_candidates",
+        counting_scan_native_rule_candidates,
+        raising=False,
+    )
+
+    validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+
+    assert len(native_payloads) == 1
+    assert "nonstandard_data_rule_coverage" in native_payloads[0]
+    assert validation.reviewed_candidate_count == 1
+    assert validation.details["translated_candidates"] == [
+        {"file": "UnknownPluginData.json", "json_path": "$[0]['name']"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -499,6 +599,117 @@ async def test_nonstandard_data_rules_enter_unified_text_scope(
 
 
 @pytest.mark.asyncio
+async def test_nonstandard_data_text_scope_uses_native_leaves_for_imported_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """统一文本清单处理已导入非标准 data 规则时复用 native leaves。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.nonstandard_data.extraction.resolve_nonstandard_data_leaves",
+        _forbid_python_nonstandard_data_leaf_resolver,
+        raising=False,
+    )
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
+
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+
+    entry = next(
+        item
+        for item in scope.entries
+        if item.location_path.startswith("nonstandard-data/UnknownPluginData.json/")
+    )
+    assert entry.original_lines == ["これは無視される"]
+    assert entry.enters_translation is True
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_data_text_scope_reuses_native_leaves_within_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """统一文本清单同一轮构建只为非标准 data 文件展开一次 native leaves。"""
+    from app.json_path_protocol import ResolvedLeaf
+    from app.nonstandard_data.scanner import (
+        resolve_nonstandard_data_file_leaves_native as real_resolve_nonstandard_data_file_leaves_native,
+    )
+    from app.rmmz.text_rules import JsonValue
+
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    native_leaf_inputs: list[dict[str, JsonValue]] = []
+
+    def counting_resolve_nonstandard_data_file_leaves_native(
+        nonstandard_data_files: dict[str, JsonValue],
+    ) -> dict[str, tuple[ResolvedLeaf, ...]]:
+        native_leaf_inputs.append(dict(nonstandard_data_files))
+        return real_resolve_nonstandard_data_file_leaves_native(nonstandard_data_files)
+
+    monkeypatch.setattr(
+        "app.nonstandard_data.extraction.resolve_nonstandard_data_file_leaves_native",
+        counting_resolve_nonstandard_data_file_leaves_native,
+    )
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
+
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+
+    assert len(native_leaf_inputs) == 1
+    assert set(native_leaf_inputs[0]) == {"UnknownPluginData.json"}
+    assert any(
+        item.location_path == "nonstandard-data/UnknownPluginData.json/$[0]['name']"
+        and item.enters_translation
+        for item in scope.entries
+    )
+
+
+@pytest.mark.asyncio
 async def test_nonstandard_data_write_back_updates_managed_json_leaf(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -540,6 +751,49 @@ async def test_nonstandard_data_write_back_updates_managed_json_leaf(
 
 
 @pytest.mark.asyncio
+async def test_nonstandard_data_write_back_extraction_uses_native_leaves(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写回输入提取已管理非标准 data 叶子时复用 native leaves。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.nonstandard_data.extraction.resolve_nonstandard_data_leaves",
+        _forbid_python_nonstandard_data_leaf_resolver,
+        raising=False,
+    )
+    game_data = await load_translation_source_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        records = await session.read_nonstandard_data_text_rules()
+
+    items = NonstandardDataTextExtraction(game_data, records).extract_all_text()[
+        "nonstandard-data/UnknownPluginData.json"
+    ].translation_items
+
+    assert [item.location_path for item in items] == [
+        "nonstandard-data/UnknownPluginData.json/$[0]['name']"
+    ]
+    assert items[0].original_lines == ["これは無視される"]
+
+
+@pytest.mark.asyncio
 async def test_active_runtime_audit_reports_nonstandard_data_source_residual(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -570,6 +824,42 @@ async def test_active_runtime_audit_reports_nonstandard_data_source_residual(
     assert report.summary["active_runtime_nonstandard_data_managed_path_count"] == 1
     assert report.summary["active_runtime_nonstandard_data_source_residual_count"] == 1
     assert report.details["active_runtime_nonstandard_data_items"]
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_uses_native_nonstandard_data_leaves(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行审计处理已管理非标准 data 路径时复用 native leaves。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.nonstandard_data.runtime_audit.resolve_nonstandard_data_leaves",
+        _forbid_python_nonstandard_data_leaf_resolver,
+        raising=False,
+    )
+
+    report = await service.audit_active_runtime(game_title="テストゲーム")
+
+    assert "active_runtime_nonstandard_data_source_residual" in {error.code for error in report.errors}
+    assert report.summary["active_runtime_nonstandard_data_managed_path_count"] == 1
 
 
 @pytest.mark.asyncio

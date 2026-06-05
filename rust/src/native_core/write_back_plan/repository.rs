@@ -75,6 +75,34 @@ pub(super) fn read_translation_items_for_allowed_paths(
     Ok(items)
 }
 
+pub(super) fn read_writable_text_index_location_paths(
+    connection: &Connection,
+) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT location_path \
+             FROM text_index_items \
+             WHERE writable = 1 \
+             ORDER BY location_path",
+        )
+        .map_err(|error| {
+            format!(
+                "写回计划缺少 allowed_translation_paths，且数据库当前文本范围索引不可读，请重新运行 rebuild-text-index: {error}"
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            let location_path: String = row.get(0)?;
+            Ok(location_path)
+        })
+        .map_err(|error| format!("读取 text index 可写范围失败: {error}"))?;
+    let mut paths: Vec<String> = Vec::new();
+    for row in rows {
+        paths.push(row.map_err(|error| format!("读取 text index 可写范围行失败: {error}"))?);
+    }
+    Ok(paths)
+}
+
 pub(super) fn parse_string_array(text: &str, label: &str) -> Result<Vec<String>, String> {
     serde_json::from_str(text).map_err(|error| format!("{label} 不是字符串数组 JSON: {error}"))
 }

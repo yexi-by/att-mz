@@ -18,11 +18,19 @@ from .importer import (
     load_plugin_rule_import_file,
     parse_plugin_rule_import_text,
 )
+from .native_validation import (
+    NativePluginRuleValidationContext,
+    build_native_plugin_rule_validation_context,
+    build_native_plugin_rule_validation_context_from_import,
+)
 
 __all__: list[str] = [
+    "NativePluginRuleValidationContext",
     "PluginRuleImportFile",
     "PluginRuleSpec",
     "PluginTextExtraction",
+    "build_native_plugin_rule_validation_context",
+    "build_native_plugin_rule_validation_context_from_import",
     "build_json_string_leaf_path_hint",
     "build_plugin_hash",
     "build_plugin_rule_records_from_import",

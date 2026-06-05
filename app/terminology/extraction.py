@@ -91,6 +91,17 @@ class TerminologyExtraction:
             database_contexts,
         )
 
+    def extract_registry(self) -> TerminologyRegistry:
+        """只提取术语表形状，不生成导出用上下文。"""
+        speaker_dialogue_map = self._collect_speaker_dialogue_map()
+        registry, _database_contexts = self._collect_database_terms(include_contexts=False)
+        return registry.model_copy(
+            update={
+                "speaker_names": {name: "" for name in sorted(speaker_dialogue_map)},
+                "map_display_names": {name: "" for name in self._collect_map_display_names()},
+            }
+        )
+
     def _collect_map_display_names(self) -> list[str]:
         """收集所有非空地图显示名。"""
         display_names: set[str] = set()
@@ -100,7 +111,11 @@ class TerminologyExtraction:
                 display_names.add(source_text)
         return sorted(display_names)
 
-    def _collect_database_terms(self) -> tuple[TerminologyRegistry, list[DatabaseTermContext]]:
+    def _collect_database_terms(
+        self,
+        *,
+        include_contexts: bool = True,
+    ) -> tuple[TerminologyRegistry, list[DatabaseTermContext]]:
         """收集标准数据库名称与系统类型术语。"""
         category_map: dict[TerminologyCategory, dict[str, str]] = {}
         database_contexts: list[DatabaseTermContext] = []
@@ -113,25 +128,27 @@ class TerminologyExtraction:
                 source_name = item.name.strip()
                 if self._is_translatable_terminology_source(source_name):
                     category_map.setdefault(category, {})[source_name] = ""
-                    database_contexts.append(
-                        DatabaseTermContext(
-                            category=category,
-                            source_text=source_name,
-                            context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                    if include_contexts:
+                        database_contexts.append(
+                            DatabaseTermContext(
+                                category=category,
+                                source_text=source_name,
+                                context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                            )
                         )
-                    )
                 if file_name != "Actors.json":
                     continue
                 nickname = item.nickname.strip()
                 if self._is_translatable_terminology_source(nickname):
                     category_map.setdefault("actor_nicknames", {})[nickname] = ""
-                    database_contexts.append(
-                        DatabaseTermContext(
-                            category="actor_nicknames",
-                            source_text=nickname,
-                            context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                    if include_contexts:
+                        database_contexts.append(
+                            DatabaseTermContext(
+                                category="actor_nicknames",
+                                source_text=nickname,
+                                context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                            )
                         )
-                    )
 
         for field_name, category in SYSTEM_TERM_CATEGORIES.items():
             values = _read_system_term_values(game_data=self.game_data, field_name=field_name)
@@ -140,13 +157,14 @@ class TerminologyExtraction:
                 if not self._is_translatable_terminology_source(source_text):
                     continue
                 category_map.setdefault(category, {})[source_text] = ""
-                database_contexts.append(
-                    DatabaseTermContext(
-                        category=category,
-                        source_text=source_text,
-                        context_lines=[],
+                if include_contexts:
+                    database_contexts.append(
+                        DatabaseTermContext(
+                            category=category,
+                            source_text=source_text,
+                            context_lines=[],
+                        )
                     )
-                )
 
         return TerminologyRegistry.from_category_map(category_map), database_contexts
 

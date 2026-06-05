@@ -432,21 +432,25 @@ def build_translation_batches(
     setting: Setting,
     text_rules: TextRules,
     terminology_prompt_index: TerminologyPromptIndex | None,
+    max_batches: int | None = None,
 ) -> list[TranslationBatch]:
     """构建正文翻译批次。"""
+    if max_batches is not None and max_batches <= 0:
+        raise ValueError("max_batches 必须是正整数")
     batches: list[TranslationBatch] = []
     for translation_data in translation_data_map.values():
-        batches.extend(
-            iter_translation_context_batches(
-                translation_data=translation_data,
-                token_size=setting.translation_context.token_size,
-                factor=setting.translation_context.factor,
-                max_command_items=setting.translation_context.max_command_items,
-                system_prompt=setting.text_translation.system_prompt,
-                text_rules=text_rules,
-                terminology_prompt_index=terminology_prompt_index,
-            )
-        )
+        for batch in iter_translation_context_batches(
+            translation_data=translation_data,
+            token_size=setting.translation_context.token_size,
+            factor=setting.translation_context.factor,
+            max_command_items=setting.translation_context.max_command_items,
+            system_prompt=setting.text_translation.system_prompt,
+            text_rules=text_rules,
+            terminology_prompt_index=terminology_prompt_index,
+        ):
+            batches.append(batch)
+            if max_batches is not None and len(batches) >= max_batches:
+                return batches
     return batches
 
 

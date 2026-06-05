@@ -9,7 +9,14 @@ import pytest
 
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
-from app.persistence.records import TextIndexInvalidationRecord, TextIndexItemRecord, TextIndexMetadata
+from app.persistence.records import (
+    TextIndexDomainSummaryRecord,
+    TextIndexInvalidationRecord,
+    TextIndexItemRecord,
+    TextIndexMetadata,
+    TextIndexRuleHitSummaryRecord,
+    TextIndexScopeSummaryRecord,
+)
 from app.persistence.sql import CURRENT_SCHEMA_VERSION, EXPECTED_STATIC_TABLE_NAMES
 from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
@@ -555,6 +562,10 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
             second_item.location_path,
             third_item.location_path,
         }
+        assert await session.read_writable_text_index_location_paths() == [
+            first_item.location_path,
+            third_item.location_path,
+        ]
         assert await session.count_text_index_items() == 3
         assert await session.read_text_index_items() == [first_item, third_item, second_item]
         assert await session.read_text_index_items_by_paths(
@@ -567,6 +578,9 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
         ) == [first_item, second_item]
         assert await session.count_pending_text_index_items() == 2
         assert await session.read_pending_text_index_items(limit=1) == [first_item]
+        assert await session.read_text_index_scope_summary() is None
+        assert await session.read_text_index_domain_summary() == []
+        assert await session.read_text_index_rule_hit_summary() == []
 
         await session.write_translation_items(
             [
@@ -581,7 +595,40 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
             ]
         )
         assert await session.count_pending_text_index_items() == 1
+        assert await session.count_translations_outside_writable_text_index() == 0
+        assert [
+            item.location_path for item in await session.read_translated_items_for_writable_text_index()
+        ] == [first_item.location_path]
+        assert await session.read_writable_text_index_location_paths() == [
+            first_item.location_path,
+            third_item.location_path,
+        ]
         assert await session.read_pending_text_index_items(limit=None) == [third_item]
+
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=second_item.location_path,
+                    item_type=second_item.item_type,
+                    role=second_item.role,
+                    original_lines=second_item.original_lines,
+                    source_line_paths=second_item.source_line_paths,
+                    translation_lines=["不可写路径译文"],
+                ),
+                TranslationItem(
+                    location_path="missing/from/current/index",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["Stale source"],
+                    source_line_paths=[],
+                    translation_lines=["索引外译文"],
+                ),
+            ]
+        )
+        assert await session.count_translations_outside_writable_text_index() == 2
+        assert [
+            item.location_path for item in await session.read_translated_items_for_writable_text_index()
+        ] == [first_item.location_path]
 
         invalidations = [
             TextIndexInvalidationRecord(
@@ -599,10 +646,52 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
             item_count=0,
             created_at="2026-06-02T00:02:00",
         )
-        await session.replace_text_index(metadata=rebuilt_metadata, items=[])
+        scope_summary = TextIndexScopeSummaryRecord(
+            total_count=3,
+            active_count=2,
+            writable_count=1,
+            unwritable_count=1,
+            stale_rule_count=1,
+            native_thread_count=4,
+        )
+        domain_summary = [
+            TextIndexDomainSummaryRecord(
+                domain="event_command",
+                item_count=2,
+                active_count=2,
+                writable_count=1,
+                unwritable_count=1,
+                inactive_rule_hit_count=0,
+            )
+        ]
+        rule_hit_summary = [
+            TextIndexRuleHitSummaryRecord(
+                domain="event_command",
+                rule_key="401",
+                hit_count=2,
+                extractable_count=2,
+                writable_count=1,
+                unwritable_count=1,
+            )
+        ]
+        await session.replace_text_index(
+            metadata=rebuilt_metadata,
+            items=[],
+            scope_summary=scope_summary,
+            domain_summary=domain_summary,
+            rule_hit_summary=rule_hit_summary,
+        )
         assert await session.read_text_index_metadata() == rebuilt_metadata
         assert await session.read_text_index_items() == []
         assert await session.read_text_index_invalidations() == []
+        assert await session.read_text_index_scope_summary() == scope_summary
+        assert await session.read_text_index_domain_summary() == domain_summary
+        assert await session.read_text_index_rule_hit_summary() == rule_hit_summary
+
+        await session.clear_text_index()
+        assert await session.read_text_index_scope_summary() is None
+        assert await session.read_text_index_domain_summary() == []
+        assert await session.read_text_index_rule_hit_summary() == []
 
 
 @pytest.mark.asyncio

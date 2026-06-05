@@ -14,6 +14,7 @@ from scripts.benchmark_rebuild_active_runtime import (
     BenchmarkOptions,
     PreparedBenchmark,
     build_cli_env,
+    prepare_app_home_assets,
     build_threshold_failures,
     collect_game_sample_stats,
     extract_last_json_object,
@@ -160,12 +161,23 @@ def test_parse_args_rejects_non_positive_rust_threads(tmp_path: Path) -> None:
         ])
 
 
-def test_build_cli_env_sets_att_mz_home_and_rust_threads(tmp_path: Path) -> None:
-    """性能命令环境显式携带临时应用目录和 Rust 线程数。"""
+def test_build_cli_env_sets_att_mz_home(tmp_path: Path) -> None:
+    """性能命令环境只携带临时应用目录，Rust 线程数由 setting.toml 控制。"""
     env = build_cli_env(app_home=tmp_path / "app-home", rust_threads=4)
 
     assert env["ATT_MZ_HOME"] == str(tmp_path / "app-home")
-    assert env["ATT_MZ_RUST_THREADS"] == "4"
+
+
+def test_prepare_app_home_assets_writes_runtime_thread_setting(tmp_path: Path) -> None:
+    """benchmark 显式线程数必须写入临时 setting.toml。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+
+    prepare_app_home_assets(app_home, rust_threads=4)
+
+    setting_text = (app_home / "setting.toml").read_text(encoding="utf-8")
+    assert "[runtime]" in setting_text
+    assert "rust_threads = 4" in setting_text
 
 
 def test_collect_game_sample_stats_records_copied_sample_scale(tmp_path: Path) -> None:
@@ -306,7 +318,6 @@ def test_run_benchmark_records_rust_threads_and_passes_child_env(
     result = rebuild_benchmark.run_benchmark(options, prepared)
 
     assert captured_env["ATT_MZ_HOME"] == str(prepared.app_home)
-    assert captured_env["ATT_MZ_RUST_THREADS"] == "4"
     assert result["command"] == rebuild_benchmark.rebuild_active_runtime_command("测试游戏")
     assert result["sample_stats"] == collect_game_sample_stats(prepared.game_path)
     runs = cast(list[dict[str, object]], result["runs"])

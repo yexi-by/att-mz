@@ -4,7 +4,6 @@
 
 import time
 from dataclasses import dataclass
-from typing import cast
 
 from .common import (
     AgentIssue,
@@ -22,6 +21,7 @@ from .common import (
     TextScopeService,
     TranslationErrorItem,
     _build_coverage_report,
+    build_text_index_coverage_report,
     _build_manual_translation_template_entry,
     _build_quality_error_category_counts,
     _build_quality_fix_categories_by_path,
@@ -38,6 +38,7 @@ from .common import (
     _read_reset_translation_location_paths,
     _resolve_quality_fix_translation_lines,
     _string_lines_to_json_array,
+    text_index_records_to_scope,
     _text_scope_blocking_errors,
     _validate_source_residual_rule_records,
     aiofiles,
@@ -64,28 +65,27 @@ from app.nonstandard_data import (
 from app.plugin_source_text import (
     ActiveRuntimePluginSourceAudit,
     ActiveRuntimePluginSourceIssue,
-    PluginSourceFileTextScan,
     PluginSourceReviewCoverage,
     PluginSourceScan,
     audit_active_runtime_plugin_source_with_scan_cache,
-    build_plugin_source_file_hash,
-    build_plugin_source_scan,
+    build_native_plugin_source_scan,
     collect_plugin_source_review_coverage,
     filter_fresh_plugin_source_text_rules,
     plugin_source_runtime_hash_lines,
     plugin_source_runtime_hash_text,
-    scan_plugin_source_files_text_strict,
+)
+from app.plugin_source_text.scanner import (
+    PluginSourceFileTextScan,
+    build_plugin_source_file_hash,
+    scan_plugin_source_runtime_files_text_strict,
 )
 from app.rmmz.schema import (
     GameData,
     PluginSourceRuntimeWriteMapRecord,
     PluginSourceTextRuleRecord,
-    TranslationData,
     TranslationItem,
 )
 from app.persistence import TargetGameSession
-from app.persistence.records import TextIndexItemRecord
-from app.text_scope import TextScopeEntry, TextScopeResult, TextSourceType
 from app.text_index import detect_text_index_invalidations
 from app.text_index import collect_text_index_external_rule_gate_errors
 
@@ -316,7 +316,7 @@ def _collect_text_index_plugin_source_review(
     """为索引质量报告补回已启动插件源码支线的审查 gate。"""
     if not plugin_source_records:
         return [], None, None
-    plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    plugin_source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
         game_data=game_data,
         rule_records=plugin_source_records,
@@ -369,157 +369,6 @@ def _plugin_source_text_audit_enabled(
 ) -> bool:
     """判断当前运行审计是否应进入插件源码文本支线。"""
     return bool(rule_records or runtime_write_map_records)
-
-
-def _text_index_records_to_scope(
-    *,
-    index_records: list[TextIndexItemRecord],
-    translated_paths: set[str],
-) -> TextScopeResult:
-    """从持久索引恢复质量报告所需的最小文本范围，不读取游戏文件。"""
-    translation_data_map: dict[str, TranslationData] = {}
-    entries: list[TextScopeEntry] = []
-    allowed_source_types = {
-        "standard_data",
-        "plugin_parameter",
-        "plugin_source",
-        "event_command",
-        "note_tag",
-        "nonstandard_data",
-    }
-    for record in index_records:
-        if record.source_type not in allowed_source_types:
-            raise RuntimeError(f"文本范围索引包含未知来源类型: {record.source_type}")
-        item = TranslationItem(
-            location_path=record.location_path,
-            item_type=record.item_type,
-            role=record.role,
-            original_lines=list(record.original_lines),
-            source_line_paths=list(record.source_line_paths),
-        )
-        source_file = record.source_file
-        if source_file not in translation_data_map:
-            translation_data_map[source_file] = TranslationData(display_name=None, translation_items=[])
-        translation_data_map[source_file].translation_items.append(item)
-        entries.append(
-            TextScopeEntry(
-                location_path=record.location_path,
-                source_type=cast(TextSourceType, record.source_type),
-                rule_source="text_index",
-                item_type=record.item_type,
-                original_lines=list(record.original_lines),
-                role=record.role,
-                enters_translation=True,
-                can_save_translation=True,
-                can_write_back=record.writable,
-                translated=record.location_path in translated_paths,
-                cannot_process_reason="" if record.writable else "索引项不可写回",
-            )
-        )
-    return TextScopeResult(translation_data_map=translation_data_map, entries=entries)
-
-
-TEXT_INDEX_QUALITY_DETAIL_SAMPLE_LIMIT = 20
-
-
-def _build_text_index_coverage_report(
-    *,
-    index_records: list[TextIndexItemRecord],
-    translated_items: list[TranslationItem],
-) -> AgentReport:
-    """为默认质量报告生成轻量覆盖结果，避免向 stdout 构造全量 pending 明细。"""
-    errors: list[AgentIssue] = []
-    translated_paths = {item.location_path for item in translated_items}
-    writable_paths: set[str] = set()
-    active_paths: set[str] = set()
-    rule_hit_count = 0
-    unwritable_count = 0
-    pending_count = 0
-    unwritable_samples: JsonArray = []
-    pending_samples: JsonArray = []
-    for record in index_records:
-        active_paths.add(record.location_path)
-        if record.source_type != "standard_data":
-            rule_hit_count += 1
-        if record.writable:
-            writable_paths.add(record.location_path)
-            if record.location_path not in translated_paths:
-                pending_count += 1
-                _append_sample(pending_samples, record.location_path)
-            continue
-        unwritable_count += 1
-        _append_sample(unwritable_samples, _text_index_record_sample(record))
-    stale_count = 0
-    stale_samples: JsonArray = []
-    for item in translated_items:
-        if item.location_path in writable_paths:
-            continue
-        stale_count += 1
-        _append_sample(stale_samples, item.location_path)
-
-    if unwritable_count:
-        errors.append(issue("coverage_unwritable", f"发现 {unwritable_count} 条当前文本无法写进游戏文件"))
-    if pending_count:
-        errors.append(issue("coverage_missing_translation", f"存在 {pending_count} 条当前可写文本还没成功保存译文"))
-    if stale_count:
-        errors.append(issue("stale_saved_translations", f"发现 {stale_count} 条已保存译文不在当前可写范围内"))
-
-    return AgentReport.from_parts(
-        errors=errors,
-        warnings=[],
-        summary={
-            "rule_hit_count": rule_hit_count,
-            "extractable_count": len(active_paths),
-            "translated_count": len(translated_paths & active_paths),
-            "writable_count": len(writable_paths),
-            "pending_count": pending_count,
-            "unwritable_count": unwritable_count,
-            "unwritable_rule_hit_count": 0,
-            "stale_translation_count": stale_count,
-            "stale_plugin_rule_count": 0,
-            "write_back_probe_failed": False,
-            "write_back_probe_enabled": False,
-        },
-        details={
-            "detail_mode": "sampled",
-            "unwritable_items": _sampled_detail(total=unwritable_count, samples=unwritable_samples),
-            "unwritable_rule_items": _sampled_detail(total=0, samples=[]),
-            "inactive_rule_hits": _sampled_detail(total=0, samples=[]),
-            "pending_location_paths": _sampled_detail(total=pending_count, samples=pending_samples),
-            "stale_translation_paths": _sampled_detail(total=stale_count, samples=stale_samples),
-            "stale_plugin_rules": _sampled_detail(total=0, samples=[]),
-            "write_back_probe_error": "",
-            "write_back_probe_enabled": False,
-        },
-    )
-
-
-def _append_sample(samples: JsonArray, value: JsonValue) -> None:
-    """按固定上限收集样本。"""
-    if len(samples) >= TEXT_INDEX_QUALITY_DETAIL_SAMPLE_LIMIT:
-        return
-    samples.append(value)
-
-
-def _sampled_detail(*, total: int, samples: JsonArray) -> JsonObject:
-    """构造大数组摘要。"""
-    return {
-        "count": total,
-        "samples": samples,
-        "omitted_count": max(0, total - len(samples)),
-    }
-
-
-def _text_index_record_sample(record: TextIndexItemRecord) -> JsonObject:
-    """把索引项转换为 coverage 样本，不展开完整 scope entry。"""
-    return {
-        "location_path": record.location_path,
-        "source_type": record.source_type,
-        "item_type": record.item_type,
-        "original_lines": [line for line in record.original_lines],
-        "role": record.role or "",
-        "can_write_back": record.writable,
-    }
 
 
 def _elapsed_ms(started: float) -> int:
@@ -576,7 +425,6 @@ def _build_active_runtime_diagnosis_items(
     translated_items: list[TranslationItem],
     active_runtime_game_data: GameData,
     translation_source_game_data: GameData,
-    text_rules: TextRules,
 ) -> JsonArray:
     """用确定性写回映射把当前运行问题反推到翻译源条目。"""
     plugin_source_files = translation_source_game_data.plugin_source_files
@@ -594,7 +442,6 @@ def _build_active_runtime_diagnosis_items(
             write_map_by_runtime_key=write_map_by_runtime_key,
         ),
         plugin_source_files=plugin_source_files,
-        text_rules=text_rules,
     )
     items: JsonArray = []
     for issue_item in audit.issues:
@@ -724,7 +571,6 @@ def _build_plugin_source_write_map_source_scan_cache(
     *,
     records: list[PluginSourceRuntimeWriteMapRecord],
     plugin_source_files: dict[str, str],
-    text_rules: TextRules,
 ) -> dict[str, PluginSourceFileTextScan]:
     """批量扫描诊断反推需要核对的翻译源插件源码。"""
     file_names = sorted(
@@ -732,6 +578,7 @@ def _build_plugin_source_write_map_source_scan_cache(
             record.source_file_name
             for record in records
             if record.source_file_name in plugin_source_files
+            and build_plugin_source_file_hash(plugin_source_files[record.source_file_name]) != record.source_file_hash
         }
     )
     if not file_names:
@@ -740,10 +587,9 @@ def _build_plugin_source_write_map_source_scan_cache(
         file_name: plugin_source_files[file_name]
         for file_name in file_names
     }
-    batch_scan = scan_plugin_source_files_text_strict(
+    batch_scan = scan_plugin_source_runtime_files_text_strict(
         files=source_files,
         active_file_names=frozenset(source_files),
-        text_rules=text_rules,
     )
     if batch_scan.syntax_errors:
         file_name, syntax_error = sorted(batch_scan.syntax_errors.items())[0]
@@ -776,15 +622,35 @@ def _plugin_source_write_map_source_matches(
         return False, False
     current_source_file_hash = build_plugin_source_file_hash(source)
     source_file_hash_matches = current_source_file_hash == record.source_file_hash
+    if source_file_hash_matches:
+        return True, True
     source_scan = source_scan_cache.get(record.source_file_name)
     if source_scan is None:
         raise RuntimeError(f"翻译源插件源码扫描结果缺失: {record.source_file_name}")
     if source_scan.file_hash != current_source_file_hash:
         raise RuntimeError(f"翻译源插件源码扫描结果已失效: {record.source_file_name}")
-    candidate = source_scan.candidate_index.by_selector.get(record.source_selector)
-    if candidate is None:
+    candidate_text = _plugin_source_write_map_source_text(
+        source_scan=source_scan,
+        selector=record.source_selector,
+    )
+    if candidate_text is None:
         return False, source_file_hash_matches
-    return plugin_source_runtime_hash_text(candidate.text) == record.source_text_hash, source_file_hash_matches
+    return plugin_source_runtime_hash_text(candidate_text) == record.source_text_hash, source_file_hash_matches
+
+
+def _plugin_source_write_map_source_text(
+    *,
+    source_scan: PluginSourceFileTextScan,
+    selector: str,
+) -> str | None:
+    """从诊断 source scan 中读取 selector 对应的翻译源可见文本。"""
+    candidate = source_scan.candidate_index.by_selector.get(selector)
+    if candidate is not None:
+        return candidate.text
+    for literal in source_scan.literals:
+        if literal.selector == selector:
+            return literal.text
+    return None
 
 
 def _active_runtime_diagnosis_summary(
@@ -946,7 +812,6 @@ class QualityAgentMixin:
             translated_items=translated_items,
             active_runtime_game_data=active_runtime_game_data,
             translation_source_game_data=translation_source_game_data,
-            text_rules=text_rules,
         )
         reset_payload = _build_active_runtime_reset_payload(diagnosis_items)
         report = AgentReport.from_parts(
@@ -1247,11 +1112,11 @@ class QualityAgentMixin:
             for item in translated_items
             if item.location_path in active_paths
         ]
-        index_scope = _text_index_records_to_scope(
+        index_scope = text_index_records_to_scope(
             index_records=index_records,
             translated_paths=translated_paths,
         )
-        coverage_report = _build_text_index_coverage_report(
+        coverage_report = build_text_index_coverage_report(
             index_records=index_records,
             translated_items=translated_items,
         )
@@ -1592,7 +1457,7 @@ class QualityAgentMixin:
             plugin_source_records = await session.read_plugin_source_text_rules()
             game_data = await self._load_translation_source_game_data(
                 session,
-                include_plugin_source_files=bool(plugin_source_records),
+                include_plugin_source_files=True,
             )
             plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
                 session=session,
@@ -1603,11 +1468,13 @@ class QualityAgentMixin:
             source_residual_rules = await session.read_source_residual_rules()
             terminology_registry = await session.read_terminology_registry()
             nonstandard_data_records = await session.read_nonstandard_data_text_rules()
-            plugin_source_scan: PluginSourceScan | None = None
+            plugin_source_scan: PluginSourceScan | None = build_native_plugin_source_scan(
+                game_data=game_data,
+                text_rules=text_rules,
+            )
             plugin_source_review: PluginSourceReviewCoverage | None = None
             plugin_source_unreviewed_details: JsonArray | None = None
             if plugin_source_records:
-                plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
                 fresh_plugin_source_records, _stale_plugin_source_records = filter_fresh_plugin_source_text_rules(
                     game_data=game_data,
                     rule_records=plugin_source_records,

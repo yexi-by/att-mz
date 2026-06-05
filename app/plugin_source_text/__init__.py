@@ -19,6 +19,9 @@ from .models import (
     PluginSourceRuleImportFile,
     PluginSourceScan,
 )
+from .native_scan import (
+    build_native_plugin_source_scan,
+)
 from .rules import (
     PluginSourceReviewCoverage,
     StalePluginSourceTextRule,
@@ -37,33 +40,13 @@ from .runtime_mapping import (
     plugin_source_runtime_hash_lines,
     plugin_source_runtime_hash_text,
 )
-from .scanner import (
-    PluginSourceCandidateIndex,
-    PluginSourceBatchTextScan,
-    PluginSourceFileTextScan,
-    PluginSourceStringLiteral,
-    build_plugin_source_candidate_index,
-    build_plugin_source_file_hash,
-    build_plugin_source_scan,
-    clear_plugin_source_native_scan_cache,
-    find_candidate_by_selector,
-    iter_plugin_source_string_literals,
-    scan_plugin_source_file_text,
-    scan_plugin_source_file_text_strict,
-    scan_plugin_source_files_text_strict,
-)
-
 __all__ = [
     "PluginSourceCandidate",
-    "PluginSourceCandidateIndex",
-    "PluginSourceBatchTextScan",
     "PluginSourceFileScan",
-    "PluginSourceFileTextScan",
     "PluginSourceRisk",
     "PluginSourceRuleImportEntry",
     "PluginSourceRuleImportFile",
     "PluginSourceScan",
-    "PluginSourceStringLiteral",
     "PluginSourceTextExtraction",
     "PluginSourceReviewCoverage",
     "StalePluginSourceTextRule",
@@ -73,15 +56,10 @@ __all__ = [
     "audit_active_runtime_plugin_source",
     "audit_active_runtime_plugin_source_with_scan_cache",
     "scan_plugin_source_files_text_strict_with_cache",
-    "build_plugin_source_candidate_index",
-    "build_plugin_source_file_hash",
     "build_plugin_source_rule_records_from_import",
-    "build_plugin_source_scan",
-    "clear_plugin_source_native_scan_cache",
+    "build_native_plugin_source_scan",
     "collect_plugin_source_review_coverage",
     "filter_fresh_plugin_source_text_rules",
-    "find_candidate_by_selector",
-    "iter_plugin_source_string_literals",
     "parse_plugin_source_location_path",
     "parse_plugin_source_rule_import_text",
     "plugin_source_file_key",
@@ -89,7 +67,4 @@ __all__ = [
     "plugin_source_runtime_hash_lines",
     "plugin_source_runtime_hash_text",
     "plugin_source_rule_records_to_import_json",
-    "scan_plugin_source_file_text",
-    "scan_plugin_source_file_text_strict",
-    "scan_plugin_source_files_text_strict",
 ]

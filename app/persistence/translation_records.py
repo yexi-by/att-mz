@@ -10,12 +10,14 @@ from app.rmmz.schema import TranslationItem
 from .rows import decode_string_list, row_int, row_item_type, row_optional_str, row_str
 from .session_base import SessionMixinBase
 from .sql import (
+    COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX,
     DELETE_TRANSLATION_ITEM_BY_PATH,
     DELETE_TRANSLATION_ITEMS_BY_PREFIX,
     INSERT_TRANSLATION,
     COUNT_TRANSLATED_ITEMS,
     SELECT_TRANSLATED_ITEM_BY_PATH,
     SELECT_TRANSLATED_ITEMS,
+    SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX,
     SELECT_TRANSLATED_ITEMS_BY_PREFIX,
     SELECT_TRANSLATION_PATHS,
     TRANSLATION_TABLE_NAME,
@@ -66,6 +68,20 @@ class TranslationRecordSessionMixin(SessionMixinBase):
         async with self.connection.execute(SELECT_TRANSLATED_ITEMS) as cursor:
             rows = await cursor.fetchall()
 
+        return [self._translation_item_from_row(row) for row in rows]
+
+    async def count_translations_outside_writable_text_index(self) -> int:
+        """统计已保存译文中不属于当前可写索引范围的数量。"""
+        async with self.connection.execute(COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "stale_translation_count", self.db_path)
+
+    async def read_translated_items_for_writable_text_index(self) -> list[TranslationItem]:
+        """读取当前可写索引范围内已经保存的译文。"""
+        async with self.connection.execute(SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX) as cursor:
+            rows = await cursor.fetchall()
         return [self._translation_item_from_row(row) for row in rows]
 
     async def read_translated_items_by_prefixes(

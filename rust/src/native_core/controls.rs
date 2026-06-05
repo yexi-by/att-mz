@@ -251,7 +251,7 @@ pub(crate) fn iter_literal_escape_spans(text: &str) -> Vec<ControlSpan> {
     spans
 }
 
-fn iter_raw_control_sequence_candidates(text: &str) -> Vec<RawControlSequenceCandidate> {
+pub(crate) fn iter_raw_control_sequence_candidates(text: &str) -> Vec<RawControlSequenceCandidate> {
     let mut candidates = Vec::new();
     for matched in RAW_BRACKETED_CONTROL_RE.find_iter(text) {
         append_raw_candidate(
@@ -689,10 +689,10 @@ pub(crate) fn encode_upper_hex(text: &str) -> String {
         .collect::<String>()
 }
 
-struct RawControlSequenceCandidate {
-    start: usize,
-    end: usize,
-    original: String,
+pub(crate) struct RawControlSequenceCandidate {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) original: String,
 }
 
 pub(crate) struct UnexpectedEscapeFragment {

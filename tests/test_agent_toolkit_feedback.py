@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from tests.agent_toolkit_contract_fixtures import *
 
 @pytest.mark.asyncio
@@ -89,6 +91,96 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
         if ensure_json_object(coerce_json_value(candidate), "candidate").get("text") == "img/system/日本語.png"
     )
     assert resource_candidate["structural_flags"] == ["resource_path_like"]
+
+
+@pytest.mark.asyncio
+async def test_verify_feedback_text_uses_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """反馈反查缺口分类必须消费 warm text_index，不能临时构建完整文本范围。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    feedback_path = tmp_path / "feedback-texts.json"
+    _ = feedback_path.write_text(json.dumps(["こんにちは"], ensure_ascii=False), encoding="utf-8")
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("verify-feedback-text must classify gaps from warm text_index")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
+
+    assert report.status == "error"
+    assert report.summary["text_index_status"] == "used"
+    occurrence_count = report.summary["occurrence_count"]
+    assert isinstance(occurrence_count, int)
+    assert occurrence_count >= 1
+    occurrences = ensure_json_array(report.details["occurrences"], "occurrences")
+    gap_types: set[str] = set()
+    for occurrence in occurrences:
+        occurrence_object = ensure_json_object(coerce_json_value(occurrence), "occurrence")
+        gap_type = occurrence_object.get("gap_type")
+        if isinstance(gap_type, str):
+            gap_types.add(gap_type)
+    assert "translation_gap" in gap_types
+
+
+@pytest.mark.asyncio
+async def test_verify_feedback_text_uses_runtime_literal_scan_for_plugin_source(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """反馈反查源码残留必须走 Rust runtime literal scan，不能回退旧 regex 候选扫描。"""
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HardcodedText.js").write_text(
+        "Window_Base.prototype.drawText('プラグイン直書き', 0, 0, 320);",
+        encoding="utf-8",
+    )
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    feedback_path = tmp_path / "feedback-texts.json"
+    _ = feedback_path.write_text(json.dumps(["プラグイン直書き"], ensure_ascii=False), encoding="utf-8")
+
+    async def forbidden_legacy_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("feedback plugin source lookup must use Rust runtime literal scan")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.common._collect_plugin_source_text_candidates",
+        forbidden_legacy_plugin_source_scan,
+        raising=False,
+    )
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
+
+    assert report.status == "error"
+    assert report.summary["text_index_status"] == "used"
+    assert report.summary["plugin_source_hardcoded_count"] == 1
+    occurrences = ensure_json_array(report.details["occurrences"], "occurrences")
+    assert any(
+        ensure_json_object(coerce_json_value(occurrence), "occurrence").get("gap_type") == "plugin_source_hardcoded"
+        for occurrence in occurrences
+    )
 @pytest.mark.asyncio
 async def test_feedback_verification_reads_active_files_not_origin_backups(
     minimal_game_dir: Path,
@@ -376,7 +468,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
             include_plugin_source_files=True,
         )
         runtime_source = active_game_data.plugin_source_files["BadSource.js"]
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         runtime_literal = iter_plugin_source_string_literals(
@@ -521,7 +613,7 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
             session.game_path,
             include_plugin_source_files=True,
         )
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         translation_items: list[TranslationItem] = []
         runtime_maps: list[PluginSourceRuntimeWriteMapRecord] = []
         for index, file_name in enumerate(sorted(origin_sources)):
@@ -547,7 +639,7 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
                     location_path=location_path,
                     source_file_name=file_name,
                     source_selector=source_candidate.selector,
-                    source_file_hash=source_file_scan.file_hash,
+                    source_file_hash=f"stale-{source_file_scan.file_hash}",
                     source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
                     translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
                     runtime_file_name=file_name,
@@ -561,27 +653,33 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
         await session.write_translation_items(translation_items)
         await session.replace_plugin_source_runtime_write_maps(runtime_maps)
 
-    from app.plugin_source_text.scanner import scan_plugin_source_files_text_strict as real_batch_scan
-
     batch_calls: list[tuple[str, ...]] = []
 
     def counting_source_batch_scan(
         *,
         files: dict[str, str],
         active_file_names: frozenset[str],
-        text_rules: TextRules | None,
     ) -> PluginSourceBatchTextScan:
-        """记录诊断反推阶段扫描过的翻译源插件文件。"""
+        """记录诊断反推阶段扫描过的翻译源插件字面量文件。"""
         batch_calls.append(tuple(sorted(files)))
-        return real_batch_scan(
+        return real_scan_plugin_source_runtime_files_text_strict(
             files=files,
             active_file_names=active_file_names,
-            text_rules=text_rules,
         )
+
+    def forbidden_legacy_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
+        _ = (args, kwargs)
+        raise AssertionError("diagnose-active-runtime 不应调用翻译源 strict scan")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.quality.scan_plugin_source_files_text_strict",
+        forbidden_legacy_strict_scan,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.scan_plugin_source_runtime_files_text_strict",
         counting_source_batch_scan,
+        raising=False,
     )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム")
@@ -589,6 +687,122 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
     assert report.status == "error"
     assert report.summary["mapped_translate_count"] == 2
     assert batch_calls == [("BadSourceA.js", "BadSourceB.js")]
+    diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis_items")
+    mapped_items = [
+        ensure_json_object(item, "diagnosis_item")
+        for item in diagnosis_items
+        if ensure_json_object(item, "diagnosis_item").get("diagnosis_status") == "mapped_translate"
+    ]
+    assert len(mapped_items) == 2
+    assert all(item["source_hash_matches"] is True for item in mapped_items)
+    assert all(item["source_file_hash_matches"] is False for item in mapped_items)
+
+
+@pytest.mark.asyncio
+async def test_diagnose_active_runtime_skips_translation_source_scan_when_source_hash_matches(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写回映射源文件 hash 未变化时，诊断不能再扫描翻译源插件源码 AST。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "BadSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    origin_source = "const Messages = { line: '頑張ってガマンする\\\\nn[0]くん…素敵よ♥' };\n"
+    active_source = "const Messages = { line: '努力忍耐着的\\nn[0]君…真棒哦♥' };\n"
+    bad_source_path = plugin_source_dir / "BadSource.js"
+    _ = bad_source_path.write_text(origin_source, encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    _ = bad_source_path.write_text(active_source, encoding="utf-8")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        source_game_data = await load_game_data(session.game_path)
+        active_game_data = await load_active_runtime_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
+        runtime_source = active_game_data.plugin_source_files["BadSource.js"]
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
+        source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
+        runtime_literal = iter_plugin_source_string_literals(
+            file_name="BadSource.js",
+            source=runtime_source,
+            active=True,
+        )[0]
+        location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
+        translation_item = TranslationItem(
+            location_path=location_path,
+            item_type="short_text",
+            original_lines=[source_candidate.text],
+            source_line_paths=[location_path],
+            translation_lines=[runtime_literal.text],
+        )
+        await session.write_translation_items([translation_item])
+        await session.replace_plugin_source_runtime_write_maps(
+            [
+                PluginSourceRuntimeWriteMapRecord(
+                    location_path=location_path,
+                    source_file_name="BadSource.js",
+                    source_selector=source_candidate.selector,
+                    source_file_hash=source_file_scan.file_hash,
+                    source_text_hash=plugin_source_runtime_hash_text(source_candidate.text),
+                    translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
+                    runtime_file_name="BadSource.js",
+                    runtime_selector=runtime_literal.selector,
+                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
+                    runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
+                    runtime_line=runtime_literal.line,
+                    created_at="2026-05-24T00:00:00",
+                )
+            ]
+        )
+
+    def counting_runtime_scan(
+        *,
+        files: dict[str, str],
+        active_file_names: frozenset[str],
+    ) -> PluginSourceBatchTextScan:
+        """允许 active runtime 扫描，禁止 hash 未变时的翻译源扫描。"""
+        if any("頑張ってガマンする" in source for source in files.values()):
+            raise AssertionError("diagnose-active-runtime must not rescan unchanged translation source files")
+        return real_scan_plugin_source_runtime_files_text_strict(
+            files=files,
+            active_file_names=active_file_names,
+        )
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.scan_plugin_source_runtime_files_text_strict",
+        counting_runtime_scan,
+        raising=False,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.diagnose_active_runtime(game_title="テストゲーム")
+
+    assert report.status == "error"
+    assert report.summary["mapped_translate_count"] == 1
+    diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
+    mapped_item = next(
+        ensure_json_object(item, "diagnosis_item")
+        for item in diagnosis_items
+        if ensure_json_object(item, "diagnosis_item").get("diagnosis_status") == "mapped_translate"
+    )
+    assert mapped_item["source_hash_matches"] is True
+    assert mapped_item["source_file_hash_matches"] is True
 @pytest.mark.asyncio
 async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtime_map(
     minimal_game_dir: Path,
@@ -622,7 +836,7 @@ async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtim
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
         await session.write_translation_items(
@@ -705,7 +919,7 @@ async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         source_game_data = await load_game_data(session.game_path)
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         await session.replace_plugin_source_text_rules(
@@ -759,7 +973,7 @@ async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime
             session.game_path,
             include_plugin_source_files=True,
         )
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         runtime_source = active_game_data.plugin_source_files["BadSource.js"]
@@ -839,7 +1053,7 @@ async def test_active_runtime_audit_reports_unmapped_residual_when_other_runtime
             session.game_path,
             include_plugin_source_files=True,
         )
-        source_scan = build_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(
             candidate

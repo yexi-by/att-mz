@@ -1,4 +1,5 @@
 """规则导入事务边界测试。"""
+# pyright: reportPrivateUsage=false
 
 import json
 from pathlib import Path
@@ -11,8 +12,8 @@ from app.config.schemas import TextRulesSetting
 from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_source_text import (
     PluginSourceTextExtraction,
+    build_native_plugin_source_scan,
     build_plugin_source_rule_records_from_import,
-    build_plugin_source_scan,
     parse_plugin_source_rule_import_text,
 )
 from app.rmmz import load_game_data
@@ -60,7 +61,7 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     game_data = await load_game_data(minimal_game_dir)
     text_rules = TextRules.from_setting(TextRulesSetting())
-    scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     old_candidate = next(candidate for candidate in scan.candidates if candidate.text == "古い本文")
     new_candidate = next(candidate for candidate in scan.candidates if candidate.text == "新しい本文")
     old_records = build_plugin_source_rule_records_from_import(

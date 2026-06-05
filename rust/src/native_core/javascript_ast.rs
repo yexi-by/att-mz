@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_ast_accepts_thread_pool_env_on_hot_path() {
+    fn batch_ast_accepts_thread_pool_config_on_hot_path() {
         let payload = json!({
             "files": [
                 {"file_name": "A.js", "source": "const a = '日文';"},
@@ -480,14 +480,14 @@ mod tests {
             crate::native_core::pool::with_thread_count_override_for_test(Some("1"), || {
                 parse_javascript_string_spans_batch_impl(&payload.to_string())
             });
-        let output = result.expect("批量 JS AST 热路径应接受 ATT_MZ_RUST_THREADS");
+        let output = result.expect("批量 JS AST 热路径应接受 runtime.rust_threads 配置");
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
 
         assert_eq!(value["files"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]
-    fn batch_ast_rejects_invalid_thread_pool_env_on_hot_path() {
+    fn batch_ast_rejects_invalid_thread_pool_config_on_hot_path() {
         let payload = json!({
             "files": [
                 {"file_name": "A.js", "source": "const a = '日文';"}
@@ -498,10 +498,10 @@ mod tests {
             crate::native_core::pool::with_thread_count_override_for_test(Some("invalid"), || {
                 parse_javascript_string_spans_batch_impl(&payload.to_string())
             })
-            .expect_err("批量 JS AST 热路径必须读取并校验 ATT_MZ_RUST_THREADS");
+            .expect_err("批量 JS AST 热路径必须读取并校验 runtime.rust_threads");
 
         assert!(
-            error.contains("ATT_MZ_RUST_THREADS 必须是非负整数"),
+            error.contains("runtime.rust_threads 必须是正整数或 auto"),
             "错误文案应说明线程配置非法，实际为 {error}",
         );
     }

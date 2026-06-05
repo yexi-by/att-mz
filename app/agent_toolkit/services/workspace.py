@@ -13,6 +13,7 @@ from .common import (
     QualityProgressCallbacks,
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
     TERMINOLOGY_SUBTASK_GROUPS,
+    TargetGameSession,
     TerminologyExtraction,
     TerminologyGlossary,
     TerminologyRegistry,
@@ -21,7 +22,7 @@ from .common import (
     TextRules,
     TranslationData,
     _agent_workflow_manifest,
-    _build_custom_placeholder_rule_draft,
+    _build_custom_placeholder_rule_draft_from_details,
     _collect_terminology_duplicate_translation_samples,
     _collect_plugin_json_string_leaf_candidate_details,
     _event_command_rule_records_to_import_json,
@@ -61,57 +62,112 @@ from .common import (
     load_setting,
     load_terminology_glossary,
     load_terminology_registry,
-    placeholder_candidates_to_details,
     resolve_event_command_codes,
-    scan_placeholder_candidates,
     shutil,
     write_field_terms_json,
     write_glossary_json,
 )
-from app.config.schemas import TextRulesSetting
+from app.config.schemas import Setting, TextRulesSetting
 from app.nonstandard_data import (
-    build_nonstandard_data_scan,
-    export_nonstandard_data_workspace,
     nonstandard_data_rule_records_to_import_json,
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
 )
+from app.nonstandard_data.scanner import build_nonstandard_data_scan, export_nonstandard_data_workspace
+from app.native_placeholder_scan import collect_native_placeholder_candidate_details
 from app.application.flow_gate import (
     build_normal_placeholder_coverage_result,
     build_structured_placeholder_coverage_result,
 )
 from app.plugin_source_text import (
     PluginSourceScan,
-    build_plugin_source_scan,
     collect_plugin_source_review_coverage,
     plugin_source_rule_records_to_import_json,
+)
+from app.plugin_source_text.native_scan import (
+    build_native_plugin_source_ast_map_payload as _build_native_plugin_source_ast_map_payload,
+    build_native_plugin_source_risk_report as _build_native_plugin_source_risk_report,
+    build_native_plugin_source_scan as _build_native_plugin_source_scan,
+    native_plugin_source_risk_report_from_ast_map as _native_plugin_source_risk_report_from_ast_map,
+    native_plugin_source_risk_report_from_scan as _native_plugin_source_risk_report_from_scan,
 )
 from app.rmmz.mv_namebox import (
     MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
     MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME,
-    mv_virtual_namebox_candidates_payload,
     mv_virtual_namebox_rule_records_to_import_json,
 )
+from app.rmmz.mv_namebox_native import native_mv_virtual_namebox_candidates_payload
 from app.rmmz.game_file_view import GameFileView, parse_game_file_view
 from app.rmmz.schema import MvVirtualNameboxRuleRecord
 from app.terminology import collect_terminology_bundle_errors
-from app.text_index import detect_text_index_invalidations, text_index_items_to_translation_data_map
+from app.text_index import (
+    detect_text_index_invalidations,
+    rebuild_text_index as rebuild_persistent_text_index,
+    text_index_items_to_translation_data_map,
+)
 
 
-def _plugin_source_scan_warnings(scan: PluginSourceScan) -> list[AgentIssue]:
-    """把跳过的非法插件源码文件转换成 Agent 告警。"""
-    if not scan.syntax_errors:
+def _plugin_source_native_scan_warnings(risk_report: JsonObject) -> list[AgentIssue]:
+    """把 Rust 候选扫描跳过的非法插件源码文件转换成 Agent 告警。"""
+    syntax_errors = ensure_json_array(risk_report["syntax_errors"], "plugin-source-risk-report.syntax_errors")
+    if not syntax_errors:
         return []
-    active_count = sum(1 for file_name in scan.syntax_errors if file_name in scan.enabled_plugin_files)
+    active_count = 0
+    for index, raw_error in enumerate(syntax_errors):
+        error = ensure_json_object(raw_error, f"plugin-source-risk-report.syntax_errors[{index}]")
+        if error.get("active") is True:
+            active_count += 1
     return [
         issue(
             "plugin_source_syntax_warning",
             (
-                f"发现 {len(scan.syntax_errors)} 个插件源码文件不是合法 JS，已跳过插件源码文本扫描；"
+                f"发现 {len(syntax_errors)} 个插件源码文件不是合法 JS，已跳过插件源码文本扫描；"
                 f"其中启用插件 {active_count} 个，详情见 plugin-source-risk-report.json"
             ),
         )
     ]
+
+
+def _json_bool(payload: JsonObject, key: str, label: str) -> bool:
+    """读取 JSON 布尔字段。"""
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise TypeError(f"{label}.{key} 必须是布尔值")
+    return value
+
+
+async def _read_workspace_translation_data_map_from_text_index(
+    *,
+    session: TargetGameSession,
+    game_data: GameData,
+    setting: Setting,
+    text_rules: TextRules,
+    plugin_source_scan: PluginSourceScan | None = None,
+) -> tuple[dict[str, TranslationData], str]:
+    """工作区命令从持久文本索引读取当前文本范围，必要时先重建索引。"""
+    text_index_invalidations = await detect_text_index_invalidations(
+        session=session,
+        text_rules=text_rules,
+    )
+    if text_index_invalidations:
+        text_index_status = (
+            "cold_rebuilt"
+            if any(item.reason_key == "text_index_missing" for item in text_index_invalidations)
+            else "stale_rebuilt"
+        )
+        _ = await rebuild_persistent_text_index(
+            session=session,
+            game_data=game_data,
+            setting=setting,
+            text_rules=text_rules,
+            plugin_source_scan=plugin_source_scan,
+            include_write_probe=False,
+            source_branch_workflow_gates_prechecked=False,
+        )
+    else:
+        text_index_status = "used"
+    text_index_records = await session.read_text_index_items()
+    return text_index_items_to_translation_data_map(text_index_records), text_index_status
 
 
 class WorkspaceAgentMixin:
@@ -135,23 +191,24 @@ class WorkspaceAgentMixin:
                 include_writable_copies=False,
             )
             text_rules = TextRules.from_setting(setting.text_rules)
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-        risk_report = scan.risk_report_json()
+        risk_report = _build_native_plugin_source_risk_report(game_data=game_data, text_rules=text_rules)
         risk_report["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
         await _write_json_object(output_path, risk_report)
+        risk = ensure_json_object(risk_report["risk"], "plugin-source-risk-report.risk")
+        candidate_count = _summary_int(risk_report, "candidate_count")
         warnings: list[AgentIssue] = []
-        if not scan.candidates:
+        if candidate_count == 0:
             warnings.append(issue("plugin_source_text_empty", "没有扫描到插件源码硬编码文本候选"))
-        warnings.extend(_plugin_source_scan_warnings(scan))
+        warnings.extend(_plugin_source_native_scan_warnings(risk_report))
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
             summary={
                 "source_view": resolved_view.value,
-                "candidate_count": len(scan.candidates),
+                "candidate_count": candidate_count,
                 "output": str(output_path),
-                **scan.risk.to_json_object(),
+                **risk,
             },
             details={
                 **risk_report,
@@ -177,22 +234,23 @@ class WorkspaceAgentMixin:
                 include_writable_copies=False,
             )
             text_rules = TextRules.from_setting(setting.text_rules)
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-        payload = scan.to_json_object()
+        payload = _build_native_plugin_source_ast_map_payload(game_data=game_data, text_rules=text_rules)
         payload["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
         await _write_json_object(output_path, payload)
-        details = scan.risk_report_json()
+        details = _native_plugin_source_risk_report_from_ast_map(payload)
         details["source_view"] = resolved_view.value
         details["output"] = str(output_path)
+        risk = ensure_json_object(payload["risk"], "plugin-source-ast-map.risk")
+        candidate_count = _summary_int(payload, "candidate_count")
         return AgentReport.from_parts(
             errors=[],
-            warnings=_plugin_source_scan_warnings(scan),
+            warnings=_plugin_source_native_scan_warnings(details),
             summary={
                 "source_view": resolved_view.value,
                 "output": str(output_path),
-                "candidate_count": len(scan.candidates),
-                **scan.risk.to_json_object(),
+                "candidate_count": candidate_count,
+                **risk,
             },
             details=details,
         )
@@ -234,34 +292,28 @@ class WorkspaceAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-            text_index_invalidations = await detect_text_index_invalidations(
-                session=session,
-                text_rules=text_rules,
+            plugin_source_scan = _build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            plugin_source_risk_report = _native_plugin_source_risk_report_from_scan(plugin_source_scan)
+            plugin_source_risk = ensure_json_object(
+                plugin_source_risk_report["risk"],
+                "plugin-source-risk-report.risk",
             )
-            if text_index_invalidations:
-                translation_scope_mode = "full_scope"
-                text_index_status = (
-                    "missing_fallback"
-                    if any(item.reason_key == "text_index_missing" for item in text_index_invalidations)
-                    else "stale_fallback"
-                )
-                translation_data_map = await self._extract_active_translation_data_map(
-                    session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
-                    plugin_source_scan=plugin_source_scan,
-                )
-            else:
-                translation_scope_mode = "text_index"
-                text_index_status = "used"
-                text_index_records = await session.read_text_index_items()
-                translation_data_map = text_index_items_to_translation_data_map(text_index_records)
+            translation_data_map, text_index_status = await _read_workspace_translation_data_map_from_text_index(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                plugin_source_scan=plugin_source_scan,
+            )
+            translation_scope_mode = "text_index"
             plugin_source_review = collect_plugin_source_review_coverage(
                 scan=plugin_source_scan,
                 rule_records=plugin_source_rules,
             )
-            plugin_source_extension_active = plugin_source_scan.risk.high_risk or bool(plugin_source_rules)
+            plugin_source_extension_active = (
+                _json_bool(plugin_source_risk, "high_risk", "plugin-source-risk-report.risk")
+                or bool(plugin_source_rules)
+            )
             nonstandard_data_scan = await build_nonstandard_data_scan(
                 layout=game_data.layout,
                 source_view=GameFileView.TRANSLATION_SOURCE,
@@ -296,7 +348,6 @@ class WorkspaceAgentMixin:
         plugin_rules_path = target_dir / "plugin-rules.json"
         await _write_json_value(plugin_rules_path, _plugin_rule_records_to_import_json(plugin_rules))
         plugin_source_risk_path = target_dir / "plugin-source-risk-report.json"
-        plugin_source_risk_report = plugin_source_scan.risk_report_json()
         plugin_source_risk_report["source_view"] = GameFileView.TRANSLATION_SOURCE.value
         await _write_json_object(plugin_source_risk_path, plugin_source_risk_report)
         plugin_source_rules_path: Path | None = None
@@ -351,17 +402,20 @@ class WorkspaceAgentMixin:
         )
         event_rules_path = target_dir / "event-command-rules.json"
         await _write_json_object(event_rules_path, _event_command_rule_records_to_import_json(event_rules))
-        placeholder_candidates = scan_placeholder_candidates(translation_data_map, text_rules)
+        placeholder_candidate_details = collect_native_placeholder_candidate_details(
+            translation_data_map=translation_data_map,
+            text_rules=text_rules,
+        )
         placeholder_report = AgentReport.from_parts(
             errors=[],
             warnings=[],
             summary={},
-            details={"candidates": placeholder_candidates_to_details(placeholder_candidates)},
+            details={"candidates": placeholder_candidate_details},
         )
         placeholder_path = target_dir / "placeholder-candidates.json"
         async with aiofiles.open(placeholder_path, "w", encoding="utf-8") as file:
             _ = await file.write(f"{placeholder_report.to_json_text()}\n")
-        placeholder_rule_drafts = _build_custom_placeholder_rule_draft(placeholder_candidates)
+        placeholder_rule_drafts = _build_custom_placeholder_rule_draft_from_details(placeholder_candidate_details)
         placeholder_rules_path = target_dir / "placeholder-rules.json"
         placeholder_rule_payload: JsonObject = (
             _placeholder_rule_records_to_import_json(placeholder_records)
@@ -379,7 +433,7 @@ class WorkspaceAgentMixin:
         mv_virtual_namebox_candidate_count = 0
         if game_data.layout.engine_kind == "mv":
             mv_virtual_namebox_candidates_path = target_dir / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
-            mv_candidates_payload = mv_virtual_namebox_candidates_payload(game_data)
+            mv_candidates_payload = native_mv_virtual_namebox_candidates_payload(game_data)
             mv_virtual_namebox_candidate_count = _summary_int(mv_candidates_payload, "candidate_count")
             await _write_json_object(mv_virtual_namebox_candidates_path, mv_candidates_payload)
             mv_virtual_namebox_rules_path = target_dir / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
@@ -407,9 +461,18 @@ class WorkspaceAgentMixin:
             "plugin_count": len(game_data.plugins_js),
             "plugin_json_string_leaf_candidate_count": len(plugin_json_string_leaf_candidates),
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
-            "plugin_source_candidate_count": len(plugin_source_scan.candidates),
-            "plugin_source_high_risk": plugin_source_scan.risk.high_risk,
-            "plugin_source_syntax_error_file_count": len(plugin_source_scan.syntax_errors),
+            "plugin_source_candidate_count": _summary_int(plugin_source_risk_report, "candidate_count"),
+            "plugin_source_high_risk": _json_bool(
+                plugin_source_risk,
+                "high_risk",
+                "plugin-source-risk-report.risk",
+            ),
+            "plugin_source_syntax_error_file_count": len(
+                ensure_json_array(
+                    plugin_source_risk_report["syntax_errors"],
+                    "plugin-source-risk-report.syntax_errors",
+                )
+            ),
             "stale_plugin_rule_count": stale_plugin_rule_count,
             "nonstandard_data_file_count": len(nonstandard_data_scan.files),
             "nonstandard_data_candidate_count": len(nonstandard_data_scan.candidates),
@@ -494,7 +557,7 @@ class WorkspaceAgentMixin:
             errors=[],
             warnings=[
                 *_nonstandard_data_skipped_warnings(nonstandard_data_rules),
-                *_plugin_source_scan_warnings(plugin_source_scan),
+                *_plugin_source_native_scan_warnings(plugin_source_risk_report),
             ],
             summary={**generated_summary, "workspace": str(target_dir), "manifest": str(manifest_path)},
             details=details,
@@ -575,22 +638,24 @@ class WorkspaceAgentMixin:
                 structured_placeholder_rules=structured_rules,
             )
             advance_progress(1)
-            set_status("抽取当前文本范围")
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            advance_progress(1)
             plugin_source_scan: PluginSourceScan | None = None
             plugin_source_required = _manifest_bool(manifest_generated, "plugin_source_high_risk")
             if plugin_source_scan_required:
                 set_status("扫描插件源码")
-                plugin_source_scan = build_plugin_source_scan(
+                plugin_source_scan = _build_native_plugin_source_scan(
                     game_data=game_data,
                     text_rules=text_rules,
                 )
                 plugin_source_required = plugin_source_scan.risk.high_risk
+            set_status("读取文本范围索引")
+            translation_data_map, _text_index_status = await _read_workspace_translation_data_map_from_text_index(
+                session=session,
+                game_data=game_data,
+                setting=setting,
+                text_rules=text_rules,
+                plugin_source_scan=plugin_source_scan,
+            )
+            advance_progress(1)
             nonstandard_data_scan = None
             nonstandard_data_scan_error: Exception | None = None
             if nonstandard_data_scan_required:

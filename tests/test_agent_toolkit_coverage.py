@@ -109,6 +109,91 @@ async def test_read_only_scope_reports_skip_write_probe_by_default(
     assert audit_report.summary["write_back_probe_enabled"] is False
     assert quality_report.summary["write_back_probe_enabled"] is False
     assert pending_report.summary["write_back_probe_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_audit_coverage_uses_warm_text_index_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认 audit-coverage 在 warm index 下使用索引和 SQLite 统计，不构建完整 scope。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 覆盖审计不应触碰游戏文件加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index audit-coverage 不应加载完整游戏数据")
+
+    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 覆盖审计不应构建完整文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index audit-coverage 不应构建完整文本范围")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(TextScopeService, "build", forbidden_scope_build)
+
+    audit_report = await service.audit_coverage(game_title="テストゲーム")
+
+    assert audit_report.summary["text_index_status"] == "used"
+    assert audit_report.summary["extractable_count"] == rebuild_report.summary["indexed_count"]
+    assert audit_report.summary["pending_count"] == rebuild_report.summary["indexed_count"]
+    assert audit_report.summary["write_back_probe_enabled"] is False
+    assert audit_report.status == "error"
+    assert {error.code for error in audit_report.errors} == {"coverage_missing_translation"}
+    assert audit_report.details["detail_mode"] == "sampled"
+
+
+@pytest.mark.asyncio
+async def test_text_scope_uses_warm_text_index_without_full_scope_load(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认 text-scope 在 warm index 下从索引输出清单，不构建完整 scope。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 文本清单不应触碰完整游戏数据加载。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index text-scope 不应加载完整游戏数据")
+
+    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 文本清单不应构建完整文本范围。"""
+        _ = (args, kwargs)
+        raise AssertionError("warm index text-scope 不应构建完整文本范围")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(TextScopeService, "build", forbidden_scope_build)
+
+    scope_report = await service.text_scope(game_title="テストゲーム")
+
+    entries = ensure_json_array(scope_report.details["entries"], "entries")
+    assert scope_report.summary["text_index_status"] == "used"
+    assert scope_report.summary["entry_count"] == rebuild_report.summary["indexed_count"]
+    assert scope_report.summary["extractable_count"] == rebuild_report.summary["indexed_count"]
+    assert scope_report.summary["write_back_probe_enabled"] is False
+    assert len(entries) == rebuild_report.summary["indexed_count"]
+    assert scope_report.status == "ok"
+    entry_objects = [ensure_json_object(entry, "entries[]") for entry in entries]
+    assert any(
+        isinstance(entry["location_path"], str) and entry["location_path"].startswith("CommonEvents.json/")
+        for entry in entry_objects
+    )
+    assert all(entry["rule_source"] == "text_index" for entry in entry_objects)
+    assert all(entry["enters_translation"] is True for entry in entry_objects)
 @pytest.mark.asyncio
 async def test_text_scope_reports_global_write_probe_failure(
     minimal_game_dir: Path,
@@ -243,6 +328,41 @@ async def test_scan_placeholder_candidates_uses_warm_text_index_without_full_sco
     candidate_count = report.summary["candidate_count"]
     assert isinstance(candidate_count, int)
     assert candidate_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_scan_placeholder_candidates_uses_native_candidate_scan(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """扫描命令必须复用 native 普通占位符候选入口。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    def forbidden_python_scan(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("scan-placeholder-candidates 不应继续调用 Python 普通占位符扫描器")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.common.scan_placeholder_candidates",
+        forbidden_python_scan,
+    )
+
+    report = await service.scan_placeholder_candidates(
+        game_title="テストゲーム",
+        custom_placeholder_rules_text='{"\\\\\\\\F\\\\[[^\\\\]]+\\\\]":"[CUSTOM_FACE_PORTRAIT_{index}]"}',
+    )
+
+    assert report.status == "ok"
+    candidate_count = report.summary["candidate_count"]
+    assert isinstance(candidate_count, int) and not isinstance(candidate_count, bool)
+    assert candidate_count >= 1
+    assert report.summary["uncovered_count"] == 0
+    raw_json = report.to_json_text()
+    assert r"\F[GuideA]" in raw_json
+    assert "テスト一行目です" not in raw_json
 @pytest.mark.asyncio
 async def test_scan_placeholder_candidates_marks_custom_rule_coverage(
     minimal_game_dir: Path,
@@ -267,6 +387,68 @@ async def test_scan_placeholder_candidates_marks_custom_rule_coverage(
     raw_json = covered_report.to_json_text()
     assert r"\F[GuideA]" in raw_json
     assert "テスト一行目です" not in raw_json
+
+
+@pytest.mark.asyncio
+async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """扫描命令必须复用 native 结构化占位符候选入口。"""
+    _replace_first_common_event_text(minimal_english_game_dir, "<名前: Alraune> trailing text")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    def fake_native_structured_details(*args: object, **kwargs: object) -> JsonArray:
+        """用 sentinel 明细证明扫描命令消费 native 候选入口。"""
+        _ = (args, kwargs)
+        return [
+            {
+                "location_path": "CommonEvents.json/1/list/0/parameters/0",
+                "line_number": 1,
+                "candidate": "<名前: Alraune>",
+                "covered": True,
+                "matching_rules": ["INLINE_NAME"],
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.common.collect_native_structured_placeholder_candidate_details",
+        fake_native_structured_details,
+    )
+
+    report = await service.scan_structured_placeholder_candidates(
+        game_title="English Fixture Game",
+        rules_text=json.dumps(
+            {
+                "paired_shell_rules": [
+                    {
+                        "name": "INLINE_NAME",
+                        "pattern": r"(?P<open><名前:\s*)(?P<text>[^>\r\n]+)(?P<close>>)",
+                        "translatable_group": "text",
+                        "protected_groups": {
+                            "open": "[CUSTOM_INLINE_NAME_OPEN_{index}]",
+                            "close": "[CUSTOM_INLINE_NAME_CLOSE_{index}]",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["rule_count"] == 1
+    assert report.summary["candidate_count"] == 1
+    assert report.summary["covered_count"] == 1
+    assert report.summary["uncovered_count"] == 0
+    raw_json = report.to_json_text()
+    assert "<名前: Alraune>" in raw_json
+    assert "trailing text" not in raw_json
+
+
 def test_placeholder_candidate_scan_requires_full_span_coverage() -> None:
     """覆盖扫描不能把标准短前缀当成长候选已覆盖。"""
     translation_data_map = {

@@ -272,7 +272,11 @@ async def test_stage0_stale_workspace_optional_files_not_in_manifest_are_ignored
         _ = (args, kwargs)
         raise AssertionError("旧 nonstandard-data-rules.json 不应触发非标准 data 扫描")
 
-    monkeypatch.setattr("app.agent_toolkit.services.workspace.build_plugin_source_scan", forbidden_plugin_source_scan)
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.workspace.build_plugin_source_scan",
+        forbidden_plugin_source_scan,
+        raising=False,
+    )
     monkeypatch.setattr("app.agent_toolkit.services.workspace.build_nonstandard_data_scan", forbidden_nonstandard_data_scan)
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)

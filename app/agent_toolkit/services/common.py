@@ -39,11 +39,20 @@ from app.native_quality import (
     collect_native_write_protocol_details,
     native_thread_count,
 )
+from app.native_placeholder_scan import (
+    collect_native_placeholder_candidate_details,
+    count_uncovered_placeholder_candidate_details,
+)
+from app.native_structured_placeholder_scan import (
+    collect_native_structured_placeholder_candidate_details,
+    count_uncovered_structured_placeholder_candidate_details,
+)
 from app.regex_contract import RegexContractValidationError
 from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
+from app.persistence.records import TextIndexItemRecord
 from app.plugin_text import (
-    PluginTextExtraction,
-    build_plugin_rule_records_from_import,
+    NativePluginRuleValidationContext,
+    build_native_plugin_rule_validation_context_from_import,
     collect_plugin_json_string_leaf_candidates,
     export_plugins_json_file,
     extract_plugin_name,
@@ -56,6 +65,7 @@ from app.plugin_source_text import (
     collect_plugin_source_review_coverage,
     parse_plugin_source_rule_import_text,
 )
+from app.plugin_source_text.scanner import scan_plugin_source_runtime_files_text_strict
 from app.rmmz.control_codes import (
     ControlSequenceSpan,
     CustomPlaceholderRule,
@@ -91,10 +101,13 @@ from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_jso
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import load_active_runtime_game_data, load_game_data_for_view
 from app.rmmz.mv_namebox import (
-    mv_virtual_namebox_candidate_details,
     mv_virtual_namebox_rule_records_to_import_json,
     parse_mv_virtual_namebox_rule_import_text,
-    validate_mv_virtual_namebox_rules_against_game,
+    validate_mv_virtual_namebox_rules_against_candidates,
+)
+from app.rmmz.mv_namebox_native import (
+    native_mv_virtual_namebox_candidates_from_details,
+    scan_native_mv_virtual_namebox,
 )
 from app.runtime_paths import resolve_app_path
 from app.rmmz.text_layout import (
@@ -117,9 +130,14 @@ from app.utils.config_loader_utils import load_setting, resolve_setting_path
 from app.event_command_text import (
     EventCommandTextExtraction,
     build_event_command_rule_records_from_import,
+    build_event_command_rule_records_from_import_shape,
     export_event_commands_json_file,
     parse_event_command_rule_import_text,
     resolve_event_command_codes,
+)
+from app.event_command_text.native_validation import (
+    NativeEventCommandRuleValidationContext as _NativeEventCommandRuleValidationContext,
+    build_native_event_command_rule_validation_context as _build_native_event_command_rule_validation_context,
 )
 from app.terminology import (
     TerminologyCategory,
@@ -150,6 +168,7 @@ from app.text_scope import (
     TextScopeEntry,
     TextScopeResult,
     TextScopeService,
+    TextSourceType,
     collect_translation_data_paths,
     read_fresh_plugin_text_rules,
 )
@@ -217,6 +236,7 @@ class AgentServiceContext(Protocol):
         *,
         game_title: str,
         setting_overrides: SettingOverrides | None = None,
+        include_write_probe: bool = True,
         callbacks: QualityProgressCallbacks | None = None,
     ) -> AgentReport:
         """重建当前游戏的持久文本范围索引。"""
@@ -1155,6 +1175,199 @@ def _build_coverage_report(
     )
 
 
+def text_index_records_to_scope(
+    *,
+    index_records: list[TextIndexItemRecord],
+    translated_paths: set[str],
+) -> TextScopeResult:
+    """从持久索引恢复报告所需的最小文本范围，不读取游戏文件。"""
+    translation_data_map: dict[str, TranslationData] = {}
+    entries: list[TextScopeEntry] = []
+    allowed_source_types = {
+        "standard_data",
+        "plugin_parameter",
+        "plugin_source",
+        "event_command",
+        "note_tag",
+        "nonstandard_data",
+    }
+    for record in index_records:
+        if record.source_type not in allowed_source_types:
+            raise RuntimeError(f"文本范围索引包含未知来源类型: {record.source_type}")
+        item = TranslationItem(
+            location_path=record.location_path,
+            item_type=record.item_type,
+            role=record.role,
+            original_lines=list(record.original_lines),
+            source_line_paths=list(record.source_line_paths),
+        )
+        source_file = record.source_file
+        if source_file not in translation_data_map:
+            translation_data_map[source_file] = TranslationData(display_name=None, translation_items=[])
+        translation_data_map[source_file].translation_items.append(item)
+        entries.append(
+            TextScopeEntry(
+                location_path=record.location_path,
+                source_type=cast(TextSourceType, record.source_type),
+                rule_source="text_index",
+                item_type=record.item_type,
+                original_lines=list(record.original_lines),
+                role=record.role,
+                enters_translation=True,
+                can_save_translation=True,
+                can_write_back=record.writable,
+                translated=record.location_path in translated_paths,
+                cannot_process_reason="" if record.writable else "索引项不可写回",
+            )
+        )
+    return TextScopeResult(translation_data_map=translation_data_map, entries=entries)
+
+
+def build_text_index_text_scope_report(
+    *,
+    index_records: list[TextIndexItemRecord],
+    translated_items: list[TranslationItem],
+) -> AgentReport:
+    """用持久索引生成默认文本清单报告，不读取游戏文件。"""
+    translated_paths = {item.location_path for item in translated_items}
+    scope = text_index_records_to_scope(
+        index_records=index_records,
+        translated_paths=translated_paths,
+    )
+    inactive_entries = [
+        entry
+        for entry in scope.entries
+        if not entry.enters_translation
+    ]
+    unwritable_entries = scope.unwritable_entries
+    return AgentReport.from_parts(
+        errors=_text_scope_blocking_errors(scope),
+        warnings=[],
+        summary={
+            "entry_count": len(scope.entries),
+            "extractable_count": len(scope.active_paths),
+            "translated_count": len(translated_paths & scope.active_paths),
+            "writable_count": len(scope.writable_paths),
+            "unwritable_count": len(unwritable_entries),
+            "inactive_rule_hit_count": len(inactive_entries),
+            "stale_plugin_rule_count": len(scope.stale_plugin_rules),
+            "write_back_probe_failed": bool(scope.write_back_probe_error),
+            "write_back_probe_enabled": scope.write_back_probe_enabled,
+            "text_index_status": "used",
+        },
+        details={
+            "entries": scope.entries_json(),
+            "unwritable_items": [entry.to_json_object() for entry in unwritable_entries],
+            "stale_plugin_rules": scope.stale_plugin_rules_json(),
+            "write_back_probe_error": scope.write_back_probe_error,
+            "write_back_probe_enabled": scope.write_back_probe_enabled,
+        },
+    )
+
+
+TEXT_INDEX_COVERAGE_DETAIL_SAMPLE_LIMIT = 20
+
+
+def build_text_index_coverage_report(
+    *,
+    index_records: list[TextIndexItemRecord],
+    translated_items: list[TranslationItem],
+) -> AgentReport:
+    """用持久索引生成轻量覆盖结果，避免构造完整 Python scope。"""
+    errors: list[AgentIssue] = []
+    translated_paths = {item.location_path for item in translated_items}
+    writable_paths: set[str] = set()
+    active_paths: set[str] = set()
+    rule_hit_count = 0
+    unwritable_count = 0
+    pending_count = 0
+    unwritable_samples: JsonArray = []
+    pending_samples: JsonArray = []
+    for record in index_records:
+        active_paths.add(record.location_path)
+        if record.source_type != "standard_data":
+            rule_hit_count += 1
+        if record.writable:
+            writable_paths.add(record.location_path)
+            if record.location_path not in translated_paths:
+                pending_count += 1
+                _append_text_index_coverage_sample(pending_samples, record.location_path)
+            continue
+        unwritable_count += 1
+        _append_text_index_coverage_sample(unwritable_samples, _text_index_record_sample(record))
+    stale_count = 0
+    stale_samples: JsonArray = []
+    for item in translated_items:
+        if item.location_path in writable_paths:
+            continue
+        stale_count += 1
+        _append_text_index_coverage_sample(stale_samples, item.location_path)
+
+    if unwritable_count:
+        errors.append(issue("coverage_unwritable", f"发现 {unwritable_count} 条当前文本无法写进游戏文件"))
+    if pending_count:
+        errors.append(issue("coverage_missing_translation", f"存在 {pending_count} 条当前可写文本还没成功保存译文"))
+    if stale_count:
+        errors.append(issue("stale_saved_translations", f"发现 {stale_count} 条已保存译文不在当前可写范围内"))
+
+    return AgentReport.from_parts(
+        errors=errors,
+        warnings=[],
+        summary={
+            "rule_hit_count": rule_hit_count,
+            "extractable_count": len(active_paths),
+            "translated_count": len(translated_paths & active_paths),
+            "writable_count": len(writable_paths),
+            "pending_count": pending_count,
+            "unwritable_count": unwritable_count,
+            "unwritable_rule_hit_count": 0,
+            "stale_translation_count": stale_count,
+            "stale_plugin_rule_count": 0,
+            "write_back_probe_failed": False,
+            "write_back_probe_enabled": False,
+        },
+        details={
+            "detail_mode": "sampled",
+            "unwritable_items": _sampled_text_index_coverage_detail(total=unwritable_count, samples=unwritable_samples),
+            "unwritable_rule_items": _sampled_text_index_coverage_detail(total=0, samples=[]),
+            "inactive_rule_hits": _sampled_text_index_coverage_detail(total=0, samples=[]),
+            "pending_location_paths": _sampled_text_index_coverage_detail(total=pending_count, samples=pending_samples),
+            "stale_translation_paths": _sampled_text_index_coverage_detail(total=stale_count, samples=stale_samples),
+            "stale_plugin_rules": _sampled_text_index_coverage_detail(total=0, samples=[]),
+            "write_back_probe_error": "",
+            "write_back_probe_enabled": False,
+        },
+    )
+
+
+def _append_text_index_coverage_sample(samples: JsonArray, value: JsonValue) -> None:
+    """按固定上限收集持久索引覆盖样本。"""
+    if len(samples) >= TEXT_INDEX_COVERAGE_DETAIL_SAMPLE_LIMIT:
+        return
+    samples.append(value)
+
+
+def _sampled_text_index_coverage_detail(*, total: int, samples: JsonArray) -> JsonObject:
+    """构造持久索引覆盖样本摘要。"""
+    return {
+        "count": total,
+        "samples": samples,
+        "omitted_count": max(0, total - len(samples)),
+    }
+
+
+def _text_index_record_sample(record: TextIndexItemRecord) -> JsonObject:
+    """把索引项转换为 coverage 样本，不展开完整 scope entry。"""
+    return {
+        "location_path": record.location_path,
+        "source_type": record.source_type,
+        "item_type": record.item_type,
+        "original_lines": [line for line in record.original_lines],
+        "role": record.role or "",
+        "can_write_back": record.writable,
+    }
+
+
 def _nonstandard_data_skipped_file_names(
     records: Sequence[NonstandardDataTextRuleRecord],
 ) -> list[str]:
@@ -1293,27 +1506,42 @@ async def _collect_feedback_text_occurrences(
                         "json_path": _format_json_path([plugin_index, *path_parts]),
                     }
                 )
-    plugin_source_candidates = await _collect_plugin_source_text_candidates(game_data.layout.js_dir)
-    for candidate in plugin_source_candidates:
-        if not isinstance(candidate, dict):
-            continue
-        candidate_text = candidate.get("text")
-        if not isinstance(candidate_text, str):
-            continue
-        for feedback_text in feedback_texts:
-            if feedback_text not in candidate_text:
-                continue
-            occurrences.append(
-                {
-                    "text": feedback_text,
-                    "file": candidate.get("file", ""),
-                    "line": candidate.get("line", 0),
-                    "category": "插件源码硬编码文本候选",
-                    "api": candidate.get("api", ""),
-                    "structural_flags": candidate.get("structural_flags", []),
-                }
-            )
+    if game_data.plugin_source_files:
+        plugin_source_scan = scan_plugin_source_runtime_files_text_strict(
+            files=game_data.plugin_source_files,
+            active_file_names=_active_plugin_source_file_names(game_data),
+        )
+        for file_scan in plugin_source_scan.file_scans.values():
+            file_path = game_data.layout.js_dir / "plugins" / file_scan.file_name
+            for literal in file_scan.literals:
+                for feedback_text in feedback_texts:
+                    if feedback_text not in literal.text:
+                        continue
+                    occurrences.append(
+                        {
+                            "text": feedback_text,
+                            "file": str(file_path),
+                            "line": literal.line,
+                            "category": "插件源码硬编码文本候选",
+                            "selector": literal.selector,
+                            "active": literal.active,
+                            "context": literal.context,
+                            "structural_flags": _plugin_source_text_structural_flags(literal.text),
+                        }
+                    )
     return occurrences
+
+
+def _active_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
+    """从当前 plugins.js 提取启用插件源码文件名，供 runtime literal scan 标注 active。"""
+    file_names: set[str] = set()
+    for plugin_index, plugin in enumerate(game_data.plugins_js):
+        if plugin.get("status") is not True:
+            continue
+        plugin_name = extract_plugin_name(plugin, plugin_index).strip()
+        if plugin_name:
+            file_names.add(f"{plugin_name}.js")
+    return frozenset(file_names)
 
 
 async def _read_text_for_line_lookup(file_path: Path) -> str:
@@ -1451,48 +1679,6 @@ def _feedback_gap_from_scope_entries(entries: list[TextScopeEntry]) -> tuple[str
     return "write_gap", "写入缺口"
 
 
-PLUGIN_SOURCE_TEXT_PATTERN: re.Pattern[str] = re.compile(
-    r"\b(?P<api>drawText(?:Ex)?|setText|addCommand)\s*\(\s*(?P<quote>['\"])(?P<text>(?:\\.|(?!\2).){2,120})(?P=quote)",
-    re.DOTALL,
-)
-
-
-async def _collect_plugin_source_text_candidates(js_dir: Path) -> JsonArray:
-    """扫描插件源码中常见 UI 文本 API 的字符串参数候选。"""
-    plugin_dir = js_dir / "plugins"
-    if not plugin_dir.is_dir():
-        return []
-    candidates: JsonArray = []
-    for file_path in sorted(plugin_dir.glob("*.js"), key=lambda path: path.name):
-        async with aiofiles.open(file_path, "r", encoding="utf-8", errors="ignore") as file:
-            content = await file.read()
-        for match in PLUGIN_SOURCE_TEXT_PATTERN.finditer(content):
-            text = _unescape_js_candidate_text(match.group("text")).strip()
-            if not text:
-                continue
-            candidates.append(
-                {
-                    "file": str(file_path),
-                    "line": content.count("\n", 0, match.start()) + 1,
-                    "api": match.group("api"),
-                    "text": text,
-                    "structural_flags": _plugin_source_text_structural_flags(text),
-                }
-            )
-    return candidates
-
-
-def _unescape_js_candidate_text(text: str) -> str:
-    """只处理候选展示需要的常见 JavaScript 字符串转义。"""
-    return (
-        text.replace(r"\n", "\n")
-        .replace(r"\t", "\t")
-        .replace(r"\'", "'")
-        .replace(r'\"', '"')
-        .replace(r"\\", "\\")
-    )
-
-
 def _plugin_source_text_structural_flags(text: str) -> JsonArray:
     """给源码字符串候选附加结构提示，不据此丢弃候选。"""
     flags: JsonArray = []
@@ -1538,6 +1724,31 @@ def _build_custom_placeholder_rule_draft(
     return draft_rules
 
 
+def _build_custom_placeholder_rule_draft_from_details(
+    candidate_details: JsonArray,
+) -> dict[str, str]:
+    """把旧报告同形候选明细折叠成适合 Agent 编辑的规则草稿。"""
+    draft_rules: dict[str, str] = {}
+    for index, raw_candidate in enumerate(candidate_details):
+        candidate = ensure_json_object(raw_candidate, f"placeholder_candidate_details[{index}]")
+        marker = candidate.get("marker")
+        if not isinstance(marker, str):
+            raise TypeError(f"placeholder_candidate_details[{index}].marker 必须是字符串")
+        standard_covered = candidate.get("standard_covered")
+        if not isinstance(standard_covered, bool):
+            raise TypeError(f"placeholder_candidate_details[{index}].standard_covered 必须是布尔值")
+        custom_covered = candidate.get("custom_covered")
+        if not isinstance(custom_covered, bool):
+            raise TypeError(f"placeholder_candidate_details[{index}].custom_covered 必须是布尔值")
+        if standard_covered or custom_covered:
+            continue
+        if _needs_manual_joined_text_boundary(marker):
+            continue
+        pattern_text, placeholder_template = _draft_custom_placeholder_rule(marker)
+        _ = draft_rules.setdefault(pattern_text, placeholder_template)
+    return draft_rules
+
+
 def _joined_text_boundary_markers(
     candidates: Sequence[PlaceholderCandidate],
 ) -> list[str]:
@@ -1552,6 +1763,27 @@ def _joined_text_boundary_markers(
         },
         key=str.lower,
     )
+
+
+def _joined_text_boundary_markers_from_details(candidate_details: JsonArray) -> list[str]:
+    """从旧报告同形候选明细列出必须人工确认边界的裸字母控制符候选。"""
+    markers: set[str] = set()
+    for index, raw_candidate in enumerate(candidate_details):
+        candidate = ensure_json_object(raw_candidate, f"placeholder_candidate_details[{index}]")
+        marker = candidate.get("marker")
+        if not isinstance(marker, str):
+            raise TypeError(f"placeholder_candidate_details[{index}].marker 必须是字符串")
+        standard_covered = candidate.get("standard_covered")
+        if not isinstance(standard_covered, bool):
+            raise TypeError(f"placeholder_candidate_details[{index}].standard_covered 必须是布尔值")
+        custom_covered = candidate.get("custom_covered")
+        if not isinstance(custom_covered, bool):
+            raise TypeError(f"placeholder_candidate_details[{index}].custom_covered 必须是布尔值")
+        if standard_covered or custom_covered:
+            continue
+        if _needs_manual_joined_text_boundary(marker):
+            markers.add(marker)
+    return sorted(markers, key=str.lower)
 
 
 def _needs_manual_joined_text_boundary(marker: str) -> bool:
@@ -1816,20 +2048,23 @@ def _validate_mv_virtual_namebox_rules_with_context(
                 },
                 details=details,
             )
-        candidates = mv_virtual_namebox_candidate_details(game_data)
-        candidate_count = len(candidates)
-        rule_errors, match_details = validate_mv_virtual_namebox_rules_against_game(
+        native_scan = scan_native_mv_virtual_namebox(
             game_data=game_data,
             records=records,
         )
+        candidates = native_scan.candidate_details
+        candidate_count = native_scan.candidate_count
+        rule_errors = native_scan.rule_errors
+        match_details = native_scan.match_details
         errors.extend(
             issue("mv_virtual_namebox_rules_invalid", _format_mv_namebox_rule_error(error_detail))
             for error_detail in rule_errors
         )
-        matched_candidate_count = len(match_details)
-        _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_game(
+        matched_candidate_count = native_scan.matched_candidate_count
+        _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_candidates(
             game_data=game_data,
             records=existing_records,
+            candidates=native_mv_virtual_namebox_candidates_from_details(candidates),
         )
         existing_match_keys = _mv_namebox_match_keys(existing_match_details)
         newly_matched_candidates: JsonArray = [
@@ -1874,7 +2109,7 @@ def _validate_plugin_rules_with_context(
     """使用已加载游戏上下文校验插件参数规则。"""
     try:
         import_file = parse_plugin_rule_import_text(rules_text)
-        records = build_plugin_rule_records_from_import(
+        context = build_native_plugin_rule_validation_context_from_import(
             game_data=game_data,
             import_file=import_file,
             text_rules=text_rules,
@@ -1894,72 +2129,51 @@ def _validate_plugin_rules_with_context(
             },
             details={"rules": []},
         )
-    return _validate_plugin_rule_records_with_context(
-        records=records,
+    return build_plugin_rule_validation_report_from_native_context(
+        context=context,
         game_data=game_data,
-        text_rules=text_rules,
         translated_paths=translated_paths,
     )
 
 
-def _validate_plugin_rule_records_with_context(
+def build_plugin_rule_validation_report_from_native_context(
     *,
-    records: list[PluginTextRuleRecord],
+    context: NativePluginRuleValidationContext,
     game_data: GameData,
-    text_rules: TextRules,
     translated_paths: set[str],
 ) -> AgentReport:
-    """使用已构建的插件参数规则校验命中与写回可行性。"""
+    """把插件参数 native 命中上下文渲染为 Agent 校验报告。"""
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
-    try:
-        extracted_map = PluginTextExtraction(
-            game_data,
-            plugin_rule_records=records,
-            text_rules=text_rules,
-        ).extract_all_text()
-        extracted_items = [
-            item
-            for translation_data in extracted_map.values()
-            for item in translation_data.translation_items
-        ]
-        unwritable_items = _collect_write_protocol_unwritable_items(
-            game_data=game_data,
-            extracted_items=extracted_items,
-        )
-        if unwritable_items:
-            errors.append(issue("plugin_rules_unwritable", f"插件规则存在 {len(unwritable_items)} 个不可写命中项"))
-        unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
-        details["rules"] = [
-            {
-                "plugin_index": record.plugin_index,
-                "plugin_name": record.plugin_name,
-                "plugin_hash": record.plugin_hash,
-                "path_count": len(record.path_templates),
-                "paths": list(record.path_templates),
-                **_build_rule_metric_detail(
-                    record_items=record_items,
-                    translated_paths=translated_paths,
-                    unwritable_items_by_path=unwritable_items_by_path,
-                ),
-            }
-            for record in records
-            for record_items in [[
-                item
-                for item in extracted_items
-                if item.location_path.startswith(f"{PLUGINS_FILE_NAME}/{record.plugin_index}/")
-            ]]
-        ]
-        if not records:
-            warnings.append(issue("plugin_rules_empty", "插件规则为空"))
-        if records and not extracted_items:
-            errors.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
-    except Exception as error:
-        errors.append(issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}"))
-        records = []
-        extracted_items = []
-        unwritable_items = []
+    records = context.records
+    extracted_items = context.extracted_items
+    unwritable_items = _collect_write_protocol_unwritable_items(
+        game_data=game_data,
+        extracted_items=extracted_items,
+    )
+    if unwritable_items:
+        errors.append(issue("plugin_rules_unwritable", f"插件规则存在 {len(unwritable_items)} 个不可写命中项"))
+    unwritable_items_by_path = _json_items_by_location_path(unwritable_items)
+    details["rules"] = [
+        {
+            "plugin_index": record.plugin_index,
+            "plugin_name": record.plugin_name,
+            "plugin_hash": record.plugin_hash,
+            "path_count": len(record.path_templates),
+            "paths": list(record.path_templates),
+            **_build_rule_metric_detail(
+                record_items=context.record_items_by_index.get(record.plugin_index, []),
+                translated_paths=translated_paths,
+                unwritable_items_by_path=unwritable_items_by_path,
+            ),
+        }
+        for record in records
+    ]
+    if not records:
+        warnings.append(issue("plugin_rules_empty", "插件规则为空"))
+    if records and not extracted_items:
+        errors.append(issue("plugin_rules_no_hits", "插件规则没有提取到任何可翻译文本"))
     return AgentReport.from_parts(
         errors=errors,
         warnings=warnings,
@@ -1980,6 +2194,7 @@ def _collect_plugin_source_unwritable_items(
     *,
     game_data: GameData,
     extracted_items: list[TranslationItem],
+    scan: PluginSourceScan | None = None,
 ) -> JsonArray:
     """把插件源码写回预演原因转换为校验报告明细。"""
     if not extracted_items:
@@ -1987,6 +2202,7 @@ def _collect_plugin_source_unwritable_items(
     reasons = collect_write_back_probe_reasons(
         game_data=game_data,
         active_items=extracted_items,
+        plugin_source_scan=scan,
     )
     return [
         {
@@ -2038,6 +2254,7 @@ def _validate_plugin_source_rules_with_context(
         unwritable_items = _collect_plugin_source_unwritable_items(
             game_data=game_data,
             extracted_items=extracted_items,
+            scan=scan,
         )
         if unwritable_items:
             errors.append(
@@ -2132,41 +2349,6 @@ def _collect_structured_placeholder_preview_samples(
     return samples
 
 
-def _collect_structured_placeholder_candidate_details(
-    *,
-    translation_data_map: dict[str, TranslationData],
-    structured_rules: Sequence[StructuredPlaceholderRule],
-) -> JsonArray:
-    """扫描当前正文中的结构化协议外壳候选和规则覆盖情况。"""
-    details: JsonArray = []
-    seen_candidates: set[tuple[str, int, int, int, str]] = set()
-    for item in _iter_translation_items_from_map(translation_data_map):
-        for line_index, line in enumerate(item.original_lines):
-            covered_ranges = _structured_rule_covered_ranges(
-                text=line,
-                structured_rules=structured_rules,
-            )
-            for start, end, candidate in _iter_structured_shell_candidate_matches(line):
-                key = (item.location_path, line_index, start, end, candidate)
-                if key in seen_candidates:
-                    continue
-                seen_candidates.add(key)
-                matching_rules = [
-                    rule_name
-                    for covered_start, covered_end, rule_name in covered_ranges
-                    if covered_start <= key[2] and covered_end >= key[3]
-                ]
-                detail: JsonObject = {
-                    "location_path": item.location_path,
-                    "line_number": line_index + 1,
-                    "candidate": candidate,
-                    "covered": bool(matching_rules),
-                    "matching_rules": _string_lines_to_json_array(matching_rules),
-                }
-                details.append(detail)
-    return details
-
-
 def _iter_translation_items_from_map(translation_data_map: dict[str, TranslationData]) -> list[TranslationItem]:
     """从正文提取结果中取出翻译条目。"""
     items: list[TranslationItem] = []
@@ -2182,44 +2364,6 @@ def _line_matches_structured_rules(
 ) -> bool:
     """判断一行文本是否命中任一结构化规则。"""
     return any(rule.pattern.search(text) is not None for rule in structured_rules)
-
-
-STRUCTURED_SHELL_CANDIDATE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"<[^<>\r\n]{1,160}(?:[:：=])[^<>\r\n]{0,240}>"),
-    re.compile(r"◆<[^<>\r\n]{1,160}>[^\s<>\r\n]?"),
-    re.compile(r"【[^】\r\n]{1,160}[:：][^】\r\n]{0,240}】"),
-)
-
-
-def _iter_structured_shell_candidate_matches(text: str) -> list[tuple[int, int, str]]:
-    """扫描常见结构化协议外壳候选。"""
-    matches: list[tuple[int, int, str]] = []
-    for pattern in STRUCTURED_SHELL_CANDIDATE_PATTERNS:
-        for match in pattern.finditer(text):
-            matches.append((match.start(), match.end(), match.group(0)))
-    matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
-
-    selected: list[tuple[int, int, str]] = []
-    protected_until = -1
-    for start, end, candidate in matches:
-        if start < protected_until:
-            continue
-        selected.append((start, end, candidate))
-        protected_until = end
-    return selected
-
-
-def _structured_rule_covered_ranges(
-    *,
-    text: str,
-    structured_rules: Sequence[StructuredPlaceholderRule],
-) -> list[tuple[int, int, str]]:
-    """返回结构化规则完整命中范围。"""
-    ranges: list[tuple[int, int, str]] = []
-    for rule in structured_rules:
-        for match in rule.pattern.finditer(text):
-            ranges.append((match.start(), match.end(), rule.rule_name))
-    return ranges
 
 
 def _validate_structured_placeholder_rules_with_context(
@@ -2347,6 +2491,7 @@ def _build_structured_placeholder_coverage_report_with_context(
     game_title: str,
     rules_text: str,
     translation_data_map: dict[str, TranslationData] | None,
+    text_rules: TextRules,
     structured_rules: tuple[StructuredPlaceholderRule, ...] | None = None,
 ) -> AgentReport:
     """使用已加载正文上下文扫描结构化占位符规则覆盖情况。"""
@@ -2377,16 +2522,12 @@ def _build_structured_placeholder_coverage_report_with_context(
             details={},
         )
 
-    candidate_details = _collect_structured_placeholder_candidate_details(
+    candidate_details = collect_native_structured_placeholder_candidate_details(
         translation_data_map=translation_data_map,
-        structured_rules=active_structured_rules,
+        text_rules=text_rules,
     )
-    covered_count = sum(
-        1
-        for detail in candidate_details
-        if isinstance(detail, dict) and detail.get("covered") is True
-    )
-    uncovered_count = len(candidate_details) - covered_count
+    uncovered_count = count_uncovered_structured_placeholder_candidate_details(candidate_details)
+    covered_count = len(candidate_details) - uncovered_count
     warnings: list[AgentIssue] = []
     if uncovered_count:
         warnings.append(issue("structured_placeholder_uncovered", f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选"))
@@ -2533,9 +2674,11 @@ def _build_placeholder_coverage_report_with_context(
         custom_placeholder_rules=custom_rules,
         structured_placeholder_rules=structured_rules,
     )
-    candidates = scan_placeholder_candidates(translation_data_map, text_rules)
-    candidate_details = placeholder_candidates_to_details(candidates)
-    uncovered_count = count_uncovered_candidates(candidates)
+    candidate_details = collect_native_placeholder_candidate_details(
+        translation_data_map=translation_data_map,
+        text_rules=text_rules,
+    )
+    uncovered_count = count_uncovered_placeholder_candidate_details(candidate_details)
     warnings: list[AgentIssue] = []
     if uncovered_count:
         warnings.append(issue("placeholder_uncovered", f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符"))
@@ -2707,7 +2850,7 @@ def _validate_event_command_rules_with_context(
     """使用已加载游戏上下文校验事件指令规则。"""
     try:
         import_file = parse_event_command_rule_import_text(rules_text)
-        records = build_event_command_rule_records_from_import(game_data=game_data, import_file=import_file)
+        records = build_event_command_rule_records_from_import_shape(import_file=import_file)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
@@ -2737,22 +2880,24 @@ def _validate_event_command_rule_records_with_context(
     game_data: GameData,
     text_rules: TextRules,
     translated_paths: set[str],
+    native_validation_context: _NativeEventCommandRuleValidationContext | None = None,
 ) -> AgentReport:
     """使用已构建的事件指令规则校验命中与写回可行性。"""
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
     try:
-        extracted_map, record_items_by_index = EventCommandTextExtraction(
-            game_data,
-            rule_records=records,
-            text_rules=text_rules,
-        ).extract_all_text_with_rule_items()
-        extracted_items = [
-            item
-            for translation_data in extracted_map.values()
-            for item in translation_data.translation_items
-        ]
+        validation_context = (
+            native_validation_context
+            if native_validation_context is not None
+            else _build_native_event_command_rule_validation_context(
+                records=records,
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+        )
+        extracted_items = validation_context.extracted_items
+        record_items_by_index = validation_context.record_items_by_index
         unwritable_items = _collect_write_protocol_unwritable_items(
             game_data=game_data,
             extracted_items=extracted_items,
@@ -3087,8 +3232,9 @@ __all__: list[str] = [
     'GameRegistry',
     'TargetGameSession',
     'ensure_db_directory',
-    'PluginTextExtraction',
-    'build_plugin_rule_records_from_import',
+    'NativePluginRuleValidationContext',
+    'build_native_plugin_rule_validation_context_from_import',
+    'build_plugin_rule_validation_report_from_native_context',
     'collect_plugin_json_string_leaf_candidates',
     'export_plugins_json_file',
     'extract_plugin_name',
@@ -3132,6 +3278,7 @@ __all__: list[str] = [
     'resolve_setting_path',
     'EventCommandTextExtraction',
     'build_event_command_rule_records_from_import',
+    'build_event_command_rule_records_from_import_shape',
     'export_event_commands_json_file',
     'parse_event_command_rule_import_text',
     'resolve_event_command_codes',
@@ -3207,11 +3354,14 @@ __all__: list[str] = [
     '_preview_placeholder_sample',
     '_placeholder_preview_loses_visible_source_text',
     '_build_coverage_report',
+    'build_text_index_text_scope_report',
+    'build_text_index_coverage_report',
     '_nonstandard_data_skipped_file_names',
     '_nonstandard_data_skipped_warnings',
     '_validate_source_residual_rule_records',
     'rule_contract_issues_to_agent_issues',
     '_coverage_hard_stop_errors',
+    'text_index_records_to_scope',
     '_text_scope_blocking_errors',
     '_read_feedback_texts',
     '_collect_feedback_text_occurrences',
@@ -3223,9 +3373,6 @@ __all__: list[str] = [
     '_count_feedback_gap_types',
     '_scope_entries_containing_text',
     '_feedback_gap_from_scope_entries',
-    'PLUGIN_SOURCE_TEXT_PATTERN',
-    '_collect_plugin_source_text_candidates',
-    '_unescape_js_candidate_text',
     '_plugin_source_text_structural_flags',
     '_current_python_major_minor',
     'CUSTOM_MARKER_WITH_PARAMS_PATTERN',
@@ -3233,6 +3380,7 @@ __all__: list[str] = [
     'JOINED_TEXT_CONTROL_BOUNDARY_PATTERN',
     '_build_custom_placeholder_rule_draft',
     '_joined_text_boundary_markers',
+    '_joined_text_boundary_markers_from_details',
     '_needs_manual_joined_text_boundary',
     '_build_joined_text_boundary_warnings',
     '_draft_custom_placeholder_rule',
@@ -3252,11 +3400,11 @@ __all__: list[str] = [
     '_collect_plugin_source_unwritable_items',
     '_validate_plugin_source_rules_with_context',
     '_collect_structured_placeholder_preview_samples',
-    '_collect_structured_placeholder_candidate_details',
     '_validate_structured_placeholder_rules_with_context',
     '_build_structured_placeholder_coverage_report_with_context',
     '_validate_placeholder_rules_with_context',
     '_build_placeholder_coverage_report_with_context',
+    '_build_custom_placeholder_rule_draft_from_details',
     '_note_tag_item_matches_rule',
     '_validate_note_tag_rules_with_context',
     '_validate_event_command_rules_with_context',

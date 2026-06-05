@@ -2,7 +2,9 @@
 //!
 //! 本模块负责读取 Rust 原生核心线程数配置，并在需要时使用局部线程池执行并发任务。
 
-use std::env;
+use std::sync::RwLock;
+
+static CONFIGURED_THREAD_COUNT: RwLock<Option<usize>> = RwLock::new(None);
 
 #[cfg(test)]
 thread_local! {
@@ -66,36 +68,52 @@ impl Drop for ThreadCountOverrideGuard {
     }
 }
 
-pub(crate) fn read_configured_thread_count() -> Result<Option<usize>, String> {
-    let raw_value = match env::var("ATT_MZ_RUST_THREADS") {
-        Ok(value) => value,
-        Err(env::VarError::NotPresent) => return Ok(None),
-        Err(error) => return Err(format!("读取 ATT_MZ_RUST_THREADS 失败: {error}")),
-    };
-    parse_configured_thread_count(&raw_value)
+pub(crate) fn configure_runtime_threads(thread_count: Option<usize>) -> Result<(), String> {
+    if matches!(thread_count, Some(0)) {
+        return Err("runtime.rust_threads 必须是正整数或 auto".to_owned());
+    }
+    let mut configured_thread_count = CONFIGURED_THREAD_COUNT
+        .write()
+        .map_err(|error| format!("Rust 线程配置锁已损坏: {error}"))?;
+    *configured_thread_count = thread_count;
+    Ok(())
 }
 
+pub(crate) fn read_configured_thread_count() -> Result<Option<usize>, String> {
+    let configured_thread_count = CONFIGURED_THREAD_COUNT
+        .read()
+        .map_err(|error| format!("Rust 线程配置锁已损坏: {error}"))?;
+    Ok(*configured_thread_count)
+}
+
+#[cfg(test)]
 pub(crate) fn parse_configured_thread_count(raw_value: &str) -> Result<Option<usize>, String> {
     let normalized_value = raw_value.trim();
+    if normalized_value == "auto" {
+        return Ok(None);
+    }
     let parsed = normalized_value.parse::<usize>().map_err(|error| {
-        format!("ATT_MZ_RUST_THREADS 必须是非负整数: {normalized_value}: {error}")
+        format!("runtime.rust_threads 必须是正整数或 auto: {normalized_value}: {error}")
     })?;
     if parsed == 0 {
-        return Ok(None);
+        return Err("runtime.rust_threads 必须是正整数或 auto".to_owned());
     }
     Ok(Some(parsed))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_configured_thread_count;
+    use super::{configure_runtime_threads, read_configured_thread_count};
 
     #[test]
-    fn thread_count_env_value_controls_configured_pool_size() {
-        assert_eq!(parse_configured_thread_count("4"), Ok(Some(4)));
-        assert_eq!(parse_configured_thread_count("64"), Ok(Some(64)));
-        assert_eq!(parse_configured_thread_count(" 2 "), Ok(Some(2)));
-        assert_eq!(parse_configured_thread_count("0"), Ok(None));
-        assert!(parse_configured_thread_count("invalid").is_err());
+    fn runtime_thread_config_accepts_auto_or_positive_count() {
+        configure_runtime_threads(Some(4)).expect("正整数线程数应可配置");
+        assert_eq!(read_configured_thread_count(), Ok(Some(4)));
+
+        configure_runtime_threads(None).expect("auto 应清除线程数覆盖");
+        assert_eq!(read_configured_thread_count(), Ok(None));
+
+        let error = configure_runtime_threads(Some(0)).expect_err("0 不是有效线程数");
+        assert!(error.contains("runtime.rust_threads 必须是正整数或 auto"));
     }
 }

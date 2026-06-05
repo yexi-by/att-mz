@@ -91,7 +91,7 @@ def build_native_write_back_setting_payload(
     text_rules: TextRules,
     content_root: Path,
     confirm_font_overwrite: bool,
-    writable_location_paths: list[str],
+    writable_location_paths: list[str] | None,
 ) -> tuple[JsonObject, Path | None, list[str]]:
     """整理 Rust 写回计划和写回级质量 gate 共用的配置载荷。"""
     payload: JsonObject = {
@@ -103,8 +103,9 @@ def build_native_write_back_setting_payload(
             for left, right in setting.text_rules.preserve_wrapping_punctuation_pairs
         ],
         "quality_text_rules": build_native_text_rules_payload(text_rules),
-        "allowed_translation_paths": [path for path in writable_location_paths],
     }
+    if writable_location_paths is not None:
+        payload["allowed_translation_paths"] = [path for path in writable_location_paths]
     if not confirm_font_overwrite:
         return payload, None, []
     replacement_font_path = setting.write_back.replacement_font_path

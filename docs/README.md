@@ -1,28 +1,24 @@
-# 文档地图
+# 文档路径图
 
-本目录只放给人类阅读的说明、研究资料和历史记录。当前翻译流程的 Agent 契约以 `skills/att-mz/` 和 `skills/att-mz-release/` 为准；归档材料不覆盖 Skill、README、CLI、发布脚本和测试事实。
+本目录只放给人类阅读的说明、百科、研究资料、计划和历史记录。当前翻译流程的 Agent 契约以 `skills/att-mz/` 和 `skills/att-mz-release/` 为准；`docs/` 不覆盖 Skill、README、CLI、发布脚本和测试事实。
 
-## 当前说明
+## 当前入口
 
-| 文档 | 用途 |
+| 路径 | 内容 |
 | --- | --- |
 | [快速开始](../README.md) | 面向发行包用户和首次使用者。 |
-| [进阶教学与源码编译](advanced-usage.md) | 面向源码运行、调试和开发参与者。 |
-| [开发文档地图](development/README.md) | 源码模块协作、测试和发布前验收入口。 |
-| [数据库 Wiki](database-wiki.md) | 当前 SQLite 表结构和维护约定。 |
+| [guides/](guides/README.md) | 使用教学、源码运行和源码编译说明。 |
+| [wiki/](wiki/README.md) | 当前实现百科，包括数据库结构和源码模块地图。 |
 
-## 研究资料
+## 资料分层
 
-| 文档 | 用途 |
+| 路径 | 内容 |
 | --- | --- |
-| [RPG Maker 全系列汉化适配理论支持](research/rm游戏全系列支持理论.md) | RPG Maker 多引擎支持边界、共通抽象和落地顺序。 |
-| [非标准 data 文件文本支线设计](research/2026-06-01-nonstandard-data-design.md) | 非标准 data JSON 文本支线的设计记录。 |
+| [research/](research/README.md) | 调研和设计资料，记录尚未完全落成当前实现的背景分析。 |
+| [plans/](plans/README.md) | 开发计划文档。已完成计划放入 `plans/completed/`。 |
+| [records/](records/README.md) | 执行记录、批次验收、review 记录和性能问题分析。 |
+| [archive/](archive/) | 已下线的大型历史材料和旧阶段归档。 |
 
-## 历史归档
+## 边界
 
-| 文档 | 用途 |
-| --- | --- |
-| [试玩反馈流程修复建议](archive/feedback-iteration-repair-plan.md) | 已落地反馈流程的历史复盘材料。 |
-| [2026 重构归档](archive/2026-heavy-refactor/) | 超重型破坏性重构的计划、审计、阶段记录和闭环证据。 |
-
-归档材料可以用于追溯背景和决策，但不作为当前实现说明或执行契约。发现归档内容与当前代码、Skill、README 或发布脚本冲突时，以当前代码和公开契约为准。
+百科文档描述当前实现；计划和记录只用于追溯“当时为什么这样做”。如果计划、记录或归档内容与当前代码、Skill、README 或发布脚本冲突，以当前实现和公开契约为准。

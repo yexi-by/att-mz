@@ -14,12 +14,10 @@ from app.native_javascript_ast import (
     parse_native_javascript_string_spans,
     parse_native_javascript_string_spans_batch,
 )
-from app.plugin_text import extract_plugin_name
-from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonObject, TextRules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
-from .models import PluginSourceCandidate, PluginSourceFileScan, PluginSourceRisk, PluginSourceScan
+from .models import PluginSourceCandidate
 
 STRONG_TEXT_KEYS: frozenset[str] = frozenset(
     {
@@ -64,49 +62,6 @@ _NATIVE_SCAN_CACHE_MAX_SIZE = 256
 _NATIVE_SCAN_CACHE: OrderedDict[str, NativeJavaScriptStringScan] = OrderedDict()
 
 
-def build_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> PluginSourceScan:
-    """扫描 `js/plugins` 直接源码文件并计算高风险摘要。"""
-    enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
-    batch_scan = scan_plugin_source_files_text_strict(
-        files=game_data.plugin_source_files,
-        active_file_names=enabled_plugin_files,
-        text_rules=text_rules,
-    )
-    file_scans: list[PluginSourceFileScan] = []
-    candidates: list[PluginSourceCandidate] = []
-    for file_name, file_scan in sorted(batch_scan.file_scans.items()):
-        file_candidates = file_scan.candidate_index.candidates
-        active_candidates = [candidate for candidate in file_candidates if candidate.active]
-        strong_count = sum(1 for candidate in active_candidates if candidate.confidence == "strong")
-        medium_count = sum(1 for candidate in active_candidates if candidate.confidence == "medium")
-        file_score = strong_count * 3 + medium_count
-        file_scans.append(
-            PluginSourceFileScan(
-                file_name=file_name,
-                file_hash=file_scan.file_hash,
-                active=file_name in enabled_plugin_files,
-                candidates=file_candidates,
-                strong_context_text_count=strong_count,
-                medium_confidence_text_count=medium_count,
-                file_score=file_score,
-            )
-        )
-        candidates.extend(file_candidates)
-
-    risk = _build_risk(
-        file_scans,
-        read_error_file_count=len(game_data.plugin_source_read_errors),
-        syntax_error_file_count=len(batch_scan.syntax_errors),
-    )
-    return PluginSourceScan(
-        risk=risk,
-        files=tuple(file_scans),
-        candidates=tuple(candidates),
-        enabled_plugin_files=enabled_plugin_files,
-        syntax_errors=dict(batch_scan.syntax_errors),
-    )
-
-
 def build_plugin_source_file_hash(source: str) -> str:
     """计算插件源码文件内容哈希。"""
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -121,23 +76,6 @@ def candidate_selector_for_span(*, start_index: int, end_index: int, raw_text: s
     """按字符串节点位置和原始内容生成稳定 AST selector。"""
     digest = hashlib.sha1(raw_text.encode("utf-8")).hexdigest()[:12]
     return f"ast:string:{start_index}:{end_index}:{digest}"
-
-
-def find_candidate_by_selector(
-    *,
-    source: str,
-    file_name: str,
-    selector: str,
-    active: bool,
-    text_rules: TextRules,
-) -> PluginSourceCandidate | None:
-    """扫描源码并按 selector 定位候选。"""
-    return build_plugin_source_candidate_index(
-        file_name=file_name,
-        source=source,
-        active=active,
-        text_rules=text_rules,
-    ).by_selector.get(selector)
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,66 +167,26 @@ def iter_plugin_source_string_literals(
     return literals
 
 
-def scan_plugin_source_file_text(
-    *,
-    file_name: str,
-    source: str,
-    active: bool,
-    text_rules: TextRules,
-) -> PluginSourceFileTextScan:
-    """扫描单个源码文件一次，并复用字面量、候选索引和文件 hash。"""
-    literals, candidates = _scan_source_literals_and_candidates(
-        file_name=file_name,
-        source=source,
-        active=active,
-        text_rules=text_rules,
-    )
-    return PluginSourceFileTextScan(
-        file_name=file_name,
-        file_hash=build_plugin_source_file_hash(source),
-        literals=literals,
-        candidate_index=PluginSourceCandidateIndex(
-            candidates=candidates,
-            by_selector={candidate.selector: candidate for candidate in candidates},
-        ),
-    )
-
-
-def scan_plugin_source_file_text_strict(
-    *,
-    file_name: str,
-    source: str,
-    active: bool,
-    text_rules: TextRules | None = None,
-) -> PluginSourceFileTextScan:
-    """只使用原生 AST 扫描单个源码文件，语法错误或原生解析不可用时直接失败。"""
-    file_hash = build_plugin_source_file_hash(source)
-    spans = _collect_native_string_literal_spans_required(source, file_hash=file_hash)
-    literals, candidates = _build_literals_and_candidates_from_spans(
-        file_name=file_name,
-        source=source,
-        active=active,
-        text_rules=text_rules,
-        spans=spans,
-    )
-    return PluginSourceFileTextScan(
-        file_name=file_name,
-        file_hash=file_hash,
-        literals=literals,
-        candidate_index=PluginSourceCandidateIndex(
-            candidates=candidates,
-            by_selector={candidate.selector: candidate for candidate in candidates},
-        ),
-    )
-
-
-def scan_plugin_source_files_text_strict(
+def scan_plugin_source_runtime_files_text_strict(
     *,
     files: dict[str, str],
     active_file_names: frozenset[str],
-    text_rules: TextRules | None = None,
 ) -> PluginSourceBatchTextScan:
-    """批量严格扫描多个插件源码文件，逐文件保留 JS 语法错误。"""
+    """批量扫描当前运行插件源码的全部字符串字面量，不构造翻译源候选。"""
+    return _scan_plugin_source_files_text_from_native_spans(
+        files=files,
+        active_file_names=active_file_names,
+        text_rules=None,
+    )
+
+
+def _scan_plugin_source_files_text_from_native_spans(
+    *,
+    files: dict[str, str],
+    active_file_names: frozenset[str],
+    text_rules: TextRules | None,
+) -> PluginSourceBatchTextScan:
+    """用 Rust AST 批量解析源码字符串，并转换成现有扫描对象。"""
     file_hashes = {
         file_name: build_plugin_source_file_hash(source)
         for file_name, source in files.items()
@@ -418,20 +316,6 @@ def _build_literals_and_candidates_from_spans(
             )
         )
     return tuple(literals), tuple(candidates)
-
-
-def _enabled_plugin_source_file_names(game_data: GameData) -> frozenset[str]:
-    """从 `plugins.js` 读取启用插件对应的源码文件名。"""
-    file_names: set[str] = set()
-    for plugin_index, plugin in enumerate(game_data.plugins_js):
-        status = plugin.get("status")
-        if status is not True:
-            continue
-        plugin_name = extract_plugin_name(plugin, plugin_index).strip()
-        if not plugin_name:
-            continue
-        file_names.add(f"{plugin_name}.js")
-    return frozenset(file_names)
 
 
 def _collect_newline_indexes(source: str) -> list[int]:
@@ -635,43 +519,6 @@ def _candidate_context(*, api: str, key: str) -> str:
     return "literal"
 
 
-def _build_risk(
-    file_scans: list[PluginSourceFileScan],
-    *,
-    read_error_file_count: int,
-    syntax_error_file_count: int,
-) -> PluginSourceRisk:
-    """按固定阈值生成风险摘要。"""
-    active_files = [file_scan for file_scan in file_scans if file_scan.active]
-    ignored_file_count = sum(1 for file_scan in file_scans if not file_scan.active)
-    strong_total = sum(file_scan.strong_context_text_count for file_scan in active_files)
-    medium_total = sum(file_scan.medium_confidence_text_count for file_scan in active_files)
-    risk_score = strong_total * 3 + medium_total
-    files_score_ge_250 = sum(1 for file_scan in active_files if file_scan.file_score >= 250)
-    max_file_score = max((file_scan.file_score for file_scan in active_files), default=0)
-    high_risk = (
-        strong_total >= 300
-        or risk_score >= 2000
-        or files_score_ge_250 >= 3
-        or any(
-            file_scan.file_score >= 300 and file_scan.strong_context_text_count >= 80
-            for file_scan in active_files
-        )
-    )
-    return PluginSourceRisk(
-        high_risk=high_risk,
-        risk_score=risk_score,
-        strong_context_text_count=strong_total,
-        medium_confidence_text_count=medium_total,
-        scanned_file_count=len(file_scans),
-        ignored_file_count=ignored_file_count,
-        read_error_file_count=read_error_file_count,
-        syntax_error_file_count=syntax_error_file_count,
-        files_score_ge_250=files_score_ge_250,
-        max_file_score=max_file_score,
-    )
-
-
 def _unescape_js_text(text: str) -> str:
     """解析候选展示与写回校验需要的常见 JS 字符串转义。"""
     decoded_parts: list[str] = []
@@ -783,12 +630,8 @@ __all__ = [
     "PluginSourceStringLiteral",
     "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
-    "build_plugin_source_scan",
     "candidate_selector_for_span",
     "clear_plugin_source_native_scan_cache",
-    "find_candidate_by_selector",
     "iter_plugin_source_string_literals",
-    "scan_plugin_source_file_text",
-    "scan_plugin_source_file_text_strict",
-    "scan_plugin_source_files_text_strict",
+    "scan_plugin_source_runtime_files_text_strict",
 ]

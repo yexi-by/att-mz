@@ -4,6 +4,116 @@ from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
 
+from app.native_note_tag_scan import collect_native_note_tag_hit_details, collect_native_note_tag_source_details
+from app.note_tag_text.sources import collect_note_tag_sources, note_file_pattern_matches
+from app.rmmz.text_rules import JsonArray
+from app.text_scope.rule_hits import collect_note_tag_rule_hits
+
+
+def _shadow_note_tag_rule_hit_tuples_from_native_details(
+    *,
+    native_hit_details: JsonArray,
+    note_tag_rules: list[NoteTagTextRuleRecord],
+) -> list[tuple[str, str, str, str]]:
+    """用 native 逐命中明细模拟旧 Note 标签 text-scope 规则命中。"""
+    hits: list[tuple[str, str, str, str]] = []
+    seen_paths: set[str] = set()
+    for rule in note_tag_rules:
+        tag_names = set(rule.tag_names)
+        for index, raw_hit in enumerate(native_hit_details):
+            hit = ensure_json_object(raw_hit, f"native_note_tag_hit[{index}]")
+            file_name = hit.get("file_name")
+            tag_name = hit.get("tag_name")
+            location_path = hit.get("location_path")
+            original_text = hit.get("original_text")
+            if not isinstance(file_name, str):
+                raise TypeError(f"native_note_tag_hit[{index}].file_name 字段类型无效")
+            if not isinstance(tag_name, str):
+                raise TypeError(f"native_note_tag_hit[{index}].tag_name 字段类型无效")
+            if not isinstance(location_path, str):
+                raise TypeError(f"native_note_tag_hit[{index}].location_path 字段类型无效")
+            if not isinstance(original_text, str):
+                raise TypeError(f"native_note_tag_hit[{index}] 字段类型无效")
+            if tag_name not in tag_names:
+                continue
+            if not note_file_pattern_matches(file_name=file_name, file_pattern=rule.file_name):
+                continue
+            if location_path in seen_paths:
+                continue
+            seen_paths.add(location_path)
+            hits.append((location_path, "note_tag", "Note 标签规则", original_text))
+    return hits
+
+
+def _shadow_note_tag_translation_item_tuples_from_native_details(
+    *,
+    native_hit_details: JsonArray,
+    rule_records: list[NoteTagTextRuleRecord],
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    """用 native 逐命中明细模拟成功路径的 Note 标签正文提取。"""
+    source_order: list[tuple[str, str]] = []
+    hits_by_source_tag: dict[tuple[tuple[str, str], str], list[tuple[str, str, bool]]] = {}
+    for index, raw_hit in enumerate(native_hit_details):
+        hit = ensure_json_object(raw_hit, f"native_note_tag_extraction_hit[{index}]")
+        file_name = hit.get("file_name")
+        tag_name = hit.get("tag_name")
+        location_path = hit.get("location_path")
+        original_text = hit.get("original_text")
+        translatable = hit.get("translatable")
+        if not isinstance(file_name, str):
+            raise TypeError(f"native_note_tag_extraction_hit[{index}].file_name 字段类型无效")
+        if not isinstance(tag_name, str):
+            raise TypeError(f"native_note_tag_extraction_hit[{index}].tag_name 字段类型无效")
+        if not isinstance(location_path, str):
+            raise TypeError(f"native_note_tag_extraction_hit[{index}].location_path 字段类型无效")
+        if not isinstance(original_text, str):
+            raise TypeError(f"native_note_tag_extraction_hit[{index}].original_text 字段类型无效")
+        if not isinstance(translatable, bool):
+            raise TypeError(f"native_note_tag_extraction_hit[{index}].translatable 字段类型无效")
+        source_prefix = location_path.rsplit("/note/", maxsplit=1)[0]
+        source_key = (file_name, source_prefix)
+        if source_key not in source_order:
+            source_order.append(source_key)
+        hits_by_source_tag.setdefault((source_key, tag_name), []).append(
+            (location_path, original_text, translatable)
+        )
+
+    items: list[tuple[str, str, tuple[str, ...]]] = []
+    seen_location_paths: set[str] = set()
+    for rule_record in rule_records:
+        matching_sources = [
+            source_key
+            for source_key in source_order
+            if note_file_pattern_matches(file_name=source_key[0], file_pattern=rule_record.file_name)
+        ]
+        if not matching_sources:
+            raise RuntimeError(
+                "native hit_details 不能单独证明规则文件模式仍命中当前游戏 note 字段"
+            )
+        tag_hit_counts = {tag_name: 0 for tag_name in rule_record.tag_names}
+        for source_key in matching_sources:
+            for tag_name in rule_record.tag_names:
+                values = hits_by_source_tag.get((source_key, tag_name), [])
+                if not values:
+                    continue
+                tag_hit_counts[tag_name] += len(values)
+                if len(values) > 1:
+                    raise ValueError(f"{source_key[1]}/note/{tag_name} 标签重复，无法生成唯一定位路径")
+                location_path, original_text, translatable = values[0]
+                if not translatable:
+                    continue
+                if location_path in seen_location_paths:
+                    continue
+                seen_location_paths.add(location_path)
+                items.append((source_key[0], location_path, (original_text,)))
+        for tag_name in rule_record.tag_names:
+            if tag_hit_counts[tag_name] == 0:
+                raise RuntimeError(
+                    f"Note 标签规则已过期: {rule_record.file_name}/{tag_name} 没有命中当前游戏 Note 标签，请重新导出并导入 Note 标签规则"
+                )
+    return items
+
+
 @pytest.mark.asyncio
 async def test_native_write_back_helper_nonstandard_data_audit_skips_game_data_load(
     tmp_path: Path,
@@ -192,6 +302,533 @@ async def test_note_tag_extraction_rejects_stale_rule_without_current_tag(minima
         _ = NoteTagTextExtraction(
             game_data=stale_game_data,
             rule_records=rule_records,
+            text_rules=get_default_text_rules(),
+        ).extract_all_text()
+
+
+@pytest.mark.asyncio
+async def test_note_tag_rule_hits_expand_full_locations_and_normalized_text(minimal_game_dir: Path) -> None:
+    """Note 标签 text-scope 命中必须保留完整定位、规范化原文和重复规则去重。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = _read_test_json(items_path)
+    items = ensure_json_array(raw_items, "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = (
+        f"<拡張説明:{json.dumps('薬草の詳細', ensure_ascii=False)}>\n"
+        "<ExtendDesc:別説明>\n"
+        "<PrivateProtocol:内部コード>"
+    )
+    _rewrite_json(items_path, raw_items)
+
+    game_data = await load_game_data(minimal_game_dir)
+    hits = collect_note_tag_rule_hits(
+        game_data=game_data,
+        note_tag_rules=[
+            NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"]),
+            NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明", "ExtendDesc"]),
+            NoteTagTextRuleRecord(file_name="Weapons.json", tag_names=["拡張説明"]),
+        ],
+        text_rules=get_default_text_rules(),
+    )
+
+    assert [
+        (hit.location_path, hit.source_type, hit.rule_source, hit.original_text)
+        for hit in hits
+    ] == [
+        ("Items.json/1/note/拡張説明", "note_tag", "Note 标签规则", "薬草の詳細"),
+        ("Items.json/1/note/ExtendDesc", "note_tag", "Note 标签规则", "別説明"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_note_tag_hit_details_can_shadow_text_scope_rule_hits(minimal_game_dir: Path) -> None:
+    """native Note 标签逐命中明细必须足够复刻 text-scope 规则筛选和去重语义。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = _read_test_json(items_path)
+    items = ensure_json_array(raw_items, "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = (
+        f"<拡張説明:{json.dumps('薬草の詳細', ensure_ascii=False)}>\n"
+        "<拡張説明:二度目>\n"
+        "<ExtendDesc:別説明>\n"
+        "<PrivateProtocol:ABC>"
+    )
+    _rewrite_json(items_path, raw_items)
+
+    map_path = minimal_game_dir / "data" / "Map001.json"
+    raw_map = _read_test_json(map_path)
+    map_object = ensure_json_object(raw_map, "Map001.json")
+    events = ensure_json_array(map_object["events"], "Map001.json.events")
+    event = ensure_json_object(events[2], "Map001.json.events[2]")
+    event["note"] = "<namePop:案内人>"
+    _rewrite_json(map_path, raw_map)
+
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
+    note_tag_rules = [
+        NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"]),
+        NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明", "ExtendDesc", "PrivateProtocol"]),
+        NoteTagTextRuleRecord(file_name="Items*.json", tag_names=["ExtendDesc"]),
+        NoteTagTextRuleRecord(file_name="Map001.json", tag_names=["namePop"]),
+        NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"]),
+    ]
+
+    python_hits = collect_note_tag_rule_hits(
+        game_data=game_data,
+        note_tag_rules=note_tag_rules,
+        text_rules=text_rules,
+    )
+    native_hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+    native_shadow_hits = _shadow_note_tag_rule_hit_tuples_from_native_details(
+        native_hit_details=native_hit_details,
+        note_tag_rules=note_tag_rules,
+    )
+
+    assert native_shadow_hits == [
+        (hit.location_path, hit.source_type, hit.rule_source, hit.original_text)
+        for hit in python_hits
+    ]
+    assert native_shadow_hits == [
+        ("Items.json/1/note/拡張説明", "note_tag", "Note 标签规则", "薬草の詳細"),
+        ("Items.json/1/note/ExtendDesc", "note_tag", "Note 标签规则", "別説明"),
+        ("Items.json/1/note/PrivateProtocol", "note_tag", "Note 标签规则", "ABC"),
+        ("Map001.json/events/2/note/namePop", "note_tag", "Note 标签规则", "案内人"),
+    ]
+    native_hit_objects = [
+        ensure_json_object(hit, f"native hit {index}")
+        for index, hit in enumerate(native_hit_details)
+    ]
+    assert [
+        str(hit["location_path"])
+        for hit in native_hit_objects
+        if str(hit["location_path"]) == "Items.json/1/note/拡張説明"
+    ] == [
+        "Items.json/1/note/拡張説明",
+        "Items.json/1/note/拡張説明",
+    ]
+    assert any(
+        str(hit["tag_name"]) == "PrivateProtocol"
+        and hit["translatable"] is False
+        for hit in native_hit_objects
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_note_tag_hit_details_can_shadow_successful_note_tag_extraction(
+    minimal_game_dir: Path,
+) -> None:
+    """native 明细必须足够复刻 NoteTagTextExtraction 的成功输出。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = _read_test_json(items_path)
+    items = ensure_json_array(raw_items, "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = (
+        "<PrivateProtocol:ABC>\n"
+        "<BlankValue:>\n"
+        "<ExtendDesc:別説明>\n"
+        f"<拡張説明:{json.dumps('薬草の詳細', ensure_ascii=False)}>"
+    )
+    _rewrite_json(items_path, raw_items)
+
+    map_path = minimal_game_dir / "data" / "Map001.json"
+    raw_map = _read_test_json(map_path)
+    map_object = ensure_json_object(raw_map, "Map001.json")
+    events = ensure_json_array(map_object["events"], "Map001.json.events")
+    event = ensure_json_object(events[2], "Map001.json.events[2]")
+    event["note"] = "<namePop:案内人>"
+    _rewrite_json(map_path, raw_map)
+
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
+    rule_records = [
+        NoteTagTextRuleRecord(
+            file_name="Items.json",
+            tag_names=["拡張説明", "PrivateProtocol", "BlankValue", "ExtendDesc"],
+        ),
+        NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"]),
+    ]
+
+    note_extracted = NoteTagTextExtraction(
+        game_data=game_data,
+        rule_records=rule_records,
+        text_rules=text_rules,
+    ).extract_all_text()
+    native_hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+
+    actual_items = [
+        (file_name, item.location_path, tuple(item.original_lines))
+        for file_name, data in note_extracted.items()
+        for item in data.translation_items
+    ]
+    shadow_items = _shadow_note_tag_translation_item_tuples_from_native_details(
+        native_hit_details=native_hit_details,
+        rule_records=rule_records,
+    )
+
+    assert shadow_items == actual_items
+    assert shadow_items == [
+        ("Items.json", "Items.json/1/note/拡張説明", ("薬草の詳細",)),
+        ("Items.json", "Items.json/1/note/ExtendDesc", ("別説明",)),
+        ("Map001.json", "Map001.json/events/2/note/namePop", ("案内人",)),
+    ]
+    native_hit_objects = [
+        ensure_json_object(hit, f"native extraction hit {index}")
+        for index, hit in enumerate(native_hit_details)
+    ]
+    assert any(
+        str(hit["tag_name"]) == "PrivateProtocol"
+        and hit["translatable"] is False
+        for hit in native_hit_objects
+    )
+    assert any(
+        str(hit["tag_name"]) == "BlankValue"
+        and hit["translatable"] is False
+        for hit in native_hit_objects
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_note_tag_hit_details_expose_duplicate_locations_for_extraction_error(
+    minimal_game_dir: Path,
+) -> None:
+    """native 明细必须保留 NoteTagTextExtraction 重复标签错误所需事实。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = _read_test_json(items_path)
+    items = ensure_json_array(raw_items, "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:一度目>\n<拡張説明:二度目>"
+    _rewrite_json(items_path, raw_items)
+
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
+    rule_records = [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
+    native_hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+
+    with pytest.raises(ValueError, match="タグ重复|标签重复"):
+        _ = NoteTagTextExtraction(
+            game_data=game_data,
+            rule_records=rule_records,
+            text_rules=text_rules,
+        ).extract_all_text()
+    with pytest.raises(ValueError, match="标签重复"):
+        _ = _shadow_note_tag_translation_item_tuples_from_native_details(
+            native_hit_details=native_hit_details,
+            rule_records=rule_records,
+        )
+
+    duplicate_locations = [
+        str(ensure_json_object(hit, "native duplicate hit")["location_path"])
+        for hit in native_hit_details
+        if ensure_json_object(hit, "native duplicate hit").get("location_path")
+        == "Items.json/1/note/拡張説明"
+    ]
+    assert duplicate_locations == [
+        "Items.json/1/note/拡張説明",
+        "Items.json/1/note/拡張説明",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_note_tag_source_details_prove_matching_sources_without_value_hits(
+    minimal_game_dir: Path,
+) -> None:
+    """native 来源摘要必须覆盖没有带值标签命中的 note 来源。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = _read_test_json(items_path)
+    items = ensure_json_array(raw_items, "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<MarkerOnly>"
+    _rewrite_json(items_path, raw_items)
+
+    map_path = minimal_game_dir / "data" / "Map001.json"
+    raw_map = _read_test_json(map_path)
+    map_object = ensure_json_object(raw_map, "Map001.json")
+    events = ensure_json_array(map_object["events"], "Map001.json.events")
+    event = ensure_json_object(events[2], "Map001.json.events[2]")
+    event["note"] = "<MapMarkerOnly>"
+    _rewrite_json(map_path, raw_map)
+
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
+    python_source_pairs = [
+        (source.file_name, source.location_prefix)
+        for source in collect_note_tag_sources(game_data=game_data)
+    ]
+    native_source_details = collect_native_note_tag_source_details(game_data=game_data, text_rules=text_rules)
+    native_source_pairs = [
+        (
+            str(ensure_json_object(source, f"native source {index}")["file_name"]),
+            str(ensure_json_object(source, f"native source {index}")["location_prefix"]),
+        )
+        for index, source in enumerate(native_source_details)
+    ]
+    native_hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+
+    assert native_source_pairs == python_source_pairs
+    assert ("Items.json", "Items.json/1") in native_source_pairs
+    assert ("Map001.json", "Map001.json/events/2") in native_source_pairs
+    assert all(
+        ensure_json_object(source, f"native source {index}").keys() == {"file_name", "location_prefix"}
+        for index, source in enumerate(native_source_details)
+    )
+    assert not any(
+        str(ensure_json_object(hit, f"native marker hit {index}")["location_path"]).startswith(
+            "Items.json/1/note/MarkerOnly"
+        )
+        or str(ensure_json_object(hit, f"native marker hit {index}")["location_path"]).startswith(
+            "Map001.json/events/2/note/MapMarkerOnly"
+        )
+        for index, hit in enumerate(native_hit_details)
+    )
+
+
+@pytest.mark.asyncio
+async def test_note_tag_rule_hits_use_native_details_without_python_note_scan(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签 text-scope 命中必须消费 native 明细，不再重复 Python 扫描 Note。"""
+    from app.text_scope import rule_hits
+
+    native_hit_details: JsonArray = [
+        {
+            "file_name": "Items.json",
+            "tag_name": "拡張説明",
+            "location_path": "Items.json/1/note/拡張説明",
+            "original_text": "薬草の詳細",
+            "translatable": True,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "拡張説明",
+            "location_path": "Items.json/1/note/拡張説明",
+            "original_text": "二度目",
+            "translatable": True,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "PrivateProtocol",
+            "location_path": "Items.json/1/note/PrivateProtocol",
+            "original_text": "ABC",
+            "translatable": False,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "BlankValue",
+            "location_path": "Items.json/1/note/BlankValue",
+            "original_text": "",
+            "translatable": False,
+        },
+        {
+            "file_name": "Map001.json",
+            "tag_name": "namePop",
+            "location_path": "Map001.json/events/2/note/namePop",
+            "original_text": "案内人",
+            "translatable": True,
+        },
+    ]
+
+    def forbidden_collect_note_tag_sources(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("collect_note_tag_rule_hits 不应再调用 Python collect_note_tag_sources")
+
+    def forbidden_iter_note_tag_matches(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("collect_note_tag_rule_hits 不应再调用 Python iter_note_tag_matches")
+
+    def fake_collect_native_note_tag_hit_details(*args: object, **kwargs: object) -> JsonArray:
+        _ = (args, kwargs)
+        return native_hit_details
+
+    monkeypatch.setattr(rule_hits, "collect_note_tag_sources", forbidden_collect_note_tag_sources, raising=False)
+    monkeypatch.setattr(rule_hits, "iter_note_tag_matches", forbidden_iter_note_tag_matches, raising=False)
+    monkeypatch.setattr(
+        rule_hits,
+        "collect_native_note_tag_hit_details",
+        fake_collect_native_note_tag_hit_details,
+        raising=False,
+    )
+
+    game_data = await load_game_data(minimal_game_dir)
+    hits = collect_note_tag_rule_hits(
+        game_data=game_data,
+        note_tag_rules=[
+            NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"]),
+            NoteTagTextRuleRecord(file_name="Items*.json", tag_names=["PrivateProtocol", "BlankValue"]),
+            NoteTagTextRuleRecord(file_name="Map001.json", tag_names=["namePop"]),
+            NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"]),
+        ],
+        text_rules=get_default_text_rules(),
+    )
+
+    assert [
+        (hit.location_path, hit.source_type, hit.rule_source, hit.original_text)
+        for hit in hits
+    ] == [
+        ("Items.json/1/note/拡張説明", "note_tag", "Note 标签规则", "薬草の詳細"),
+        ("Items.json/1/note/PrivateProtocol", "note_tag", "Note 标签规则", "ABC"),
+        ("Items.json/1/note/BlankValue", "note_tag", "Note 标签规则", ""),
+        ("Map001.json/events/2/note/namePop", "note_tag", "Note 标签规则", "案内人"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_note_tag_extraction_uses_native_details_without_python_note_scan(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Note 标签正文提取必须消费同一次 native 来源和命中明细。"""
+    from app.note_tag_text import extraction as extraction_module
+
+    native_source_details: JsonArray = [
+        {"file_name": "Items.json", "location_prefix": "Items.json/1"},
+        {"file_name": "Map001.json", "location_prefix": "Map001.json/events/2"},
+    ]
+    native_hit_details: JsonArray = [
+        {
+            "file_name": "Items.json",
+            "tag_name": "PrivateProtocol",
+            "location_path": "Items.json/1/note/PrivateProtocol",
+            "original_text": "ABC",
+            "translatable": False,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "BlankValue",
+            "location_path": "Items.json/1/note/BlankValue",
+            "original_text": "",
+            "translatable": False,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "ExtendDesc",
+            "location_path": "Items.json/1/note/ExtendDesc",
+            "original_text": "別説明",
+            "translatable": True,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "拡張説明",
+            "location_path": "Items.json/1/note/拡張説明",
+            "original_text": "薬草の詳細",
+            "translatable": True,
+        },
+        {
+            "file_name": "Map001.json",
+            "tag_name": "namePop",
+            "location_path": "Map001.json/events/2/note/namePop",
+            "original_text": "案内人",
+            "translatable": True,
+        },
+    ]
+    native_call_count = 0
+
+    def forbidden_collect_note_tag_sources(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("NoteTagTextExtraction 不应再调用 Python collect_note_tag_sources")
+
+    def forbidden_iter_note_tag_matches(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("NoteTagTextExtraction 不应再调用 Python iter_note_tag_matches")
+
+    def fake_collect_native_note_tag_extraction_details(
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[JsonArray, JsonArray]:
+        nonlocal native_call_count
+        _ = (args, kwargs)
+        native_call_count += 1
+        return native_source_details, native_hit_details
+
+    monkeypatch.setattr(extraction_module, "collect_note_tag_sources", forbidden_collect_note_tag_sources, raising=False)
+    monkeypatch.setattr(extraction_module, "iter_note_tag_matches", forbidden_iter_note_tag_matches, raising=False)
+    monkeypatch.setattr(
+        extraction_module,
+        "collect_native_note_tag_extraction_details",
+        fake_collect_native_note_tag_extraction_details,
+        raising=False,
+    )
+
+    game_data = await load_game_data(minimal_game_dir)
+    extracted = NoteTagTextExtraction(
+        game_data=game_data,
+        rule_records=[
+            NoteTagTextRuleRecord(
+                file_name="Items*.json",
+                tag_names=["拡張説明", "PrivateProtocol", "BlankValue", "ExtendDesc"],
+            ),
+            NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"]),
+        ],
+        text_rules=get_default_text_rules(),
+    ).extract_all_text()
+
+    assert native_call_count == 1
+    assert [
+        (file_name, item.location_path, tuple(item.original_lines))
+        for file_name, data in extracted.items()
+        for item in data.translation_items
+    ] == [
+        ("Items.json", "Items.json/1/note/拡張説明", ("薬草の詳細",)),
+        ("Items.json", "Items.json/1/note/ExtendDesc", ("別説明",)),
+        ("Map001.json", "Map001.json/events/2/note/namePop", ("案内人",)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_note_tag_extraction_native_details_keep_duplicate_error_before_filter(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """native 薄适配仍必须先报重复标签，再执行不可翻译过滤。"""
+    from app.note_tag_text import extraction as extraction_module
+
+    native_source_details: JsonArray = [{"file_name": "Items.json", "location_prefix": "Items.json/1"}]
+    native_hit_details: JsonArray = [
+        {
+            "file_name": "Items.json",
+            "tag_name": "PrivateProtocol",
+            "location_path": "Items.json/1/note/PrivateProtocol",
+            "original_text": "ABC",
+            "translatable": False,
+        },
+        {
+            "file_name": "Items.json",
+            "tag_name": "PrivateProtocol",
+            "location_path": "Items.json/1/note/PrivateProtocol",
+            "original_text": "DEF",
+            "translatable": False,
+        },
+    ]
+
+    def forbidden_collect_note_tag_sources(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("NoteTagTextExtraction 不应再调用 Python collect_note_tag_sources")
+
+    def forbidden_iter_note_tag_matches(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("NoteTagTextExtraction 不应再调用 Python iter_note_tag_matches")
+
+    def fake_collect_native_note_tag_extraction_details(
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[JsonArray, JsonArray]:
+        _ = (args, kwargs)
+        return native_source_details, native_hit_details
+
+    monkeypatch.setattr(extraction_module, "collect_note_tag_sources", forbidden_collect_note_tag_sources, raising=False)
+    monkeypatch.setattr(extraction_module, "iter_note_tag_matches", forbidden_iter_note_tag_matches, raising=False)
+    monkeypatch.setattr(
+        extraction_module,
+        "collect_native_note_tag_extraction_details",
+        fake_collect_native_note_tag_extraction_details,
+        raising=False,
+    )
+
+    game_data = await load_game_data(minimal_game_dir)
+    with pytest.raises(ValueError, match="标签重复"):
+        _ = NoteTagTextExtraction(
+            game_data=game_data,
+            rule_records=[NoteTagTextRuleRecord(file_name="Items.json", tag_names=["PrivateProtocol"])],
             text_rules=get_default_text_rules(),
         ).extract_all_text()
 @pytest.mark.asyncio
