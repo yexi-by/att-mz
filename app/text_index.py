@@ -113,7 +113,7 @@ async def rebuild_text_index_native_storage_with_summary(
     rule_candidate_text_rules = build_native_rule_candidate_text_rules_payload(text_rules)
     rule_candidate_text_rules["source_text_required_pattern"] = setting.text_rules.source_text_required_pattern
     engine_kind = resolve_game_layout(session.game_path).engine_kind
-    event_command_default_codes = [
+    event_command_scope_codes = [
         coerce_json_value(code)
         for code in setting.event_command_text.default_codes_for_engine(engine_kind)
     ]
@@ -129,7 +129,7 @@ async def rebuild_text_index_native_storage_with_summary(
             "engine_kind": engine_kind,
             "text_rules_setting": text_rules_setting,
             "rule_candidate_text_rules": rule_candidate_text_rules,
-            "event_command_default_codes": event_command_default_codes,
+            "event_command_scope_codes": event_command_scope_codes,
             "source_text_required_pattern": setting.text_rules.source_text_required_pattern,
             "created_at": current_timestamp_text(),
         }

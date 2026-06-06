@@ -510,7 +510,7 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
             "engine_kind": "mz",
             "text_rules_setting": setting.model_dump(mode="json"),
             "rule_candidate_text_rules": _rebuild_rule_candidate_text_rules(setting),
-            "event_command_default_codes": [357],
+            "event_command_scope_codes": [357],
             "source_text_required_pattern": setting.source_text_required_pattern,
             "created_at": "2026-06-05T00:00:00",
         }

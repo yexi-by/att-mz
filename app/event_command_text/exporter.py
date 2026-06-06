@@ -17,13 +17,13 @@ from app.rmmz.text_rules import JsonArray, JsonValue, ensure_json_array, ensure_
 def resolve_event_command_codes(
     *,
     command_codes: set[int] | None,
-    default_command_codes: list[int] | None,
+    configured_command_codes: list[int] | None,
 ) -> frozenset[int]:
     """解析事件指令参数导出的有效编码集合。"""
     if command_codes is None:
-        if default_command_codes is None:
-            raise ValueError("未传入 CLI 编码时必须提供配置文件默认编码数组")
-        effective_codes = frozenset(default_command_codes)
+        if configured_command_codes is None:
+            raise ValueError("未传入 CLI 编码时必须提供按引擎配置的默认编码数组")
+        effective_codes = frozenset(configured_command_codes)
     else:
         effective_codes = frozenset(command_codes)
 

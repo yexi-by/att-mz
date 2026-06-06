@@ -336,7 +336,7 @@ def event_command_rule_codes_for_setting(*, game_data: GameData, setting: Settin
     """读取当前配置实际启用的事件指令编码集合。"""
     return resolve_event_command_codes(
         command_codes=None,
-        default_command_codes=setting.event_command_text.default_codes_for_engine(game_data.layout.engine_kind),
+        configured_command_codes=setting.event_command_text.default_codes_for_engine(game_data.layout.engine_kind),
     )
 
 

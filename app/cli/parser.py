@@ -639,15 +639,6 @@ def add_setting_override_arguments(
     if not include_text_rules:
         return
     _ = group.add_argument(
-        "--event-command-default-code",
-        action="extend",
-        nargs="+",
-        type=int,
-        dest="event_command_default_codes",
-        metavar="CODE",
-        help="事件指令参数默认编码数组",
-    )
-    _ = group.add_argument(
         "--strip-wrapping-punctuation-pair",
         action="append",
         nargs=2,

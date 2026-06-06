@@ -50,7 +50,7 @@ async def test_event_command_json_export_uses_configured_command_codes(
         output_path=output_path,
         command_codes=resolve_event_command_codes(
             command_codes=None,
-            default_command_codes=[357],
+            configured_command_codes=[357],
         ),
     )
 
@@ -139,7 +139,6 @@ async def test_mv_event_command_json_export_uses_engine_default_356(
     game_data = await load_game_data(minimal_mv_game_dir)
     setting = EventCommandTextSetting.model_validate(
         {
-            "default_command_codes": [357],
             "default_command_codes_by_engine": {"mv": [356], "mz": [357]},
         }
     )
@@ -150,7 +149,7 @@ async def test_mv_event_command_json_export_uses_engine_default_356(
         output_path=output_path,
         command_codes=resolve_event_command_codes(
             command_codes=None,
-            default_command_codes=setting.default_codes_for_engine(game_data.layout.engine_kind),
+            configured_command_codes=setting.default_codes_for_engine(game_data.layout.engine_kind),
         ),
     )
 
@@ -163,23 +162,22 @@ async def test_mv_event_command_json_export_uses_engine_default_356(
     assert parameters == ["ShowMvText text:MVプラグイン本文 name:案内人"]
 
 
-def test_event_command_code_resolution_uses_configured_default_array() -> None:
+def test_event_command_code_resolution_uses_configured_code_array() -> None:
     """事件指令导出编码未传入时使用配置数组，命令参数可覆盖配置。"""
     assert resolve_event_command_codes(
         command_codes=None,
-        default_command_codes=[357, 999, 357],
+        configured_command_codes=[357, 999, 357],
     ) == frozenset({357, 999})
     assert resolve_event_command_codes(
         command_codes={102, 103},
-        default_command_codes=[357],
+        configured_command_codes=[357],
     ) == frozenset({102, 103})
 
 
-def test_event_command_setting_prefers_engine_default_over_common_default() -> None:
-    """按引擎默认编码优先于通用默认编码，显式编码仍由调用方覆盖。"""
+def test_event_command_setting_reads_engine_default_codes() -> None:
+    """事件指令默认编码按引擎读取，显式编码仍由调用方覆盖。"""
     setting = EventCommandTextSetting.model_validate(
         {
-            "default_command_codes": [357],
             "default_command_codes_by_engine": {"mv": [356], "mz": [357]},
         }
     )
@@ -188,8 +186,8 @@ def test_event_command_setting_prefers_engine_default_over_common_default() -> N
     assert setting.default_codes_for_engine("mz") == [357]
 
 
-def test_event_command_text_setting_requires_default_code_array() -> None:
-    """事件指令默认编码数组必须由配置文件显式提供。"""
+def test_event_command_text_setting_requires_engine_code_map() -> None:
+    """事件指令按引擎默认编码必须由配置文件显式提供。"""
     with pytest.raises(ValidationError):
         _ = EventCommandTextSetting.model_validate({})
 

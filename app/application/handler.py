@@ -625,15 +625,15 @@ class TranslationHandler:
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
             resolved_output_path = output_path.resolve()
-            default_command_codes: list[int] | None = None
+            configured_command_codes: list[int] | None = None
             if command_codes is None:
                 setting = self._load_setting(source_language=session.source_language)
-                default_command_codes = setting.event_command_text.default_codes_for_engine(
+                configured_command_codes = setting.event_command_text.default_codes_for_engine(
                     game_data.layout.engine_kind
                 )
             effective_command_codes = resolve_event_command_codes(
                 command_codes=command_codes,
-                default_command_codes=default_command_codes,
+                configured_command_codes=configured_command_codes,
             )
             command_count = await export_event_commands_json_file(
                 game_data=game_data,
@@ -708,7 +708,7 @@ class TranslationHandler:
                 else:
                     effective_command_codes = resolve_event_command_codes(
                         command_codes=command_codes,
-                        default_command_codes=None,
+                        configured_command_codes=None,
                     )
                 empty_review_scope_hash = event_command_rule_scope_hash_for_command_codes(
                     game_data=game_data,

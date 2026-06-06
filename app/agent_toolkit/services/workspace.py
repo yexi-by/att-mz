@@ -571,12 +571,12 @@ class WorkspaceAgentMixin:
         )
         note_tag_rules_path = target_dir / "note-tag-rules.json"
         await _write_json_object(note_tag_rules_path, _note_tag_rule_records_to_import_json(note_tag_rules))
-        default_command_codes = (
+        configured_command_codes = (
             None
             if command_codes is not None
             else setting.event_command_text.default_codes_for_engine(game_data.layout.engine_kind)
         )
-        effective_codes = resolve_event_command_codes(command_codes=command_codes, default_command_codes=default_command_codes)
+        effective_codes = resolve_event_command_codes(command_codes=command_codes, configured_command_codes=configured_command_codes)
         event_commands_path = target_dir / "event-commands.json"
         event_command_count = await export_event_commands_json_file(
             game_data=game_data,

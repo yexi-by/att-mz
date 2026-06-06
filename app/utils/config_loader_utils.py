@@ -299,7 +299,7 @@ def _build_setting_summary(
         f"正文切块: 目标 [tag.count]{setting.translation_context.token_size}[/tag.count] token，换算系数 [tag.count]{setting.translation_context.factor}[/tag.count]，同角色最多连续 [tag.count]{setting.translation_context.max_command_items}[/tag.count] 条",
         f"正文翻译: [tag.count]{setting.text_translation.worker_count}[/tag.count] 个 worker，RPM [tag.count]{setting.text_translation.rpm or '不限'}[/tag.count]，失败重试 [tag.count]{setting.text_translation.retry_count}[/tag.count] 次，间隔 [tag.count]{setting.text_translation.retry_delay}[/tag.count] 秒",
         f"模型输出原文对照: [tag.count]{'开启' if setting.text_translation.include_source_lines else '关闭'}[/tag.count]",
-        f"事件指令参数默认: 兼容旧配置编码 [tag.count]{', '.join(map(str, setting.event_command_text.default_command_codes))}[/tag.count]，按引擎有效默认 [tag.count]{engine_code_label}[/tag.count]",
+        f"事件指令参数默认: 按引擎有效默认 [tag.count]{engine_code_label}[/tag.count]",
         f"字体覆盖候选配置: [tag.path]{setting.write_back.replacement_font_path or '未配置'}[/tag.path]（只有显式确认字体覆盖时使用）",
         f"Rust 原生线程: [tag.count]{setting.runtime.rust_threads}[/tag.count]",
         f"文本规则: 行切分标点 [tag.count]{len(setting.text_rules.line_split_punctuations)}[/tag.count] 个，长文本宽度 [tag.count]{setting.text_rules.long_text_line_width_limit}[/tag.count]，提取剥离标点 [tag.count]{len(setting.text_rules.strip_wrapping_punctuation_pairs)}[/tag.count] 组，译文保形标点 [tag.count]{len(setting.text_rules.preserve_wrapping_punctuation_pairs)}[/tag.count] 组",

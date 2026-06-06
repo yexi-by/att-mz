@@ -85,28 +85,15 @@ class TextTranslationSetting(StrictBaseModel):
 
 
 type EventCommandCode = Annotated[int, Field(ge=0, strict=True)]
+REQUIRED_EVENT_COMMAND_ENGINE_KINDS: frozenset[EngineKind] = frozenset(("mv", "mz"))
 
 
 class EventCommandTextSetting(StrictBaseModel):
     """事件指令参数外部规则配置。"""
 
-    default_command_codes: list[EventCommandCode] = Field(
-        min_length=1,
-        title="默认导出的事件指令编码",
-    )
     default_command_codes_by_engine: dict[EngineKind, list[EventCommandCode]] = Field(
-        default_factory=dict,
         title="按引擎区分的默认事件指令编码",
     )
-
-    @field_validator("default_command_codes")
-    @classmethod
-    def _validate_default_command_codes(cls, value: list[int]) -> list[int]:
-        """默认事件指令编码必须是非空、非负且去重后的数组。"""
-        return normalize_event_command_codes(
-            value,
-            context="event_command_text.default_command_codes",
-        )
 
     @field_validator("default_command_codes_by_engine")
     @classmethod
@@ -114,7 +101,11 @@ class EventCommandTextSetting(StrictBaseModel):
         cls,
         value: dict[EngineKind, list[int]],
     ) -> dict[EngineKind, list[int]]:
-        """按引擎配置的事件指令编码必须逐项非空并去重。"""
+        """按引擎配置的事件指令编码必须覆盖 MV/MZ 且逐项非空。"""
+        missing_engine_kinds = sorted(REQUIRED_EVENT_COMMAND_ENGINE_KINDS.difference(value))
+        if missing_engine_kinds:
+            missing_label = "、".join(missing_engine_kinds)
+            raise ValueError(f"event_command_text.default_command_codes_by_engine 缺少引擎: {missing_label}")
         normalized_map: dict[EngineKind, list[int]] = {}
         for engine_kind, command_codes in value.items():
             normalized_map[engine_kind] = normalize_event_command_codes(
@@ -124,11 +115,8 @@ class EventCommandTextSetting(StrictBaseModel):
         return normalized_map
 
     def default_codes_for_engine(self, engine_kind: EngineKind) -> list[int]:
-        """按引擎返回默认事件指令编码，引擎配置优先于旧配置。"""
-        engine_codes = self.default_command_codes_by_engine.get(engine_kind)
-        if engine_codes is not None:
-            return list(engine_codes)
-        return list(self.default_command_codes)
+        """按引擎返回默认事件指令编码。"""
+        return list(self.default_command_codes_by_engine[engine_kind])
 
 
 def normalize_event_command_codes(value: list[int], *, context: str) -> list[int]:

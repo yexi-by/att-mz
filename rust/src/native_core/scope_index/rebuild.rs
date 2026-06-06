@@ -61,7 +61,7 @@ struct RebuildStoragePayload {
     engine_kind: String,
     text_rules_setting: Value,
     rule_candidate_text_rules: RuleCandidateTextRules,
-    event_command_default_codes: Vec<i64>,
+    event_command_scope_codes: Vec<i64>,
     source_text_required_pattern: String,
     created_at: String,
 }
@@ -525,10 +525,10 @@ fn build_workflow_gate_scope_hashes(
         );
     }
 
-    if payload.event_command_default_codes.is_empty() {
+    if payload.event_command_scope_codes.is_empty() {
         return Err(structured_error(
             "scope_index_rebuild_event_command_codes_invalid",
-            "事件指令默认编码为空，请检查配置".to_string(),
+            "事件指令范围编码为空，请检查按引擎配置".to_string(),
         ));
     }
     if context.event_command_rules.is_empty() {
@@ -536,7 +536,7 @@ fn build_workflow_gate_scope_hashes(
         let event_data_files = event_command_data_file_inputs(data_files);
         let event_payload = super::event_commands::event_command_scope_hash_payload(
             &event_data_files,
-            &payload.event_command_default_codes,
+            &payload.event_command_scope_codes,
         );
         metadata.insert(
             EVENT_COMMAND_TEXT_RULE_DOMAIN.to_string(),

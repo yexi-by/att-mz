@@ -50,8 +50,9 @@ retry_delay = 1
 ja = "missing_prompt.txt"
 en = "missing_prompt.txt"
 
-[event_command_text]
-default_command_codes = [357]
+[event_command_text.default_command_codes_by_engine]
+mv = [356]
+mz = [357]
 
 [text_rules]
 strip_wrapping_punctuation_pairs = [["「", "」"]]
@@ -79,7 +80,6 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
         text_translation_retry_delay=3,
         text_translation_include_source_lines=True,
         text_translation_system_prompt=MINIMAL_PROMPT_TEMPLATE,
-        event_command_default_codes=[357, 355],
         strip_wrapping_punctuation_pairs=[("《", "》")],
         preserve_wrapping_punctuation_pairs=[("『", "』")],
         source_residual_allowed_chars=["ー"],
@@ -113,7 +113,6 @@ residual_escape_sequence_pattern = "\\\\[nrt]"
     assert setting.text_translation.selected_system_prompt_file == "<cli>"
     assert setting.text_translation.system_prompt.startswith("系统提示词")
     assert "`source_lines` 尽量原样复制输入原文，用于人工对照。" in setting.text_translation.system_prompt
-    assert setting.event_command_text.default_command_codes == [357, 355]
     assert setting.text_rules.strip_wrapping_punctuation_pairs == [("《", "》")]
     assert setting.text_rules.preserve_wrapping_punctuation_pairs == [("『", "』")]
     assert setting.text_rules.source_residual_allowed_chars == ["ー"]
@@ -369,8 +368,9 @@ retry_count = 1
 retry_delay = 1
 system_prompt_file = "prompt.txt"
 
-[event_command_text]
-default_command_codes = [357]
+[event_command_text.default_command_codes_by_engine]
+mv = [356]
+mz = [357]
 """,
         encoding="utf-8",
     )
@@ -445,8 +445,9 @@ retry_delay = 1
 ja = "prompt.txt"
 en = "prompt.txt"
 
-[event_command_text]
-default_command_codes = [357]
+[event_command_text.default_command_codes_by_engine]
+mv = [356]
+mz = [357]
 """,
         encoding="utf-8",
     )
@@ -564,8 +565,9 @@ retry_delay = 1
 ja = "prompt.txt"
 en = "prompt.txt"
 
-[event_command_text]
-default_command_codes = [357]
+[event_command_text.default_command_codes_by_engine]
+mv = [356]
+mz = [357]
 
 {runtime_text}
 """,

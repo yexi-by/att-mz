@@ -35,9 +35,6 @@ include_source_lines = false
 ja = "prompts/text_translation_ja_to_zh_system.md"
 en = "prompts/text_translation_en_to_zh_system.md"
 
-[event_command_text]
-default_command_codes = [357]
-
 [event_command_text.default_command_codes_by_engine]
 mv = [356]
 mz = [357]

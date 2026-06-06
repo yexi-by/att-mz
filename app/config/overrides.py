@@ -20,7 +20,6 @@ class SettingOverrides:
     text_translation_retry_delay: int | None = None
     text_translation_include_source_lines: bool | None = None
     text_translation_system_prompt: str | None = None
-    event_command_default_codes: list[int] | None = None
     write_back_replacement_font_path: str | None = None
     strip_wrapping_punctuation_pairs: list[tuple[str, str]] | None = None
     preserve_wrapping_punctuation_pairs: list[tuple[str, str]] | None = None
@@ -51,7 +50,6 @@ class SettingOverrides:
                 self.text_translation_retry_delay is not None,
                 self.text_translation_include_source_lines is not None,
                 self.text_translation_system_prompt is not None,
-                self.event_command_default_codes is not None,
                 self.write_back_replacement_font_path is not None,
                 self.strip_wrapping_punctuation_pairs is not None,
                 self.preserve_wrapping_punctuation_pairs is not None,
@@ -109,13 +107,6 @@ def apply_setting_overrides(
     if overrides.text_translation_system_prompt is not None:
         text_translation["system_prompt"] = overrides.text_translation_system_prompt
         text_translation["selected_system_prompt_file"] = "<cli>"
-
-    event_command_text = _read_or_create_section(raw_config, "event_command_text")
-    _set_if_present(
-        event_command_text,
-        "default_command_codes",
-        overrides.event_command_default_codes,
-    )
 
     write_back = _read_or_create_section(raw_config, "write_back")
     _set_if_present(
