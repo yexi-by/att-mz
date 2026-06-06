@@ -162,6 +162,8 @@ def test_setting_example_loads_debug_config(monkeypatch: pytest.MonkeyPatch) -> 
     assert setting.debug.timings.write_file is True
     assert setting.debug.timings.include_summary_in_report is True
     assert setting.debug.timings.detail_level == "standard"
+    assert setting.debug.llm_messages.enabled is True
+    assert setting.debug.llm_messages.output_dir == "output/debug/llm-messages"
 
 
 def test_debug_runtime_settings_uses_lightweight_config_and_cli_env_precedence(
@@ -199,12 +201,17 @@ enabled = false
 write_file = true
 include_summary_in_report = true
 detail_level = "standard"
+
+[debug.llm_messages]
+enabled = false
+output_dir = "debug/llm-messages"
 """,
         encoding="utf-8",
     )
     monkeypatch.setenv("ATT_MZ_DEBUG", "1")
     monkeypatch.setenv("ATT_MZ_DEBUG_TIMINGS", "1")
-    args = Namespace(debug=None, debug_logging=True, debug_timings=None)
+    monkeypatch.setenv("ATT_MZ_DEBUG_LLM_MESSAGES", "1")
+    args = Namespace(debug=None, debug_logging=True, debug_timings=None, debug_llm_messages=None)
 
     settings = resolve_debug_runtime_settings(args=args, setting_path=setting_path)
 
@@ -214,6 +221,47 @@ detail_level = "standard"
     assert settings.logging_source == "cli"
     assert settings.timings_enabled is True
     assert settings.timings_source == "env"
+    assert settings.llm_messages_enabled is True
+    assert settings.llm_messages_source == "env"
+    assert settings.llm_messages_output_dir == "debug/llm-messages"
+
+
+def test_debug_runtime_settings_cli_overrides_llm_messages_env_and_setting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM 消息观测子功能必须沿用 CLI > env > setting 优先级。"""
+    from argparse import Namespace
+
+    from app.observability.diagnostics import resolve_debug_runtime_settings
+
+    setting_path = tmp_path / "setting.toml"
+    _ = setting_path.write_text(
+        """
+[debug]
+enabled = true
+
+[debug.llm_messages]
+enabled = true
+output_dir = "custom/debug/llm"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_DEBUG_LLM_MESSAGES", "1")
+    args = Namespace(
+        debug=None,
+        debug_logging=None,
+        debug_timings=None,
+        debug_llm_messages=False,
+    )
+
+    settings = resolve_debug_runtime_settings(args=args, setting_path=setting_path)
+
+    assert settings.enabled is True
+    assert settings.llm_messages_enabled is False
+    assert settings.llm_messages_source == "cli"
+    assert settings.effective_llm_messages_enabled is False
+    assert settings.llm_messages_output_dir == "custom/debug/llm"
 
 
 @pytest.mark.parametrize(

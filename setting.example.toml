@@ -31,6 +31,10 @@ write_file = true
 include_summary_in_report = true
 detail_level = "standard"
 
+[debug.llm_messages]
+enabled = true
+output_dir = "output/debug/llm-messages"
+
 [translation_context]
 token_size = 1024
 factor = 3.5

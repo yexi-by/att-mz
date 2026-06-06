@@ -267,6 +267,7 @@ class TranslationRunController:
             retry_count=self._retry_count,
             retry_delay=self._retry_delay,
             task_label="正文翻译",
+            task_key="text-translation",
         )
         self.state.model_request_ms += int((time.perf_counter() - request_started) * 1000)
         right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()

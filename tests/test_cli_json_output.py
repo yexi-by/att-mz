@@ -93,8 +93,9 @@ def test_global_debug_switches_parse() -> None:
         [
             "--debug",
             "--debug-timings",
+            "--debug-llm-messages",
             "--no-debug-logging",
-            "quality-report",
+            "translate",
             "--game",
             "demo",
         ]
@@ -103,6 +104,7 @@ def test_global_debug_switches_parse() -> None:
         [
             "--no-debug",
             "--no-debug-timings",
+            "--no-debug-llm-messages",
             "--debug-logging",
             "quality-report",
             "--game",
@@ -112,10 +114,88 @@ def test_global_debug_switches_parse() -> None:
 
     assert getattr(enabled_args, "debug") is True
     assert getattr(enabled_args, "debug_timings") is True
+    assert getattr(enabled_args, "debug_llm_messages") is True
     assert getattr(enabled_args, "debug_logging") is False
     assert getattr(disabled_args, "debug") is False
     assert getattr(disabled_args, "debug_timings") is False
+    assert getattr(disabled_args, "debug_llm_messages") is False
     assert getattr(disabled_args, "debug_logging") is True
+
+
+def test_debug_llm_messages_cli_requires_debug_enabled(
+    capsys: CaptureFixture[str],
+) -> None:
+    """显式开启 LLM 消息观测时必须同时开启 debug 总开关。"""
+    exit_code = main(["--debug-llm-messages", "translate", "--game", "demo"])
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    errors = ensure_json_array(payload["errors"], "errors")
+    first_error = ensure_json_object(errors[0], "errors[0]")
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    message = first_error["message"]
+    assert isinstance(message, str)
+    assert "--debug-llm-messages" in message
+    assert "--debug" in message
+
+
+def test_debug_llm_messages_cli_rejects_non_llm_command(
+    capsys: CaptureFixture[str],
+) -> None:
+    """显式开启 LLM 消息观测只能用于 translate/run-all。"""
+    exit_code = main(
+        [
+            "--debug",
+            "--debug-llm-messages",
+            "quality-report",
+            "--game",
+            "demo",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    errors = ensure_json_array(payload["errors"], "errors")
+    first_error = ensure_json_object(errors[0], "errors[0]")
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    message = first_error["message"]
+    assert isinstance(message, str)
+    assert "debug.llm_messages" in message
+    assert "quality-report" in message
+
+
+def test_debug_llm_messages_setting_or_env_on_non_llm_command_is_ignored(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """配置或环境变量开启 LLM 消息观测时，非 LLM 命令不报错也不创建空目录。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path))
+    monkeypatch.setenv("ATT_MZ_DEBUG", "1")
+    monkeypatch.setenv("ATT_MZ_DEBUG_LLM_MESSAGES", "1")
+
+    async def fake_dispatch_command(args: object) -> int:
+        """模拟非 LLM 命令成功。"""
+        from app.cli.reports import print_report
+
+        assert getattr(args, "command") == "quality-report"
+        print_report(AgentReport(status="ok", summary={"command": "quality-report"}))
+        return 0
+
+    monkeypatch.setattr("app.cli_main.dispatch_command", fake_dispatch_command)
+
+    exit_code = main(["quality-report", "--game", "demo"])
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert not (tmp_path / "output" / "debug" / "llm-messages").exists()
 
 
 def test_add_game_existing_source_snapshot_reports_business_error(

@@ -174,12 +174,23 @@ class DebugTimingsSetting(StrictBaseModel):
     detail_level: DebugTimingDetailLevel = Field(default="standard", title="计时诊断详细程度")
 
 
+class DebugLLMMessagesSetting(StrictBaseModel):
+    """debug 模式下的 LLM 消息观测配置。"""
+
+    enabled: bool = Field(default=True, title="是否启用 LLM 消息观测")
+    output_dir: str = Field(default="output/debug/llm-messages", title="LLM 消息观测输出目录")
+
+
 class DebugSetting(StrictBaseModel):
     """项目 debug 配置域。"""
 
     enabled: bool = Field(default=False, title="是否进入 debug 模式")
     logging: DebugLoggingSetting = Field(default_factory=DebugLoggingSetting, title="debug 日志配置")
     timings: DebugTimingsSetting = Field(default_factory=DebugTimingsSetting, title="debug 计时配置")
+    llm_messages: DebugLLMMessagesSetting = Field(
+        default_factory=DebugLLMMessagesSetting,
+        title="debug LLM 消息观测配置",
+    )
 
 
 class TextRulesSetting(StrictBaseModel):
@@ -272,6 +283,7 @@ class Setting(StrictBaseModel):
 __all__: list[str] = [
     "EventCommandTextSetting",
     "DebugLogLevel",
+    "DebugLLMMessagesSetting",
     "DebugLoggingSetting",
     "DebugSetting",
     "DebugTimingDetailLevel",

@@ -187,6 +187,7 @@ class TextTranslation:
                     retry_count=retry_count,
                     retry_delay=retry_delay,
                     task_label="正文翻译",
+                    task_key="text-translation",
                 )
                 await verify_translation_batch(
                     ai_result=ai_result,

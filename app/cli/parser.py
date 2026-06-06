@@ -55,6 +55,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="本次强制关闭统一计时诊断",
     )
+    debug_llm_messages_group = parser.add_mutually_exclusive_group()
+    _ = debug_llm_messages_group.add_argument(
+        "--debug-llm-messages",
+        dest="debug_llm_messages",
+        action="store_true",
+        default=None,
+        help="本次强制开启 LLM 消息观测",
+    )
+    _ = debug_llm_messages_group.add_argument(
+        "--no-debug-llm-messages",
+        dest="debug_llm_messages",
+        action="store_false",
+        help="本次强制关闭 LLM 消息观测",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="<命令>", required=True, parser_class=CliArgumentParser)
 
     _ = subparsers.add_parser("list", help="列出当前已注册游戏")

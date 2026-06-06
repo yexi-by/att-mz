@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import asyncio
 from collections.abc import Iterable
-from typing import override
+from typing import cast, override
 
 import pytest
+from openai import AsyncOpenAI
 
 from app.application.summaries import TextTranslationSummary
 from app.application.use_cases.translation_run import (
@@ -38,9 +39,11 @@ class AlwaysQualityErrorLLMHandler(LLMHandler):
         messages: list[ChatMessage],
         model: str,
         temperature: float | None = None,
+        task_key: str = "llm",
+        task_label: str = "LLM 调用",
     ) -> str:
         """返回空数组，让校验器把整个批次记录为 AI 漏翻。"""
-        _ = (messages, model, temperature)
+        _ = (messages, model, temperature, task_key, task_label)
         self.call_count += 1
         return "[]"
 
@@ -60,9 +63,11 @@ class SlowSecondQualityErrorLLMHandler(LLMHandler):
         messages: list[ChatMessage],
         model: str,
         temperature: float | None = None,
+        task_key: str = "llm",
+        task_label: str = "LLM 调用",
     ) -> str:
         """第二个已发送请求延迟返回质量错误。"""
-        _ = (messages, model, temperature)
+        _ = (messages, model, temperature, task_key, task_label)
         self.call_count += 1
         if self.call_count == 2:
             await asyncio.sleep(0.01)
@@ -85,9 +90,11 @@ class OneSuccessOneFailureLLMHandler(LLMHandler):
         messages: list[ChatMessage],
         model: str,
         temperature: float | None = None,
+        task_key: str = "llm",
+        task_label: str = "LLM 调用",
     ) -> str:
         """等待两个请求都发出后分别返回成功和失败结果。"""
-        _ = (model, temperature)
+        _ = (model, temperature, task_key, task_label)
         self.call_count += 1
         if self.call_count >= 2:
             _ = self._all_started.set()
@@ -113,7 +120,56 @@ def _build_batch(index: int) -> TranslationBatch:
         items=[item],
         prompt_ids_by_location_path={location_path: f"id-{index}"},
         messages=[ChatMessage(role="user", text=f"translate {index}")],
-    )
+        )
+
+
+class FakeCompletionMessage:
+    """模拟 OpenAI SDK 返回的消息对象。"""
+
+    def __init__(self, content: str) -> None:
+        """保存模型文本内容。"""
+        self.content: str = content
+
+
+class FakeChoice:
+    """模拟 OpenAI SDK 返回的候选项。"""
+
+    def __init__(self, content: str) -> None:
+        """保存候选项消息。"""
+        self.message: FakeCompletionMessage = FakeCompletionMessage(content)
+
+
+class FakeChatCompletionResponse:
+    """模拟 OpenAI SDK 的非流式响应。"""
+
+    def __init__(self, content: str) -> None:
+        """保存唯一候选项。"""
+        self.choices: list[FakeChoice] = [FakeChoice(content)]
+
+
+class FakeCompletions:
+    """返回固定内容的 Chat Completions 假实现。"""
+
+    async def create(self, **kwargs: object) -> FakeChatCompletionResponse:
+        """忽略请求参数并返回项目校验失败响应。"""
+        _ = kwargs
+        return FakeChatCompletionResponse("[]")
+
+
+class FakeChat:
+    """模拟 OpenAI SDK 的 chat 命名空间。"""
+
+    def __init__(self) -> None:
+        """初始化 completions 假实现。"""
+        self.completions: FakeCompletions = FakeCompletions()
+
+
+class FakeOpenAIClient:
+    """模拟 OpenAI SDK 客户端。"""
+
+    def __init__(self) -> None:
+        """初始化 chat 命名空间。"""
+        self.chat: FakeChat = FakeChat()
 
 
 @pytest.mark.asyncio
@@ -162,6 +218,57 @@ async def test_stop_on_error_rate_stops_dispatching_unsent_batches() -> None:
     assert interrupted_state.cancelled_unsent_item_count == 2
     assert interrupted_state.sent_after_stop_completed_batch_count == 0
     assert "停止阈值" in interrupted_state.stop_reason
+
+
+@pytest.mark.asyncio
+async def test_llm_messages_recorded_before_translation_quality_failure(tmp_path: Path) -> None:
+    """LLM API 成功返回后即写观测文件，即使后续翻译校验失败。"""
+    from app.observability.llm_messages import LLMMessageRecorder, bind_llm_message_recorder
+
+    llm_handler = LLMHandler()
+    llm_handler.configure(
+        base_url="https://api.example.com/v1",
+        api_key="sk-test-secret",
+        timeout=10,
+    )
+    llm_handler.client = cast(AsyncOpenAI, cast(object, FakeOpenAIClient()))
+    state = TranslationRunState(total_batch_count=1, total_item_count=1)
+
+    async def save_success(items: list[TranslationItem]) -> int:
+        """本用例不会产生成功译文。"""
+        return len(items)
+
+    async def save_errors(items: list[TranslationErrorItem]) -> int:
+        """返回已保存错误数量。"""
+        return len(items)
+
+    controller = TranslationRunController(
+        batches=[_build_batch(1)],
+        llm_handler=llm_handler,
+        model="fake-model",
+        retry_count=0,
+        retry_delay=0,
+        worker_count=1,
+        rpm=None,
+        text_rules=TextRules.from_setting(TextRulesSetting()),
+        source_residual_rule_set=None,
+        stop_on_error_rate=1.0,
+        state=state,
+        save_success_items=save_success,
+        save_error_items=save_errors,
+        advance_progress=lambda _count: None,
+    )
+    recorder = LLMMessageRecorder(command="translate", run_id="run123", output_dir=tmp_path)
+
+    with bind_llm_message_recorder(recorder):
+        with pytest.raises(TranslationRunInterrupted):
+            _ = await controller.run()
+
+    output_files = list(tmp_path.rglob("000001_text-translation.md"))
+    assert len(output_files) == 1
+    markdown = output_files[0].read_text(encoding="utf-8")
+    assert "translate 1" in markdown
+    assert "[]" in markdown
 
 
 @pytest.mark.asyncio

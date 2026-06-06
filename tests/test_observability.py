@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 from typing import cast
 
+import pytest
 from pytest import CaptureFixture
 
+from app.llm import ChatMessage
 from app.cli.progress import AgentProgressReporter
 from app.observability import logger, setup_logger
 from app.observability.logging import agent_console_sink
@@ -167,3 +169,99 @@ def test_diagnostics_context_does_not_write_file_in_ordinary_mode(tmp_path: Path
 
     assert diagnostics_path is None
     assert list(tmp_path.glob("*.json")) == []
+
+
+def test_llm_message_recorder_writes_markdown_and_index(tmp_path: Path) -> None:
+    """LLM 消息观测保存成功响应、脱敏请求元数据，并在收尾生成索引。"""
+    from app.observability.llm_messages import LLMMessageRecorder, LLMMessageRequest
+
+    recorder = LLMMessageRecorder(command="translate", run_id="run123", output_dir=tmp_path)
+    request = LLMMessageRequest(
+        task_key="text-translation",
+        task_label="正文|翻译",
+        model="model|x",
+        base_url="https://api.example.com/v1",
+        api_key_display="<redacted>",
+        temperature=None,
+        extra_body={
+            "reasoning_effort": "high",
+            "private_token": "secret-value",
+            "nested": {"authorization": "Bearer secret"},
+        },
+        messages=[
+            ChatMessage(role="system", text="系统提示词\n```json\n{}\n```"),
+            ChatMessage(role="user", text="用户提示词"),
+        ],
+        request_started_at="2026-06-07T14:30:12+08:00",
+    )
+
+    output_path = recorder.record_success(
+        request=request,
+        assistant_text='[{"id":"1","translation_lines":["译文"]}]',
+        response_received_at="2026-06-07T14:30:21+08:00",
+    )
+    index_path = recorder.finalize()
+
+    assert output_path.name == "000001_text-translation.md"
+    assert index_path is not None
+    assert index_path.name == "index.md"
+    markdown = output_path.read_text(encoding="utf-8")
+    index = index_path.read_text(encoding="utf-8")
+    assert "# LLM 调用 000001" in markdown
+    assert "- task_key: text-translation" in markdown
+    assert "- task_label: 正文|翻译" in markdown
+    assert '"api_key": "<redacted>"' in markdown
+    assert '"private_token": "<redacted>"' in markdown
+    assert '"authorization": "<redacted>"' in markdown
+    assert "https://api.example.com/v1" in markdown
+    assert "````text\n系统提示词" in markdown
+    assert '```json\n{}\n```' in markdown
+    assert '[{"id":"1","translation_lines":["译文"]}]' in markdown
+    assert "正文\\|翻译" in index
+    assert "model\\|x" in index
+    assert "000001_text-translation.md" in index
+
+
+def test_llm_message_recorder_does_not_create_directory_without_success(tmp_path: Path) -> None:
+    """没有成功 LLM 调用时，不创建空运行目录。"""
+    from app.observability.llm_messages import LLMMessageRecorder
+
+    recorder = LLMMessageRecorder(command="quality-report", run_id="run-empty", output_dir=tmp_path)
+
+    assert recorder.finalize() is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_llm_message_recorder_write_failure_is_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """debug 文件写入失败必须显式抛出专用错误。"""
+    from app.observability import llm_messages
+    from app.observability.llm_messages import LLMMessageRecorder, LLMMessageRequest, LLMMessageWriteError
+
+    recorder = LLMMessageRecorder(command="translate", run_id="run123", output_dir=tmp_path)
+    request = LLMMessageRequest(
+        task_key="llm",
+        task_label="LLM 调用",
+        model="model",
+        base_url="https://api.example.com/v1",
+        api_key_display="<redacted>",
+        temperature=None,
+        extra_body={},
+        messages=[ChatMessage(role="user", text="你好")],
+        request_started_at="2026-06-07T14:30:12+08:00",
+    )
+
+    def fail_write_text(path: Path, text: str) -> None:
+        _ = (path, text)
+        raise OSError("磁盘不可写")
+
+    monkeypatch.setattr(llm_messages, "_write_text", fail_write_text)
+
+    with pytest.raises(LLMMessageWriteError, match="LLM 消息观测文件写出失败"):
+        _ = recorder.record_success(
+            request=request,
+            assistant_text="成功",
+            response_received_at="2026-06-07T14:30:21+08:00",
+        )

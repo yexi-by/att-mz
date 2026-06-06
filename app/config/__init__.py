@@ -23,6 +23,7 @@ from .environment import (
 )
 from .overrides import SettingOverrides, apply_setting_overrides
 from .schemas import (
+    DebugLLMMessagesSetting,
     DebugLogLevel,
     DebugLoggingSetting,
     DebugSetting,
@@ -42,6 +43,7 @@ from .schemas import (
 
 __all__: list[str] = [
     "DebugLogLevel",
+    "DebugLLMMessagesSetting",
     "DebugLoggingSetting",
     "DebugSetting",
     "DebugTimingDetailLevel",

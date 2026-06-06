@@ -26,6 +26,7 @@ from app.runtime_paths import resolve_app_path
 DEBUG_ENV_NAME = "ATT_MZ_DEBUG"
 DEBUG_LOGGING_ENV_NAME = "ATT_MZ_DEBUG_LOGGING"
 DEBUG_TIMINGS_ENV_NAME = "ATT_MZ_DEBUG_TIMINGS"
+DEBUG_LLM_MESSAGES_ENV_NAME = "ATT_MZ_DEBUG_LLM_MESSAGES"
 DEFAULT_SETTING_FILE_NAME = "setting.toml"
 DIAGNOSTICS_SCHEMA_VERSION = 1
 
@@ -47,6 +48,9 @@ class DebugRuntimeSettings:
     timings_write_file: bool = True
     timings_include_summary_in_report: bool = True
     timings_detail_level: str = "standard"
+    llm_messages_enabled: bool = True
+    llm_messages_source: DebugValueSource = "default"
+    llm_messages_output_dir: str = "output/debug/llm-messages"
 
     @property
     def effective_logging_enabled(self) -> bool:
@@ -57,6 +61,11 @@ class DebugRuntimeSettings:
     def effective_timings_enabled(self) -> bool:
         """判断本次是否启用统一计时诊断。"""
         return self.enabled and self.timings_enabled
+
+    @property
+    def effective_llm_messages_enabled(self) -> bool:
+        """判断本次是否启用 LLM 消息观测。"""
+        return self.enabled and self.llm_messages_enabled
 
 
 class StageTimer:
@@ -274,6 +283,8 @@ class DiagnosticsContext:
                 "logging_source": self.settings.logging_source,
                 "timings_enabled": self.settings.timings_enabled,
                 "timings_source": self.settings.timings_source,
+                "llm_messages_enabled": self.settings.llm_messages_enabled,
+                "llm_messages_source": self.settings.llm_messages_source,
             },
             "environment": self._build_environment_payload(),
             "timings": dict(self._timings),
@@ -338,6 +349,11 @@ def resolve_debug_runtime_settings(
         env_value=_read_env_bool(environment, DEBUG_TIMINGS_ENV_NAME),
         setting_value=raw_debug.timings.enabled,
     )
+    llm_messages_enabled, llm_messages_source = _resolve_bool_value(
+        cli_value=_read_optional_bool_attr(args, "debug_llm_messages"),
+        env_value=_read_env_bool(environment, DEBUG_LLM_MESSAGES_ENV_NAME),
+        setting_value=raw_debug.llm_messages.enabled,
+    )
     return DebugRuntimeSettings(
         enabled=enabled,
         source=enabled_source,
@@ -350,6 +366,9 @@ def resolve_debug_runtime_settings(
         timings_write_file=raw_debug.timings.write_file,
         timings_include_summary_in_report=raw_debug.timings.include_summary_in_report,
         timings_detail_level=raw_debug.timings.detail_level,
+        llm_messages_enabled=llm_messages_enabled,
+        llm_messages_source=llm_messages_source,
+        llm_messages_output_dir=raw_debug.llm_messages.output_dir,
     )
 
 
@@ -418,6 +437,7 @@ def _now_iso() -> str:
 
 __all__ = [
     "DEBUG_ENV_NAME",
+    "DEBUG_LLM_MESSAGES_ENV_NAME",
     "DEBUG_LOGGING_ENV_NAME",
     "DEBUG_TIMINGS_ENV_NAME",
     "DIAGNOSTICS_SCHEMA_VERSION",
