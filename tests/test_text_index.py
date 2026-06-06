@@ -10,12 +10,14 @@ import pytest
 from tests.agent_toolkit_contract_fixtures import _install_minimal_workflow_gate_prerequisites
 
 from app.agent_toolkit import AgentToolkitService
+from app.application.flow_gate import event_command_rule_scope_hash_for_command_codes
 from app.config import SettingOverrides
 from app.native_scope_index import build_native_plugin_source_candidates_payload, scan_native_rule_candidates
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
 from app.persistence import GameRegistry
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
-from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
+from app.rule_review import EVENT_COMMAND_TEXT_RULE_DOMAIN, PLUGIN_TEXT_RULE_DOMAIN
+from app.rmmz import load_game_data
 from app.rmmz.schema import (
     MvVirtualNameboxRuleRecord,
     NonstandardDataTextRuleRecord,
@@ -196,7 +198,31 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
         _ = (args, kwargs)
         raise AssertionError("rebuild-text-index 冷路径不应调用 TextScopeService.build")
 
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        """首次冷重建不应为了 gate 加载 Python GameData。"""
+        _ = (args, kwargs)
+        raise AssertionError("rebuild-text-index 冷路径不应加载 Python GameData")
+
+    def forbidden_scope_restore(*args: object, **kwargs: object) -> NoReturn:
+        """首次冷重建不应把 text_index_items 还原成完整 scope 只为补 gate。"""
+        _ = (args, kwargs)
+        raise AssertionError("rebuild-text-index 冷路径不应还原完整 scope")
+
+    from app.agent_toolkit.services import text_index as text_index_service_module
+
+    assert not hasattr(text_index_service_module, "collect_workflow_gate_errors")
+    assert not hasattr(text_index_service_module, "refresh_text_index_external_rule_gate_metadata")
+    assert not hasattr(text_index_service_module, "text_index_items_to_scope")
     monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+    monkeypatch.setattr(
+        AgentToolkitService,
+        "_load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+    monkeypatch.setattr(
+        "app.text_index.text_index_items_to_scope",
+        forbidden_scope_restore,
+    )
 
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -219,16 +245,23 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
     assert isinstance(native_threads, int)
     assert native_threads > 0
     stage_timings = ensure_json_object(report.summary["stage_timings"], "stage_timings")
-    assert set(stage_timings) == {
-        "load_config_and_rules",
-        "rust_rebuild_text_index",
-        "source_branch_workflow_gate",
-    }
+    assert set(stage_timings) == {"load_config_and_rules", "rust_rebuild_text_index"}
+    assert "source_branch_workflow_gate" not in stage_timings
     assert all(isinstance(value, int) and value >= 0 for value in stage_timings.values())
     async with await registry.open_game(record.game_title) as session:
         metadata = await session.read_text_index_metadata()
         assert metadata is not None
         assert metadata.item_count == indexed_count
+        assert text_index_source_branch_gates_prechecked(metadata)
+        assert PLUGIN_TEXT_RULE_DOMAIN in metadata.workflow_gate_scope_hashes
+        assert any(
+            key.startswith(f"{TEXT_INDEX_PLACEHOLDER_GATE_PREFIX}:")
+            for key in metadata.workflow_gate_scope_hashes
+        )
+        assert any(
+            key.startswith(f"{TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX}:")
+            for key in metadata.workflow_gate_scope_hashes
+        )
         assert len(await session.read_text_index_items()) == indexed_count
         scope_summary = await session.read_text_index_scope_summary()
         assert scope_summary is not None
@@ -237,27 +270,17 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_text_index_reuses_gate_metadata_when_scope_unchanged(
+async def test_rebuild_text_index_recomputes_gate_metadata_without_python_fallback(
     minimal_english_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """连续重建同一索引时，应复用已通过的 gate 元信息，避免再次全量扫描。"""
-
-    async def forbidden_workflow_gate(*args: object, **kwargs: object) -> NoReturn:
-        """源快照和规则未变时不应重新运行完整 workflow gate。"""
-        _ = (args, kwargs)
-        raise AssertionError("连续 rebuild-text-index 不应重新运行完整 workflow gate")
+    """连续重建同一索引时，也只能由 Rust 重建当前 gate 元信息。"""
 
     async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
         """源快照和规则未变时不应加载完整 GameData 做 gate。"""
         _ = (args, kwargs)
         raise AssertionError("连续 rebuild-text-index 不应重新加载完整 GameData")
-
-    async def forbidden_external_gate_refresh(*args: object, **kwargs: object) -> NoReturn:
-        """源快照和规则未变时不应为了 gate hash 额外刷新外部规则元信息。"""
-        _ = (args, kwargs)
-        raise AssertionError("连续 rebuild-text-index 不应额外刷新外部规则 gate hash")
 
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -284,30 +307,23 @@ async def test_rebuild_text_index_reuses_gate_metadata_when_scope_unchanged(
     }
     assert placeholder_hashes
 
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.text_index.collect_workflow_gate_errors",
-        forbidden_workflow_gate,
-    )
+    from app.agent_toolkit.services import text_index as text_index_service_module
+
+    assert not hasattr(text_index_service_module, "collect_workflow_gate_errors")
+    assert not hasattr(text_index_service_module, "refresh_text_index_external_rule_gate_metadata")
     monkeypatch.setattr(
         AgentToolkitService,
         "_load_translation_source_game_data",
         forbidden_game_data_load,
     )
-    monkeypatch.setattr(
-        "app.text_index.refresh_text_index_external_rule_gate_metadata",
-        forbidden_external_gate_refresh,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.text_index.refresh_text_index_external_rule_gate_metadata",
-        forbidden_external_gate_refresh,
-    )
 
     second_report = await service.rebuild_text_index(game_title=record.game_title)
 
     assert second_report.status == "ok"
-    assert second_report.summary["source_branch_gate_status"] == "prechecked_from_previous_index"
+    assert second_report.summary["source_branch_gate_status"] == "prechecked"
     stage_timings = ensure_json_object(second_report.summary["stage_timings"], "stage_timings")
-    assert stage_timings["source_branch_workflow_gate"] == 0
+    assert set(stage_timings) == {"load_config_and_rules", "rust_rebuild_text_index"}
+    assert "source_branch_workflow_gate" not in stage_timings
     async with await registry.open_game(record.game_title) as session:
         second_metadata = await session.read_text_index_metadata()
     assert second_metadata is not None
@@ -316,6 +332,43 @@ async def test_rebuild_text_index_reuses_gate_metadata_when_scope_unchanged(
         key: second_metadata.workflow_gate_scope_hashes[key]
         for key in placeholder_hashes
     } == placeholder_hashes
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_event_command_scope_hash_matches_current_confirmation_order(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 冷索引写入的事件指令 hash 必须等价于当前空规则确认 hash。"""
+    setting_path = tmp_path / "setting.toml"
+    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8")
+    setting_text = setting_text.replace(
+        "prompts/text_translation_ja_to_zh_system.md",
+        (ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix(),
+    )
+    setting_text = setting_text.replace(
+        "prompts/text_translation_en_to_zh_system.md",
+        (ROOT / "prompts" / "text_translation_en_to_zh_system.md").as_posix(),
+    )
+    _ = setting_path.write_text(setting_text.replace("mz = [357]", "mz = [101]"), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=setting_path,
+    ).rebuild_text_index(game_title=record.game_title)
+
+    assert report.status == "ok"
+    game_data = await load_game_data(minimal_game_dir)
+    expected_hash = event_command_rule_scope_hash_for_command_codes(
+        game_data=game_data,
+        command_codes=frozenset({101}),
+    )
+    async with await registry.open_game(record.game_title) as session:
+        metadata = await session.read_text_index_metadata()
+    assert metadata is not None
+    assert metadata.workflow_gate_scope_hashes[EVENT_COMMAND_TEXT_RULE_DOMAIN] == expected_hash
 
 
 @pytest.mark.asyncio
@@ -524,7 +577,139 @@ async def test_agent_service_rebuild_text_index_includes_plugin_source_rule_text
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stale_mode", ["hash_changed", "file_missing"])
+async def test_rebuild_text_index_allows_plugin_source_file_hash_drift_when_selector_still_matches(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """插件源码冷索引不应把整文件 hash 漂移当成 selector 规则失效。"""
+    source = "\n".join(
+        [
+            "(() => {",
+            "  const message = 'ハッシュ漂移本文';",
+            "})();",
+        ]
+    )
+    plugin_source_path = minimal_game_dir / "js" / "plugins" / "TestPlugin.js"
+    _ = plugin_source_path.write_text(source, encoding="utf-8", newline="\n")
+    source_for_rules = plugin_source_path.read_text(encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    text_rules = TextRules.from_setting(load_setting(EXAMPLE_SETTING_PATH, source_language="ja").text_rules)
+    native_scan = scan_native_rule_candidates(
+        build_native_plugin_source_candidates_payload(
+            plugin_source_files={"TestPlugin.js": source_for_rules},
+            enabled_plugin_files={"TestPlugin.js"},
+            text_rules=text_rules,
+        )
+    )
+    candidate = next(
+        ensure_json_object(item, "plugin_source_candidate")
+        for item in native_scan.candidates
+        if ensure_json_object(item, "plugin_source_candidate")["original_text"] == "ハッシュ漂移本文"
+    )
+    selector = candidate["selector"]
+    assert isinstance(selector, str)
+
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="TestPlugin.js",
+                    file_hash="stale-diagnostic-hash",
+                    selectors=[selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+
+    assert report.status == "ok", report.errors[0].message if report.errors else report
+    async with await registry.open_game(record.game_title) as session:
+        items = {
+            item.location_path: item
+            for item in await session.read_text_index_items()
+        }
+    assert f"js/plugins/TestPlugin.js/{selector}" in items
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_reads_only_plugin_source_rule_files(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """有插件源码规则时，冷重建不能读取无关插件源码文件正文。"""
+    source = "\n".join(
+        [
+            "(() => {",
+            "  const message = '規則対象本文';",
+            "})();",
+        ]
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    _ = (plugin_source_dir / "TestPlugin.js").write_text(source, encoding="utf-8", newline="\n")
+    for index in range(300):
+        _ = (plugin_source_dir / f"Unused{index:03}.js").write_bytes(b"\xff\xfe\x00\x00")
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title=record.game_title,
+        game_dir=minimal_game_dir,
+    )
+
+    origin_plugin_source_dir = minimal_game_dir / "js" / "plugins_source_origin"
+    _ = origin_plugin_source_dir.mkdir(exist_ok=True)
+    _ = (origin_plugin_source_dir / "TestPlugin.js").write_text(source, encoding="utf-8", newline="\n")
+    source_for_rules = source
+    text_rules = TextRules.from_setting(load_setting(EXAMPLE_SETTING_PATH, source_language="ja").text_rules)
+    native_scan = scan_native_rule_candidates(
+        build_native_plugin_source_candidates_payload(
+            plugin_source_files={"TestPlugin.js": source_for_rules},
+            enabled_plugin_files={"TestPlugin.js"},
+            text_rules=text_rules,
+        )
+    )
+    candidate = next(
+        ensure_json_object(item, "plugin_source_candidate")
+        for item in native_scan.candidates
+        if ensure_json_object(item, "plugin_source_candidate")["original_text"] == "規則対象本文"
+    )
+    selector = candidate["selector"]
+    assert isinstance(selector, str)
+
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="TestPlugin.js",
+                    file_hash=build_plugin_source_file_hash(source_for_rules),
+                    selectors=[selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+
+    assert report.status == "ok", report.errors[0].message if report.errors else report
+    async with await registry.open_game(record.game_title) as session:
+        items = {
+            item.location_path: item
+            for item in await session.read_text_index_items()
+        }
+    assert f"js/plugins/TestPlugin.js/{selector}" in items
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale_mode", ["file_missing", "selector_missing"])
 async def test_rebuild_text_index_rejects_stale_plugin_source_rules_in_rust_path(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -566,12 +751,12 @@ async def test_rebuild_text_index_rejects_stale_plugin_source_rules_in_rust_path
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
-                    file_hash=(
-                        "stale-hash"
-                        if stale_mode == "hash_changed"
-                        else build_plugin_source_file_hash(source_for_rules)
-                    ),
-                    selectors=[selector],
+                    file_hash=build_plugin_source_file_hash(source_for_rules),
+                    selectors=[
+                        f"{selector}-missing"
+                        if stale_mode == "selector_missing"
+                        else selector
+                    ],
                     excluded_selectors=[],
                 )
             ]
@@ -587,6 +772,63 @@ async def test_rebuild_text_index_rejects_stale_plugin_source_rules_in_rust_path
     assert report.status == "error"
     assert [error.code for error in report.errors] == ["stale_plugin_source_rules"]
     assert "重新导出并导入" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_rejects_incomplete_plugin_source_review_for_referenced_file(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """已导入插件源码规则必须覆盖同一引用文件内的当前候选。"""
+    source = "\n".join(
+        [
+            "(() => {",
+            "  const first = '已归类插件本文';",
+            "  const second = '未归类插件本文';",
+            "})();",
+        ]
+    )
+    plugin_source_path = minimal_game_dir / "js" / "plugins" / "TestPlugin.js"
+    _ = plugin_source_path.write_text(source, encoding="utf-8", newline="\n")
+    source_for_rules = plugin_source_path.read_text(encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    text_rules = TextRules.from_setting(load_setting(EXAMPLE_SETTING_PATH, source_language="ja").text_rules)
+    native_scan = scan_native_rule_candidates(
+        build_native_plugin_source_candidates_payload(
+            plugin_source_files={"TestPlugin.js": source_for_rules},
+            enabled_plugin_files={"TestPlugin.js"},
+            text_rules=text_rules,
+        )
+    )
+    first_candidate = next(
+        ensure_json_object(item, "plugin_source_candidate")
+        for item in native_scan.candidates
+        if ensure_json_object(item, "plugin_source_candidate")["original_text"] == "已归类插件本文"
+    )
+    selector = first_candidate["selector"]
+    assert isinstance(selector, str)
+
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="TestPlugin.js",
+                    file_hash=build_plugin_source_file_hash(source_for_rules),
+                    selectors=[selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+
+    assert report.status == "error"
+    assert [error.code for error in report.errors] == ["plugin_source_review_incomplete"]
+    assert "补全插件源码规则" in report.errors[0].message
 
 
 @pytest.mark.asyncio
@@ -620,6 +862,42 @@ async def test_rebuild_text_index_rejects_stale_nonstandard_data_rules_in_rust_p
     assert report.status == "error"
     assert [error.code for error in report.errors] == ["stale_nonstandard_data_rules"]
     assert "重新导出并导入" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_rejects_incomplete_nonstandard_data_review_for_referenced_file(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """已导入非标准 data 规则必须覆盖同一引用文件内的当前候选。"""
+    recipes_path = minimal_game_dir / "data" / "PluginCache.json"
+    recipes_raw = json.dumps(
+        [{"name": "已归类非标准本文", "desc": "未归类非标准本文"}],
+        ensure_ascii=False,
+    )
+    _ = recipes_path.write_text(recipes_raw, encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_nonstandard_data_text_rules(
+            [
+                NonstandardDataTextRuleRecord(
+                    file_name="PluginCache.json",
+                    file_hash=build_nonstandard_data_file_hash(recipes_raw),
+                    path_templates=["$[0]['name']"],
+                )
+            ]
+        )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+
+    assert report.status == "error"
+    assert [error.code for error in report.errors] == ["nonstandard_data_review_incomplete"]
+    assert "补全非标准 data 规则" in report.errors[0].message
 
 
 @pytest.mark.asyncio

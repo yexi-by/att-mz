@@ -129,7 +129,6 @@ class CoreAgentMixin:
                 setting=setting,
                 text_rules=text_rules,
                 include_write_probe=False,
-                source_branch_workflow_gates_prechecked=False,
             )
         return text_index_items_to_translation_data_map(await session.read_text_index_items())
 

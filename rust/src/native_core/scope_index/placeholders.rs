@@ -13,8 +13,8 @@ use crate::native_core::models::{CompiledRules, ControlSpan, SpanSource};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct PlaceholderTextInput {
-    source_name: String,
-    text: String,
+    pub(super) source_name: String,
+    pub(super) text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

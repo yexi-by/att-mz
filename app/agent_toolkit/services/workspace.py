@@ -123,7 +123,6 @@ from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
-    refresh_text_index_external_rule_gate_metadata,
 )
 
 
@@ -201,7 +200,6 @@ async def _read_workspace_placeholder_entries_from_text_index(
             session=session,
             setting=setting,
             text_rules=text_rules,
-            source_branch_workflow_gates_prechecked=False,
         )
     else:
         text_index_status = "used"
@@ -482,29 +480,14 @@ class WorkspaceAgentMixin:
             text_index_metadata = await session.read_text_index_metadata()
             mv_virtual_namebox_review_required = game_data.layout.engine_kind == "mv"
             if text_index_metadata is not None:
-                if (
-                    game_data.layout.engine_kind == "mv"
-                    and MV_VIRTUAL_NAMEBOX_RULE_DOMAIN not in text_index_metadata.workflow_gate_scope_hashes
-                ):
-                    text_index_metadata = await refresh_text_index_external_rule_gate_metadata(
-                        session=session,
-                        metadata=text_index_metadata,
-                        game_data=game_data,
-                        setting=setting,
-                        text_rules=text_rules,
-                        rule_domains=(MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,),
-                    )
-                if MV_VIRTUAL_NAMEBOX_RULE_DOMAIN not in text_index_metadata.workflow_gate_scope_hashes:
-                    mv_virtual_namebox_review_required = False
-                else:
-                    external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
-                        session=session,
-                        metadata=text_index_metadata,
-                    )
-                    mv_virtual_namebox_review_required = any(
-                        error.code.startswith(MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
-                        for error in external_rule_gate_errors
-                    )
+                external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+                    session=session,
+                    metadata=text_index_metadata,
+                )
+                mv_virtual_namebox_review_required = any(
+                    error.code.startswith(MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
+                    for error in external_rule_gate_errors
+                )
             translation_scope_mode = "text_index"
             plugin_source_review = collect_plugin_source_review_coverage(
                 scan=plugin_source_scan,

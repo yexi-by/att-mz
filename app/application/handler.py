@@ -27,7 +27,6 @@ from app.application.font_replacement.constants import (
 from app.application.font_replacement.css import replace_gamefont_css_text
 from app.application.flow_gate import (
     collect_indexed_workflow_gate_errors,
-    collect_workflow_gate_errors,
     ensure_empty_rule_confirmed,
     event_command_rule_codes_for_setting,
     event_command_rule_scope_hash_for_command_codes,
@@ -155,13 +154,8 @@ from app.text_index import (
     collect_text_index_placeholder_gate_errors,
     collect_text_index_scope_gate_errors,
     detect_text_index_invalidations,
-    mark_text_index_source_branch_gates_prechecked,
     rebuild_text_index_native_storage,
-    refresh_text_index_external_rule_gate_metadata,
-    text_index_source_branch_gate_errors,
-    text_index_source_branch_gates_prechecked,
     text_index_items_to_translation_data_map,
-    text_index_items_to_scope,
 )
 from app.text_scope import TextScopeResult, collect_translation_data_paths
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
@@ -514,7 +508,6 @@ class TranslationHandler:
             setting=setting,
             text_rules=text_rules,
             include_write_probe=True,
-            source_branch_workflow_gates_prechecked=False,
         )
         advance_progress(1)
         finish_stage("rust_rebuild_text_index")
@@ -986,56 +979,27 @@ class TranslationHandler:
         )
 
         set_status("检查正文翻译前置条件")
-        source_branch_gates_prechecked = text_index_source_branch_gates_prechecked(metadata)
-        if source_branch_gates_prechecked:
-            external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
-                session=session,
-                metadata=metadata,
-            )
-            placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
-                session=session,
-                metadata=metadata,
-                custom_placeholder_rules_supplied=False,
-            )
-            text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
-            workflow_gate_errors = await collect_indexed_workflow_gate_errors(
-                session=session,
-                text_rules=text_rules,
-                custom_placeholder_rules_supplied=False,
-                scope=None,
-                plugin_source_rule_gate_errors=[],
-                nonstandard_data_rule_gate_errors=[],
-                external_rule_gate_errors=external_rule_gate_errors,
-                placeholder_gate_errors=placeholder_gate_errors,
-                text_scope_gate_errors=text_scope_gate_errors,
-            )
-        else:
-            index_items = await session.read_text_index_items()
-            scope = text_index_items_to_scope(index_items)
-            game_data = await self._load_session_game_data(
-                session,
-                include_plugin_source_files=True,
-            )
-            metadata = await refresh_text_index_external_rule_gate_metadata(
-                session=session,
-                metadata=metadata,
-                game_data=game_data,
-                setting=setting,
-                text_rules=text_rules,
-            )
-            workflow_gate_errors = await collect_workflow_gate_errors(
-                session=session,
-                game_data=game_data,
-                setting=setting,
-                text_rules=text_rules,
-                custom_placeholder_rules_supplied=False,
-                scope=scope,
-            )
-            if not text_index_source_branch_gate_errors(workflow_gate_errors):
-                metadata = await mark_text_index_source_branch_gates_prechecked(
-                    session=session,
-                    metadata=metadata,
-                )
+        external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+            session=session,
+            metadata=metadata,
+        )
+        placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
+            session=session,
+            metadata=metadata,
+            custom_placeholder_rules_supplied=False,
+        )
+        text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+        workflow_gate_errors = await collect_indexed_workflow_gate_errors(
+            session=session,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=None,
+            plugin_source_rule_gate_errors=[],
+            nonstandard_data_rule_gate_errors=[],
+            external_rule_gate_errors=external_rule_gate_errors,
+            placeholder_gate_errors=placeholder_gate_errors,
+            text_scope_gate_errors=text_scope_gate_errors,
+        )
         if workflow_gate_errors:
             blocked_reason = format_workflow_gate_error(workflow_gate_errors)
             logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
@@ -1440,55 +1404,27 @@ class TranslationHandler:
             records=snapshot_records,
         )
 
-        if text_index_source_branch_gates_prechecked(metadata):
-            external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
-                session=session,
-                metadata=metadata,
-            )
-            placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
-                session=session,
-                metadata=metadata,
-                custom_placeholder_rules_supplied=False,
-            )
-            text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
-            workflow_gate_errors = await collect_indexed_workflow_gate_errors(
-                session=session,
-                text_rules=text_rules,
-                custom_placeholder_rules_supplied=False,
-                scope=None,
-                plugin_source_rule_gate_errors=[],
-                nonstandard_data_rule_gate_errors=[],
-                external_rule_gate_errors=external_rule_gate_errors,
-                placeholder_gate_errors=placeholder_gate_errors,
-                text_scope_gate_errors=text_scope_gate_errors,
-            )
-        else:
-            index_items = await session.read_text_index_items()
-            scope = text_index_items_to_scope(index_items)
-            game_data = await self._load_session_game_data(
-                session,
-                include_plugin_source_files=True,
-            )
-            metadata = await refresh_text_index_external_rule_gate_metadata(
-                session=session,
-                metadata=metadata,
-                game_data=game_data,
-                setting=setting,
-                text_rules=text_rules,
-            )
-            workflow_gate_errors = await collect_workflow_gate_errors(
-                session=session,
-                game_data=game_data,
-                setting=setting,
-                text_rules=text_rules,
-                custom_placeholder_rules_supplied=False,
-                scope=scope,
-            )
-            if not text_index_source_branch_gate_errors(workflow_gate_errors):
-                metadata = await mark_text_index_source_branch_gates_prechecked(
-                    session=session,
-                    metadata=metadata,
-                )
+        external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+            session=session,
+            metadata=metadata,
+        )
+        placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
+            session=session,
+            metadata=metadata,
+            custom_placeholder_rules_supplied=False,
+        )
+        text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+        workflow_gate_errors = await collect_indexed_workflow_gate_errors(
+            session=session,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=None,
+            plugin_source_rule_gate_errors=[],
+            nonstandard_data_rule_gate_errors=[],
+            external_rule_gate_errors=external_rule_gate_errors,
+            placeholder_gate_errors=placeholder_gate_errors,
+            text_scope_gate_errors=text_scope_gate_errors,
+        )
         if workflow_gate_errors:
             raise WorkflowGateError(format_workflow_gate_error(workflow_gate_errors))
 
@@ -1545,7 +1481,6 @@ class TranslationHandler:
                 text_rules=text_rules,
                 setting_overrides=setting_overrides,
                 include_write_probe=True,
-                source_branch_workflow_gates_prechecked=False,
             )
         except RuntimeError as error:
             raise WriteBackGateError(f"当前游戏持久文本范围索引自动重建失败: {error}") from error

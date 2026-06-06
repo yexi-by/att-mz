@@ -12,14 +12,14 @@ const COMMAND_TEXT: i64 = 401;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct MvVirtualNameboxDataFileInput {
-    file_name: String,
-    data: Value,
+    pub(super) file_name: String,
+    pub(super) data: Value,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct MvVirtualNameboxActorNameInput {
-    actor_id: i64,
-    name: String,
+    pub(super) actor_id: i64,
+    pub(super) name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

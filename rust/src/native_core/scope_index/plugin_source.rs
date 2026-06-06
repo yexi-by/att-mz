@@ -5,6 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use super::{RuleCandidateOutput, RuleCandidateTextRules};
@@ -28,7 +29,6 @@ pub(super) struct PluginSourceFileInput {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct PluginSourceTextRuleInput {
     pub(super) file_name: String,
-    pub(super) file_hash: String,
     #[serde(default)]
     pub(super) selectors: Vec<String>,
     #[serde(default)]
@@ -62,6 +62,11 @@ pub(super) struct PluginSourceManagedText {
     pub(super) file_name: String,
     pub(super) selector: String,
     pub(super) text: String,
+}
+
+pub(super) enum PluginSourceManagedTextError {
+    Stale(String),
+    ReviewIncomplete { unreviewed_count: usize },
 }
 
 pub(super) static NUMBER_LIKE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -191,11 +196,12 @@ pub(super) fn collect_plugin_source_managed_texts(
     files: &[PluginSourceFileInput],
     rules: &[PluginSourceTextRuleInput],
     text_rules: RuleCandidateTextRules,
-) -> Result<Vec<PluginSourceManagedText>, String> {
+) -> Result<Vec<PluginSourceManagedText>, PluginSourceManagedTextError> {
     if rules.is_empty() {
         return Ok(Vec::new());
     }
-    let scan = scan_plugin_source_rule_candidates(files, text_rules)?;
+    let scan = scan_plugin_source_rule_candidates(files, text_rules)
+        .map_err(PluginSourceManagedTextError::Stale)?;
     let candidates_by_file_selector = scan
         .candidates
         .into_iter()
@@ -206,47 +212,47 @@ pub(super) fn collect_plugin_source_managed_texts(
                 .unwrap_or_else(|| candidate.rule_key.clone());
             ((candidate.source_file.clone(), selector), candidate)
         })
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     let file_hashes = files
         .iter()
         .map(|file| (file.file_name.as_str(), sha256_text(&file.source)))
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     let active_files = files
         .iter()
         .filter(|file| file.active)
         .map(|file| file.file_name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<BTreeSet<_>>();
 
     let mut managed_texts = Vec::new();
+    let mut reviewed_selectors_by_file: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for rule in rules {
-        let Some(current_hash) = file_hashes.get(rule.file_name.as_str()) else {
-            return Err(format!(
+        if !file_hashes.contains_key(rule.file_name.as_str()) {
+            return Err(PluginSourceManagedTextError::Stale(format!(
                 "插件源码规则已过期: {}: 插件源码文件不存在，请重新导出并导入插件源码规则",
                 rule.file_name
-            ));
-        };
-        if current_hash != &rule.file_hash {
-            return Err(format!(
-                "插件源码规则已过期: {}: 插件源码文件内容已变化，请重新导出并导入插件源码规则",
-                rule.file_name
-            ));
+            )));
         }
         if !active_files.contains(rule.file_name.as_str()) {
-            return Err(format!(
+            return Err(PluginSourceManagedTextError::Stale(format!(
                 "插件源码规则已过期: {}: 插件源码文件未在 plugins.js 中启用，请重新导出并导入插件源码规则",
                 rule.file_name
-            ));
+            )));
         }
         for selector in rule.selectors.iter().chain(rule.excluded_selectors.iter()) {
             if !candidates_by_file_selector
                 .contains_key(&(rule.file_name.clone(), selector.clone()))
             {
-                return Err(format!(
+                return Err(PluginSourceManagedTextError::Stale(format!(
                     "插件源码规则已过期: {}: 插件源码 selector 已无法命中当前 AST 地图，请重新导出并导入插件源码规则",
                     rule.file_name
-                ));
+                )));
             }
         }
+        let reviewed_selectors = reviewed_selectors_by_file
+            .entry(rule.file_name.clone())
+            .or_default();
+        reviewed_selectors.extend(rule.selectors.iter().cloned());
+        reviewed_selectors.extend(rule.excluded_selectors.iter().cloned());
         for selector in &rule.selectors {
             let Some(candidate) =
                 candidates_by_file_selector.get(&(rule.file_name.clone(), selector.clone()))
@@ -259,6 +265,18 @@ pub(super) fn collect_plugin_source_managed_texts(
                 text: candidate.original_text.clone(),
             });
         }
+    }
+    let unreviewed_count = candidates_by_file_selector
+        .iter()
+        .filter(|((file_name, selector), candidate)| {
+            candidate.active == Some(true)
+                && !reviewed_selectors_by_file
+                    .get(file_name)
+                    .is_some_and(|reviewed_selectors| reviewed_selectors.contains(selector))
+        })
+        .count();
+    if unreviewed_count > 0 {
+        return Err(PluginSourceManagedTextError::ReviewIncomplete { unreviewed_count });
     }
     managed_texts.sort_by(|left, right| {
         left.file_name

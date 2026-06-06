@@ -1,7 +1,7 @@
 //! 事件指令候选扫描。
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::RuleCandidateOutput;
@@ -205,6 +205,70 @@ pub(super) fn scan_event_command_rule_candidates(
         samples_by_code,
         scanned_command_count,
     })
+}
+
+pub(super) fn event_command_scope_hash_payload(
+    data_files: &[EventCommandDataFileInput],
+    event_command_codes: &[i64],
+) -> Value {
+    let command_code_set = event_command_codes.iter().copied().collect::<BTreeSet<_>>();
+    let mut command_snapshots = Vec::new();
+    for file in python_event_command_scope_order(data_files) {
+        for snapshot in collect_event_command_snapshots(file) {
+            if !command_code_set.contains(&snapshot.command_code) {
+                continue;
+            }
+            command_snapshots.push(json!({
+                "path": command_location_path_parts(&snapshot.command_location_path),
+                "code": snapshot.command_code,
+                "parameters": snapshot.parameters,
+            }));
+        }
+    }
+    json!({
+        "command_codes": command_code_set.into_iter().collect::<Vec<_>>(),
+        "commands": command_snapshots,
+    })
+}
+
+fn python_event_command_scope_order(
+    data_files: &[EventCommandDataFileInput],
+) -> Vec<&EventCommandDataFileInput> {
+    let mut map_files = data_files
+        .iter()
+        .filter(|file| file.file_name.starts_with("Map") && file.file_name.ends_with(".json"))
+        .collect::<Vec<_>>();
+    map_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    let mut ordered_files = map_files;
+    if let Some(common_events) = data_files
+        .iter()
+        .find(|file| file.file_name == "CommonEvents.json")
+    {
+        ordered_files.push(common_events);
+    }
+    if let Some(troops) = data_files
+        .iter()
+        .find(|file| file.file_name == "Troops.json")
+    {
+        ordered_files.push(troops);
+    }
+    ordered_files
+}
+
+fn command_location_path_parts(command_location_path: &str) -> Vec<Value> {
+    command_location_path
+        .split('/')
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0 {
+                return Value::String(part.to_string());
+            }
+            match part.parse::<i64>() {
+                Ok(value) => Value::from(value),
+                Err(_) => Value::String(part.to_string()),
+            }
+        })
+        .collect()
 }
 
 impl EventCommandRuleStats {

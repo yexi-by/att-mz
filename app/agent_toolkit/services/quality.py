@@ -59,9 +59,6 @@ from app.plugin_source_text import (
     ActiveRuntimePluginSourceIssue,
     PluginSourceReviewCoverage,
     audit_active_runtime_plugin_source_with_scan_cache,
-    build_native_plugin_source_scan,
-    collect_plugin_source_review_coverage,
-    filter_fresh_plugin_source_text_rules,
     plugin_source_runtime_hash_lines,
     plugin_source_runtime_hash_text,
 )
@@ -405,59 +402,6 @@ def _int_counts_to_json_object(counts: dict[str, int]) -> JsonObject:
     for key, value in counts.items():
         result[key] = value
     return result
-
-
-def _collect_text_index_plugin_source_review(
-    *,
-    game_data: GameData,
-    text_rules: TextRules,
-    plugin_source_records: list[PluginSourceTextRuleRecord],
-) -> tuple[list[AgentIssue], PluginSourceReviewCoverage | None, JsonArray | None]:
-    """为索引质量报告补回已启动插件源码支线的审查 gate。"""
-    plugin_source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
-        game_data=game_data,
-        rule_records=plugin_source_records,
-        text_rules=text_rules,
-        scan=plugin_source_scan,
-    )
-    plugin_source_review = collect_plugin_source_review_coverage(
-        scan=plugin_source_scan,
-        rule_records=fresh_records,
-    )
-    plugin_source_unreviewed_details: JsonArray = []
-    for candidate in plugin_source_review.unreviewed_candidates[:100]:
-        plugin_source_unreviewed_details.append(candidate.to_json_object())
-
-    gate_errors: list[AgentIssue] = []
-    if stale_records:
-        gate_errors.append(
-            issue(
-                "stale_plugin_source_rules",
-                f"存在 {len(stale_records)} 个过期插件源码规则，请重新导入插件源码规则",
-            )
-        )
-    elif plugin_source_scan.risk.high_risk and not fresh_records:
-        gate_errors.append(
-            issue(
-                "plugin_source_text_high_risk",
-                (
-                    "发现大量插件源码文本候选，可能有玩家可见正文存放在 js/plugins 源码文件中；"
-                    "正文翻译已暂停，请先确认并完成插件源码 AST 分析支线，导入插件源码规则后再继续"
-                ),
-            )
-        )
-    elif plugin_source_review.unreviewed_candidates:
-        gate_errors.append(
-            issue(
-                "plugin_source_review_incomplete",
-                (
-                    f"插件源码支线还有 {len(plugin_source_review.unreviewed_candidates)} 个候选未由外部 Agent 归入翻译或排除；"
-                    "请补全插件源码规则后再继续"
-                ),
-            )
-        )
-    return gate_errors, plugin_source_review, plugin_source_unreviewed_details
 
 
 def _source_branch_gate_errors_from_rebuild_details(details: JsonObject) -> list[AgentIssue] | None:
@@ -1275,23 +1219,15 @@ class QualityAgentMixin:
         elif plugin_source_records and source_branch_gates_prechecked:
             plugin_source_review_status = "prechecked_from_text_index"
             stage_timings["plugin_source_review"] = 0
-        elif not source_branch_gates_prechecked and not external_rule_gate_errors and not text_index_scope_gate_errors:
-            stage_started = time.perf_counter()
-            plugin_source_game_data = await service._load_translation_source_game_data(
-                session,
-                include_plugin_source_files=True,
-            )
-            (
-                plugin_source_gate_errors,
-                plugin_source_review,
-                plugin_source_unreviewed_details,
-            ) = _collect_text_index_plugin_source_review(
-                game_data=plugin_source_game_data,
-                text_rules=text_rules,
-                plugin_source_records=plugin_source_records,
-            )
-            plugin_source_review_status = "scanned"
-            stage_timings["plugin_source_review"] = _elapsed_ms(stage_started)
+        elif not source_branch_gates_prechecked:
+            plugin_source_gate_errors = [
+                issue(
+                    "text_index_workflow_gate_metadata_missing",
+                    "持久文本范围索引缺少插件源码或非标准 data 预检结果，请重新运行 rebuild-text-index",
+                )
+            ]
+            plugin_source_review_status = "metadata_missing"
+            stage_timings["plugin_source_review"] = 0
         stage_started = time.perf_counter()
         event_rules = await session.read_event_command_text_rules()
         note_tag_rules = await session.read_note_tag_text_rules()

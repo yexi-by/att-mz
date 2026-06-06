@@ -6,7 +6,6 @@ import time
 
 from app.application.flow_gate import (
     collect_indexed_workflow_gate_errors,
-    collect_workflow_gate_errors,
     format_workflow_gate_error,
 )
 from app.native_scope_index import NativeScopeIndexStorageError
@@ -15,12 +14,7 @@ from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     collect_text_index_placeholder_gate_errors,
     collect_text_index_scope_gate_errors,
-    mark_text_index_source_branch_gates_prechecked,
     rebuild_text_index_native_storage,
-    refresh_text_index_external_rule_gate_metadata,
-    text_index_source_branch_gate_errors,
-    text_index_source_branch_gates_prechecked,
-    text_index_items_to_scope,
 )
 
 from .common import (
@@ -95,7 +89,6 @@ class TextIndexAgentMixin:
                     text_rules=text_rules,
                     setting_overrides=setting_overrides,
                     include_write_probe=include_write_probe,
-                    source_branch_workflow_gates_prechecked=False,
                 )
             except NativeScopeIndexStorageError as error:
                 error_message = str(error)
@@ -149,74 +142,35 @@ class TextIndexAgentMixin:
             set_status("检查源分支前置条件")
             source_branch_gate_summary: str | None = None
             source_branch_gate_details: JsonArray = []
-            if text_index_source_branch_gates_prechecked(metadata):
-                external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
-                    session=session,
-                    metadata=metadata,
-                )
-                source_branch_gate_status = "prechecked_from_previous_index"
-                placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
-                    session=session,
-                    metadata=metadata,
-                    custom_placeholder_rules_supplied=False,
-                )
-                text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
-                workflow_gate_errors = await collect_indexed_workflow_gate_errors(
-                    session=session,
-                    text_rules=text_rules,
-                    custom_placeholder_rules_supplied=False,
-                    scope=None,
-                    plugin_source_rule_gate_errors=[],
-                    nonstandard_data_rule_gate_errors=[],
-                    external_rule_gate_errors=external_rule_gate_errors,
-                    placeholder_gate_errors=placeholder_gate_errors,
-                    text_scope_gate_errors=text_scope_gate_errors,
-                )
-                stage_timings["source_branch_workflow_gate"] = 0
-                if workflow_gate_errors:
-                    source_branch_gate_status = "needs_review"
-                    source_branch_gate_summary = format_workflow_gate_error(workflow_gate_errors)
-                    source_branch_gate_details = [
-                        {"code": item.code, "message": item.message}
-                        for item in workflow_gate_errors
-                    ]
-            else:
-                stage_started = time.perf_counter()
-                index_items = await session.read_text_index_items()
-                scope = text_index_items_to_scope(index_items)
-                game_data = await self._load_translation_source_game_data(
-                    session,
-                    include_plugin_source_files=True,
-                )
-                workflow_gate_errors = await collect_workflow_gate_errors(
-                    session=session,
-                    game_data=game_data,
-                    setting=setting,
-                    text_rules=text_rules,
-                    custom_placeholder_rules_supplied=False,
-                    scope=scope,
-                )
-                metadata = await refresh_text_index_external_rule_gate_metadata(
-                    session=session,
-                    metadata=metadata,
-                    game_data=game_data,
-                    setting=setting,
-                    text_rules=text_rules,
-                )
-                source_branch_gate_status = "prechecked"
-                if workflow_gate_errors:
-                    source_branch_gate_status = "needs_review"
-                    source_branch_gate_summary = format_workflow_gate_error(workflow_gate_errors)
-                    source_branch_gate_details = [
-                        {"code": item.code, "message": item.message}
-                        for item in workflow_gate_errors
-                    ]
-                if not text_index_source_branch_gate_errors(workflow_gate_errors):
-                    metadata = await mark_text_index_source_branch_gates_prechecked(
-                        session=session,
-                        metadata=metadata,
-                    )
-                stage_timings["source_branch_workflow_gate"] = int((time.perf_counter() - stage_started) * 1000)
+            external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+                session=session,
+                metadata=metadata,
+            )
+            placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
+                session=session,
+                metadata=metadata,
+                custom_placeholder_rules_supplied=False,
+            )
+            text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+            workflow_gate_errors = await collect_indexed_workflow_gate_errors(
+                session=session,
+                text_rules=text_rules,
+                custom_placeholder_rules_supplied=False,
+                scope=None,
+                plugin_source_rule_gate_errors=[],
+                nonstandard_data_rule_gate_errors=[],
+                external_rule_gate_errors=external_rule_gate_errors,
+                placeholder_gate_errors=placeholder_gate_errors,
+                text_scope_gate_errors=text_scope_gate_errors,
+            )
+            source_branch_gate_status = "prechecked"
+            if workflow_gate_errors:
+                source_branch_gate_status = "needs_review"
+                source_branch_gate_summary = format_workflow_gate_error(workflow_gate_errors)
+                source_branch_gate_details = [
+                    {"code": item.code, "message": item.message}
+                    for item in workflow_gate_errors
+                ]
 
         set_progress(3, 3)
         set_status("文本范围索引重建完成")

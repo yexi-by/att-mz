@@ -49,6 +49,7 @@ pub(super) struct NonstandardDataTextRuleInput {
     pub(super) file_name: String,
     pub(super) file_hash: String,
     pub(super) path_templates: Vec<String>,
+    pub(super) excluded_path_templates: Vec<String>,
     pub(super) skipped: bool,
 }
 
@@ -57,6 +58,11 @@ pub(super) struct NonstandardDataManagedText {
     pub(super) file_name: String,
     pub(super) json_path: String,
     pub(super) raw_text: String,
+}
+
+pub(super) enum NonstandardDataManagedTextError {
+    Stale(String),
+    ReviewIncomplete { unreviewed_count: usize },
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,41 +281,52 @@ pub(super) fn scan_nonstandard_data_file_leaves(
 pub(super) fn collect_nonstandard_data_managed_texts(
     files: &[NonstandardDataFileInput],
     rules: &[NonstandardDataTextRuleInput],
-) -> Result<Vec<NonstandardDataManagedText>, String> {
+    text_rules: RuleCandidateTextRules,
+) -> Result<Vec<NonstandardDataManagedText>, NonstandardDataManagedTextError> {
     if rules.is_empty() {
         return Ok(Vec::new());
     }
+    let compiled_rules = compile_rule_candidate_text_rules(text_rules)
+        .map_err(NonstandardDataManagedTextError::Stale)?;
     let file_by_name = files
         .iter()
         .map(|file| (file.file_name.as_str(), file))
         .collect::<BTreeMap<_, _>>();
     let mut required_files = BTreeSet::new();
     for rule in rules {
-        if rule.skipped || rule.path_templates.is_empty() {
+        if rule.skipped {
             continue;
         }
         required_files.insert(rule.file_name.as_str());
-        let file = file_by_name
-            .get(rule.file_name.as_str())
-            .ok_or_else(|| format!("非标准 data 文件规则已过期: 文件不存在: {}", rule.file_name))?;
+        let file = file_by_name.get(rule.file_name.as_str()).ok_or_else(|| {
+            NonstandardDataManagedTextError::Stale(format!(
+                "非标准 data 文件规则已过期: 文件不存在: {}",
+                rule.file_name
+            ))
+        })?;
         let current_hash = sha256_hex(&file.raw_text);
         if current_hash != rule.file_hash {
-            return Err(format!(
+            return Err(NonstandardDataManagedTextError::Stale(format!(
                 "非标准 data 文件规则已过期: 文件 hash 不匹配: {}",
                 rule.file_name
-            ));
+            )));
         }
     }
 
     let scans = required_files
         .into_iter()
         .map(|file_name| {
-            let file = file_by_name
-                .get(file_name)
-                .ok_or_else(|| format!("非标准 data 文件规则已过期: 文件不存在: {file_name}"))?;
-            scan_nonstandard_data_file(file, None).map(|scan| (file_name.to_string(), scan))
+            let file = file_by_name.get(file_name).ok_or_else(|| {
+                NonstandardDataManagedTextError::Stale(format!(
+                    "非标准 data 文件规则已过期: 文件不存在: {file_name}"
+                ))
+            })?;
+            scan_nonstandard_data_file(file, Some(&compiled_rules))
+                .map(|scan| (file_name.to_string(), scan))
+                .map_err(NonstandardDataManagedTextError::Stale)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    validate_nonstandard_data_review_coverage(&scans, rules)?;
 
     let mut rows = Vec::new();
     let mut seen_paths: BTreeSet<(String, String)> = BTreeSet::new();
@@ -317,9 +334,12 @@ pub(super) fn collect_nonstandard_data_managed_texts(
         if rule.skipped || rule.path_templates.is_empty() {
             continue;
         }
-        let scan = scans
-            .get(&rule.file_name)
-            .ok_or_else(|| format!("非标准 data 文件规则已过期: 文件不存在: {}", rule.file_name))?;
+        let scan = scans.get(&rule.file_name).ok_or_else(|| {
+            NonstandardDataManagedTextError::Stale(format!(
+                "非标准 data 文件规则已过期: 文件不存在: {}",
+                rule.file_name
+            ))
+        })?;
         let string_leaf_map = scan
             .leaves
             .iter()
@@ -331,12 +351,13 @@ pub(super) fn collect_nonstandard_data_managed_texts(
             })
             .collect::<BTreeMap<_, _>>();
         for path_template in &rule.path_templates {
-            let matched_paths = expand_rule_to_leaf_output_paths(path_template, &scan.leaves)?;
+            let matched_paths = expand_rule_to_leaf_output_paths(path_template, &scan.leaves)
+                .map_err(NonstandardDataManagedTextError::Stale)?;
             if matched_paths.is_empty() {
-                return Err(format!(
+                return Err(NonstandardDataManagedTextError::Stale(format!(
                     "非标准 data 文件规则已过期: {} 路径没有命中当前字符串叶子: {}",
                     rule.file_name, path_template
-                ));
+                )));
             }
             for json_path in matched_paths {
                 if !seen_paths.insert((rule.file_name.clone(), json_path.clone())) {
@@ -359,6 +380,87 @@ pub(super) fn collect_nonstandard_data_managed_texts(
             .then_with(|| left.json_path.cmp(&right.json_path))
     });
     Ok(rows)
+}
+
+fn validate_nonstandard_data_review_coverage(
+    scans: &BTreeMap<String, NonstandardDataFileScan>,
+    rules: &[NonstandardDataTextRuleInput],
+) -> Result<(), NonstandardDataManagedTextError> {
+    let candidate_paths = scans
+        .values()
+        .flat_map(|scan| {
+            scan.candidates.iter().filter_map(|candidate| {
+                candidate
+                    .json_path
+                    .as_ref()
+                    .map(|json_path| (candidate.source_file.clone(), json_path.clone()))
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    let mut reviewed_paths = BTreeSet::new();
+    let mut skipped_files = BTreeSet::new();
+    for rule in rules {
+        if rule.skipped {
+            skipped_files.insert(rule.file_name.clone());
+            continue;
+        }
+        let Some(scan) = scans.get(&rule.file_name) else {
+            return Err(NonstandardDataManagedTextError::Stale(format!(
+                "非标准 data 文件规则已过期: 文件不存在: {}",
+                rule.file_name
+            )));
+        };
+        let translated_hits =
+            collect_rule_candidate_hits(&rule.file_name, &rule.path_templates, &scan.leaves)?;
+        let excluded_hits = collect_rule_candidate_hits(
+            &rule.file_name,
+            &rule.excluded_path_templates,
+            &scan.leaves,
+        )?;
+        let overlap = translated_hits
+            .intersection(&excluded_hits)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !overlap.is_empty() {
+            return Err(NonstandardDataManagedTextError::ReviewIncomplete {
+                unreviewed_count: overlap.len(),
+            });
+        }
+        reviewed_paths.extend(translated_hits);
+        reviewed_paths.extend(excluded_hits);
+    }
+    let unreviewed_count = candidate_paths
+        .iter()
+        .filter(|(file_name, _json_path)| !skipped_files.contains(file_name))
+        .filter(|path| !reviewed_paths.contains(*path))
+        .count();
+    if unreviewed_count > 0 {
+        return Err(NonstandardDataManagedTextError::ReviewIncomplete { unreviewed_count });
+    }
+    Ok(())
+}
+
+fn collect_rule_candidate_hits(
+    file_name: &str,
+    path_templates: &[String],
+    leaves: &[NonstandardDataLeafOutput],
+) -> Result<BTreeSet<(String, String)>, NonstandardDataManagedTextError> {
+    let mut hits = BTreeSet::new();
+    for path_template in path_templates {
+        let matched_paths = expand_rule_to_leaf_output_paths(path_template, leaves)
+            .map_err(NonstandardDataManagedTextError::Stale)?;
+        if matched_paths.is_empty() {
+            return Err(NonstandardDataManagedTextError::Stale(format!(
+                "非标准 data 文件规则已过期: {file_name} 路径没有命中当前字符串叶子: {path_template}"
+            )));
+        }
+        hits.extend(
+            matched_paths
+                .into_iter()
+                .map(|json_path| (file_name.to_string(), json_path)),
+        );
+    }
+    Ok(hits)
 }
 
 fn expand_rule_to_leaf_output_paths(

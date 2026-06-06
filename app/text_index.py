@@ -3,20 +3,13 @@
 import hashlib
 import json
 from collections.abc import Iterable
-from dataclasses import asdict
 from typing import cast
 
-from app.application.flow_gate import (
-    build_normal_placeholder_coverage_result,
-    build_structured_placeholder_coverage_result,
-    event_command_rule_scope_hash_for_setting,
-    mv_virtual_namebox_rule_scope_hash_for_game_data,
-    note_tag_rule_scope_hash_for_text_rules,
-)
 from app.config import SettingOverrides
 from app.config.schemas import Setting
 from app.native_scope_index import (
     NativeScopeGateResult,
+    build_native_rule_candidate_text_rules_payload,
     evaluate_native_scope_gate,
     rebuild_native_scope_index_storage,
 )
@@ -29,7 +22,6 @@ from app.persistence.records import (
 from app.persistence.repository import current_timestamp_text
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
-    GameData,
     MvVirtualNameboxRuleRecord,
     NonstandardDataTextRuleRecord,
     NoteTagTextRuleRecord,
@@ -42,6 +34,7 @@ from app.rmmz.schema import (
 )
 from app.rmmz.source_snapshot import SourceSnapshotFileRecord
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, coerce_json_value
+from app.rmmz.loader import resolve_game_layout
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
@@ -50,7 +43,6 @@ from app.rule_review import (
     PLUGIN_TEXT_RULE_DOMAIN,
     RuleReviewDomain,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    plugin_rule_scope_hash,
 )
 from app.rule_review_decision import (
     RuleCoverageResult,
@@ -68,23 +60,6 @@ TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed_v1"
 TEXT_INDEX_PLACEHOLDER_GATE_PREFIX = "workflow_gate:placeholder_rules"
 TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX = "workflow_gate:structured_placeholder_rules"
 TEXT_INDEX_PROMPT_CONTEXT_VERSION = "display_name_owner_system_terms_v3"
-TEXT_INDEX_SOURCE_BRANCH_GATE_ERROR_CODES = frozenset(
-    {
-        "stale_plugin_source_rules",
-        "plugin_source_text_high_risk",
-        "plugin_source_review_incomplete",
-        "nonstandard_data_scan_failed",
-        "stale_nonstandard_data_rules",
-        "nonstandard_data_high_risk",
-        "nonstandard_data_review_incomplete",
-    }
-)
-TEXT_INDEX_EXTERNAL_RULE_GATE_DOMAINS: tuple[RuleReviewDomain, ...] = (
-    PLUGIN_TEXT_RULE_DOMAIN,
-    EVENT_COMMAND_TEXT_RULE_DOMAIN,
-    NOTE_TAG_TEXT_RULE_DOMAIN,
-    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-)
 
 
 async def rebuild_text_index_native_storage(
@@ -94,35 +69,26 @@ async def rebuild_text_index_native_storage(
     text_rules: TextRules,
     setting_overrides: SettingOverrides | None = None,
     include_write_probe: bool = False,
-    source_branch_workflow_gates_prechecked: bool = False,
 ) -> TextIndexMetadata:
     """由 Rust 直读 DB/游戏目录并重建持久 text index。"""
     _ = include_write_probe
-    previous_metadata = await session.read_text_index_metadata()
     source_snapshot_fingerprint = await collect_source_snapshot_fingerprint(session)
     rules_fingerprint = await collect_text_index_rules_fingerprint(
         session=session,
         text_rules=text_rules,
     )
-    workflow_gate_scope_hashes: dict[str, str] = _reusable_external_rule_gate_hashes(
-        previous_metadata=previous_metadata,
-        source_snapshot_fingerprint=source_snapshot_fingerprint,
-        rules_fingerprint=rules_fingerprint,
-    )
-    if source_branch_workflow_gates_prechecked:
-        workflow_gate_scope_hashes[TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY] = TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-        workflow_gate_scope_hashes[TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY] = TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
     text_rules_setting = coerce_json_value(cast(object, text_rules.setting.model_dump(mode="json")))
     if not isinstance(text_rules_setting, dict):
         raise TypeError("text_rules.setting JSON 必须是对象")
     text_rules_setting["prompt_context_version"] = TEXT_INDEX_PROMPT_CONTEXT_VERSION
-    if setting_overrides is not None and setting_overrides.has_any():
-        workflow_gate_scope_hashes["setting_overrides"] = stable_json_fingerprint(
-            setting_overrides_payload(setting_overrides)
-        )
-    workflow_gate_scope_hashes_payload: JsonObject = {
-        key: value for key, value in workflow_gate_scope_hashes.items()
-    }
+    rule_candidate_text_rules = build_native_rule_candidate_text_rules_payload(text_rules)
+    rule_candidate_text_rules["source_text_required_pattern"] = setting.text_rules.source_text_required_pattern
+    engine_kind = resolve_game_layout(session.game_path).engine_kind
+    event_command_default_codes = [
+        coerce_json_value(code)
+        for code in setting.event_command_text.default_codes_for_engine(engine_kind)
+    ]
+    _ = setting_overrides
     result = rebuild_native_scope_index_storage(
         {
             "db_path": str(session.db_path),
@@ -131,9 +97,11 @@ async def rebuild_text_index_native_storage(
             "rules_fingerprint": rules_fingerprint,
             "source_language": session.source_language,
             "target_language": session.target_language,
+            "engine_kind": engine_kind,
             "text_rules_setting": text_rules_setting,
+            "rule_candidate_text_rules": rule_candidate_text_rules,
+            "event_command_default_codes": event_command_default_codes,
             "source_text_required_pattern": setting.text_rules.source_text_required_pattern,
-            "workflow_gate_scope_hashes": workflow_gate_scope_hashes_payload,
             "created_at": current_timestamp_text(),
         }
     )
@@ -142,110 +110,7 @@ async def rebuild_text_index_native_storage(
     metadata = await session.read_text_index_metadata()
     if metadata is None:
         raise RuntimeError("Rust 原生文本范围索引重建后没有写入元信息")
-    metadata = await refresh_text_index_placeholder_gate_metadata(
-        session=session,
-        metadata=metadata,
-        text_rules=text_rules,
-    )
     return metadata
-
-
-async def refresh_text_index_placeholder_gate_metadata(
-    *,
-    session: TargetGameSession,
-    metadata: TextIndexMetadata,
-    text_rules: TextRules,
-) -> TextIndexMetadata:
-    """用当前持久索引项刷新占位符候选 gate 摘要。"""
-    coverage_or_errors = _placeholder_coverages_from_metadata(metadata)
-    if not isinstance(coverage_or_errors, list):
-        return metadata
-    index_records = await session.read_text_index_items()
-    scope = text_index_items_to_scope(
-        records=index_records,
-        translated_paths=set(),
-    )
-    scope_hashes = dict(metadata.workflow_gate_scope_hashes)
-    scope_hashes.update(_placeholder_gate_metadata(scope=scope, text_rules=text_rules))
-    await session.update_text_index_workflow_gate_scope_hashes(scope_hashes)
-    return TextIndexMetadata(
-        source_snapshot_fingerprint=metadata.source_snapshot_fingerprint,
-        rules_fingerprint=metadata.rules_fingerprint,
-        item_count=metadata.item_count,
-        workflow_gate_scope_hashes=scope_hashes,
-        created_at=metadata.created_at,
-    )
-
-
-async def refresh_text_index_external_rule_gate_metadata(
-    *,
-    session: TargetGameSession,
-    metadata: TextIndexMetadata,
-    game_data: GameData,
-    setting: Setting,
-    text_rules: TextRules,
-    rule_domains: Iterable[RuleReviewDomain] | None = None,
-) -> TextIndexMetadata:
-    """用本轮已加载的游戏数据刷新外部空规则 gate 当前范围 hash。"""
-    requested_domains = set(rule_domains or TEXT_INDEX_EXTERNAL_RULE_GATE_DOMAINS)
-    scope_hashes = dict(metadata.workflow_gate_scope_hashes)
-    if PLUGIN_TEXT_RULE_DOMAIN in requested_domains and not await session.read_plugin_text_rules():
-        scope_hashes[PLUGIN_TEXT_RULE_DOMAIN] = plugin_rule_scope_hash(game_data)
-    if EVENT_COMMAND_TEXT_RULE_DOMAIN in requested_domains and not await session.read_event_command_text_rules():
-        scope_hashes[EVENT_COMMAND_TEXT_RULE_DOMAIN] = event_command_rule_scope_hash_for_setting(
-            game_data=game_data,
-            setting=setting,
-        )
-    if NOTE_TAG_TEXT_RULE_DOMAIN in requested_domains and not await session.read_note_tag_text_rules():
-        scope_hashes[NOTE_TAG_TEXT_RULE_DOMAIN] = note_tag_rule_scope_hash_for_text_rules(
-            game_data=game_data,
-            text_rules=text_rules,
-        )
-    if (
-        MV_VIRTUAL_NAMEBOX_RULE_DOMAIN in requested_domains
-        and game_data.layout.engine_kind == "mv"
-        and not await session.read_mv_virtual_namebox_rules()
-    ):
-        scope_hashes[MV_VIRTUAL_NAMEBOX_RULE_DOMAIN] = mv_virtual_namebox_rule_scope_hash_for_game_data(
-            game_data
-        )
-    await session.update_text_index_workflow_gate_scope_hashes(scope_hashes)
-    return TextIndexMetadata(
-        source_snapshot_fingerprint=metadata.source_snapshot_fingerprint,
-        rules_fingerprint=metadata.rules_fingerprint,
-        item_count=metadata.item_count,
-        workflow_gate_scope_hashes=scope_hashes,
-        created_at=metadata.created_at,
-    )
-
-
-def _reusable_external_rule_gate_hashes(
-    *,
-    previous_metadata: TextIndexMetadata | None,
-    source_snapshot_fingerprint: str,
-    rules_fingerprint: str,
-) -> dict[str, str]:
-    """在源快照和规则未变化时复用旧 workflow gate 确认范围。"""
-    if previous_metadata is None:
-        return {}
-    if previous_metadata.source_snapshot_fingerprint != source_snapshot_fingerprint:
-        return {}
-    if previous_metadata.rules_fingerprint != rules_fingerprint:
-        return {}
-    reusable = {
-        domain: previous_metadata.workflow_gate_scope_hashes[domain]
-        for domain in TEXT_INDEX_EXTERNAL_RULE_GATE_DOMAINS
-        if domain in previous_metadata.workflow_gate_scope_hashes
-    }
-    for key, value in previous_metadata.workflow_gate_scope_hashes.items():
-        if key.startswith(f"{TEXT_INDEX_PLACEHOLDER_GATE_PREFIX}:") or key.startswith(
-            f"{TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX}:"
-        ):
-            reusable[key] = value
-    if text_index_source_branch_gates_prechecked(previous_metadata):
-        reusable[TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY] = TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-        reusable[TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY] = TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-    return reusable
 
 
 async def detect_text_index_invalidations(
@@ -305,30 +170,6 @@ def text_index_source_branch_gates_prechecked(metadata: TextIndexMetadata) -> bo
     return (
         scope_hashes.get(TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY) == TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
         and scope_hashes.get(TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY) == TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-    )
-
-
-def text_index_source_branch_gate_errors(errors: Iterable[WorkflowGateIssue]) -> list[WorkflowGateIssue]:
-    """筛出会阻止源码支线预检复用的插件源码/非标准 data gate 错误。"""
-    return [error for error in errors if error.code in TEXT_INDEX_SOURCE_BRANCH_GATE_ERROR_CODES]
-
-
-async def mark_text_index_source_branch_gates_prechecked(
-    *,
-    session: TargetGameSession,
-    metadata: TextIndexMetadata,
-) -> TextIndexMetadata:
-    """记录当前持久索引的插件源码和非标准 data gate 已完成预检。"""
-    scope_hashes = dict(metadata.workflow_gate_scope_hashes)
-    scope_hashes[TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY] = TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-    scope_hashes[TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY] = TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-    await session.update_text_index_workflow_gate_scope_hashes(scope_hashes)
-    return TextIndexMetadata(
-        source_snapshot_fingerprint=metadata.source_snapshot_fingerprint,
-        rules_fingerprint=metadata.rules_fingerprint,
-        item_count=metadata.item_count,
-        workflow_gate_scope_hashes=scope_hashes,
-        created_at=metadata.created_at,
     )
 
 
@@ -458,10 +299,7 @@ async def collect_text_index_external_rule_gate_errors(
                 label="Note 标签规则",
             )
         )
-    if (
-        MV_VIRTUAL_NAMEBOX_RULE_DOMAIN in metadata.workflow_gate_scope_hashes
-        and not await session.read_mv_virtual_namebox_rules()
-    ):
+    if resolve_game_layout(session.game_path).engine_kind == "mv" and not await session.read_mv_virtual_namebox_rules():
         errors.extend(
             await _empty_text_index_rule_review_errors(
                 session=session,
@@ -520,40 +358,6 @@ async def _empty_text_index_rule_review_errors(
         stale_severity="error",
     )
     return [decision.to_issue()] if decision.severity == "error" else []
-
-
-def _placeholder_gate_metadata(*, scope: TextScopeResult, text_rules: TextRules) -> dict[str, str]:
-    """构建 warm index 可复用的占位符候选覆盖摘要。"""
-    placeholder_coverage = build_normal_placeholder_coverage_result(
-        translation_data_map=scope.translation_data_map,
-        text_rules=text_rules,
-        rule_count=len(text_rules.custom_placeholder_rules),
-    )
-    structured_coverage = build_structured_placeholder_coverage_result(
-        translation_data_map=scope.translation_data_map,
-        structured_rules=text_rules.structured_placeholder_rules,
-        rule_count=len(text_rules.structured_placeholder_rules),
-    )
-    metadata: dict[str, str] = {}
-    metadata.update(_placeholder_coverage_metadata(TEXT_INDEX_PLACEHOLDER_GATE_PREFIX, placeholder_coverage))
-    metadata.update(
-        _placeholder_coverage_metadata(
-            TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX,
-            structured_coverage,
-        )
-    )
-    return metadata
-
-
-def _placeholder_coverage_metadata(prefix: str, coverage: RuleCoverageResult) -> dict[str, str]:
-    """把候选覆盖摘要编码进 text index metadata 字符串字典。"""
-    return {
-        f"{prefix}:scope_hash": coverage.scope_hash,
-        f"{prefix}:rule_count": str(coverage.rule_count),
-        f"{prefix}:candidate_count": str(coverage.candidate_count),
-        f"{prefix}:covered_count": str(coverage.covered_count),
-        f"{prefix}:uncovered_count": str(coverage.uncovered_count),
-    }
 
 
 def _placeholder_coverages_from_metadata(
@@ -684,21 +488,6 @@ async def collect_source_snapshot_fingerprint(session: TargetGameSession) -> str
     """读取数据库可信源快照 manifest 并生成稳定指纹。"""
     records = await session.read_source_snapshot_records()
     return source_snapshot_records_fingerprint(records)
-
-
-def setting_overrides_payload(overrides: SettingOverrides | None) -> JsonObject:
-    """把本次命令配置覆盖转换为快照 payload。"""
-    if overrides is None or not overrides.has_any():
-        return {}
-    payload: JsonObject = {}
-    raw_payload = cast(dict[str, object], asdict(overrides))
-    for key, raw_value in raw_payload.items():
-        if key == "text_translation_rpm" and not overrides.text_translation_rpm_is_set:
-            continue
-        if raw_value is None:
-            continue
-        payload[key] = coerce_json_value(raw_value)
-    return payload
 
 
 def source_snapshot_records_payload(records: list[SourceSnapshotFileRecord]) -> JsonArray:
@@ -1063,14 +852,11 @@ __all__ = [
     "collect_text_index_rules_fingerprint",
     "detect_text_index_invalidations",
     "evaluate_text_index_scope_gate",
-    "mark_text_index_source_branch_gates_prechecked",
     "rebuild_text_index_native_storage",
-    "refresh_text_index_placeholder_gate_metadata",
     "source_snapshot_records_fingerprint",
     "stable_json_fingerprint",
     "text_index_item_to_translation_item",
     "text_index_items_to_scope",
     "text_index_items_to_translation_data_map",
-    "text_index_source_branch_gate_errors",
     "text_index_source_branch_gates_prechecked",
 ]

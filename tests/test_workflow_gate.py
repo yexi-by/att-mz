@@ -8,6 +8,7 @@ import pytest
 
 from app.agent_toolkit import AgentToolkitService
 from app.application.handler import TranslationHandler, TranslationRunLimits
+from app.application.summaries import TextTranslationSummary
 from app.application.flow_gate import (
     normal_placeholder_scope_hash,
     structured_placeholder_scope_hash,
@@ -145,13 +146,13 @@ async def _install_non_plugin_source_gate_prerequisites(
 
 
 @pytest.mark.asyncio
-async def test_translate_max_items_blocks_unreviewed_high_risk_plugin_source(
+async def test_translate_max_items_does_not_run_hidden_plugin_source_discovery(
     minimal_game_dir: Path,
     tmp_path: Path,
     app_home_with_example_setting: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """小批翻译使用 warm index 时也不能绕过插件源码高风险门禁。"""
+    """小批翻译使用 warm index 时不能隐式扫描插件源码目录。"""
     _ = app_home_with_example_setting
     _add_high_risk_plugin_source(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
@@ -162,13 +163,28 @@ async def test_translate_max_items_blocks_unreviewed_high_risk_plugin_source(
         game_dir=minimal_game_dir,
     )
 
-    async def forbidden_batches(*args: object, **kwargs: object) -> NoReturn:
-        """插件源码高风险未审查时不能进入模型批次。"""
+    async def forbidden_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+        """插件源码发现必须由显式扫描命令触发，翻译热路径不能偷扫。"""
         _ = (args, kwargs)
-        raise AssertionError("插件源码高风险未审查时 translate --max-items 不能进入模型批次")
+        raise AssertionError("translate --max-items 不能隐式扫描插件源码目录")
 
-    monkeypatch.setattr(TranslationHandler, "_run_prepared_translation_batches", forbidden_batches)
-    monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", forbidden_batches)
+    async def fake_batches(*args: object, **kwargs: object) -> TextTranslationSummary:
+        """截断模型调用，只验证翻译热路径已经完成本地准备。"""
+        _ = args
+        batches = cast(list[object], kwargs["batches"])
+        assert isinstance(batches, list)
+        return TextTranslationSummary(
+            total_extracted_items=cast(int, kwargs["total_extracted_items"]),
+            pending_count=cast(int, kwargs["pending_count"]),
+            deduplicated_count=cast(int, kwargs["deduplicated_count"]),
+            batch_count=len(batches),
+            success_count=0,
+            error_count=0,
+            total_pending_count=cast(int, kwargs["total_pending_count"]),
+        )
+
+    monkeypatch.setattr("app.application.flow_gate.build_native_plugin_source_scan", forbidden_plugin_source_scan)
+    monkeypatch.setattr(TranslationHandler, "_run_prepared_translation_batches", fake_batches)
     handler = TranslationHandler(registry, LLMHandler())
     try:
         summary = await handler.translate_text(
@@ -181,10 +197,8 @@ async def test_translate_max_items_blocks_unreviewed_high_risk_plugin_source(
     finally:
         await handler.close()
 
-    assert summary.blocked_reason is not None
-    assert "插件源码" in summary.blocked_reason
-    assert "高风险" in summary.blocked_reason
-    assert summary.batch_count == 0
+    assert summary.blocked_reason is None
+    assert summary.batch_count > 0
 
 
 @pytest.mark.asyncio

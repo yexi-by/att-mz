@@ -2148,11 +2148,11 @@ async def test_plugin_source_rule_validation_rejects_invalid_js_directly(
 
 
 @pytest.mark.asyncio
-async def test_quality_report_errors_when_high_risk_plugin_source_review_is_incomplete(
+async def test_quality_report_consumes_text_index_plugin_source_review_incomplete(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """高风险插件源码只审查部分 selector 时，质量报告必须提示源码审查未完成。"""
+    """质量报告只消费索引，并保留冷索引发现的插件源码未归类错误。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
@@ -2200,8 +2200,9 @@ async def test_quality_report_errors_when_high_risk_plugin_source_review_is_inco
     ).quality_report(game_title="テストゲーム")
 
     assert report.status == "error"
-    assert "plugin_source_review_incomplete" in {error.code for error in report.errors}
-    assert any("300" in error.message for error in report.errors)
+    error_codes = {error.code for error in report.errors}
+    assert "plugin_source_review_incomplete" in error_codes
+    assert "coverage_missing_translation" not in error_codes
 
 
 @pytest.mark.asyncio
@@ -2599,12 +2600,12 @@ async def test_import_plugin_source_rules_replaces_stale_existing_rule(
 
 
 @pytest.mark.asyncio
-async def test_quality_report_uses_native_plugin_source_scan_before_branch_started(
+async def test_quality_report_does_not_discover_plugin_source_before_branch_started(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未启动插件源码支线时，质量报告用 Rust-derived scan 识别高风险源码。"""
+    """未启动插件源码支线时，质量报告不得隐藏扫描插件源码目录。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
@@ -2625,24 +2626,36 @@ async def test_quality_report_uses_native_plugin_source_scan_before_branch_start
         game_title="テストゲーム",
         game_dir=minimal_game_dir,
     )
+    native_scan_count = 0
+
+    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        nonlocal native_scan_count
+        native_scan_count += 1
+        return real_scan_native_rule_candidates(payload)
+
     _forbid_legacy_plugin_source_scan(monkeypatch)
+    monkeypatch.setattr(
+        "app.plugin_source_text.native_scan.scan_native_rule_candidates",
+        counting_scan_native_rule_candidates,
+    )
 
     report = await AgentToolkitService(
         game_registry=registry,
         setting_path=EXAMPLE_SETTING_PATH,
     ).quality_report(game_title="テストゲーム")
 
+    assert native_scan_count == 0
     assert report.status == "error"
-    assert "plugin_source_text_high_risk" in {error.code for error in report.errors}
+    assert "plugin_source_text_high_risk" not in {error.code for error in report.errors}
 
 
 @pytest.mark.asyncio
-async def test_quality_report_write_probe_loads_plugin_source_for_high_risk_gate(
+async def test_quality_report_write_probe_does_not_discover_plugin_source_high_risk_gate(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写回级质量报告未启动插件源码支线时也要加载源码识别高风险 gate。"""
+    """写回级质量报告执行写回 gate，但不把插件源码发现混进热路径。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "WriteProbeHighRiskSource", "status": True, "description": "", "parameters": {}})
@@ -2681,9 +2694,12 @@ async def test_quality_report_write_probe_loads_plugin_source_for_high_risk_gate
         setting_path=EXAMPLE_SETTING_PATH,
     ).quality_report(game_title="テストゲーム", include_write_probe=True)
 
-    assert native_scan_count == 1
+    assert native_scan_count == 0
     assert report.status == "error"
-    assert "plugin_source_text_high_risk" in {error.code for error in report.errors}
+    assert "plugin_source_text_high_risk" not in {error.code for error in report.errors}
+    assert report.summary["write_back_probe_requested"] is True
+    assert report.summary["write_back_probe_executed"] is True
+    assert report.summary["write_back_probe_mode"] == "rust_write_gate"
 
 
 @pytest.mark.asyncio

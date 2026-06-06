@@ -45,7 +45,6 @@ from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
-    refresh_text_index_external_rule_gate_metadata,
     text_index_items_to_translation_data_map,
 )
 
@@ -635,18 +634,6 @@ class PlaceholderRuleAgentMixin:
                     setting=setting,
                     text_rules=empty_rules,
                     include_write_probe=False,
-                    source_branch_workflow_gates_prechecked=False,
-                )
-                game_data = await self._load_translation_source_game_data(
-                    session,
-                    include_plugin_source_files=False,
-                )
-                metadata = await refresh_text_index_external_rule_gate_metadata(
-                    session=session,
-                    metadata=metadata,
-                    game_data=game_data,
-                    setting=setting,
-                    text_rules=empty_rules,
                 )
             if metadata is None:
                 return AgentReport.from_parts(

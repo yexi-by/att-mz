@@ -13,6 +13,7 @@ import pytest
 from app import native_scope_index
 from app.native_scope_index import (
     build_native_placeholder_candidates_payload,
+    build_native_rule_candidate_text_rules_payload,
     build_native_scope_index,
     evaluate_native_scope_gate,
     inspect_native_scope_index_storage,
@@ -36,6 +37,14 @@ from app.rmmz.schema import (
 )
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, ensure_json_array, ensure_json_object
 from app.rmmz.text_rules import TextRules
+
+
+def _rebuild_rule_candidate_text_rules(setting: TextRulesSetting) -> JsonObject:
+    """生成 Rust rebuild 当前必需的规则候选文本规则载荷。"""
+    text_rules = TextRules.from_setting(setting)
+    payload = build_native_rule_candidate_text_rules_payload(text_rules)
+    payload["source_text_required_pattern"] = setting.source_text_required_pattern
+    return payload
 
 
 def _scope_entries_payload() -> list[JsonObject]:
@@ -498,9 +507,11 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
             "rules_fingerprint": "rules-v1",
             "source_language": "ja",
             "target_language": "zh-Hans",
+            "engine_kind": "mz",
             "text_rules_setting": setting.model_dump(mode="json"),
+            "rule_candidate_text_rules": _rebuild_rule_candidate_text_rules(setting),
+            "event_command_default_codes": [357],
             "source_text_required_pattern": setting.source_text_required_pattern,
-            "workflow_gate_scope_hashes": {},
             "created_at": "2026-06-05T00:00:00",
         }
     )

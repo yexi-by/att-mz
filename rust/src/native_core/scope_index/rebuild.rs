@@ -16,19 +16,38 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
+use super::mv_virtual_namebox::{MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput};
 use super::nonstandard_data::{
-    NonstandardDataFileInput, NonstandardDataTextRuleInput, collect_nonstandard_data_managed_texts,
+    NonstandardDataFileInput, NonstandardDataManagedTextError, NonstandardDataTextRuleInput,
+    collect_nonstandard_data_managed_texts,
 };
+use super::placeholders::{PlaceholderTextInput, scan_placeholder_rule_candidates};
 use super::plugin_config::{PluginConfigInput, PluginConfigRuleInput};
 use super::plugin_source::{
-    PluginSourceFileInput, PluginSourceTextRuleInput, collect_plugin_source_managed_texts,
+    PluginSourceFileInput, PluginSourceManagedTextError, PluginSourceTextRuleInput,
+    collect_plugin_source_managed_texts,
 };
 use super::pool;
 use super::storage;
+use super::structured_placeholders::{
+    StructuredPlaceholderTextInput, scan_structured_placeholder_rule_candidates,
+};
 use super::{RuleCandidateOutput, RuleCandidateTextRules};
 use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
 
 const TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY: &str = "prompt_context_version";
+const PLUGIN_TEXT_RULE_DOMAIN: &str = "plugin_text";
+const EVENT_COMMAND_TEXT_RULE_DOMAIN: &str = "event_command_text";
+const NOTE_TAG_TEXT_RULE_DOMAIN: &str = "note_tag_text";
+const MV_VIRTUAL_NAMEBOX_RULE_DOMAIN: &str = "mv_virtual_namebox";
+const TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: &str =
+    "workflow_gate_prechecked:plugin_source_text";
+const TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: &str =
+    "workflow_gate_prechecked:nonstandard_data";
+const TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE: &str = "passed_v1";
+const TEXT_INDEX_PLACEHOLDER_GATE_PREFIX: &str = "workflow_gate:placeholder_rules";
+const TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX: &str =
+    "workflow_gate:structured_placeholder_rules";
 
 #[derive(Debug, Deserialize)]
 struct RebuildStoragePayload {
@@ -38,10 +57,11 @@ struct RebuildStoragePayload {
     rules_fingerprint: Option<String>,
     source_language: String,
     target_language: String,
+    engine_kind: String,
     text_rules_setting: Value,
+    rule_candidate_text_rules: RuleCandidateTextRules,
+    event_command_default_codes: Vec<i64>,
     source_text_required_pattern: String,
-    #[serde(default)]
-    workflow_gate_scope_hashes: BTreeMap<String, String>,
     created_at: String,
 }
 
@@ -231,13 +251,7 @@ fn rebuild_with_context(
     context.database_owner_terms_by_key = database_owner_terms_by_key(&data_files);
     context.system_owner_terms = system_owner_terms(&data_files);
     context.map_display_names_by_file = map_display_names_by_file(&data_files);
-    let needs_plugin_config =
-        !context.plugin_text_rules.is_empty() || !context.plugin_source_rules.is_empty();
-    let plugin_config_inputs = if needs_plugin_config {
-        read_plugin_config_inputs(&layout.plugins_path)?
-    } else {
-        Vec::new()
-    };
+    let plugin_config_inputs = read_plugin_config_inputs(&layout.plugins_path)?;
     let (fresh_plugin_text_rules, stale_plugin_rule_count) = if context.plugin_text_rules.is_empty()
     {
         (Vec::new(), 0usize)
@@ -249,7 +263,11 @@ fn rebuild_with_context(
     let plugin_source_files = if context.plugin_source_rules.is_empty() {
         Vec::new()
     } else {
-        read_plugin_source_file_inputs(&layout.plugin_source_dir, &plugin_config_inputs)?
+        read_plugin_source_file_inputs(
+            &layout.plugin_source_dir,
+            &plugin_config_inputs,
+            &context.plugin_source_rules,
+        )?
     };
     let native_thread_count = pool::read_configured_thread_count()
         .map(|thread_count| thread_count.unwrap_or_else(rayon::current_num_threads))
@@ -287,13 +305,20 @@ fn rebuild_with_context(
 
     let source_snapshot_fingerprint = context.source_snapshot_fingerprint.clone();
     let rules_fingerprint = context.rules_fingerprint.clone();
+    let workflow_gate_scope_hashes = build_workflow_gate_scope_hashes(
+        &payload,
+        &context,
+        &data_files,
+        &plugin_config_inputs,
+        &rows,
+    )?;
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
         metadata: storage::TextIndexMetadataInput {
             source_snapshot_fingerprint: source_snapshot_fingerprint.clone(),
             rules_fingerprint: rules_fingerprint.clone(),
             item_count,
-            workflow_gate_scope_hashes: payload.workflow_gate_scope_hashes,
+            workflow_gate_scope_hashes,
             created_at: payload.created_at,
         },
         text_index_rows: rows
@@ -344,6 +369,223 @@ fn rebuild_with_context(
         native_thread_count,
         written_item_count,
     })
+}
+
+fn build_workflow_gate_scope_hashes(
+    payload: &RebuildStoragePayload,
+    context: &RebuildContext,
+    data_files: &[ParsedDataFile],
+    plugin_config_inputs: &[PluginConfigInput],
+    rows: &[DirectTextIndexRow],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert(
+        TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY.to_string(),
+        TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE.to_string(),
+    );
+    metadata.insert(
+        TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY.to_string(),
+        TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE.to_string(),
+    );
+
+    let plugins_payload = Value::Array(
+        plugin_config_inputs
+            .iter()
+            .map(|input| input.plugin.clone())
+            .collect(),
+    );
+    metadata.insert(
+        PLUGIN_TEXT_RULE_DOMAIN.to_string(),
+        stable_json_fingerprint(&plugins_payload)?,
+    );
+
+    if payload.event_command_default_codes.is_empty() {
+        return Err(structured_error(
+            "scope_index_rebuild_event_command_codes_invalid",
+            "事件指令默认编码为空，请检查配置".to_string(),
+        ));
+    }
+    let event_data_files = event_command_data_file_inputs(data_files);
+    let event_payload = super::event_commands::event_command_scope_hash_payload(
+        &event_data_files,
+        &payload.event_command_default_codes,
+    );
+    metadata.insert(
+        EVENT_COMMAND_TEXT_RULE_DOMAIN.to_string(),
+        stable_json_fingerprint(&event_payload)?,
+    );
+
+    let note_data_files = data_file_map(data_files);
+    let note_scan = super::note_tags::scan_note_tag_rule_candidates(
+        &note_data_files,
+        context.rule_candidate_text_rules.clone(),
+    )?;
+    metadata.insert(
+        NOTE_TAG_TEXT_RULE_DOMAIN.to_string(),
+        stable_json_fingerprint(&to_json_value(&note_scan.candidates, "Note 标签候选")?)?,
+    );
+
+    if payload.engine_kind == "mv" {
+        let mv_data_files = mv_virtual_namebox_data_file_inputs(data_files);
+        let actor_names = context
+            .actor_names_by_id
+            .iter()
+            .map(|(actor_id, name)| MvVirtualNameboxActorNameInput {
+                actor_id: *actor_id,
+                name: name.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mv_scan = super::mv_virtual_namebox::scan_mv_virtual_namebox_rule_candidates(
+            &mv_data_files,
+            &actor_names,
+            &[],
+        )?;
+        metadata.insert(
+            MV_VIRTUAL_NAMEBOX_RULE_DOMAIN.to_string(),
+            stable_json_fingerprint(&to_json_value(
+                &mv_scan.candidate_details,
+                "MV 虚拟名字框候选",
+            )?)?,
+        );
+    }
+
+    let placeholder_texts = placeholder_text_inputs(rows);
+    let placeholder_scan = scan_placeholder_rule_candidates(
+        &placeholder_texts,
+        context.rule_candidate_text_rules.clone(),
+    )?;
+    insert_candidate_coverage_metadata(
+        &mut metadata,
+        TEXT_INDEX_PLACEHOLDER_GATE_PREFIX,
+        context
+            .rule_candidate_text_rules
+            .custom_placeholder_rules
+            .len(),
+        &to_json_value(&placeholder_scan.candidates, "普通占位符候选")?,
+        placeholder_scan.candidates.len(),
+        placeholder_scan
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.covered)
+            .count(),
+    )?;
+
+    let structured_placeholder_texts = structured_placeholder_text_inputs(rows);
+    let structured_scan = scan_structured_placeholder_rule_candidates(
+        &structured_placeholder_texts,
+        context.rule_candidate_text_rules.clone(),
+    )?;
+    insert_candidate_coverage_metadata(
+        &mut metadata,
+        TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX,
+        context
+            .rule_candidate_text_rules
+            .structured_placeholder_rules
+            .len(),
+        &to_json_value(&structured_scan.candidates, "结构化占位符候选")?,
+        structured_scan.candidates.len(),
+        structured_scan
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.covered)
+            .count(),
+    )?;
+
+    Ok(metadata)
+}
+
+fn insert_candidate_coverage_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    prefix: &str,
+    rule_count: usize,
+    candidates: &Value,
+    candidate_count: usize,
+    covered_count: usize,
+) -> Result<(), String> {
+    metadata.insert(
+        format!("{prefix}:scope_hash"),
+        stable_json_fingerprint(candidates)?,
+    );
+    metadata.insert(format!("{prefix}:rule_count"), rule_count.to_string());
+    metadata.insert(
+        format!("{prefix}:candidate_count"),
+        candidate_count.to_string(),
+    );
+    metadata.insert(format!("{prefix}:covered_count"), covered_count.to_string());
+    metadata.insert(
+        format!("{prefix}:uncovered_count"),
+        (candidate_count - covered_count).to_string(),
+    );
+    Ok(())
+}
+
+fn to_json_value<T: Serialize>(value: &T, label: &str) -> Result<Value, String> {
+    serde_json::to_value(value).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_workflow_gate_metadata_failed",
+            format!("{label} JSON 序列化失败: {error}"),
+        )
+    })
+}
+
+fn data_file_map(data_files: &[ParsedDataFile]) -> BTreeMap<String, Value> {
+    data_files
+        .iter()
+        .map(|file| (file.file_name.clone(), file.data.clone()))
+        .collect()
+}
+
+fn event_command_data_file_inputs(data_files: &[ParsedDataFile]) -> Vec<EventCommandDataFileInput> {
+    data_files
+        .iter()
+        .map(|file| EventCommandDataFileInput {
+            file_name: file.file_name.clone(),
+            data: file.data.clone(),
+        })
+        .collect()
+}
+
+fn mv_virtual_namebox_data_file_inputs(
+    data_files: &[ParsedDataFile],
+) -> Vec<MvVirtualNameboxDataFileInput> {
+    data_files
+        .iter()
+        .map(|file| MvVirtualNameboxDataFileInput {
+            file_name: file.file_name.clone(),
+            data: file.data.clone(),
+        })
+        .collect()
+}
+
+fn placeholder_text_inputs(rows: &[DirectTextIndexRow]) -> Vec<PlaceholderTextInput> {
+    rows.iter()
+        .flat_map(|row| {
+            row.original_lines
+                .iter()
+                .enumerate()
+                .map(|(line_index, text)| PlaceholderTextInput {
+                    source_name: format!("{}#{line_index}", row.location_path),
+                    text: text.clone(),
+                })
+        })
+        .collect()
+}
+
+fn structured_placeholder_text_inputs(
+    rows: &[DirectTextIndexRow],
+) -> Vec<StructuredPlaceholderTextInput> {
+    rows.iter()
+        .flat_map(|row| {
+            row.original_lines
+                .iter()
+                .enumerate()
+                .map(|(line_index, text)| StructuredPlaceholderTextInput {
+                    location_path: row.location_path.clone(),
+                    line_number: line_index + 1,
+                    text: text.clone(),
+                })
+        })
+        .collect()
 }
 
 fn open_connection_readonly(db_path: &Path) -> Result<Connection, String> {
@@ -464,42 +706,7 @@ fn sanitized_text_rules_setting(raw_setting: &Value) -> Value {
 }
 
 fn rule_candidate_text_rules(payload: &RebuildStoragePayload) -> RuleCandidateTextRules {
-    RuleCandidateTextRules {
-        custom_placeholder_rules: Vec::new(),
-        structured_placeholder_rules: Vec::new(),
-        strip_wrapping_punctuation_pairs: strip_wrapping_punctuation_pairs(
-            &payload.text_rules_setting,
-        ),
-        source_text_required_pattern: payload.source_text_required_pattern.clone(),
-        source_text_exclusion_profile: payload
-            .text_rules_setting
-            .get("source_text_exclusion_profile")
-            .and_then(Value::as_str)
-            .unwrap_or("none")
-            .to_string(),
-    }
-}
-
-fn strip_wrapping_punctuation_pairs(text_rules_setting: &Value) -> Vec<(String, String)> {
-    text_rules_setting
-        .get("strip_wrapping_punctuation_pairs")
-        .and_then(Value::as_array)
-        .map(|pairs| {
-            pairs
-                .iter()
-                .filter_map(|pair| {
-                    let values = pair.as_array()?;
-                    if values.len() != 2 {
-                        return None;
-                    }
-                    Some((
-                        values.first()?.as_str()?.to_string(),
-                        values.get(1)?.as_str()?.to_string(),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    payload.rule_candidate_text_rules.clone()
 }
 
 fn read_plugin_text_rules(connection: &Connection) -> Result<Value, String> {
@@ -969,6 +1176,7 @@ fn read_nonstandard_data_text_rule_inputs(
                     file_name,
                     file_hash: file_hash.clone(),
                     path_templates: Vec::new(),
+                    excluded_path_templates: Vec::new(),
                     skipped: false,
                 });
         if entry.file_hash != file_hash {
@@ -982,7 +1190,7 @@ fn read_nonstandard_data_text_rule_inputs(
         }
         match path_kind.as_str() {
             "translate" => entry.path_templates.push(path_template),
-            "excluded" => {}
+            "excluded" => entry.excluded_path_templates.push(path_template),
             "skipped" => {
                 if !path_template.is_empty() {
                     return Err(structured_error(
@@ -1537,33 +1745,46 @@ fn scan_nonstandard_data_rows(
     files: &[NonstandardDataFileInput],
     context: &RebuildContext,
 ) -> Result<Vec<DirectTextIndexRow>, String> {
-    collect_nonstandard_data_managed_texts(files, &context.nonstandard_data_rules)
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_nonstandard_data_scan_failed",
-                format!("扫描非标准 data 文件文本失败: {error}"),
-            )
-        })?
-        .into_iter()
-        .filter_map(|managed_text| {
-            let normalized = normalized_extractable_text(&managed_text.raw_text, context)?;
-            Some(row(
-                RowInput {
-                    location_path: format!(
-                        "nonstandard-data/{}/{}",
-                        managed_text.file_name, managed_text.json_path
-                    ),
-                    item_type: "short_text",
-                    role: None,
-                    original_lines: vec![normalized],
-                    source_line_paths: vec![managed_text.json_path],
-                    source_type: "nonstandard_data",
-                    source_file: &managed_text.file_name,
-                },
-                context,
-            ))
-        })
-        .collect()
+    collect_nonstandard_data_managed_texts(
+        files,
+        &context.nonstandard_data_rules,
+        context.rule_candidate_text_rules.clone(),
+    )
+    .map_err(nonstandard_data_managed_text_error)?
+    .into_iter()
+    .filter_map(|managed_text| {
+        let normalized = normalized_extractable_text(&managed_text.raw_text, context)?;
+        Some(row(
+            RowInput {
+                location_path: format!(
+                    "nonstandard-data/{}/{}",
+                    managed_text.file_name, managed_text.json_path
+                ),
+                item_type: "short_text",
+                role: None,
+                original_lines: vec![normalized],
+                source_line_paths: vec![managed_text.json_path],
+                source_type: "nonstandard_data",
+                source_file: &managed_text.file_name,
+            },
+            context,
+        ))
+    })
+    .collect()
+}
+
+fn nonstandard_data_managed_text_error(error: NonstandardDataManagedTextError) -> String {
+    match error {
+        NonstandardDataManagedTextError::Stale(message) => {
+            structured_error("stale_nonstandard_data_rules", message)
+        }
+        NonstandardDataManagedTextError::ReviewIncomplete { unreviewed_count } => structured_error(
+            "nonstandard_data_review_incomplete",
+            format!(
+                "非标准 data 文件文本支线还有 {unreviewed_count} 个候选未归类，请补全非标准 data 规则后重新重建文本范围索引"
+            ),
+        ),
+    }
 }
 
 fn scan_plugin_parameter_rows(
@@ -1603,7 +1824,7 @@ fn scan_plugin_source_rows(
         &context.plugin_source_rules,
         context.rule_candidate_text_rules.clone(),
     )
-    .map_err(|error| structured_error("stale_plugin_source_rules", error))?
+    .map_err(plugin_source_managed_text_error)?
     .iter()
     .map(|managed_text| {
         let location_path = format!(
@@ -1624,6 +1845,20 @@ fn scan_plugin_source_rows(
         )
     })
     .collect()
+}
+
+fn plugin_source_managed_text_error(error: PluginSourceManagedTextError) -> String {
+    match error {
+        PluginSourceManagedTextError::Stale(message) => {
+            structured_error("stale_plugin_source_rules", message)
+        }
+        PluginSourceManagedTextError::ReviewIncomplete { unreviewed_count } => structured_error(
+            "plugin_source_review_incomplete",
+            format!(
+                "插件源码规则还有 {unreviewed_count} 个候选未归入翻译或排除，请补全插件源码规则后重新重建文本范围索引"
+            ),
+        ),
+    }
 }
 
 fn filter_fresh_plugin_text_rules(
@@ -1684,67 +1919,53 @@ fn read_plugin_config_inputs(plugins_path: &Path) -> Result<Vec<PluginConfigInpu
 fn read_plugin_source_file_inputs(
     plugin_source_dir: &Path,
     plugins: &[PluginConfigInput],
+    rules: &[PluginSourceTextRuleInput],
 ) -> Result<Vec<PluginSourceFileInput>, String> {
     if !plugin_source_dir.is_dir() {
         return Ok(Vec::new());
     }
     let enabled_files = enabled_plugin_source_file_names(plugins);
-    let entries = fs::read_dir(plugin_source_dir).map_err(|error| {
-        structured_error(
-            "scope_index_rebuild_plugin_source_dir_read_failed",
-            format!(
-                "读取插件源码目录失败 {}: {error}",
-                plugin_source_dir.display()
-            ),
-        )
-    })?;
-    let mut paths = entries
-        .map(|entry| entry.map(|item| item.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_plugin_source_dir_read_failed",
-                format!(
-                    "读取插件源码目录项失败 {}: {error}",
-                    plugin_source_dir.display()
-                ),
-            )
-        })?
-        .into_iter()
-        .filter(|path| path.is_file())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|file_name| file_name.ends_with(".js"))
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
+    let required_files = rules
+        .iter()
+        .map(|rule| rule.file_name.clone())
+        .collect::<BTreeSet<_>>();
+    required_files
         .into_par_iter()
-        .map(|path| {
-            let file_name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    structured_error(
-                        "scope_index_rebuild_plugin_source_path_invalid",
-                        format!("插件源码文件缺少有效文件名: {}", path.display()),
-                    )
-                })?;
+        .map(|file_name| {
+            validate_plugin_source_file_name(&file_name)?;
+            let path = plugin_source_dir.join(&file_name);
+            if !path.is_file() {
+                return Ok(None);
+            }
             let source = fs::read_to_string(&path).map_err(|error| {
                 structured_error(
                     "scope_index_rebuild_plugin_source_read_failed",
                     format!("读取插件源码文件失败 {}: {error}", path.display()),
                 )
             })?;
-            Ok(PluginSourceFileInput {
+            Ok(Some(PluginSourceFileInput {
                 active: enabled_files.contains(&file_name),
                 file_name,
                 source,
-            })
+            }))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(|files| files.into_iter().flatten().collect())
+}
+
+fn validate_plugin_source_file_name(file_name: &str) -> Result<(), String> {
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains("..")
+        || !file_name.ends_with(".js")
+    {
+        return Err(structured_error(
+            "stale_plugin_source_rules",
+            format!("插件源码规则引用了非法文件名，请重新导入插件源码规则: {file_name}"),
+        ));
+    }
+    Ok(())
 }
 
 fn enabled_plugin_source_file_names(plugins: &[PluginConfigInput]) -> BTreeSet<String> {

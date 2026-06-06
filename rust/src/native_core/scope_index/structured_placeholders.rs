@@ -23,9 +23,9 @@ pub(super) static STRUCTURED_SHELL_CANDIDATE_PATTERNS: LazyLock<Vec<Regex>> = La
 
 #[derive(Debug, Deserialize)]
 pub(super) struct StructuredPlaceholderTextInput {
-    location_path: String,
-    line_number: usize,
-    text: String,
+    pub(super) location_path: String,
+    pub(super) line_number: usize,
+    pub(super) text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

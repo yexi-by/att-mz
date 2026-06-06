@@ -637,7 +637,10 @@ async def test_translate_max_items_warm_index_uses_text_scope_gate_metadata(
     rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
     monkeypatch.setattr("app.application.flow_gate._text_scope_gate_errors", forbidden_text_scope_gate)
-    monkeypatch.setattr("app.application.handler.text_index_items_to_scope", forbidden_text_scope_restore)
+    import app.application.handler as handler_module
+
+    assert not hasattr(handler_module, "text_index_items_to_scope")
+    _ = forbidden_text_scope_restore
     monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", run_batches_with_prepared_state)
 
     handler = TranslationHandler(registry, LLMHandler())
