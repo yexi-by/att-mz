@@ -130,3 +130,43 @@ def test_public_protocol_docs_do_not_promise_legacy_candidate_hash_compatibility
         text = _read_text(path)
         assert "legacy_hash" not in text, path
         assert "前 100 个候选" not in text, path
+
+
+def test_cli_contract_uses_debug_diagnostics_for_rebuild_text_index_timings() -> None:
+    """重建文本索引的性能信息必须指向 debug diagnostics，而不是普通摘要字段。"""
+    protocol_paths = [
+        DEV_SKILL_DIR / "references" / "cli-command-contract.md",
+        RELEASE_SKILL_DIR / "references" / "cli-command-contract.md",
+    ]
+    removed_summary_fields = (
+        "summary.elapsed_ms",
+        "summary.stage_timings",
+        "summary.native_thread_count",
+    )
+    required_debug_terms = (
+        "--debug --debug-timings",
+        "summary.diagnostics",
+        "text_index.rebuild",
+        "runtime.native_thread_count",
+    )
+    for path in protocol_paths:
+        text = _read_text(path)
+        for field in removed_summary_fields:
+            assert field not in text, path
+        for term in required_debug_terms:
+            assert term in text, path
+
+
+def test_removed_prepare_translation_command_is_absent_from_user_facing_protocol() -> None:
+    """面向用户和 Agent 的恢复路径不得再引用已移除的 prepare-translation 命令。"""
+    protocol_paths = [
+        DEV_SKILL_DIR / "SKILL.md",
+        RELEASE_SKILL_DIR / "SKILL.md",
+        ROOT / "README.md",
+        ROOT / "app" / "agent_toolkit" / "services" / "workspace.py",
+        *sorted((DEV_SKILL_DIR / "references").glob("*.md")),
+        *sorted((RELEASE_SKILL_DIR / "references").glob("*.md")),
+    ]
+    for path in protocol_paths:
+        text = _read_text(path)
+        assert "prepare-translation" not in text, path

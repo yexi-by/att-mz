@@ -125,6 +125,11 @@ from app.text_index import (
     rebuild_text_index_native_storage,
 )
 
+SOURCE_SNAPSHOT_MISSING_MESSAGE = (
+    "尚未创建翻译源快照，请使用干净原始游戏目录重新执行 add-game；"
+    "如果只是文本范围索引缺失或过期，再运行 rebuild-text-index"
+)
+
 
 def _plugin_source_native_scan_warnings(risk_report: JsonObject) -> list[AgentIssue]:
     """把 Rust 候选扫描跳过的非法插件源码文件转换成 Agent 告警。"""
@@ -350,7 +355,7 @@ class WorkspaceAgentMixin:
             if resolved_view == GameFileView.TRANSLATION_SOURCE:
                 snapshot_records = await session.read_source_snapshot_records()
                 if not snapshot_records:
-                    raise RuntimeError("尚未创建翻译源快照，请先执行 prepare-translation 或 rebuild-text-index")
+                    raise RuntimeError(SOURCE_SNAPSHOT_MISSING_MESSAGE)
                 validate_plugin_source_snapshot_manifest(layout=layout, records=snapshot_records)
             text_rules = TextRules.from_setting(setting.text_rules)
         risk_report = _build_native_plugin_source_risk_report_from_inputs(
@@ -401,7 +406,7 @@ class WorkspaceAgentMixin:
             if resolved_view == GameFileView.TRANSLATION_SOURCE:
                 snapshot_records = await session.read_source_snapshot_records()
                 if not snapshot_records:
-                    raise RuntimeError("尚未创建翻译源快照，请先执行 prepare-translation 或 rebuild-text-index")
+                    raise RuntimeError(SOURCE_SNAPSHOT_MISSING_MESSAGE)
                 validate_plugin_source_snapshot_manifest(layout=layout, records=snapshot_records)
             text_rules = TextRules.from_setting(setting.text_rules)
         payload, details = _build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(

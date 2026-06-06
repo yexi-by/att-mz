@@ -6,7 +6,7 @@
 
 ## 阅读路线
 
-1. 先读 [运行入口与 CLI](runtime-and-cli.md)，理解命令如何解析、输出报告和装配配置。
+1. 先读 [运行入口与 CLI](runtime-and-cli.md)，理解命令如何解析、输出报告和装配配置；需要逐命令维护事实时读 [CLI 维护事实地图](../cli.md)。
 2. 再读 [应用层与业务流程](application-and-workflows.md)，理解用户用例如何编排。
 3. 涉及外部 Agent 协作时读 [Agent 工具箱](agent-toolkit.md)。
 4. 涉及 RPG Maker 数据、规则或写入时读 [文本领域模块](text-domains.md)。
@@ -22,6 +22,7 @@
 | 文档 | 覆盖模块 | 主要问题 |
 | --- | --- | --- |
 | [运行入口与 CLI](runtime-and-cli.md) | `app.cli_main`、`app.cli`、`app.config`、`app.runtime_paths`、`app.observability`、`app.utils` | 命令如何进入、参数如何生效、日志和 JSON 如何输出 |
+| [CLI 维护事实地图](../cli.md) | `app.cli.parser`、`app.cli.dispatch`、`app.cli.commands`、`app.cli.reports` | 子命令清单、handler 归属、业务门面、输出模式和测试护栏 |
 | [应用层与业务流程](application-and-workflows.md) | `app.application` | 注册、翻译、写入、字体处理和运行摘要如何编排 |
 | [Agent 工具箱](agent-toolkit.md) | `app.agent_toolkit` | 外部 Agent 如何拿报告、工作区、规则校验和质量修复表 |
 | [文本领域模块](text-domains.md) | `app.rmmz`、`app.text_scope`、`app.plugin_text`、`app.event_command_text`、`app.note_tag_text`、`app.source_residual` | RPG Maker 文本如何提取、检查、定位和写入 |
