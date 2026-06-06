@@ -29,6 +29,18 @@
 - 不为非 LLM 命令创建空目录。
 - 不让 `--debug-llm-messages` 隐式开启 debug 总开关。
 
+## 维护成本复审结论
+
+该功能应作为现有 debug 运行时的一个子能力实现，避免形成第二套配置解析、第二套命令校验或第二套 LLM 客户端包装。
+
+关键约束：
+
+- `debug.llm_messages` 的 CLI、环境变量和配置文件优先级必须继续由统一 debug resolver 处理。
+- `app/observability/llm_messages.py` 只负责运行期记录、脱敏和写文件，不读取 `setting.toml`，不读取环境变量，不解释 CLI 参数。
+- `LLMHandler` 只暴露低成本观测元数据，不依赖翻译业务对象、数据库记录、`location_path` 或 CLI 参数。
+- 写文件失败是 debug 观测失败，不是 LLM 请求失败；不得触发 LLM 重试，也不得写成 LLM failure 记录。
+- Markdown 写入必须用统一 helper 处理 fenced block、表格转义和密钥脱敏，避免各处复制格式化逻辑。
+
 ## 配置与开关
 
 配置文件新增 debug 子域：
@@ -73,6 +85,13 @@ debug.llm_messages.enabled == true
 
 `--debug-llm-messages` 不隐式开启 `--debug`。如果用户显式传入 `--debug-llm-messages`，但最终 debug 总开关没有开启，CLI 必须直接报错。
 
+实现约束：
+
+- 现有 `DebugRuntimeSettings` 增加 `llm_messages_enabled`、`llm_messages_source`、`llm_messages_output_dir` 和 `effective_llm_messages_enabled`。
+- 现有 `resolve_debug_runtime_settings()` 增加 `ATT_MZ_DEBUG_LLM_MESSAGES` 解析。
+- 不新增独立的 `resolve_llm_message_settings()`。
+- 不在业务命令里重复实现 CLI/env/setting 优先级判断。
+
 ## 命令适用范围
 
 第一版只把以下命令视为 LLM 调用类命令：
@@ -90,6 +109,12 @@ debug.llm_messages 只能用于会调用 LLM 的命令；当前命令 rebuild-te
 
 后续新增 LLM 命令时，必须显式登记到白名单，不允许靠“运行过程中有没有调用 LLM”做隐式判断。
 
+实现约束：
+
+- 白名单集中维护为一个低层常量，例如 `LLM_MESSAGE_COMMANDS = frozenset({"translate", "run-all"})`。
+- 只有 `llm_messages_source == "cli"` 且 `llm_messages_enabled is True` 时，才执行“非 LLM 命令直接报错”的严格校验。
+- 显式 `--no-debug-llm-messages` 用在非 LLM 命令时不报错。
+
 ## 运行时架构
 
 新增模块：
@@ -100,10 +125,10 @@ app/observability/llm_messages.py
 
 核心对象：
 
-- `LLMMessageRuntimeSettings`：合并后的 LLM 消息观测配置。
 - `LLMMessageRecorder`：本次 CLI 运行的消息记录器。
 - `NoopLLMMessageRecorder`：未启用时的空对象。
 - `current_llm_message_recorder()`：通过 `contextvars.ContextVar` 获取当前记录器。
+- `LLMMessageWriteError`：LLM 消息观测文件写入失败。
 
 CLI 入口负责：
 
@@ -120,6 +145,22 @@ CLI 入口负责：
 4. 返回 assistant 文本给原业务流程。
 
 业务层不应该直接写 LLM 消息文件。翻译、doctor 或后续其他功能只需继续调用 `LLMHandler.get_ai_response()`。
+
+LLM 调用观测元数据：
+
+- `LLMHandler.get_ai_response()` 增加可选关键字参数 `task_key` 和 `task_label`。
+- `task_key` 是低基数 ASCII 标识，用于文件名，例如 `text-translation`；默认值为 `llm`。
+- `task_label` 是面向人的中文说明，用于 Markdown 元数据和索引，例如 `正文翻译`；默认值为 `LLM 调用`。
+- `request_with_recoverable_retry()` 继续接收现有 `task_label`，并增加可选 `task_key`，调用 `LLMHandler` 时向下传递。
+- 正文翻译调用使用 `task_key="text-translation"`、`task_label="正文翻译"`。
+- 不允许把 `TranslationBatch`、`TranslationItem`、数据库记录或 `location_path` 传给 `LLMHandler` 作为观测上下文。
+
+请求元数据来源：
+
+- `LLMHandler.configure()` 保存 `base_url` 字符串和脱敏后的 `api_key` 展示值。
+- `LLMHandler` 不从 `AsyncOpenAI` 内部对象反查配置。
+- `request_body_extra` 使用已有规范化结果，并在写文件前递归脱敏。
+- 原始 API key 不应为了 debug 观测额外长期保存。
 
 ## 并发与编号
 
@@ -139,6 +180,7 @@ CLI 入口负责：
 - 并发写文件不会破坏 Markdown 内容。
 - 每个成功响应对应一个文件。
 - 写文件失败直接抛错，不静默吞掉。
+- 写文件失败不得触发 LLM 请求重试。
 
 实现可使用 async lock 或同步 lock 保护编号与索引记录。文件写入可以保持同步写入；该功能只在显式 debug 模式启用。
 
@@ -176,6 +218,7 @@ output/debug/llm-messages/2026-06-07_143012_translate_a1b2c3d4/
 ## 元数据
 
 - command: translate
+- task_key: text-translation
 - task_label: 正文翻译
 - model: example-model
 - base_url: https://api.example.com/v1
@@ -230,6 +273,13 @@ output/debug/llm-messages/2026-06-07_143012_translate_a1b2c3d4/
 - `extra_body` 完整记录，但字段名疑似密钥、token、secret、password、credential、authorization 时递归脱敏。
 - 文件名不包含 `location_path`、prompt id、游戏名或真实路径。
 
+Markdown helper 约束：
+
+- fenced block 不能固定写死为三个反引号；如果原文包含反引号代码块，helper 必须选择比原文最长连续反引号更长的 fence。
+- 索引表格中的 `task_label`、`model`、文件名等字段必须做 Markdown 表格转义。
+- JSON 请求元数据使用 `ensure_ascii=False` 和缩进输出，方便人工阅读。
+- 所有 Markdown 写入逻辑集中在 `llm_messages.py` 或其私有 helper 中。
+
 ## 索引文件
 
 CLI 正常收尾时生成：
@@ -261,6 +311,17 @@ index.md
 
 显式启用 debug 文件观测时，写文件失败不能静默忽略。否则用户会误判观测文件可靠性。
 
+`LLMMessageWriteError` 不属于可恢复 LLM 错误。`request_with_recoverable_retry()` 必须让它直接向外传播，不进入 LLM 错误分类、重试等待或 LLM failure 记录。
+
+CLI 收尾顺序：
+
+1. 业务命令结束或抛错。
+2. LLM message recorder finalize，正常时写 `index.md`。
+3. diagnostics finalize，记录 LLM 消息目录 artifact。
+4. logger 输出最终状态。
+
+如果 LLM message recorder finalize 失败，CLI 必须返回非零退出码，并在终端错误报告中说明 debug 观测文件写出失败。
+
 ## 测试要求
 
 测试应覆盖以下外部可观察行为：
@@ -273,9 +334,12 @@ index.md
 - 成功 LLM 调用会生成运行目录和 `.md` 文件。
 - Markdown 文件包含 system、user、assistant 原文 fenced block。
 - `api_key` 和 `extra_body` 中疑似密钥字段会脱敏。
+- 原文包含 Markdown 代码块时，fenced block 不会被提前截断。
+- 索引表格字段包含 `|` 时会正确转义。
 - LLM 成功返回但后续翻译校验失败时，仍生成 `.md`。
 - 正常收尾生成 `index.md`。
 - 失败请求和空响应不写 `.md`。
+- debug 文件写入失败时不触发 LLM 重试。
 
 涉及 CLI 参数、配置字段、环境变量和输出目录结构的测试，必须覆盖“定义 -> 解析 -> 校验 -> 应用”的完整链路。
 
@@ -284,4 +348,5 @@ index.md
 - LLM 消息观测是 debug 子功能，不是翻译业务的一部分。
 - 新增 LLM 调用路径时，优先复用 `LLMHandler.get_ai_response()`，不要在业务模块绕过统一门面。
 - 新增会调用 LLM 的 CLI 命令时，必须显式登记为 LLM 调用类命令，才能使用 `--debug-llm-messages`。
+- 新增 LLM 调用业务标签时，只传低基数 `task_key` 和 `task_label`，不得把游戏路径、文本位置或批次明细放进文件名。
 - 后续若增加失败请求审计、token 成本统计或自动分析，应作为新的 debug 子功能或扩展配置设计，不混入第一版消息观测。
