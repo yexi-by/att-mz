@@ -153,6 +153,35 @@ class RuntimeSetting(StrictBaseModel):
     )
 
 
+type DebugLogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+type DebugTimingDetailLevel = Literal["standard"]
+
+
+class DebugLoggingSetting(StrictBaseModel):
+    """debug 模式下的日志输出配置。"""
+
+    enabled: bool = Field(default=True, title="是否启用 debug 日志")
+    console_level: DebugLogLevel = Field(default="DEBUG", title="debug 终端日志等级")
+    file_level: DebugLogLevel = Field(default="DEBUG", title="debug 文件日志等级")
+
+
+class DebugTimingsSetting(StrictBaseModel):
+    """debug 模式下的统一计时诊断配置。"""
+
+    enabled: bool = Field(default=True, title="是否启用统一计时诊断")
+    write_file: bool = Field(default=True, title="是否写出完整诊断 JSON 文件")
+    include_summary_in_report: bool = Field(default=True, title="是否在 stdout 报告中追加诊断摘要")
+    detail_level: DebugTimingDetailLevel = Field(default="standard", title="计时诊断详细程度")
+
+
+class DebugSetting(StrictBaseModel):
+    """项目 debug 配置域。"""
+
+    enabled: bool = Field(default=False, title="是否进入 debug 模式")
+    logging: DebugLoggingSetting = Field(default_factory=DebugLoggingSetting, title="debug 日志配置")
+    timings: DebugTimingsSetting = Field(default_factory=DebugTimingsSetting, title="debug 计时配置")
+
+
 class TextRulesSetting(StrictBaseModel):
     """可配置的文本判断规则。"""
 
@@ -236,11 +265,17 @@ class Setting(StrictBaseModel):
     event_command_text: EventCommandTextSetting = Field(title="事件指令参数外部规则配置")
     write_back: WriteBackSetting = Field(default_factory=WriteBackSetting, title="写回配置")
     runtime: RuntimeSetting = Field(default_factory=RuntimeSetting, title="运行时配置")
+    debug: DebugSetting = Field(default_factory=DebugSetting, title="debug 配置")
     text_rules: TextRulesSetting = Field(default_factory=TextRulesSetting, title="文本规则")
 
 
 __all__: list[str] = [
     "EventCommandTextSetting",
+    "DebugLogLevel",
+    "DebugLoggingSetting",
+    "DebugSetting",
+    "DebugTimingDetailLevel",
+    "DebugTimingsSetting",
     "LLMSetting",
     "RuntimeRustThreads",
     "RuntimeSetting",

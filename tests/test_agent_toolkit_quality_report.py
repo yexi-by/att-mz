@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
 
 @pytest.mark.asyncio
 async def test_mv_virtual_namebox_validation_reports_overwide_angle_rule_hits(
@@ -392,7 +393,9 @@ async def test_quality_report_cold_rebuilds_missing_text_index(
     assert report.summary["text_index_status"] == "cold_rebuilt"
     rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "text_index_rebuild_summary")
     assert rebuild_summary["index_status"] == "rebuilt"
-    assert "stage_timings" in rebuild_summary
+    assert "stage_timings" not in rebuild_summary
+    assert "elapsed_ms" not in rebuild_summary
+    assert "native_thread_count" not in rebuild_summary
     async with await registry.open_game("テストゲーム") as session:
         metadata = await session.read_text_index_metadata()
         assert metadata is not None
@@ -420,15 +423,23 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
         forbidden_game_data_load,
     )
 
-    report = await service.quality_report(game_title="テストゲーム")
+    diagnostics = DiagnosticsContext.create_for_command(
+        command="quality-report",
+        settings=DebugRuntimeSettings(enabled=True, timings_enabled=True),
+        diagnostics_dir=tmp_path / "diagnostics",
+    )
+    with bind_diagnostics_context(diagnostics):
+        report = await service.quality_report(game_title="テストゲーム")
 
     assert report.summary["text_index_status"] == "used"
     assert report.summary["extractable_count"] == rebuild_report.summary["indexed_count"]
-    stage_timings = ensure_json_object(report.summary["stage_timings"], "stage_timings")
-    assert "read_index_and_state" in stage_timings
-    assert "total" in stage_timings
-    assert isinstance(report.summary["native_thread_count"], int)
-    assert report.summary["native_quality_payload_item_count"] == report.summary["translated_count"]
+    assert "stage_timings" not in report.summary
+    assert "native_thread_count" not in report.summary
+    assert "native_quality_payload_item_count" not in report.summary
+    assert "quality.read_index_and_state" in diagnostics.timings
+    assert "quality.total" in diagnostics.timings
+    assert diagnostics.counters["quality.native_quality_payload_item_count"] == report.summary["translated_count"]
+    assert isinstance(diagnostics.counters["runtime.native_thread_count"], int)
     coverage = ensure_json_object(report.details["coverage"], "coverage")
     assert coverage["detail_mode"] == "sampled"
     pending_paths = ensure_json_object(coverage["pending_location_paths"], "pending_location_paths")
@@ -499,10 +510,17 @@ async def test_quality_report_large_warm_index_uses_count_fast_path(
     monkeypatch.setattr(TargetGameSession, "read_text_index_items", forbidden_index_items_read)
     monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_translated_items_read)
 
-    report = await service.quality_report(game_title="テストゲーム")
+    diagnostics = DiagnosticsContext.create_for_command(
+        command="quality-report",
+        settings=DebugRuntimeSettings(enabled=True, timings_enabled=True),
+        diagnostics_dir=tmp_path / "diagnostics",
+    )
+    with bind_diagnostics_context(diagnostics):
+        report = await service.quality_report(game_title="テストゲーム")
 
-    assert report.summary["native_quality_payload_item_count"] == 0
-    assert report.summary["native_quality_recheck_mode"] == "saved_error_records"
+    assert "native_quality_payload_item_count" not in report.summary
+    assert "native_quality_recheck_mode" not in report.summary
+    assert diagnostics.counters["quality.native_quality_payload_item_count"] == 0
     coverage = ensure_json_object(report.details["coverage"], "coverage")
     assert coverage["detail_mode"] == "count_only"
 @pytest.mark.asyncio

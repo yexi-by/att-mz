@@ -23,6 +23,11 @@ from .environment import (
 )
 from .overrides import SettingOverrides, apply_setting_overrides
 from .schemas import (
+    DebugLogLevel,
+    DebugLoggingSetting,
+    DebugSetting,
+    DebugTimingDetailLevel,
+    DebugTimingsSetting,
     EventCommandTextSetting,
     LLMSetting,
     RuntimeRustThreads,
@@ -36,6 +41,11 @@ from .schemas import (
 )
 
 __all__: list[str] = [
+    "DebugLogLevel",
+    "DebugLoggingSetting",
+    "DebugSetting",
+    "DebugTimingDetailLevel",
+    "DebugTimingsSetting",
     "EnvironmentOverrides",
     "EventCommandTextSetting",
     "LLM_API_KEY_ENV_NAME",

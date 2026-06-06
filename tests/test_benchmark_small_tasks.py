@@ -20,6 +20,47 @@ from scripts.benchmark_small_tasks import (
 )
 
 
+def stdout_report_with_diagnostics(
+    *,
+    app_home: Path,
+    status: str,
+    summary: dict[str, object],
+    timings: dict[str, int] | None = None,
+    counters: dict[str, int] | None = None,
+) -> str:
+    """构造带 diagnostics 文件的 fake CLI stdout。"""
+    diagnostics_dir = app_home / "logs" / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_path = diagnostics_dir / f"run-{len(list(diagnostics_dir.glob('*.json'))) + 1}.json"
+    _ = diagnostics_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "command": "benchmark-task",
+                "status": "ok",
+                "timings": timings or {"command.total": 1},
+                "counters": counters or {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return json.dumps(
+        {
+            "status": status,
+            "summary": {
+                **summary,
+                "diagnostics": {
+                    "enabled": True,
+                    "timings_enabled": True,
+                    "file": str(diagnostics_path),
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_parse_args_reads_small_task_thresholds(tmp_path: Path) -> None:
     """小任务性能脚本读取各命令阈值和运行规模。"""
     sample = tmp_path / "sample"
@@ -142,17 +183,15 @@ def test_run_benchmark_records_all_small_task_commands(
         return subprocess.CompletedProcess(
             args=args,
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "status": "ok",
-                    "summary": {
-                        "index_status": task_status,
-                        "text_index_status": task_status,
-                        "stage_timings": {"total": 1},
-                        "native_thread_count": 4,
-                    },
+            stdout=stdout_report_with_diagnostics(
+                app_home=Path(env["ATT_MZ_HOME"]),
+                status="ok",
+                summary={
+                    "index_status": task_status,
+                    "text_index_status": task_status,
                 },
-                ensure_ascii=False,
+                timings={"command.total": 1},
+                counters={"runtime.native_thread_count": 4},
             ),
             stderr="",
         )
@@ -230,17 +269,15 @@ def test_run_benchmark_records_json_command_failure_and_continues(
         return subprocess.CompletedProcess(
             args=args,
             returncode=1 if is_quality_report else 0,
-            stdout=json.dumps(
-                {
-                    "status": "error" if is_quality_report else "ok",
-                    "summary": {
-                        "index_status": "used",
-                        "text_index_status": "used",
-                        "stage_timings": {"total": 1},
-                        "native_thread_count": 0,
-                    },
+            stdout=stdout_report_with_diagnostics(
+                app_home=Path(env["ATT_MZ_HOME"]),
+                status="error" if is_quality_report else "ok",
+                summary={
+                    "index_status": "used",
+                    "text_index_status": "used",
                 },
-                ensure_ascii=False,
+                timings={"command.total": 1},
+                counters={"runtime.native_thread_count": 0},
             ),
             stderr="质量报告发现问题" if is_quality_report else "",
         )

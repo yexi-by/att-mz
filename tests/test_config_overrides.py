@@ -147,6 +147,75 @@ def test_load_setting_reads_runtime_rust_thread_config(
     assert setting.runtime.rust_threads == 8
 
 
+def test_setting_example_loads_debug_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """示例配置必须声明 debug 域，且完整业务配置加载后可读取默认 debug 设置。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+
+    setting = load_setting(setting_path=ROOT / "setting.example.toml")
+
+    assert setting.debug.enabled is False
+    assert setting.debug.logging.enabled is True
+    assert setting.debug.logging.console_level == "DEBUG"
+    assert setting.debug.logging.file_level == "DEBUG"
+    assert setting.debug.timings.enabled is True
+    assert setting.debug.timings.write_file is True
+    assert setting.debug.timings.include_summary_in_report is True
+    assert setting.debug.timings.detail_level == "standard"
+
+
+def test_debug_runtime_settings_uses_lightweight_config_and_cli_env_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """debug 运行配置只读取 [debug]，并按 CLI > env > setting > default 合并。"""
+    from argparse import Namespace
+
+    from app.observability.diagnostics import resolve_debug_runtime_settings
+
+    setting_path = tmp_path / "setting.toml"
+    _ = setting_path.write_text(
+        """
+[llm]
+base_url = "https://example.invalid"
+api_key = "from-file"
+model = "file-model"
+timeout = 10
+
+[text_translation.system_prompt_files]
+ja = "missing-ja-prompt.md"
+en = "missing-en-prompt.md"
+
+[debug]
+enabled = false
+
+[debug.logging]
+enabled = false
+console_level = "DEBUG"
+file_level = "DEBUG"
+
+[debug.timings]
+enabled = false
+write_file = true
+include_summary_in_report = true
+detail_level = "standard"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_DEBUG", "1")
+    monkeypatch.setenv("ATT_MZ_DEBUG_TIMINGS", "1")
+    args = Namespace(debug=None, debug_logging=True, debug_timings=None)
+
+    settings = resolve_debug_runtime_settings(args=args, setting_path=setting_path)
+
+    assert settings.enabled is True
+    assert settings.source == "env"
+    assert settings.logging_enabled is True
+    assert settings.logging_source == "cli"
+    assert settings.timings_enabled is True
+    assert settings.timings_source == "env"
+
+
 @pytest.mark.parametrize(
     ("runtime_text", "message"),
     [

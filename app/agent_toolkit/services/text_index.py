@@ -4,6 +4,7 @@
 
 import time
 
+from app.observability import current_diagnostics
 from app.application.flow_gate import (
     collect_indexed_workflow_gate_errors,
     format_workflow_gate_error,
@@ -50,15 +51,18 @@ class TextIndexAgentMixin:
         def finish_stage(stage_name: str) -> None:
             nonlocal stage_started_at
             now = time.perf_counter()
-            stage_timings[stage_name] = int((now - stage_started_at) * 1000)
+            duration_ms = int((now - stage_started_at) * 1000)
+            stage_timings[stage_name] = duration_ms
+            diagnostics_name = {
+                "load_config_and_rules": "text_index.rebuild.load_config_and_rules",
+                "rust_rebuild_text_index": "text_index.rebuild.rust",
+            }.get(stage_name, f"text_index.rebuild.{stage_name}")
+            current_diagnostics().record_timing(diagnostics_name, duration_ms)
             stage_started_at = now
 
         def base_summary() -> JsonObject:
-            return {
-                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                "stage_timings": dict(stage_timings),
-                "native_thread_count": native_thread_count(),
-            }
+            _ = started_at
+            return {}
 
         set_progress(0, 3)
         set_status("加载配置和规则")
@@ -147,6 +151,15 @@ class TextIndexAgentMixin:
                 )
             advance_progress(1)
             finish_stage("rust_rebuild_text_index")
+            diagnostics = current_diagnostics()
+            diagnostics.counter("text_index.item_count", metadata.item_count)
+            diagnostics.counter("runtime.native_thread_count", native_thread_count())
+            for name, duration_ms in rust_stage_timings.items():
+                if isinstance(duration_ms, int):
+                    diagnostics.record_timing(
+                        f"text_index.rebuild.rust.internal.{name}",
+                        duration_ms,
+                    )
 
             set_status("检查源分支前置条件")
             source_branch_gate_summary: str | None = None
@@ -194,10 +207,6 @@ class TextIndexAgentMixin:
                 "created_at": metadata.created_at,
                 "include_write_probe": include_write_probe,
                 "source_branch_gate_status": source_branch_gate_status,
-                "rust_stage_timings": rust_stage_timings,
-                "performance_notes": [
-                    "首次重建由 Rust 直读游戏目录并写入持久索引；后续小任务应复用 warm index。",
-                ],
             }
         )
         if source_branch_gate_summary is not None:

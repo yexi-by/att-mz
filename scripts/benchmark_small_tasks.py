@@ -28,6 +28,7 @@ from scripts.benchmark_rebuild_active_runtime import (
     ensure_int,
     ensure_object,
     extract_last_json_object,
+    load_diagnostics_from_summary,
     optional_positive_int,
     prepare_benchmark,
     remove_tree_with_retries,
@@ -210,6 +211,7 @@ def run_task(
     try:
         report = extract_last_json_object(completed.stdout)
         summary = ensure_object(report.get("summary"), "summary")
+        diagnostics = load_diagnostics_from_summary(summary)
     except Exception as error:
         if completed.returncode != 0:
             raise RuntimeError(
@@ -233,6 +235,7 @@ def run_task(
         return_code=completed.returncode,
         report_status=report_status,
         summary=summary,
+        diagnostics=diagnostics,
     )
 
 
@@ -244,6 +247,7 @@ def build_task_result(
     return_code: int,
     report_status: str,
     summary: dict[str, object],
+    diagnostics: dict[str, object],
 ) -> dict[str, object]:
     """从 CLI JSON 摘要提取小任务性能字段。"""
     return {
@@ -253,8 +257,9 @@ def build_task_result(
         "return_code": return_code,
         "report_status": report_status,
         "report_index_status": summary.get("index_status") or summary.get("text_index_status") or "",
-        "stage_timings": summary.get("stage_timings", {}),
-        "native_thread_count": summary.get("native_thread_count", 0),
+        "diagnostics_file": str(ensure_diagnostics_file(summary)),
+        "diagnostics_timings": ensure_object(diagnostics.get("timings"), "diagnostics.timings"),
+        "diagnostics_counters": ensure_object(diagnostics.get("counters"), "diagnostics.counters"),
         "summary": summary,
     }
 
@@ -347,27 +352,51 @@ def build_benchmark_translation_lines(original_lines: list[str]) -> list[str]:
 
 def rebuild_text_index_command(game_title: str) -> list[str]:
     """返回重建文本范围索引命令。"""
-    return ["uv", "run", "python", "main.py", "rebuild-text-index", "--game", game_title]
+    return debug_cli_command("rebuild-text-index", "--game", game_title)
 
 
 def quality_report_command(game_title: str) -> list[str]:
     """返回普通质量报告命令。"""
-    return ["uv", "run", "python", "main.py", "quality-report", "--game", game_title]
+    return debug_cli_command("quality-report", "--game", game_title)
 
 
 def translate_max_items_command(game_title: str, max_items: int) -> list[str]:
     """返回小批翻译命令。"""
-    return ["uv", "run", "python", "main.py", "translate", "--game", game_title, "--max-items", str(max_items)]
+    return debug_cli_command("translate", "--game", game_title, "--max-items", str(max_items))
 
 
 def import_manual_translations_command(game_title: str, input_path: Path) -> list[str]:
     """返回手动译文导入命令。"""
-    return ["uv", "run", "python", "main.py", "import-manual-translations", "--game", game_title, "--input", str(input_path)]
+    return debug_cli_command("import-manual-translations", "--game", game_title, "--input", str(input_path))
 
 
 def reset_translations_command(game_title: str, input_path: Path) -> list[str]:
     """返回精确重置译文命令。"""
-    return ["uv", "run", "python", "main.py", "reset-translations", "--game", game_title, "--input", str(input_path)]
+    return debug_cli_command("reset-translations", "--game", game_title, "--input", str(input_path))
+
+
+def debug_cli_command(command_name: str, *args: str) -> list[str]:
+    """构造启用统一计时、关闭 debug 日志的 CLI 命令。"""
+    return [
+        "uv",
+        "run",
+        "python",
+        "main.py",
+        "--debug",
+        "--debug-timings",
+        "--no-debug-logging",
+        command_name,
+        *args,
+    ]
+
+
+def ensure_diagnostics_file(summary: dict[str, object]) -> Path:
+    """读取 stdout summary 中的 diagnostics 文件路径。"""
+    diagnostics_summary = ensure_object(summary.get("diagnostics"), "summary.diagnostics")
+    file_value = diagnostics_summary.get("file")
+    if not isinstance(file_value, str) or not file_value.strip():
+        raise TypeError("summary.diagnostics.file 必须是非空字符串")
+    return Path(file_value)
 
 
 class FakeOpenAICompatibleServer:

@@ -13,10 +13,47 @@ from app.cli.errors import CliArgumentParser
 def build_parser() -> argparse.ArgumentParser:
     """构建项目主命令行解析器。"""
     parser = CliArgumentParser(prog="att-mz", description="RPG Maker 翻译工具命令行入口")
-    _ = parser.add_argument(
+    debug_group = parser.add_mutually_exclusive_group()
+    _ = debug_group.add_argument(
         "--debug",
+        dest="debug",
         action="store_true",
-        help="在终端显示 DEBUG 级别日志，默认仅写入文件日志",
+        default=None,
+        help="本次进入统一 debug 模式",
+    )
+    _ = debug_group.add_argument(
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="本次关闭统一 debug 模式",
+    )
+    debug_logging_group = parser.add_mutually_exclusive_group()
+    _ = debug_logging_group.add_argument(
+        "--debug-logging",
+        dest="debug_logging",
+        action="store_true",
+        default=None,
+        help="本次强制开启 debug 日志",
+    )
+    _ = debug_logging_group.add_argument(
+        "--no-debug-logging",
+        dest="debug_logging",
+        action="store_false",
+        help="本次强制关闭 debug 日志",
+    )
+    debug_timings_group = parser.add_mutually_exclusive_group()
+    _ = debug_timings_group.add_argument(
+        "--debug-timings",
+        dest="debug_timings",
+        action="store_true",
+        default=None,
+        help="本次强制开启统一计时诊断",
+    )
+    _ = debug_timings_group.add_argument(
+        "--no-debug-timings",
+        dest="debug_timings",
+        action="store_false",
+        help="本次强制关闭统一计时诊断",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<命令>", required=True, parser_class=CliArgumentParser)
 

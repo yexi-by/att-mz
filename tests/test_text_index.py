@@ -14,6 +14,7 @@ from app.application.flow_gate import event_command_rule_scope_hash_for_command_
 from app.config import SettingOverrides
 from app.native_scope_index import build_native_plugin_source_candidates_payload, scan_native_rule_candidates
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
+from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
 from app.persistence import GameRegistry
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rule_review import EVENT_COMMAND_TEXT_RULE_DOMAIN, PLUGIN_TEXT_RULE_DOMAIN
@@ -231,28 +232,29 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
         setting_path=EXAMPLE_SETTING_PATH,
     )
 
-    report = await service.rebuild_text_index(game_title=record.game_title)
+    diagnostics = DiagnosticsContext.create_for_command(
+        command="rebuild-text-index",
+        settings=DebugRuntimeSettings(enabled=True, timings_enabled=True),
+        diagnostics_dir=tmp_path / "diagnostics",
+    )
+    with bind_diagnostics_context(diagnostics):
+        report = await service.rebuild_text_index(game_title=record.game_title)
 
     assert report.status == "ok"
     indexed_count = report.summary["indexed_count"]
     assert isinstance(indexed_count, int)
     assert indexed_count > 0
     assert report.summary["index_item_count"] == indexed_count
-    elapsed_ms = report.summary["elapsed_ms"]
-    assert isinstance(elapsed_ms, int)
-    assert elapsed_ms >= 0
-    native_threads = report.summary["native_thread_count"]
-    assert isinstance(native_threads, int)
-    assert native_threads > 0
-    stage_timings = ensure_json_object(report.summary["stage_timings"], "stage_timings")
-    assert set(stage_timings) == {"load_config_and_rules", "rust_rebuild_text_index"}
-    assert "source_branch_workflow_gate" not in stage_timings
-    assert all(isinstance(value, int) and value >= 0 for value in stage_timings.values())
-    rust_stage_timings = ensure_json_object(report.summary["rust_stage_timings"], "rust_stage_timings")
-    assert "scan_standard_data" in rust_stage_timings
-    assert "build_workflow_gate_metadata" in rust_stage_timings
-    assert "write_storage" in rust_stage_timings
-    assert all(isinstance(value, int) and value >= 0 for value in rust_stage_timings.values())
+    assert "elapsed_ms" not in report.summary
+    assert "native_thread_count" not in report.summary
+    assert "stage_timings" not in report.summary
+    assert "rust_stage_timings" not in report.summary
+    timings = diagnostics.timings
+    assert "text_index.rebuild.load_config_and_rules" in timings
+    assert "text_index.rebuild.rust" in timings
+    assert "text_index.rebuild.rust.internal.scan_standard_data" in timings
+    assert "text_index.rebuild.rust.internal.build_workflow_gate_metadata" in timings
+    assert "text_index.rebuild.rust.internal.write_storage" in timings
     async with await registry.open_game(record.game_title) as session:
         metadata = await session.read_text_index_metadata()
         assert metadata is not None
@@ -271,7 +273,7 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
         scope_summary = await session.read_text_index_scope_summary()
         assert scope_summary is not None
         assert scope_summary.active_count == indexed_count
-        assert scope_summary.native_thread_count == native_threads
+        assert diagnostics.counters["runtime.native_thread_count"] == scope_summary.native_thread_count
 
 
 @pytest.mark.asyncio
@@ -326,9 +328,8 @@ async def test_rebuild_text_index_recomputes_gate_metadata_without_python_fallba
 
     assert second_report.status == "ok"
     assert second_report.summary["source_branch_gate_status"] == "prechecked"
-    stage_timings = ensure_json_object(second_report.summary["stage_timings"], "stage_timings")
-    assert set(stage_timings) == {"load_config_and_rules", "rust_rebuild_text_index"}
-    assert "source_branch_workflow_gate" not in stage_timings
+    assert "stage_timings" not in second_report.summary
+    assert "rust_stage_timings" not in second_report.summary
     async with await registry.open_game(record.game_title) as session:
         second_metadata = await session.read_text_index_metadata()
     assert second_metadata is not None

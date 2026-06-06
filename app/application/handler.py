@@ -146,6 +146,7 @@ from app.rmmz.loader import (
     resolve_game_directory,
     resolve_game_layout,
 )
+from app.observability import current_diagnostics
 from app.observability.logging import logger
 from app.utils.config_loader_utils import load_setting
 from app.source_residual import SourceResidualRuleSet
@@ -483,22 +484,20 @@ class TranslationHandler:
         set_progress, advance_progress, set_status = callbacks
         started_at = time.perf_counter()
         stage_started_at = started_at
-        stage_timings: dict[str, int] = {}
 
         def finish_stage(stage_name: str) -> None:
             nonlocal stage_started_at
             now = time.perf_counter()
-            stage_timings[stage_name] = int((now - stage_started_at) * 1000)
+            duration_ms = int((now - stage_started_at) * 1000)
+            current_diagnostics().record_timing(f"translation.text_index_rebuild.{stage_name}", duration_ms)
             stage_started_at = now
 
         def rebuild_summary(*, index_status: str, indexed_count: int) -> JsonObject:
+            _ = started_at
             return {
                 "index_status": index_status,
                 "indexed_count": indexed_count,
                 "index_item_count": indexed_count,
-                "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                "stage_timings": dict(stage_timings),
-                "native_thread_count": native_thread_count(),
             }
 
         set_progress(0, 3)
@@ -511,6 +510,9 @@ class TranslationHandler:
         )
         advance_progress(1)
         finish_stage("rust_rebuild_text_index")
+        diagnostics = current_diagnostics()
+        diagnostics.counter("translation.text_index_rebuild.item_count", metadata.item_count)
+        diagnostics.counter("runtime.native_thread_count", native_thread_count())
         set_progress(3, 3)
         return rebuild_summary(index_status="rebuilt", indexed_count=metadata.item_count), None
 
@@ -1646,8 +1648,32 @@ class TranslationHandler:
         source_font_count = len(source_font_names) if source_font_path is not None else plan.summary.source_font_count
         if plan.summary.target_font_name is not None:
             logger.info(f"[tag.phase]字体引用已同步[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 目标字体 [tag.path]{plan.summary.target_font_name}[/tag.path] 原字体 [tag.count]{source_font_count}[/tag.count] 个，替换引用 [tag.count]{replaced_font_reference_count}[/tag.count] 处")
-        timing_text = "，".join(f"{name} {value}ms" for name, value in plan.timings_ms.items())
-        logger.info(f"[tag.phase]写文件分段耗时[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 模式 [tag.count]{mode}[/tag.count] 写入前检查 [tag.count]{pre_write_check_ms}[/tag.count]ms，Rust 计划 {timing_text}，文件替换 [tag.count]{file_replacement_ms}[/tag.count]ms，写后审计 [tag.count]{post_write_audit_ms}[/tag.count]ms")
+        diagnostics = current_diagnostics()
+        diagnostics_domain = "write_back" if mode == "write_back" else mode
+        diagnostics.record_timing(f"{diagnostics_domain}.pre_write_check", pre_write_check_ms)
+        for name, duration_ms in plan.timings_ms.items():
+            diagnostics.record_timing(f"{diagnostics_domain}.rust_plan.{name}", duration_ms)
+        diagnostics.record_timing(f"{diagnostics_domain}.file_replacement", file_replacement_ms)
+        diagnostics.record_timing(f"{diagnostics_domain}.post_write_audit", post_write_audit_ms)
+        diagnostics.counter(f"{diagnostics_domain}.planned_file_count", plan.summary.planned_file_count)
+        diagnostics.counter(f"{diagnostics_domain}.skipped_file_count", plan.summary.skipped_file_count)
+        diagnostics.counter(f"{diagnostics_domain}.data_item_count", plan.summary.data_item_count)
+        diagnostics.counter(f"{diagnostics_domain}.plugin_item_count", plan.summary.plugin_item_count)
+        diagnostics.counter(
+            f"{diagnostics_domain}.plugin_source_ast_source_scan_file_count",
+            plan.summary.plugin_source_ast_source_scan_file_count,
+        )
+        diagnostics.counter(
+            f"{diagnostics_domain}.plugin_source_ast_runtime_scan_file_count",
+            plan.summary.plugin_source_ast_runtime_scan_file_count,
+        )
+        diagnostics.counter(
+            f"{diagnostics_domain}.plugin_source_runtime_map_count",
+            plan.summary.plugin_source_runtime_map_count,
+        )
+        if diagnostics.timings_enabled:
+            timing_text = "，".join(f"{name} {value}ms" for name, value in plan.timings_ms.items())
+            logger.info(f"[tag.phase]写文件分段耗时[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 模式 [tag.count]{mode}[/tag.count] 写入前检查 [tag.count]{pre_write_check_ms}[/tag.count]ms，Rust 计划 {timing_text}，文件替换 [tag.count]{file_replacement_ms}[/tag.count]ms，写后审计 [tag.count]{post_write_audit_ms}[/tag.count]ms")
         logger.info(f"[tag.phase]Rust 写回计划完成[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 模式 [tag.count]{mode}[/tag.count] 写入文件 [tag.count]{plan.summary.planned_file_count}[/tag.count] 个，跳过 [tag.count]{plan.summary.skipped_file_count}[/tag.count] 个，插件源码源 AST 扫描 [tag.count]{plan.summary.plugin_source_ast_source_scan_file_count}[/tag.count] 个，写后 AST 验证 [tag.count]{plan.summary.plugin_source_ast_runtime_scan_file_count}[/tag.count] 个")
         logger.success(f"[tag.success]{success_phase}[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] data 文本 [tag.count]{plan.summary.data_item_count}[/tag.count] 条，插件文本 [tag.count]{plan.summary.plugin_item_count}[/tag.count] 条，术语 [tag.count]{plan.summary.terminology_written_count}[/tag.count] 条")
         return WriteBackSummary(

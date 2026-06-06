@@ -301,11 +301,13 @@ def run_benchmark(options: BenchmarkOptions, prepared: PreparedBenchmark) -> dic
             )
         report = extract_last_json_object(completed.stdout)
         summary = ensure_object(report.get("summary"), "summary")
+        diagnostics = load_diagnostics_from_summary(summary)
         run_result = build_run_result(
             index=index,
             elapsed_ms=elapsed_ms,
             return_code=completed.returncode,
             summary=summary,
+            diagnostics=diagnostics,
         )
         run_result["active_data_reset_from_origin_count"] = active_data_reset_count
         runs.append(run_result)
@@ -364,6 +366,9 @@ def rebuild_active_runtime_command(game_title: str) -> list[str]:
         "run",
         "python",
         "main.py",
+        "--debug",
+        "--debug-timings",
+        "--no-debug-logging",
         "rebuild-active-runtime",
         "--game",
         game_title,
@@ -377,15 +382,27 @@ def build_run_result(
     elapsed_ms: int,
     return_code: int,
     summary: dict[str, object],
+    diagnostics: dict[str, object],
 ) -> dict[str, object]:
     """从 CLI JSON 摘要提取性能分段。"""
+    timings = ensure_object(diagnostics.get("timings"), "diagnostics.timings")
     return {
         "run_index": index,
         "elapsed_ms": elapsed_ms,
         "return_code": return_code,
-        "rust_plan_ms": ensure_int(summary.get("rust_plan_ms"), "rust_plan_ms"),
-        "file_replacement_ms": ensure_int(summary.get("file_replacement_ms"), "file_replacement_ms"),
-        "post_write_audit_ms": ensure_int(summary.get("post_write_audit_ms"), "post_write_audit_ms"),
+        "diagnostics_file": str(ensure_str_path_from_summary(summary)),
+        "rust_plan_ms": ensure_int(
+            timings.get("rebuild_active_runtime.rust_plan.total"),
+            "diagnostics.timings.rebuild_active_runtime.rust_plan.total",
+        ),
+        "file_replacement_ms": ensure_int(
+            timings.get("rebuild_active_runtime.file_replacement"),
+            "diagnostics.timings.rebuild_active_runtime.file_replacement",
+        ),
+        "post_write_audit_ms": ensure_int(
+            timings.get("rebuild_active_runtime.post_write_audit"),
+            "diagnostics.timings.rebuild_active_runtime.post_write_audit",
+        ),
         "planned_file_count": ensure_int(summary.get("planned_file_count"), "planned_file_count"),
         "skipped_file_count": ensure_int(summary.get("skipped_file_count"), "skipped_file_count"),
         "plugin_source_ast_source_scan_file_count": ensure_int(
@@ -407,6 +424,25 @@ def build_run_result(
             "terminology_written_count",
         ),
     }
+
+
+def load_diagnostics_from_summary(summary: dict[str, object]) -> dict[str, object]:
+    """从 stdout summary.diagnostics.file 读取完整诊断 JSON。"""
+    diagnostics_path = ensure_str_path_from_summary(summary)
+    try:
+        payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeError(f"diagnostics 文件不可读取: {diagnostics_path}") from error
+    return ensure_object(payload, "diagnostics")
+
+
+def ensure_str_path_from_summary(summary: dict[str, object]) -> Path:
+    """从 stdout summary 中读取 diagnostics 文件路径。"""
+    diagnostics_summary = ensure_object(summary.get("diagnostics"), "summary.diagnostics")
+    path_value = diagnostics_summary.get("file")
+    if not isinstance(path_value, str) or not path_value.strip():
+        raise TypeError("summary.diagnostics.file 必须是非空字符串")
+    return Path(path_value)
 
 
 def collect_game_sample_stats(game_path: Path) -> dict[str, int]:

@@ -32,20 +32,58 @@ def test_extract_last_json_object_reads_report_after_progress() -> None:
             "进度 重建运行文件 | [--------------------] | 0/1",
             '{"status":"debug"}',
             "进度 重建运行文件 | [####################] | 1/1",
-            '{"status":"ok","summary":{"rust_plan_ms":12}}',
+            '{"status":"ok","summary":{"planned_file_count":12}}',
         ]
     )
 
     report = extract_last_json_object(text)
 
     assert report["status"] == "ok"
-    assert report["summary"] == {"rust_plan_ms": 12}
+    assert report["summary"] == {"planned_file_count": 12}
 
 
 def test_extract_last_json_object_rejects_missing_report() -> None:
     """stdout 没有 JSON 对象时直接报错。"""
     with pytest.raises(RuntimeError, match="没有找到 JSON"):
         _ = extract_last_json_object("进度 重建运行文件")
+
+
+def stdout_report_with_diagnostics(
+    *,
+    app_home: Path,
+    status: str,
+    summary: dict[str, object],
+    timings: dict[str, int],
+) -> str:
+    """构造带 diagnostics 文件的 fake CLI stdout。"""
+    diagnostics_dir = app_home / "logs" / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_path = diagnostics_dir / f"run-{len(list(diagnostics_dir.glob('*.json'))) + 1}.json"
+    _ = diagnostics_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "command": "rebuild-active-runtime",
+                "status": "ok",
+                "timings": timings,
+                "counters": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "status": status,
+        "summary": {
+            **summary,
+            "diagnostics": {
+                "enabled": True,
+                "timings_enabled": True,
+                "file": str(diagnostics_path),
+            },
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def test_resolve_content_root_supports_direct_and_www_layouts(tmp_path: Path) -> None:
@@ -291,24 +329,24 @@ def test_run_benchmark_records_rust_threads_and_passes_child_env(
         return subprocess.CompletedProcess(
             args="uv run python main.py",
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "status": "ok",
-                    "summary": {
-                        "rust_plan_ms": 1,
-                        "file_replacement_ms": 2,
-                        "post_write_audit_ms": 3,
-                        "planned_file_count": 4,
-                        "skipped_file_count": 5,
-                        "plugin_source_ast_source_scan_file_count": 9,
-                        "plugin_source_ast_runtime_scan_file_count": 10,
-                        "plugin_source_runtime_map_count": 11,
-                        "data_item_count": 6,
-                        "plugin_item_count": 7,
-                        "terminology_written_count": 8,
-                    },
+            stdout=stdout_report_with_diagnostics(
+                app_home=Path(env["ATT_MZ_HOME"]),
+                status="ok",
+                summary={
+                    "planned_file_count": 4,
+                    "skipped_file_count": 5,
+                    "plugin_source_ast_source_scan_file_count": 9,
+                    "plugin_source_ast_runtime_scan_file_count": 10,
+                    "plugin_source_runtime_map_count": 11,
+                    "data_item_count": 6,
+                    "plugin_item_count": 7,
+                    "terminology_written_count": 8,
                 },
-                ensure_ascii=False,
+                timings={
+                    "rebuild_active_runtime.rust_plan.total": 1,
+                    "rebuild_active_runtime.file_replacement": 2,
+                    "rebuild_active_runtime.post_write_audit": 3,
+                },
             ),
             stderr="",
         )

@@ -31,6 +31,7 @@ from app.cli.commands.write_back import run_all_command
 from app.cli.runtime import build_setting_overrides
 from app.application.errors import WorkflowGateError
 from app.application.summaries import TerminologyWriteSummary, TextTranslationSummary, WriteBackSummary
+from app.runtime_paths import APP_HOME_ENV_NAME
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 
 
@@ -82,6 +83,39 @@ def test_add_game_requires_explicit_source_language() -> None:
     assert namespace_optional_str(probe_args, "output") == "probe.json"
     assert namespace_optional_str(reset_args, "confirm_game_title") == "demo"
     assert getattr(reset_args, "dry_run") is True
+
+
+def test_global_debug_switches_parse() -> None:
+    """debug 总开关和子功能开关必须作为全局 CLI 参数解析。"""
+    parser = build_parser()
+
+    enabled_args = parser.parse_args(
+        [
+            "--debug",
+            "--debug-timings",
+            "--no-debug-logging",
+            "quality-report",
+            "--game",
+            "demo",
+        ]
+    )
+    disabled_args = parser.parse_args(
+        [
+            "--no-debug",
+            "--no-debug-timings",
+            "--debug-logging",
+            "quality-report",
+            "--game",
+            "demo",
+        ]
+    )
+
+    assert getattr(enabled_args, "debug") is True
+    assert getattr(enabled_args, "debug_timings") is True
+    assert getattr(enabled_args, "debug_logging") is False
+    assert getattr(disabled_args, "debug") is False
+    assert getattr(disabled_args, "debug_timings") is False
+    assert getattr(disabled_args, "debug_logging") is True
 
 
 def test_add_game_existing_source_snapshot_reports_business_error(
@@ -350,11 +384,11 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
     assert calls == ["translate", "write_back"]
 
 
-def test_write_back_json_summary_reports_handler_timing_fields(
+def test_write_back_json_summary_hides_timing_fields_in_ordinary_mode(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`write-back` 必须输出 handler 返回的写回阶段耗时字段。"""
+    """普通 `write-back` 报告只输出业务摘要，不泄漏写回阶段耗时。"""
 
     class FakeHandler:
         """返回固定写回摘要。"""
@@ -409,20 +443,20 @@ def test_write_back_json_summary_reports_handler_timing_fields(
     summary = ensure_json_object(payload["summary"], "CLI JSON summary")
 
     assert exit_code == 0
-    assert summary["pre_write_check_ms"] == 7
-    assert summary["rust_plan_ms"] == 11
-    assert summary["file_replacement_ms"] == 13
-    assert summary["post_write_audit_ms"] == 17
+    assert "pre_write_check_ms" not in summary
+    assert "rust_plan_ms" not in summary
+    assert "file_replacement_ms" not in summary
+    assert "post_write_audit_ms" not in summary
     assert summary["plugin_source_ast_source_scan_file_count"] == 6
     assert summary["plugin_source_ast_runtime_scan_file_count"] == 7
     assert summary["plugin_source_runtime_map_count"] == 8
 
 
-def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
+def test_rebuild_active_runtime_json_summary_hides_timing_fields_in_ordinary_mode(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`rebuild-active-runtime` 必须输出 handler 返回的写回阶段耗时字段。"""
+    """普通 `rebuild-active-runtime` 报告不泄漏写回阶段耗时。"""
 
     class FakeHandler:
         """返回固定重建摘要。"""
@@ -477,10 +511,10 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
     summary = ensure_json_object(payload["summary"], "CLI JSON summary")
 
     assert exit_code == 0
-    assert summary["pre_write_check_ms"] == 17
-    assert summary["rust_plan_ms"] == 19
-    assert summary["file_replacement_ms"] == 23
-    assert summary["post_write_audit_ms"] == 29
+    assert "pre_write_check_ms" not in summary
+    assert "rust_plan_ms" not in summary
+    assert "file_replacement_ms" not in summary
+    assert "post_write_audit_ms" not in summary
     assert summary["plugin_source_ast_source_scan_file_count"] == 10
     assert summary["plugin_source_ast_runtime_scan_file_count"] == 11
     assert summary["plugin_source_runtime_map_count"] == 12
@@ -725,6 +759,40 @@ def test_removed_output_mode_flags_report_argument_error(
     assert first_error["code"] == "argument_error"
     assert isinstance(message, str)
     assert "--agent-mode" in message
+
+
+def test_debug_timings_cli_run_writes_single_diagnostics_file(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """debug timings 开启时，CLI 入口每次运行只写一个 diagnostics 文件。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+
+    exit_code = main(["--debug", "list"])
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+    diagnostics = ensure_json_object(summary["diagnostics"], "CLI JSON summary.diagnostics")
+    diagnostics_dir = app_home / "logs" / "diagnostics"
+    diagnostics_files = list(diagnostics_dir.glob("*.json"))
+
+    assert exit_code == 0
+    assert diagnostics["enabled"] is True
+    assert diagnostics["timings_enabled"] is True
+    assert len(diagnostics_files) == 1
+    assert Path(str(diagnostics["file"])) == diagnostics_files[0]
+    diagnostics_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(diagnostics_files[0].read_text(encoding="utf-8")))),
+        "diagnostics JSON",
+    )
+    timings = ensure_json_object(diagnostics_payload["timings"], "diagnostics.timings")
+    assert diagnostics_payload["command"] == "list"
+    assert diagnostics_payload["status"] == "ok"
+    assert "command.total" in timings
 
 
 def test_placeholder_rule_commands_accept_input_files() -> None:
@@ -1056,7 +1124,7 @@ def test_translate_quality_errors_do_not_fail_process() -> None:
 
 
 def test_translate_summary_report_includes_text_index_status() -> None:
-    """小批翻译摘要会暴露索引来源和自动重建摘要。"""
+    """小批翻译摘要会暴露索引来源，但普通模式不输出阶段耗时。"""
     summary = TextTranslationSummary(
         total_extracted_items=10,
         pending_count=3,
@@ -1084,8 +1152,7 @@ def test_translate_summary_report_includes_text_index_status() -> None:
     assert report.summary["text_index_status"] == "cold_rebuilt"
     rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "rebuild_summary")
     assert rebuild_summary["index_status"] == "rebuilt"
-    stage_timings = ensure_json_object(report.summary["stage_timings"], "stage_timings")
-    assert stage_timings["local_total_excluding_model_ms"] == 41
+    assert "stage_timings" not in report.summary
 
 
 def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
@@ -1110,8 +1177,8 @@ def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
     assert "import-manual-translations" in restore_step
 
 
-def test_write_back_summary_report_keeps_timing_fields_separate() -> None:
-    """写回 JSON 摘要必须保留 Rust 计划、文件替换和写后审计的独立耗时语义。"""
+def test_write_back_summary_report_hides_timing_fields_in_ordinary_mode() -> None:
+    """写回 JSON 摘要保留业务数量，但普通模式不输出耗时字段。"""
     report = build_write_back_summary_report(
         WriteBackSummary(
             data_item_count=3,
@@ -1133,10 +1200,10 @@ def test_write_back_summary_report_keeps_timing_fields_separate() -> None:
         )
     )
 
-    assert report.summary["pre_write_check_ms"] == 9
-    assert report.summary["rust_plan_ms"] == 11
-    assert report.summary["file_replacement_ms"] == 13
-    assert report.summary["post_write_audit_ms"] == 17
+    assert "pre_write_check_ms" not in report.summary
+    assert "rust_plan_ms" not in report.summary
+    assert "file_replacement_ms" not in report.summary
+    assert "post_write_audit_ms" not in report.summary
     assert report.summary["planned_file_count"] == 6
     assert report.summary["skipped_file_count"] == 7
     assert report.summary["plugin_source_ast_source_scan_file_count"] == 8
@@ -1415,6 +1482,45 @@ def test_report_output_can_leave_data_output_file_untouched(
     payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
     assert payload["status"] == "ok"
     assert output_path.read_text(encoding="utf-8") == data_json
+
+
+def test_report_output_injects_diagnostics_summary_when_debug_timings_enabled(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """stdout JSON 统一出口必须在 debug timings 开启时注入摘要。"""
+    from app.observability.diagnostics import (
+        DebugRuntimeSettings,
+        DiagnosticsContext,
+        bind_diagnostics_context,
+    )
+
+    context = DiagnosticsContext.create_for_command(
+        command="quality-report",
+        settings=DebugRuntimeSettings(enabled=True, timings_enabled=True),
+        diagnostics_dir=tmp_path,
+    )
+    report = AgentReport(status="ok", summary={"candidate_count": 1})
+
+    with bind_diagnostics_context(context):
+        context.record_timing("quality.native_quality", 1800)
+        write_report_outputs(
+            report=report,
+            args=Namespace(output=None),
+            title="翻译质量报告",
+        )
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    summary = ensure_json_object(payload["summary"], "summary")
+    diagnostics = ensure_json_object(summary["diagnostics"], "summary.diagnostics")
+    slowest = ensure_json_array(diagnostics["slowest_timings"], "summary.diagnostics.slowest_timings")
+    slowest_first = ensure_json_object(slowest[0], "summary.diagnostics.slowest_timings[0]")
+
+    assert diagnostics["enabled"] is True
+    assert diagnostics["timings_enabled"] is True
+    assert str(diagnostics["file"]).endswith(".json")
+    assert slowest_first == {"name": "quality.native_quality", "duration_ms": 1800}
 
 
 def test_validation_report_output_writes_full_file_and_prints_summary(

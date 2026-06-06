@@ -16,7 +16,7 @@ from app.cli.arguments import (
     read_required_path_arg,
 )
 from app.cli.progress import build_progress_reporter
-from app.cli.reports import build_sampled_stdout_report, build_translate_summary_report, write_report_outputs
+from app.cli.reports import build_sampled_stdout_report, build_translate_summary_report, print_report, write_report_outputs
 from app.cli.runtime import (
     HandlerSession,
     build_setting_overrides,
@@ -226,5 +226,5 @@ async def run_translate_command(args: argparse.Namespace) -> int:
         )
     ensure_text_translation_not_blocked(summary)
     report = build_translate_summary_report(summary)
-    print(report.to_json_text())
+    print_report(report)
     return 0

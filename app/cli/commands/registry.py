@@ -13,7 +13,7 @@ from app.agent_toolkit.reports import issue
 from app.cli.arguments import read_bool_arg, read_optional_path_arg, read_optional_str_arg, read_str_arg
 from app.cli.errors import CliBusinessError
 from app.cli.runtime import HandlerSession, resolve_optional_target_game_title
-from app.cli.reports import write_report_outputs
+from app.cli.reports import print_report, write_report_outputs
 from app.game_reset import reset_registered_game
 from app.language import parse_source_language
 from app.persistence import GameRegistry
@@ -55,7 +55,7 @@ async def run_list_command(args: argparse.Namespace) -> int:
             ],
         },
     )
-    print(report.to_json_text())
+    print_report(report)
     return 0
 
 
@@ -78,7 +78,7 @@ async def run_add_game_command(args: argparse.Namespace) -> int:
             },
             details={"next_game_argument": game_title},
         )
-        print(report.to_json_text())
+        print_report(report)
     return 0
 
 

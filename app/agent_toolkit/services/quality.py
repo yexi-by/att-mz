@@ -80,6 +80,7 @@ from app.text_index import collect_text_index_scope_gate_errors
 from app.text_index import collect_text_index_placeholder_gate_decisions
 from app.text_index import text_index_item_to_translation_item
 from app.text_index import text_index_source_branch_gates_prechecked
+from app.observability import current_diagnostics
 
 QUALITY_REPORT_FULL_RECHECK_LIMIT = 1000
 
@@ -468,6 +469,11 @@ def _collect_rust_write_back_gate(
             "mode": "quality_gate",
             "message": message,
         }
+    diagnostics = current_diagnostics()
+    for name, duration_ms in plan.timings_ms.items():
+        diagnostics.record_timing(f"quality.write_back_gate.rust_plan.{name}", duration_ms)
+    diagnostics.counter("quality.write_back_gate.data_item_count", plan.summary.data_item_count)
+    diagnostics.counter("quality.write_back_gate.plugin_item_count", plan.summary.plugin_item_count)
     return None, {
         "status": "ok",
         "mode": "quality_gate",
@@ -475,7 +481,6 @@ def _collect_rust_write_back_gate(
         "plugin_item_count": plan.summary.plugin_item_count,
         "terminology_written_count": plan.summary.terminology_written_count,
         "plugin_source_runtime_map_count": plan.summary.plugin_source_runtime_map_count,
-        "timings_ms": {key: value for key, value in plan.timings_ms.items()},
     }
 
 
@@ -1151,6 +1156,9 @@ class QualityAgentMixin:
             warnings.append(issue("quality_fix_empty", "当前没有可导出的质量修复条目"))
         set_progress(8, 8)
         set_status("质量修复表已完成")
+        diagnostics = current_diagnostics()
+        diagnostics.counter("quality_fix.native_quality_payload_item_count", len(active_translated_items))
+        diagnostics.counter("quality_fix.native_write_protocol_payload_item_count", len(active_translated_items))
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
@@ -1170,8 +1178,6 @@ class QualityAgentMixin:
                     executed=False,
                     mode="index_writable" if include_write_probe else "disabled",
                 ),
-                "native_quality_payload_item_count": len(active_translated_items),
-                "native_write_protocol_payload_item_count": len(active_translated_items),
             },
             details={
                 "location_paths": _string_lines_to_json_array(problem_paths),
@@ -1192,7 +1198,10 @@ class QualityAgentMixin:
         """使用持久文本范围索引生成默认质量报告。"""
         set_progress, advance_progress, set_status = callbacks
         overall_started = time.perf_counter()
-        stage_timings: JsonObject = {}
+
+        def record_stage(stage_name: str, duration_ms: int) -> None:
+            current_diagnostics().record_timing(f"quality.{stage_name}", duration_ms)
+
         set_status("读取持久文本范围索引")
         stage_started = time.perf_counter()
         metadata = await session.read_text_index_metadata()
@@ -1206,7 +1215,7 @@ class QualityAgentMixin:
             metadata=metadata,
         )
         text_index_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
-        stage_timings["read_index_and_state"] = _elapsed_ms(stage_started)
+        record_stage("read_index_and_state", _elapsed_ms(stage_started))
         plugin_source_gate_errors: list[AgentIssue] = []
         plugin_source_review: PluginSourceReviewCoverage | None = None
         plugin_source_unreviewed_details: JsonArray | None = None
@@ -1215,10 +1224,10 @@ class QualityAgentMixin:
         if precomputed_source_branch_gate_errors is not None and not source_branch_gates_prechecked:
             plugin_source_gate_errors = list(precomputed_source_branch_gate_errors)
             plugin_source_review_status = "reused_rebuild_gate"
-            stage_timings["plugin_source_review"] = 0
+            record_stage("plugin_source_review", 0)
         elif plugin_source_records and source_branch_gates_prechecked:
             plugin_source_review_status = "prechecked_from_text_index"
-            stage_timings["plugin_source_review"] = 0
+            record_stage("plugin_source_review", 0)
         elif not source_branch_gates_prechecked:
             plugin_source_gate_errors = [
                 issue(
@@ -1227,7 +1236,7 @@ class QualityAgentMixin:
                 )
             ]
             plugin_source_review_status = "metadata_missing"
-            stage_timings["plugin_source_review"] = 0
+            record_stage("plugin_source_review", 0)
         stage_started = time.perf_counter()
         event_rules = await session.read_event_command_text_rules()
         note_tag_rules = await session.read_note_tag_text_rules()
@@ -1240,7 +1249,7 @@ class QualityAgentMixin:
         nonstandard_data_records = await session.read_nonstandard_data_text_rules()
         source_residual_rules = await session.read_source_residual_rules()
         terminology_registry = await session.read_terminology_registry()
-        stage_timings["read_rules"] = _elapsed_ms(stage_started)
+        record_stage("read_rules", _elapsed_ms(stage_started))
         stage_started = time.perf_counter()
         if latest_run is None:
             run_quality_error_items: list[TranslationErrorItem] = []
@@ -1249,7 +1258,7 @@ class QualityAgentMixin:
             stage_started = time.perf_counter()
             run_quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
             llm_failures = await session.read_llm_failures(latest_run.run_id)
-            stage_timings["read_run_failures"] = _elapsed_ms(stage_started)
+            record_stage("read_run_failures", _elapsed_ms(stage_started))
         run_quality_error_count = len(run_quality_error_items)
 
         stage_started = time.perf_counter()
@@ -1277,7 +1286,6 @@ class QualityAgentMixin:
                 if item.location_path in pending_quality_error_paths
             ]
             native_quality_items = await session.read_translated_items_by_paths(sorted(active_quality_error_paths))
-            native_quality_recheck_mode = "quality_error_subset" if native_quality_items else "saved_error_records"
             active_count = scope_summary.active_count
             writable_count = scope_summary.writable_count
             unwritable_count = scope_summary.unwritable_count
@@ -1349,15 +1357,13 @@ class QualityAgentMixin:
                     *active_translated_items,
                     *source_existing_stale_items,
                 ]
-                native_quality_recheck_mode = "full"
             else:
                 native_quality_items = [
                     item
                     for item in active_translated_items
                     if item.location_path in active_quality_error_paths
                 ]
-                native_quality_recheck_mode = "quality_error_subset" if native_quality_items else "saved_error_records"
-        stage_timings["build_index_scope"] = _elapsed_ms(stage_started)
+        record_stage("build_index_scope", _elapsed_ms(stage_started))
         stage_started = time.perf_counter()
         placeholder_review_decisions, placeholder_metadata_errors = await collect_text_index_placeholder_gate_decisions(
             session=session,
@@ -1365,7 +1371,7 @@ class QualityAgentMixin:
             custom_placeholder_rules_supplied=False,
             stage="quality_report",
         )
-        stage_timings["placeholder_review"] = _elapsed_ms(stage_started)
+        record_stage("placeholder_review", _elapsed_ms(stage_started))
 
         total_terminology_count = 0
         filled_terminology_count = 0
@@ -1429,7 +1435,7 @@ class QualityAgentMixin:
             if include_write_probe or has_native_quality_issues or len(native_quality_items) <= 1000
             else None
         )
-        stage_timings["native_quality"] = _elapsed_ms(stage_started)
+        record_stage("native_quality", _elapsed_ms(stage_started))
         residual_items = native_quality_details.source_residual_items if native_quality_details is not None else []
         text_structure_items = native_quality_details.text_structure_items if native_quality_details is not None else []
         placeholder_risk_items = native_quality_details.placeholder_risk_items if native_quality_details is not None else []
@@ -1448,7 +1454,7 @@ class QualityAgentMixin:
                 text_rules=text_rules,
                 writable_paths=writable_paths,
             )
-            stage_timings["rust_write_back_gate"] = _elapsed_ms(stage_started)
+            record_stage("rust_write_back_gate", _elapsed_ms(stage_started))
             stage_started = time.perf_counter()
             game_data = await service._load_translation_source_game_data(session)
             write_back_protocol_items = collect_agent_service_native_write_protocol_details(
@@ -1456,7 +1462,7 @@ class QualityAgentMixin:
                 plugins_js=[plugin for plugin in game_data.plugins_js],
                 items=active_translated_items,
             )
-            stage_timings["native_write_protocol"] = _elapsed_ms(stage_started)
+            record_stage("native_write_protocol", _elapsed_ms(stage_started))
             advance_progress(len(active_translated_items))
 
         errors: list[AgentIssue] = []
@@ -1528,7 +1534,14 @@ class QualityAgentMixin:
         )
         set_progress(total_progress_steps, total_progress_steps)
         set_status("质量报告已完成")
-        stage_timings["total"] = _elapsed_ms(overall_started)
+        record_stage("total", _elapsed_ms(overall_started))
+        diagnostics = current_diagnostics()
+        diagnostics.counter("quality.native_quality_payload_item_count", len(native_quality_items))
+        diagnostics.counter(
+            "quality.native_write_protocol_payload_item_count",
+            len(active_translated_items) if include_write_probe else 0,
+        )
+        diagnostics.counter("runtime.native_thread_count", native_thread_count())
         probe_fields = write_back_probe_report_fields(
             requested=include_write_probe,
             executed=include_write_probe,
@@ -1569,11 +1582,6 @@ class QualityAgentMixin:
                 **probe_fields,
                 "write_back_gate": write_back_gate_summary,
                 "text_index_status": "used",
-                "stage_timings": stage_timings,
-                "native_quality_payload_item_count": len(native_quality_items),
-                "native_write_protocol_payload_item_count": len(active_translated_items) if include_write_probe else 0,
-                "native_quality_recheck_mode": native_quality_recheck_mode,
-                "native_thread_count": native_thread_count(),
             },
             details={
                 "error_type_counts": dict(error_type_counts),

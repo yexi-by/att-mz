@@ -4,6 +4,7 @@
 
 import time
 
+from app.observability import current_diagnostics
 from .common import (
     AgentIssue,
     AgentReport,
@@ -70,15 +71,15 @@ class CoverageAgentMixin:
                 custom_placeholder_rules_supplied=False,
                 stage="text_scope",
             )
-            stage_timings["placeholder_review"] = _elapsed_ms(stage_started)
+            _record_stage(stage_timings, "text_scope", "placeholder_review", _elapsed_ms(stage_started))
             stage_started = time.perf_counter()
             report = build_text_index_text_scope_report(
                 index_records=index_records,
                 translated_items=translated_items,
                 include_write_probe=include_write_probe,
             )
-            stage_timings["assemble_report"] = _elapsed_ms(stage_started)
-            stage_timings["total"] = _elapsed_ms(overall_started)
+            _record_stage(stage_timings, "text_scope", "assemble_report", _elapsed_ms(stage_started))
+            _record_stage(stage_timings, "text_scope", "total", _elapsed_ms(overall_started))
             placeholder_review_warnings = [
                 issue(decision.code, decision.message)
                 for decision in placeholder_review_decisions
@@ -100,7 +101,6 @@ class CoverageAgentMixin:
                     **report.summary,
                     "nonstandard_data_skipped_file_count": len(skipped_file_names),
                     "text_index_status": index_status,
-                    "stage_timings": stage_timings,
                 },
                 details={
                     **report.details,
@@ -144,15 +144,15 @@ class CoverageAgentMixin:
                 custom_placeholder_rules_supplied=False,
                 stage="audit_coverage",
             )
-            stage_timings["placeholder_review"] = _elapsed_ms(stage_started)
+            _record_stage(stage_timings, "audit_coverage", "placeholder_review", _elapsed_ms(stage_started))
             stage_started = time.perf_counter()
             report = build_text_index_coverage_report(
                 index_records=index_records,
                 translated_items=translated_items,
                 include_write_probe=include_write_probe,
             )
-            stage_timings["assemble_report"] = _elapsed_ms(stage_started)
-            stage_timings["total"] = _elapsed_ms(overall_started)
+            _record_stage(stage_timings, "audit_coverage", "assemble_report", _elapsed_ms(stage_started))
+            _record_stage(stage_timings, "audit_coverage", "total", _elapsed_ms(overall_started))
             placeholder_review_warnings = [
                 issue(decision.code, decision.message)
                 for decision in placeholder_review_decisions
@@ -174,7 +174,6 @@ class CoverageAgentMixin:
                     **report.summary,
                     "nonstandard_data_skipped_file_count": len(skipped_file_names),
                     "text_index_status": index_status,
-                    "stage_timings": stage_timings,
                 },
                 details={
                     **report.details,
@@ -276,7 +275,7 @@ async def _read_current_index_report(
         session=session,
         text_rules=text_rules,
     )
-    stage_timings["detect_text_index"] = _elapsed_ms(stage_started)
+    _record_stage(stage_timings, stage, "detect_text_index", _elapsed_ms(stage_started))
     if index_invalidations:
         index_status = "rebuilt"
         rebuild_report = await service.rebuild_text_index(game_title=game_title)
@@ -319,7 +318,7 @@ async def _read_current_index_report(
     index_records = await session.read_text_index_items()
     translated_items = await session.read_translated_items()
     nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
-    stage_timings["read_index_and_state"] = _elapsed_ms(stage_started)
+    _record_stage(stage_timings, stage, "read_index_and_state", _elapsed_ms(stage_started))
     return index_status, metadata, index_records, translated_items, nonstandard_data_rules
 
 
@@ -375,3 +374,14 @@ def _empty_audit_coverage_report(
 def _elapsed_ms(started: float) -> int:
     """返回从 started 到当前的毫秒耗时。"""
     return int((time.perf_counter() - started) * 1000)
+
+
+def _record_stage(
+    stage_timings: JsonObject,
+    domain: str,
+    stage_name: str,
+    duration_ms: int,
+) -> None:
+    """记录 coverage 命令阶段耗时到统一 diagnostics。"""
+    stage_timings[stage_name] = duration_ms
+    current_diagnostics().record_timing(f"{domain}.{stage_name}", duration_ms)

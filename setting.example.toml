@@ -16,6 +16,21 @@ timeout = 600
 # auto 使用 Rust 原生核心默认线程数；也可以改成正整数，例如 4。
 rust_threads = "auto"
 
+[debug]
+# debug 总开关；CLI --debug/--no-debug 可按单次运行覆盖。
+enabled = false
+
+[debug.logging]
+enabled = true
+console_level = "DEBUG"
+file_level = "DEBUG"
+
+[debug.timings]
+enabled = true
+write_file = true
+include_summary_in_report = true
+detail_level = "standard"
+
 [translation_context]
 token_size = 1024
 factor = 3.5
