@@ -31,15 +31,32 @@ def test_copy_release_resources_packages_release_skill_and_required_layout(tmp_p
     assert (release_dir / "logs").is_dir()
     assert (release_dir / "outputs").is_dir()
     skill_text = packaged_skill.read_text(encoding="utf-8")
+    expected_skill_text = build_release.RELEASE_SKILL_SOURCE.read_text(encoding="utf-8").replace(
+        "name: att-mz-release",
+        "name: att-mz",
+        1,
+    )
+    assert skill_text == expected_skill_text
     assert skill_text.startswith("---\nname: att-mz\n")
     assert "name: att-mz-release" not in skill_text
     assert {path.name for path in packaged_references.glob("*.md")} == {
         path.name for path in source_references.glob("*.md")
     }
+    for source_reference in source_references.glob("*.md"):
+        packaged_reference = packaged_references / source_reference.name
+        assert packaged_reference.read_text(encoding="utf-8") == source_reference.read_text(encoding="utf-8")
     assert not any((release_dir / "data" / "db").iterdir())
     assert not any((release_dir / "logs").iterdir())
     assert not any((release_dir / "outputs").iterdir())
-    for forbidden_relative in ("app", "tests", "rust", ".github", ".git", "skills/att-mz-release"):
+    for forbidden_relative in (
+        "app",
+        "tests",
+        "rust",
+        ".github",
+        ".git",
+        "skills/att-mz-release",
+        "skills/att-mz-protocol",
+    ):
         assert not (release_dir / forbidden_relative).exists()
 
 
@@ -59,3 +76,4 @@ def test_create_release_zip_preserves_empty_runtime_directories(tmp_path: Path) 
     assert f"{root}/outputs/" in names
     assert f"{root}/skills/att-mz/SKILL.md" in names
     assert f"{root}/skills/att-mz-release/" not in names
+    assert f"{root}/skills/att-mz-protocol/" not in names

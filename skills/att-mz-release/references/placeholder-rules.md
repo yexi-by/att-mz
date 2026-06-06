@@ -80,5 +80,3 @@
 `original_lines`、`text_for_model_lines` 和待填 `translation_lines` 中凡是出现反斜杠开头的 RPG Maker 控制片段、内置游戏控制符占位符或自定义占位符，都必须当成不可翻译标记。
 
 填写 `translation_lines` 时只能使用 `original_lines` 里的游戏原始控制符，禁止复制程序占位符。看起来不标准的控制片段也必须按原文保留，例如原文是 `\F3[66」「` 时，译文也保留 `\F3[66」「`，不能改括号、编号或紧邻边界。
-
-

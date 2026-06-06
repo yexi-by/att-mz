@@ -49,7 +49,7 @@
 | [OpenClaw](https://github.com/openclaw/openclaw) | ⌨️ 命令行 | 开源跨平台个人 AI 助理 |
 | [Hermes](https://github.com/NousResearch/hermes-agent) | ⌨️ 命令行 | Nous Research 出品，支持子代理调度 |
 
-以上只是举例，选择你顺手的即可。如果 Agent 支持调用子代理，翻译流程会跑得更快，但不是必须。
+以上只是举例，选择你顺手的即可。如果 Agent 支持调用子代理，翻译流程会更强地并行分析和交叉审查；不支持子代理时，也能按任务包或串行方式完成。
 
 怎么算装好了？在对话框里输入"你好"，AI 回复你了就说明 OK。
 

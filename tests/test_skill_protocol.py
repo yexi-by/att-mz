@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import tomllib
 import re
 from pathlib import Path
+from typing import cast
 
 from app.cli import build_parser
 from app.cli.parser import parser_command_names
@@ -12,6 +16,8 @@ from app.cli.parser import parser_command_names
 ROOT = Path(__file__).resolve().parents[1]
 DEV_SKILL_DIR = ROOT / "skills" / "att-mz"
 RELEASE_SKILL_DIR = ROOT / "skills" / "att-mz-release"
+PROTOCOL_DIR = ROOT / "skills" / "att-mz-protocol"
+GENERATE_PROTOCOL_SCRIPT = ROOT / "scripts" / "generate_skill_protocol.py"
 REQUIRED_FLOW_COMMANDS = frozenset(
     {
         "add-game",
@@ -54,6 +60,60 @@ def _extract_prefixed_command_examples(text: str) -> set[str]:
     for pattern in COMMAND_LINE_PATTERNS:
         examples.update(pattern.findall(text))
     return examples
+
+
+def _read_toml(path: Path) -> dict[str, object]:
+    """读取 TOML 协议文件。"""
+    return cast(dict[str, object], tomllib.loads(_read_text(path)))
+
+
+def test_generated_skill_protocol_outputs_are_current() -> None:
+    """Skill 和 references 必须由 canonical 协议源生成。"""
+    completed = subprocess.run(
+        [sys.executable, str(GENERATE_PROTOCOL_SCRIPT), "--check"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_skill_protocol_workflow_manifest_commands_and_references_are_valid() -> None:
+    """workflow.toml 中声明的命令和 reference 必须能落到真实公开契约。"""
+    command_names = parser_command_names(build_parser())
+    workflow = _read_toml(PROTOCOL_DIR / "workflow.toml")
+    stages = cast(list[dict[str, object]], workflow["stages"])
+    stage_ids = [cast(str, stage["id"]) for stage in stages]
+
+    assert len(stage_ids) == len(set(stage_ids))
+    assert REQUIRED_FLOW_COMMANDS <= {
+        command
+        for stage in stages
+        for command in cast(list[str], stage["commands"])
+        if command in REQUIRED_FLOW_COMMANDS
+    }
+    for stage in stages:
+        for command in cast(list[str], stage["commands"]):
+            assert command in command_names, f"{stage['id']} 引用了未知命令 {command}"
+        for reference in cast(list[str], stage["references"]):
+            assert (DEV_SKILL_DIR / "references" / reference).is_file(), reference
+            assert reference in _read_text(DEV_SKILL_DIR / "SKILL.md"), reference
+            assert reference in _read_text(RELEASE_SKILL_DIR / "SKILL.md"), reference
+
+
+def test_generated_skill_entrypoints_are_profile_specific() -> None:
+    """开发版和发行版 Skill 只能暴露各自入口，不交叉污染。"""
+    dev_protocol = _read_text(DEV_SKILL_DIR / "SKILL.md") + "\n" + _read_reference_text(DEV_SKILL_DIR)
+    release_protocol = _read_text(RELEASE_SKILL_DIR / "SKILL.md") + "\n" + _read_reference_text(RELEASE_SKILL_DIR)
+
+    assert "uv run python main.py" in dev_protocol
+    assert ".\\att-mz.exe" not in dev_protocol
+    assert ".\\att-mz.exe" in release_protocol
+    assert "uv run python main.py" not in release_protocol
 
 
 def test_skill_frontmatter_default_entry_and_references_are_split() -> None:

@@ -124,8 +124,12 @@ def test_global_debug_switches_parse() -> None:
 
 def test_debug_llm_messages_cli_requires_debug_enabled(
     capsys: CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     """显式开启 LLM 消息观测时必须同时开启 debug 总开关。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path))
+
     exit_code = main(["--debug-llm-messages", "translate", "--game", "demo"])
 
     captured = capsys.readouterr()

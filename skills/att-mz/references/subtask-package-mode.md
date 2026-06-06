@@ -10,12 +10,6 @@
 uv run python main.py prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
 ```
 
-发行版使用：
-
-```powershell
-.\att-mz.exe prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
-```
-
 用户可选择当前会话完成、外部协作任务包或混合处理。多项候选分析会消耗较多上下文和模型额度；额度有限时，建议主代理把任务包文件夹交给用户带走处理。
 
 ## 固定目录结构

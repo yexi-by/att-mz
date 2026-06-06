@@ -2,7 +2,7 @@
 
 本脚本只负责发布包装，不保存源码数据库，不复制历史日志，也不把开发态
 `skills/att-mz/SKILL.md` 放进发行包。发行包内的 `skills/att-mz/SKILL.md`
-固定来自 `skills/att-mz-release/SKILL.md`。
+固定来自生成后的 `skills/att-mz-release/SKILL.md`。
 """
 
 from __future__ import annotations
