@@ -9,6 +9,7 @@ from .common import (
     GameData,
     JsonArray,
     JsonObject,
+    JsonValue,
     Path,
     QualityProgressCallbacks,
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
@@ -20,7 +21,6 @@ from .common import (
     CustomPlaceholderRule,
     StructuredPlaceholderRule,
     TextRules,
-    TranslationData,
     _agent_workflow_manifest,
     _build_custom_placeholder_rule_draft_from_details,
     _collect_terminology_duplicate_translation_samples,
@@ -28,13 +28,15 @@ from .common import (
     _event_command_rule_records_to_import_json,
     _is_path_inside,
     _merge_terminology_registry,
+    _format_mv_namebox_rule_error,
+    _mv_namebox_match_key,
+    _mv_namebox_match_keys,
     _note_tag_rule_records_to_import_json,
     _nonstandard_data_skipped_warnings,
     _placeholder_rule_records_to_import_json,
     _plugin_rule_records_to_import_json,
     _structured_placeholder_rule_records_to_import_json,
     _validate_event_command_rules_with_context,
-    _validate_mv_virtual_namebox_rules_with_context,
     _validate_note_tag_rules_with_context,
     _validate_placeholder_rules_with_context,
     _validate_plugin_source_rules_with_context,
@@ -74,10 +76,13 @@ from app.nonstandard_data import (
     validate_nonstandard_data_rules,
 )
 from app.nonstandard_data.scanner import build_nonstandard_data_scan, export_nonstandard_data_workspace
-from app.native_placeholder_scan import collect_native_placeholder_candidate_details
-from app.application.flow_gate import (
-    build_normal_placeholder_coverage_result,
-    build_structured_placeholder_coverage_result,
+from app.native_placeholder_scan import (
+    collect_native_placeholder_candidate_details_from_entries,
+    count_uncovered_placeholder_candidate_details,
+)
+from app.native_structured_placeholder_scan import (
+    collect_native_structured_placeholder_candidate_details_from_entries,
+    count_uncovered_structured_placeholder_candidate_details,
 )
 from app.plugin_source_text import (
     PluginSourceScan,
@@ -85,25 +90,40 @@ from app.plugin_source_text import (
     plugin_source_rule_records_to_import_json,
 )
 from app.plugin_source_text.native_scan import (
-    build_native_plugin_source_ast_map_payload as _build_native_plugin_source_ast_map_payload,
-    build_native_plugin_source_risk_report as _build_native_plugin_source_risk_report,
+    build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs as _build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs,
+    build_native_plugin_source_risk_report_from_inputs as _build_native_plugin_source_risk_report_from_inputs,
     build_native_plugin_source_scan as _build_native_plugin_source_scan,
-    native_plugin_source_risk_report_from_ast_map as _native_plugin_source_risk_report_from_ast_map,
     native_plugin_source_risk_report_from_scan as _native_plugin_source_risk_report_from_scan,
 )
 from app.rmmz.mv_namebox import (
     MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
     MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME,
     mv_virtual_namebox_rule_records_to_import_json,
+    parse_mv_virtual_namebox_rule_import_text,
+    validate_mv_virtual_namebox_rules_against_candidates,
 )
-from app.rmmz.mv_namebox_native import native_mv_virtual_namebox_candidates_payload
+from app.rmmz.mv_namebox_native import (
+    native_mv_virtual_namebox_candidates_from_details,
+    native_mv_virtual_namebox_candidates_payload,
+)
 from app.rmmz.game_file_view import GameFileView, parse_game_file_view
+from app.rmmz.loader import load_plugin_source_files_for_view
 from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.source_snapshot import validate_plugin_source_snapshot_manifest
+from app.rule_review import (
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    placeholder_rule_scope_hash,
+    structured_placeholder_rule_scope_hash,
+)
+from app.rule_review_decision import RuleCoverageResult
 from app.terminology import collect_terminology_bundle_errors
 from app.text_index import (
+    collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
-    rebuild_text_index as rebuild_persistent_text_index,
-    text_index_items_to_translation_data_map,
+    rebuild_text_index_native_storage,
+    refresh_text_index_external_rule_gate_metadata,
 )
 
 
@@ -136,15 +156,37 @@ def _json_bool(payload: JsonObject, key: str, label: str) -> bool:
     return value
 
 
-async def _read_workspace_translation_data_map_from_text_index(
+async def _write_compact_json_value(path: Path, payload: JsonValue) -> None:
+    """写入大型工作区 JSON，避免 pretty 输出主导本地 CLI 耗时。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    async with aiofiles.open(path, "w", encoding="utf-8") as file:
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        _ = await file.write(f"{text}\n")
+
+
+def _sampled_coverage_report_details(
+    coverage: RuleCoverageResult,
+    *,
+    summary_extra: JsonObject | None = None,
+) -> JsonObject:
+    """工作区验收报告只输出覆盖样本；完整候选已在工作区候选文件中。"""
+    summary: JsonObject = {
+        **coverage.summary(detail_mode="sampled"),
+        **(summary_extra or {}),
+    }
+    return {
+        "summary": summary,
+        "details": coverage.sampled_details(),
+    }
+
+
+async def _read_workspace_placeholder_entries_from_text_index(
     *,
     session: TargetGameSession,
-    game_data: GameData,
     setting: Setting,
     text_rules: TextRules,
-    plugin_source_scan: PluginSourceScan | None = None,
-) -> tuple[dict[str, TranslationData], str]:
-    """工作区命令从持久文本索引读取当前文本范围，必要时先重建索引。"""
+) -> tuple[list[tuple[str, list[str]]], str]:
+    """工作区命令从持久文本索引读取占位符扫描所需的轻量正文。"""
     text_index_invalidations = await detect_text_index_invalidations(
         session=session,
         text_rules=text_rules,
@@ -155,19 +197,138 @@ async def _read_workspace_translation_data_map_from_text_index(
             if any(item.reason_key == "text_index_missing" for item in text_index_invalidations)
             else "stale_rebuilt"
         )
-        _ = await rebuild_persistent_text_index(
+        _ = await rebuild_text_index_native_storage(
             session=session,
-            game_data=game_data,
             setting=setting,
             text_rules=text_rules,
-            plugin_source_scan=plugin_source_scan,
-            include_write_probe=False,
             source_branch_workflow_gates_prechecked=False,
         )
     else:
         text_index_status = "used"
-    text_index_records = await session.read_text_index_items()
-    return text_index_items_to_translation_data_map(text_index_records), text_index_status
+    return await session.read_text_index_placeholder_texts(), text_index_status
+
+
+def _normal_placeholder_coverage_result_from_entries(
+    *,
+    entries: list[tuple[str, list[str]]],
+    text_rules: TextRules,
+    rule_count: int,
+) -> RuleCoverageResult:
+    """用轻量索引正文构建普通占位符覆盖结果。"""
+    candidate_details = collect_native_placeholder_candidate_details_from_entries(
+        entries=entries,
+        text_rules=text_rules,
+    )
+    uncovered_count = count_uncovered_placeholder_candidate_details(candidate_details)
+    return RuleCoverageResult(
+        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        rule_count=rule_count,
+        candidate_count=len(candidate_details),
+        covered_count=len(candidate_details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
+
+
+def _structured_placeholder_coverage_result_from_entries(
+    *,
+    entries: list[tuple[str, list[str]]],
+    structured_rules: tuple[StructuredPlaceholderRule, ...],
+    rule_count: int,
+) -> RuleCoverageResult:
+    """用轻量索引正文构建结构化占位符覆盖结果。"""
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=structured_rules,
+    )
+    candidate_details = collect_native_structured_placeholder_candidate_details_from_entries(
+        entries=entries,
+        text_rules=text_rules,
+    )
+    uncovered_count = count_uncovered_structured_placeholder_candidate_details(candidate_details)
+    return RuleCoverageResult(
+        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=structured_placeholder_rule_scope_hash(candidate_details),
+        rule_count=rule_count,
+        candidate_count=len(candidate_details),
+        covered_count=len(candidate_details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
+
+
+def _workspace_preview_sample_texts(
+    entries: list[tuple[str, list[str]]],
+    *,
+    limit: int = 100,
+) -> list[str]:
+    """从轻量索引正文提取有限预览样本，避免还原完整 TranslationData。"""
+    samples: list[str] = []
+    seen: set[str] = set()
+    for _location_path, original_lines in entries:
+        for text in original_lines:
+            stripped_text = text.strip()
+            if not stripped_text or stripped_text in seen:
+                continue
+            seen.add(stripped_text)
+            samples.append(stripped_text)
+            if len(samples) >= limit:
+                return samples
+    return samples
+
+
+def _workspace_placeholder_preview_sample_texts(
+    entries: list[tuple[str, list[str]]],
+    *,
+    text_rules: TextRules,
+    limit: int = 100,
+) -> list[str]:
+    """从轻量索引正文提取普通占位符规则预览样本。"""
+    custom_rules = text_rules.custom_placeholder_rules
+    structured_rules = text_rules.structured_placeholder_rules
+
+    def likely_placeholder_text(text: str) -> bool:
+        return (
+            "\\" in text
+            or "<" in text
+            or any(rule.pattern.search(text) is not None for rule in custom_rules)
+            or any(rule.pattern.search(text) is not None for rule in structured_rules)
+        )
+
+    return _workspace_preview_sample_texts(
+        [
+            (
+                location_path,
+                [text for text in original_lines if likely_placeholder_text(text)],
+            )
+            for location_path, original_lines in entries
+        ],
+        limit=limit,
+    )
+
+
+def _workspace_structured_placeholder_preview_sample_texts(
+    entries: list[tuple[str, list[str]]],
+    *,
+    structured_rules: tuple[StructuredPlaceholderRule, ...],
+    limit: int = 100,
+) -> list[str]:
+    """从轻量索引正文提取结构化占位符规则预览样本。"""
+
+    def matches_structured_rule(text: str) -> bool:
+        return any(rule.pattern.search(text) is not None for rule in structured_rules)
+
+    return _workspace_preview_sample_texts(
+        [
+            (
+                location_path,
+                [text for text in original_lines if matches_structured_rule(text)],
+            )
+            for location_path, original_lines in entries
+        ],
+        limit=limit,
+    )
 
 
 class WorkspaceAgentMixin:
@@ -184,17 +345,25 @@ class WorkspaceAgentMixin:
         resolved_view = parse_game_file_view(str(source_view))
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data_for_view(
-                session,
+            layout, plugins_js, plugin_source_files, plugin_source_read_errors = await load_plugin_source_files_for_view(
+                session.game_path,
                 source_view=resolved_view,
-                include_plugin_source_files=True,
-                include_writable_copies=False,
             )
+            if resolved_view == GameFileView.TRANSLATION_SOURCE:
+                snapshot_records = await session.read_source_snapshot_records()
+                if not snapshot_records:
+                    raise RuntimeError("尚未创建翻译源快照，请先执行 prepare-translation 或 rebuild-text-index")
+                validate_plugin_source_snapshot_manifest(layout=layout, records=snapshot_records)
             text_rules = TextRules.from_setting(setting.text_rules)
-        risk_report = _build_native_plugin_source_risk_report(game_data=game_data, text_rules=text_rules)
+        risk_report = _build_native_plugin_source_risk_report_from_inputs(
+            plugins_js=plugins_js,
+            plugin_source_files=plugin_source_files,
+            plugin_source_read_errors=plugin_source_read_errors,
+            text_rules=text_rules,
+        )
         risk_report["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        await _write_json_object(output_path, risk_report)
+        await _write_compact_json_value(output_path, risk_report)
         risk = ensure_json_object(risk_report["risk"], "plugin-source-risk-report.risk")
         candidate_count = _summary_int(risk_report, "candidate_count")
         warnings: list[AgentIssue] = []
@@ -227,18 +396,25 @@ class WorkspaceAgentMixin:
         resolved_view = parse_game_file_view(str(source_view))
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data_for_view(
-                session,
+            layout, plugins_js, plugin_source_files, plugin_source_read_errors = await load_plugin_source_files_for_view(
+                session.game_path,
                 source_view=resolved_view,
-                include_plugin_source_files=True,
-                include_writable_copies=False,
             )
+            if resolved_view == GameFileView.TRANSLATION_SOURCE:
+                snapshot_records = await session.read_source_snapshot_records()
+                if not snapshot_records:
+                    raise RuntimeError("尚未创建翻译源快照，请先执行 prepare-translation 或 rebuild-text-index")
+                validate_plugin_source_snapshot_manifest(layout=layout, records=snapshot_records)
             text_rules = TextRules.from_setting(setting.text_rules)
-        payload = _build_native_plugin_source_ast_map_payload(game_data=game_data, text_rules=text_rules)
+        payload, details = _build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(
+            plugins_js=plugins_js,
+            plugin_source_files=plugin_source_files,
+            plugin_source_read_errors=plugin_source_read_errors,
+            text_rules=text_rules,
+        )
         payload["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        await _write_json_object(output_path, payload)
-        details = _native_plugin_source_risk_report_from_ast_map(payload)
+        await _write_compact_json_value(output_path, payload)
         details["source_view"] = resolved_view.value
         details["output"] = str(output_path)
         risk = ensure_json_object(payload["risk"], "plugin-source-ast-map.risk")
@@ -298,13 +474,37 @@ class WorkspaceAgentMixin:
                 plugin_source_risk_report["risk"],
                 "plugin-source-risk-report.risk",
             )
-            translation_data_map, text_index_status = await _read_workspace_translation_data_map_from_text_index(
+            placeholder_entries, text_index_status = await _read_workspace_placeholder_entries_from_text_index(
                 session=session,
-                game_data=game_data,
                 setting=setting,
                 text_rules=text_rules,
-                plugin_source_scan=plugin_source_scan,
             )
+            text_index_metadata = await session.read_text_index_metadata()
+            mv_virtual_namebox_review_required = game_data.layout.engine_kind == "mv"
+            if text_index_metadata is not None:
+                if (
+                    game_data.layout.engine_kind == "mv"
+                    and MV_VIRTUAL_NAMEBOX_RULE_DOMAIN not in text_index_metadata.workflow_gate_scope_hashes
+                ):
+                    text_index_metadata = await refresh_text_index_external_rule_gate_metadata(
+                        session=session,
+                        metadata=text_index_metadata,
+                        game_data=game_data,
+                        setting=setting,
+                        text_rules=text_rules,
+                        rule_domains=(MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,),
+                    )
+                if MV_VIRTUAL_NAMEBOX_RULE_DOMAIN not in text_index_metadata.workflow_gate_scope_hashes:
+                    mv_virtual_namebox_review_required = False
+                else:
+                    external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+                        session=session,
+                        metadata=text_index_metadata,
+                    )
+                    mv_virtual_namebox_review_required = any(
+                        error.code.startswith(MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
+                        for error in external_rule_gate_errors
+                    )
             translation_scope_mode = "text_index"
             plugin_source_review = collect_plugin_source_review_coverage(
                 scan=plugin_source_scan,
@@ -402,8 +602,8 @@ class WorkspaceAgentMixin:
         )
         event_rules_path = target_dir / "event-command-rules.json"
         await _write_json_object(event_rules_path, _event_command_rule_records_to_import_json(event_rules))
-        placeholder_candidate_details = collect_native_placeholder_candidate_details(
-            translation_data_map=translation_data_map,
+        placeholder_candidate_details = collect_native_placeholder_candidate_details_from_entries(
+            entries=placeholder_entries,
             text_rules=text_rules,
         )
         placeholder_report = AgentReport.from_parts(
@@ -413,8 +613,7 @@ class WorkspaceAgentMixin:
             details={"candidates": placeholder_candidate_details},
         )
         placeholder_path = target_dir / "placeholder-candidates.json"
-        async with aiofiles.open(placeholder_path, "w", encoding="utf-8") as file:
-            _ = await file.write(f"{placeholder_report.to_json_text()}\n")
+        await _write_compact_json_value(placeholder_path, placeholder_report.model_dump(mode="json"))
         placeholder_rule_drafts = _build_custom_placeholder_rule_draft_from_details(placeholder_candidate_details)
         placeholder_rules_path = target_dir / "placeholder-rules.json"
         placeholder_rule_payload: JsonObject = (
@@ -431,11 +630,15 @@ class WorkspaceAgentMixin:
         mv_virtual_namebox_candidates_path: Path | None = None
         mv_virtual_namebox_rules_path: Path | None = None
         mv_virtual_namebox_candidate_count = 0
-        if game_data.layout.engine_kind == "mv":
+        mv_virtual_namebox_workspace_active = (
+            game_data.layout.engine_kind == "mv"
+            and mv_virtual_namebox_review_required
+        )
+        if mv_virtual_namebox_workspace_active:
             mv_virtual_namebox_candidates_path = target_dir / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
             mv_candidates_payload = native_mv_virtual_namebox_candidates_payload(game_data)
             mv_virtual_namebox_candidate_count = _summary_int(mv_candidates_payload, "candidate_count")
-            await _write_json_object(mv_virtual_namebox_candidates_path, mv_candidates_payload)
+            await _write_compact_json_value(mv_virtual_namebox_candidates_path, mv_candidates_payload)
             mv_virtual_namebox_rules_path = target_dir / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
             await _write_json_object(
                 mv_virtual_namebox_rules_path,
@@ -488,6 +691,7 @@ class WorkspaceAgentMixin:
             "structured_placeholder_rule_count": len(structured_placeholder_records),
             "mv_virtual_namebox_candidate_count": mv_virtual_namebox_candidate_count,
             "mv_virtual_namebox_rule_count": len(mv_virtual_namebox_rules),
+            "mv_virtual_namebox_workspace_active": mv_virtual_namebox_workspace_active,
         }
         if plugin_source_extension_active:
             generated_summary.update(
@@ -544,6 +748,7 @@ class WorkspaceAgentMixin:
             },
             "workflow": _agent_workflow_manifest(
                 engine_kind=game_data.layout.engine_kind,
+                include_mv_virtual_namebox_round=mv_virtual_namebox_workspace_active,
                 terminology_subtask_summary=terminology_subtask_summary,
             ),
         }
@@ -585,6 +790,7 @@ class WorkspaceAgentMixin:
         nonstandard_data_rules_path = workspace / "nonstandard-data-rules.json"
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
+        mv_virtual_namebox_candidates_path = workspace / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
@@ -602,6 +808,10 @@ class WorkspaceAgentMixin:
         nonstandard_data_rules_in_manifest = _workspace_manifest_includes_path(
             workspace_manifest,
             nonstandard_data_rules_path,
+        )
+        mv_virtual_namebox_rules_in_manifest = _workspace_manifest_includes_path(
+            workspace_manifest,
+            mv_virtual_namebox_rules_path,
         )
         advance_progress(1)
         async with await self.game_registry.open_game(game_title) as session:
@@ -648,12 +858,10 @@ class WorkspaceAgentMixin:
                 )
                 plugin_source_required = plugin_source_scan.risk.high_risk
             set_status("读取文本范围索引")
-            translation_data_map, _text_index_status = await _read_workspace_translation_data_map_from_text_index(
+            placeholder_entries, _text_index_status = await _read_workspace_placeholder_entries_from_text_index(
                 session=session,
-                game_data=game_data,
                 setting=setting,
                 text_rules=text_rules,
-                plugin_source_scan=plugin_source_scan,
             )
             advance_progress(1)
             nonstandard_data_scan = None
@@ -881,13 +1089,18 @@ class WorkspaceAgentMixin:
             errors.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
         advance_progress(1)
         set_status("校验名字框和普通占位符规则")
-        if game_data.layout.engine_kind == "mv":
+        if game_data.layout.engine_kind == "mv" and mv_virtual_namebox_rules_in_manifest:
             if mv_virtual_namebox_rules_path.exists():
                 async with aiofiles.open(mv_virtual_namebox_rules_path, "r", encoding="utf-8") as file:
                     mv_namebox_report = _validate_workspace_mv_virtual_namebox_rules(
                         rules_text=await file.read(),
                         game_data=game_data,
                         existing_records=mv_virtual_namebox_rule_records,
+                        candidate_path=mv_virtual_namebox_candidates_path,
+                        candidate_count_hint=_manifest_int(
+                            manifest_generated,
+                            "mv_virtual_namebox_candidate_count",
+                        ),
                     )
                 errors.extend(mv_namebox_report.errors)
                 warnings.extend(mv_namebox_report.warnings)
@@ -905,7 +1118,7 @@ class WorkspaceAgentMixin:
                     rules_text=placeholder_rules_text,
                     setting_text_rules=setting.text_rules,
                     structured_rules=text_rules.structured_placeholder_rules,
-                    translation_data_map=translation_data_map,
+                    entries=placeholder_entries,
                 )
             errors.extend(placeholder_report.errors)
             warnings.extend(placeholder_report.warnings)
@@ -921,8 +1134,8 @@ class WorkspaceAgentMixin:
                     custom_placeholder_rules=workspace_custom_rules,
                     structured_placeholder_rules=text_rules.structured_placeholder_rules,
                 )
-                placeholder_coverage = build_normal_placeholder_coverage_result(
-                    translation_data_map=translation_data_map,
+                placeholder_coverage = _normal_placeholder_coverage_result_from_entries(
+                    entries=placeholder_entries,
                     text_rules=workspace_text_rules,
                     rule_count=len(workspace_custom_rules),
                 )
@@ -933,13 +1146,10 @@ class WorkspaceAgentMixin:
                             f"发现 {placeholder_coverage.uncovered_count} 个未覆盖的疑似自定义控制符",
                         )
                     )
-                details["placeholder_coverage"] = {
-                    "summary": {
-                        **placeholder_coverage.summary(detail_mode="full"),
-                        "custom_rule_count": len(workspace_custom_rules),
-                    },
-                    "details": placeholder_coverage.full_details(),
-                }
+                details["placeholder_coverage"] = _sampled_coverage_report_details(
+                    placeholder_coverage,
+                    summary_extra={"custom_rule_count": len(workspace_custom_rules)},
+                )
             except Exception as error:
                 errors.append(
                     issue(
@@ -959,7 +1169,7 @@ class WorkspaceAgentMixin:
                     rules_text=structured_placeholder_rules_text,
                     setting_text_rules=setting.text_rules,
                     custom_rules=text_rules.custom_placeholder_rules,
-                    translation_data_map=translation_data_map,
+                    entries=placeholder_entries,
                 )
             errors.extend(structured_placeholder_report.errors)
             warnings.extend(
@@ -974,8 +1184,8 @@ class WorkspaceAgentMixin:
                     warnings.append(structured_placeholder_empty_issue)
             try:
                 workspace_structured_rules = load_structured_placeholder_rules_text(structured_placeholder_rules_text)
-                structured_placeholder_coverage = build_structured_placeholder_coverage_result(
-                    translation_data_map=translation_data_map,
+                structured_placeholder_coverage = _structured_placeholder_coverage_result_from_entries(
+                    entries=placeholder_entries,
                     structured_rules=workspace_structured_rules,
                     rule_count=len(workspace_structured_rules),
                 )
@@ -986,13 +1196,10 @@ class WorkspaceAgentMixin:
                             f"发现 {structured_placeholder_coverage.uncovered_count} 个未被结构化规则覆盖的协议外壳候选",
                         )
                     )
-                details["structured_placeholder_coverage"] = {
-                    "summary": {
-                        "game": game_title,
-                        **structured_placeholder_coverage.summary(detail_mode="full"),
-                    },
-                    "details": structured_placeholder_coverage.full_details(),
-                }
+                details["structured_placeholder_coverage"] = _sampled_coverage_report_details(
+                    structured_placeholder_coverage,
+                    summary_extra={"game": game_title},
+                )
             except Exception as error:
                 errors.append(
                     issue(
@@ -1079,13 +1286,118 @@ def _validate_workspace_mv_virtual_namebox_rules(
     rules_text: str,
     game_data: GameData,
     existing_records: list[MvVirtualNameboxRuleRecord],
+    candidate_path: Path,
+    candidate_count_hint: int,
 ) -> AgentReport:
-    """复用工作区上下文校验 MV 虚拟名字框规则。"""
-    return _validate_mv_virtual_namebox_rules_with_context(
-        rules_text=rules_text,
-        game_data=game_data,
-        existing_records=existing_records,
-    )
+    """复用工作区候选文件校验 MV 虚拟名字框规则。"""
+    errors: list[AgentIssue] = []
+    warnings: list[AgentIssue] = []
+    details: JsonObject = {"rules": [], "matched_candidates": []}
+    try:
+        records = parse_mv_virtual_namebox_rule_import_text(rules_text)
+        if game_data.layout.engine_kind != "mv":
+            errors.append(issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用"))
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        if not records:
+            warnings.append(issue("mv_virtual_namebox_rules_empty", "MV 虚拟名字框规则为空"))
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=warnings,
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": candidate_count_hint,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details={
+                    "rules": [],
+                    "matched_candidates": [],
+                    "newly_matched_candidates": [],
+                    "candidate_count": candidate_count_hint,
+                },
+            )
+        if not candidate_path.exists():
+            errors.append(issue("mv_virtual_namebox_candidates_missing", f"工作区缺少 {MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}"))
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        payload = ensure_json_object(
+            coerce_json_value(cast(object, json.loads(candidate_path.read_text(encoding="utf-8")))),
+            MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
+        )
+        candidate_details = ensure_json_array(payload["candidates"], f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}.candidates")
+        candidates = native_mv_virtual_namebox_candidates_from_details(candidate_details)
+        rule_errors, match_details = validate_mv_virtual_namebox_rules_against_candidates(
+            game_data=game_data,
+            records=records,
+            candidates=candidates,
+        )
+        errors.extend(
+            issue("mv_virtual_namebox_rules_invalid", _format_mv_namebox_rule_error(error_detail))
+            for error_detail in rule_errors
+        )
+        _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_candidates(
+            game_data=game_data,
+            records=existing_records,
+            candidates=candidates,
+        )
+        existing_match_keys = _mv_namebox_match_keys(existing_match_details)
+        newly_matched_candidates: JsonArray = [
+            detail
+            for detail in match_details
+            if _mv_namebox_match_key(detail) not in existing_match_keys
+        ]
+        candidate_count = len(candidate_details)
+        matched_candidate_count = len(match_details)
+        if matched_candidate_count == 0 and candidate_count > 0:
+            warnings.append(issue("mv_virtual_namebox_rules_no_hits", "MV 虚拟名字框规则没有命中任何候选"))
+        details = {
+            "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
+            "matched_candidates": match_details,
+            "newly_matched_candidates": newly_matched_candidates,
+            "candidate_count": candidate_count,
+        }
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=warnings,
+            summary={
+                "rule_count": len(records),
+                "candidate_count": candidate_count,
+                "matched_candidate_count": matched_candidate_count,
+                "newly_matched_candidate_count": len(newly_matched_candidates),
+            },
+            details=details,
+        )
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "rule_count": 0,
+                "candidate_count": 0,
+                "matched_candidate_count": 0,
+                "newly_matched_candidate_count": 0,
+            },
+            details=details,
+        )
 
 
 def _validate_workspace_plugin_rules(
@@ -1159,7 +1471,7 @@ def _validate_workspace_placeholder_rules(
     rules_text: str,
     setting_text_rules: TextRulesSetting,
     structured_rules: tuple[StructuredPlaceholderRule, ...],
-    translation_data_map: dict[str, TranslationData],
+    entries: list[tuple[str, list[str]]],
 ) -> AgentReport:
     """复用工作区上下文校验普通占位符规则。"""
     try:
@@ -1180,13 +1492,18 @@ def _validate_workspace_placeholder_rules(
             },
             details={},
         )
+    text_rules = TextRules.from_setting(
+        setting_text_rules,
+        custom_placeholder_rules=custom_rules,
+        structured_placeholder_rules=structured_rules,
+    )
     return _validate_placeholder_rules_with_context(
         source_label="--placeholder-rules",
         setting_text_rules=setting_text_rules,
         custom_rules=custom_rules,
         structured_rules=structured_rules,
-        sample_texts=[],
-        translation_data_map=translation_data_map,
+        sample_texts=_workspace_placeholder_preview_sample_texts(entries, text_rules=text_rules),
+        translation_data_map=None,
     )
 
 
@@ -1196,16 +1513,23 @@ def _validate_workspace_structured_placeholder_rules(
     rules_text: str,
     setting_text_rules: TextRulesSetting,
     custom_rules: tuple[CustomPlaceholderRule, ...],
-    translation_data_map: dict[str, TranslationData],
+    entries: list[tuple[str, list[str]]],
 ) -> AgentReport:
     """复用工作区上下文校验结构化占位符规则。"""
+    try:
+        structured_rules = load_structured_placeholder_rules_text(rules_text)
+    except Exception:
+        structured_rules = ()
     return _validate_structured_placeholder_rules_with_context(
         game_title=game_title,
         rules_text=rules_text,
         setting_text_rules=setting_text_rules,
         custom_rules=custom_rules,
-        sample_texts=[],
-        translation_data_map=translation_data_map,
+        sample_texts=_workspace_structured_placeholder_preview_sample_texts(
+            entries,
+            structured_rules=structured_rules,
+        ),
+        translation_data_map=None,
     )
 
 
@@ -1336,3 +1660,11 @@ def _manifest_bool(generated: JsonObject, key: str) -> bool:
     """读取 manifest.generated 中的布尔开关，非法值按未启用处理。"""
     value = generated.get(key)
     return value is True
+
+
+def _manifest_int(generated: JsonObject, key: str) -> int:
+    """读取 manifest.generated 中的非负整数计数，非法值按 0 处理。"""
+    value = generated.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)

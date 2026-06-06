@@ -17,7 +17,12 @@ from app.persistence.records import (
     TextIndexRuleHitSummaryRecord,
     TextIndexScopeSummaryRecord,
 )
-from app.persistence.sql import CURRENT_SCHEMA_VERSION, EXPECTED_STATIC_TABLE_NAMES
+from app.persistence.sql import (
+    CURRENT_SCHEMA_VERSION,
+    EXPECTED_STATIC_TABLE_NAMES,
+    current_schema_fingerprint,
+    current_schema_sql,
+)
 from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
     EventCommandParameterFilter,
@@ -45,6 +50,26 @@ def read_sqlite_table_names(db_path: Path) -> set[str]:
             connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
         )
     return {row[0] for row in table_rows}
+
+
+def test_shared_current_schema_resource_creates_declared_static_table_set() -> None:
+    """共享 schema 资源必须能创建当前声明的完整静态表集合。"""
+    with sqlite3.connect(":memory:") as connection:
+        _ = connection.executescript(current_schema_sql())
+        table_rows = cast(
+            list[tuple[str]],
+            connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
+        )
+        version_row = cast(
+            tuple[int] | None,
+            connection.execute(
+                "SELECT version FROM schema_version WHERE schema_key = 'current'"
+            ).fetchone(),
+        )
+
+    assert {row[0] for row in table_rows} - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
+    assert version_row == (CURRENT_SCHEMA_VERSION,)
+    assert len(current_schema_fingerprint()) == 64
 
 
 def create_database_with_invalid_table_shapes(db_path: Path, tmp_path: Path) -> None:

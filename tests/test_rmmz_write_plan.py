@@ -6,9 +6,46 @@ from collections.abc import Callable
 
 from app.agent_toolkit import AgentToolkitService
 from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME
-from app.text_index import rebuild_text_index as rebuild_persistent_text_index
+from app.text_index import (
+    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
+    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
+)
 
 from tests.rmmz_writeback_contract_fixtures import *
+
+
+async def _write_translations_from_rebuilt_text_index(
+    *,
+    registry: GameRegistry,
+    game_title: str,
+    setting_path: Path,
+    text_rules: TextRules,
+) -> None:
+    """按 Rust 持久文本索引写入测试译文，避免旧 Python scope 成为第二事实源。"""
+    rebuild_report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=setting_path,
+    ).rebuild_text_index(game_title=game_title)
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game(game_title) as session:
+        indexed_items = await session.read_text_index_items()
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in indexed_items
+                if item.writable
+            ]
+        )
 
 
 @pytest.mark.asyncio
@@ -92,6 +129,11 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
         _ = (args, kwargs)
         raise AssertionError("写回相关命令不应读取全部 text index rows")
 
+    async def forbidden_writable_translation_items(*args: object, **kwargs: object) -> NoReturn:
+        """写回前检查不应把当前可写索引内所有译文拉回 Python。"""
+        _ = (args, kwargs)
+        raise AssertionError("写回相关命令不应读取全部可写译文对象")
+
     async def forbidden_rust_scope_gate(*args: object, **kwargs: object) -> NoReturn:
         """写回前检查应使用 SQL 摘要，不应为 gate 还原 Rust 输入行。"""
         _ = (args, kwargs)
@@ -129,6 +171,10 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
     monkeypatch.setattr(
         "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_items",
         forbidden_full_index_rows,
+    )
+    monkeypatch.setattr(
+        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translated_items_for_writable_text_index",
+        forbidden_writable_translation_items,
     )
     monkeypatch.setattr("app.text_index.evaluate_text_index_scope_gate", forbidden_rust_scope_gate)
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
@@ -332,35 +378,18 @@ async def test_write_related_commands_rebuild_missing_or_stale_text_index_before
             )
             await session.connection.commit()
     elif index_state == "precheck_missing":
+        rebuild_report = await AgentToolkitService(
+            game_registry=registry,
+            setting_path=setting_path,
+        ).rebuild_text_index(game_title="テストゲーム")
+        assert rebuild_report.status == "ok"
         async with await registry.open_game("テストゲーム") as session:
-            _ = await rebuild_persistent_text_index(
-                session=session,
-                game_data=game_data,
-                setting=_setting,
-                text_rules=text_rules,
-                scope=scope,
-                source_branch_workflow_gates_prechecked=False,
-            )
-
-    async def forbidden_workflow_fallback(*args: object, **kwargs: object) -> NoReturn:
-        """自动重建后不应继续执行旧 Python workflow gate fallback。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引自动重建后不应执行旧 Python workflow gate fallback")
-
-    async def forbidden_quality_fallback(*args: object, **kwargs: object) -> NoReturn:
-        """自动重建后不应继续执行旧 Python quality gate fallback。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引自动重建后不应执行旧 Python quality gate fallback")
-
-    async def forbidden_writable_filter(*args: object, **kwargs: object) -> NoReturn:
-        """自动重建后不应继续用 Python scope 过滤可写译文。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引自动重建后不应执行 Python 可写路径 fallback")
-
-    async def forbidden_full_index_rows(*args: object, **kwargs: object) -> NoReturn:
-        """自动重建后写回快路径仍不应读取全部索引行。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引自动重建后不应读取全部 text index rows")
+            metadata = await session.read_text_index_metadata()
+            assert metadata is not None
+            scope_hashes = dict(metadata.workflow_gate_scope_hashes)
+            _ = scope_hashes.pop(TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY, None)
+            _ = scope_hashes.pop(TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY, None)
+            await session.update_text_index_workflow_gate_scope_hashes(scope_hashes)
 
     async def forbidden_rust_scope_gate(*args: object, **kwargs: object) -> NoReturn:
         """自动重建后写回快路径仍不应还原 Rust scope gate 输入。"""
@@ -395,13 +424,6 @@ async def test_write_related_commands_rebuild_missing_or_stale_text_index_before
             timings_ms={"total": 1},
         )
 
-    monkeypatch.setattr("app.application.handler.assert_workflow_gate_passed", forbidden_workflow_fallback)
-    monkeypatch.setattr("app.application.handler.assert_write_back_quality_passed", forbidden_quality_fallback)
-    monkeypatch.setattr(TranslationHandler, "_filter_writable_translation_items", forbidden_writable_filter)
-    monkeypatch.setattr(
-        "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_items",
-        forbidden_full_index_rows,
-    )
     monkeypatch.setattr("app.text_index.evaluate_text_index_scope_gate", forbidden_rust_scope_gate)
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", fake_build_native_write_back_plan)
 
@@ -467,46 +489,33 @@ async def test_write_related_commands_stop_when_text_index_rebuild_fails_without
             glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
         )
 
-    async def fake_rebuild_text_index_for_translation(
+    async def fake_rebuild_text_index_for_write_operation(
         self: TranslationHandler,
         *,
         session: TargetGameSession,
         setting: Setting,
+        setting_overrides: SettingOverrides | None,
         text_rules: TextRules,
         callbacks: tuple[
             Callable[[int, int], None],
             Callable[[int], None],
             Callable[[str], None],
         ],
-    ) -> tuple[dict[str, object], str]:
+    ) -> None:
         """模拟索引重建被 workflow gate 阻断。"""
-        _ = (self, session, setting, text_rules, callbacks)
-        return {"index_status": "not_rebuilt", "indexed_count": 0}, "测试索引重建失败"
-
-    async def forbidden_workflow_fallback(*args: object, **kwargs: object) -> NoReturn:
-        """重建失败后不应继续执行旧 Python workflow gate fallback。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引重建失败后不应执行旧 Python workflow gate fallback")
-
-    async def forbidden_quality_fallback(*args: object, **kwargs: object) -> NoReturn:
-        """重建失败后不应继续执行旧 Python quality gate fallback。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引重建失败后不应执行旧 Python quality gate fallback")
-
-    async def forbidden_writable_filter(*args: object, **kwargs: object) -> NoReturn:
-        """重建失败后不应继续用 Python scope 过滤可写译文。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回索引重建失败后不应执行 Python 可写路径 fallback")
+        _ = (self, session, setting, setting_overrides, text_rules, callbacks)
+        raise WriteBackGateError("当前游戏持久文本范围索引自动重建失败: 测试索引重建失败")
 
     def forbidden_native_plan(**kwargs: object) -> NoReturn:
         """重建失败时不应继续生成 Rust 写回计划。"""
         _ = kwargs
         raise AssertionError("写回索引重建失败后不应生成 Rust 写回计划")
 
-    monkeypatch.setattr(TranslationHandler, "_rebuild_text_index_for_translation", fake_rebuild_text_index_for_translation)
-    monkeypatch.setattr("app.application.handler.assert_workflow_gate_passed", forbidden_workflow_fallback)
-    monkeypatch.setattr("app.application.handler.assert_write_back_quality_passed", forbidden_quality_fallback)
-    monkeypatch.setattr(TranslationHandler, "_filter_writable_translation_items", forbidden_writable_filter)
+    monkeypatch.setattr(
+        TranslationHandler,
+        "_rebuild_text_index_for_write_operation",
+        fake_rebuild_text_index_for_write_operation,
+    )
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_native_plan)
 
     handler = TranslationHandler(registry, LLMHandler())
@@ -1193,22 +1202,12 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
             ),
             reviewed_empty=True,
         )
-        await session.write_translation_items(
-            [
-                TranslationItem(
-                    location_path=item.location_path,
-                    item_type=item.item_type,
-                    role=item.role,
-                    original_lines=[line for line in item.original_lines],
-                    source_line_paths=[path for path in item.source_line_paths],
-                    translation_lines=[
-                        _translated_test_line_preserving_controls(line, text_rules)
-                        for line in item.original_lines
-                    ],
-                )
-                for item in scope.active_items()
-            ]
-        )
+    await _write_translations_from_rebuilt_text_index(
+        registry=registry,
+        game_title="テストゲーム",
+        setting_path=app_home / "setting.toml",
+        text_rules=text_rules,
+    )
 
     _rewrite_json(
         minimal_game_dir / "data" / "System.json",
@@ -1413,22 +1412,12 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             ),
             reviewed_empty=True,
         )
-        await session.write_translation_items(
-            [
-                TranslationItem(
-                    location_path=item.location_path,
-                    item_type=item.item_type,
-                    role=item.role,
-                    original_lines=[line for line in item.original_lines],
-                    source_line_paths=[path for path in item.source_line_paths],
-                    translation_lines=[
-                        _translated_test_line_preserving_controls(line, text_rules)
-                        for line in item.original_lines
-                    ],
-                )
-                for item in scope.active_items()
-            ]
-        )
+    await _write_translations_from_rebuilt_text_index(
+        registry=registry,
+        game_title="テストゲーム",
+        setting_path=app_home / "setting.toml",
+        text_rules=text_rules,
+    )
 
     handler = TranslationHandler(registry, LLMHandler())
     try:

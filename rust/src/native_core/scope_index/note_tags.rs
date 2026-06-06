@@ -4,8 +4,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    RuleCandidateTextRules, compile_rule_candidate_text_rules, normalize_extraction_text,
+use super::RuleCandidateTextRules;
+use super::plugin_source::{
+    compile_rule_candidate_text_rules, normalize_extraction_text,
     should_translate_plugin_source_text,
 };
 use crate::native_core::note_sources::collect_note_tag_sources_in_value;

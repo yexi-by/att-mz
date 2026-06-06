@@ -25,8 +25,13 @@ from .common import (
     json,
     load_setting,
     _noop_quality_progress_callbacks,
+    write_back_probe_report_fields,
 )
-from app.text_index import detect_text_index_invalidations, text_index_item_to_translation_item
+from app.text_index import (
+    collect_text_index_scope_gate_errors,
+    detect_text_index_invalidations,
+    text_index_item_to_translation_item,
+)
 
 
 class ManualTranslationAgentMixin:
@@ -54,7 +59,11 @@ class ManualTranslationAgentMixin:
             summary: JsonObject = {
                 "pending_exported_count": pending_exported_count,
                 "output": str(output_path),
-                "write_back_probe_enabled": include_write_probe,
+                **write_back_probe_report_fields(
+                    requested=include_write_probe,
+                    executed=False,
+                    mode="index_writable" if include_write_probe else "disabled",
+                ),
                 "text_index_status": text_index_status,
             }
             if pending_total_count is not None:
@@ -117,6 +126,27 @@ class ManualTranslationAgentMixin:
             else:
                 text_index_status = "used"
             advance_progress(1)
+
+            scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+            if scope_gate_errors:
+                report_errors = [
+                    issue(error.code, error.message)
+                    for error in scope_gate_errors
+                ]
+                set_progress(5, 5)
+                set_status("当前文本范围检查没通过，停止导出手动填写译文表")
+                return AgentReport.from_parts(
+                    errors=report_errors,
+                    warnings=rebuild_warnings,
+                    summary=export_summary(pending_exported_count=0),
+                    details={
+                        "text_index_invalidations": text_index_invalidation_details,
+                        "text_index_scope_gate_errors": [
+                            {"code": error.code, "message": error.message}
+                            for error in scope_gate_errors
+                        ],
+                    },
+                )
 
             set_status("读取还没成功保存译文的索引条目")
             pending_total_count = await session.count_pending_text_index_items()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-NATIVE_CONTRACT_VERSION = 9
+NATIVE_CONTRACT_VERSION = 10
 _STALE_NATIVE_ERROR_MESSAGE = "Rust 原生扩展版本过旧，请先执行 uv run maturin develop"
 
 

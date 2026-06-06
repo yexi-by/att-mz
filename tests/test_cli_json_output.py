@@ -1070,6 +1070,13 @@ def test_translate_summary_report_includes_text_index_status() -> None:
             "index_status": "rebuilt",
             "indexed_count": 10,
         },
+        stage_timings={
+            "prepare_local_ms": 11,
+            "model_request_ms": 7,
+            "response_verify_ms": 13,
+            "save_results_ms": 17,
+            "local_total_excluding_model_ms": 41,
+        },
     )
 
     report = build_translate_summary_report(summary)
@@ -1077,6 +1084,8 @@ def test_translate_summary_report_includes_text_index_status() -> None:
     assert report.summary["text_index_status"] == "cold_rebuilt"
     rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "rebuild_summary")
     assert rebuild_summary["index_status"] == "rebuilt"
+    stage_timings = ensure_json_object(report.summary["stage_timings"], "stage_timings")
+    assert stage_timings["local_total_excluding_model_ms"] == 41
 
 
 def test_rule_import_json_warns_about_deleted_translation_backup() -> None:

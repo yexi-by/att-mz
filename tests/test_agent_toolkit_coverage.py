@@ -35,26 +35,21 @@ async def test_text_scope_and_audit_coverage_use_unified_contract(
     assert audit_report.summary["extractable_count"] == scope_report.summary["extractable_count"]
     assert audit_report.summary["pending_count"] == scope_report.summary["extractable_count"]
 @pytest.mark.asyncio
-async def test_text_scope_and_audit_coverage_use_real_write_probe(
+async def test_text_scope_and_audit_coverage_include_write_probe_does_not_call_python_probe(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """统一文本清单的可写状态来自真实写入协议探针。"""
+    """include_write_probe 只保留报告标记，不回退旧 Python 写入探针。"""
 
-    def fake_collect_native_write_protocol_details(
-        *,
-        game_data: JsonObject,
-        plugins_js: list[JsonValue],
-        items: list[TranslationItem],
-    ) -> list[JsonValue]:
-        """把第一条文本标记为不可写，模拟 Rust 写入协议失败。"""
-        _ = (game_data, plugins_js)
-        return [{"location_path": items[0].location_path, "reason": "探针失败"}]
+    def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
+        """text-scope/audit-coverage 不应再调用旧文本范围写入探针。"""
+        _ = (args, kwargs)
+        raise AssertionError("include_write_probe 不应回退 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
-        fake_collect_native_write_protocol_details,
+        forbidden_collect_native_write_protocol_details,
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -63,17 +58,23 @@ async def test_text_scope_and_audit_coverage_use_real_write_probe(
     scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
     audit_report = await service.audit_coverage(game_title="テストゲーム", include_write_probe=True)
     unwritable_items = ensure_json_array(scope_report.details["unwritable_items"], "unwritable_items")
-    first_unwritable = ensure_json_object(unwritable_items[0], "unwritable_items[0]")
 
-    assert scope_report.summary["unwritable_count"] == 1
-    assert scope_report.summary["write_back_probe_enabled"] is True
-    assert first_unwritable["can_write_back"] is False
-    assert first_unwritable["cannot_process_reason"] == "探针失败"
+    assert scope_report.status == "ok"
+    assert scope_report.summary["unwritable_count"] == 0
+    assert scope_report.summary["write_back_probe_requested"] is True
+    assert scope_report.summary["write_back_probe_executed"] is False
+    assert scope_report.summary["write_back_probe_mode"] == "index_writable"
+    assert scope_report.summary["write_back_probe_enabled"] is False
+    assert unwritable_items == []
     assert audit_report.status == "error"
-    assert {error.code for error in audit_report.errors} >= {"coverage_unwritable"}
+    assert audit_report.summary["write_back_probe_requested"] is True
+    assert audit_report.summary["write_back_probe_executed"] is False
+    assert audit_report.summary["write_back_probe_mode"] == "index_writable"
+    assert audit_report.summary["write_back_probe_enabled"] is False
+    assert "write_probe_failed" not in {error.code for error in audit_report.errors}
     extractable_count = scope_report.summary["extractable_count"]
     assert isinstance(extractable_count, int)
-    assert audit_report.summary["writable_count"] == extractable_count - 1
+    assert audit_report.summary["writable_count"] == extractable_count
 @pytest.mark.asyncio
 async def test_read_only_scope_reports_skip_write_probe_by_default(
     minimal_game_dir: Path,
@@ -200,21 +201,16 @@ async def test_text_scope_reports_global_write_probe_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写入协议探针整体不可用时返回全局错误，不伪装成每条文本不可写。"""
+    """旧写入探针整体不可用时不影响 index 报告。"""
 
-    def broken_collect_native_write_protocol_details(
-        *,
-        game_data: JsonObject,
-        plugins_js: list[JsonValue],
-        items: list[TranslationItem],
-    ) -> list[JsonValue]:
-        """模拟原生探针基础设施故障。"""
-        _ = (game_data, plugins_js, items)
-        raise RuntimeError("native probe unavailable")
+    def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
+        """text-scope/audit/quality 不应再触碰旧文本范围写入探针。"""
+        _ = (args, kwargs)
+        raise AssertionError("include_write_probe 不应回退 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
-        broken_collect_native_write_protocol_details,
+        forbidden_collect_native_write_protocol_details,
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -224,13 +220,12 @@ async def test_text_scope_reports_global_write_probe_failure(
     audit_report = await service.audit_coverage(game_title="テストゲーム", include_write_probe=True)
     quality_report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
 
-    assert scope_report.status == "error"
+    assert scope_report.status == "ok"
     assert audit_report.status == "error"
     assert quality_report.status == "error"
-    assert {error.code for error in scope_report.errors} == {"write_probe_failed"}
-    assert {error.code for error in audit_report.errors} >= {"write_probe_failed"}
-    assert {error.code for error in quality_report.errors} >= {"write_probe_failed"}
-    assert scope_report.summary["write_back_probe_failed"] is True
+    assert "write_probe_failed" not in {error.code for error in scope_report.errors}
+    assert "write_probe_failed" not in {error.code for error in audit_report.errors}
+    assert "write_probe_failed" not in {error.code for error in quality_report.errors}
     assert scope_report.summary["unwritable_count"] == 0
 @pytest.mark.asyncio
 async def test_text_scope_reports_batch_write_probe_failure_directly(
@@ -238,29 +233,16 @@ async def test_text_scope_reports_batch_write_probe_failure_directly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写入协议批量探针失败时直接报告全局错误。"""
-    failed_single_path = ""
+    """旧批量探针失败不会影响 text index 输出。"""
 
-    def flaky_collect_native_write_protocol_details(
-        *,
-        game_data: JsonObject,
-        plugins_js: list[JsonValue],
-        items: list[TranslationItem],
-    ) -> list[JsonValue]:
-        """模拟批量探针失败，不再逐条重试。"""
-        nonlocal failed_single_path
-        _ = (game_data, plugins_js)
-        if len(items) > 1:
-            raise RuntimeError("batch probe unavailable")
-        item = items[0]
-        if not failed_single_path:
-            failed_single_path = item.location_path
-            raise RuntimeError("single path probe unavailable")
-        return []
+    def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
+        """text-scope 不应再进入旧批量写入探针。"""
+        _ = (args, kwargs)
+        raise AssertionError("include_write_probe 不应回退 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
-        flaky_collect_native_write_protocol_details,
+        forbidden_collect_native_write_protocol_details,
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -268,11 +250,13 @@ async def test_text_scope_reports_batch_write_probe_failure_directly(
 
     scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
 
-    assert scope_report.status == "error"
-    assert not failed_single_path
-    assert scope_report.summary["write_back_probe_failed"] is True
+    assert scope_report.status == "ok"
+    assert scope_report.summary["write_back_probe_requested"] is True
+    assert scope_report.summary["write_back_probe_executed"] is False
+    assert scope_report.summary["write_back_probe_mode"] == "index_writable"
+    assert scope_report.summary["write_back_probe_enabled"] is False
     assert scope_report.summary["unwritable_count"] == 0
-    assert {error.code for error in scope_report.errors} == {"write_probe_failed"}
+    assert "write_probe_failed" not in {error.code for error in scope_report.errors}
 @pytest.mark.asyncio
 async def test_read_only_placeholder_scan_does_not_run_write_probe(
     minimal_game_dir: Path,

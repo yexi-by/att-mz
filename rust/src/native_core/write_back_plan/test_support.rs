@@ -227,6 +227,68 @@ fn build_plan_skips_plugin_source_diff_without_plugin_source_items() {
 }
 
 #[test]
+fn build_plan_ignores_unrelated_active_plugin_source_syntax_error_without_source_work() {
+    let fixture = create_fixture_dir("att_mz_write_plan_ignore_unrelated_plugin_syntax");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    write_plugins_origin(
+        &game_dir,
+        r#"[{"name":"BrokenPlugin","status":true,"description":"","parameters":{}}]"#,
+    );
+    fs::write(
+        game_dir.join("js").join("plugins").join("BrokenPlugin.js"),
+        "const Broken = ;\n",
+    )
+    .expect("当前插件源码应可写入");
+    fs::write(
+        game_dir
+            .join("js")
+            .join("plugins_source_origin")
+            .join("BrokenPlugin.js"),
+        "const Broken = { title: '可信源' };\n",
+    )
+    .expect("可信源插件源码应可写入");
+
+    let write_back_output = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "write_back",
+        false,
+    )
+    .expect("普通写回没有插件源码译文或规则时不应扫描无关当前插件源码");
+    let write_back_value: Value =
+        serde_json::from_str(&write_back_output).expect("写回计划输出应是 JSON");
+    let write_back_paths: Vec<&str> = write_back_value["files"]
+        .as_array()
+        .expect("计划文件应是数组")
+        .iter()
+        .filter_map(|file| file["relative_path"].as_str())
+        .collect();
+    assert!(
+        !write_back_paths.contains(&"js/plugins/BrokenPlugin.js"),
+        "普通写回没有插件源码工作时不得触碰无关坏插件源码",
+    );
+
+    let rebuild_error = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect_err("重建当前运行文件仍必须审计所有启用插件源码");
+    assert!(
+        rebuild_error.contains("插件源码 JS 语法检查失败"),
+        "重建模式应继续暴露坏插件源码，实际为 {rebuild_error}",
+    );
+
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
 fn build_plan_skips_unrelated_data_diff_in_write_back_mode() {
     let fixture = create_fixture_dir("att_mz_write_plan_skip_unrelated_data_diff");
     let game_dir = fixture.join("game");

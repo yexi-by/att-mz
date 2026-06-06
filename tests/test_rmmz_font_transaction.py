@@ -5,12 +5,12 @@ from __future__ import annotations
 from tests.rmmz_writeback_contract_fixtures import *
 
 @pytest.mark.asyncio
-async def test_direct_write_back_rejects_active_runtime_read_error_before_font_side_effects(
+async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_with_font_side_effects(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """当前运行源码读取失败时，Rust 计划阶段直接失败且不改字体。"""
+    """普通写回没有插件源码工作时，不因无关当前源码读取失败跳过字体替换。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_text = _example_setting_text_with_absolute_prompt_files()
@@ -132,21 +132,22 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_font_s
 
     handler = TranslationHandler(registry, LLMHandler())
     try:
-        with pytest.raises(RuntimeError, match="插件源码读取失败"):
-            _ = await handler.write_back(
-                game_title="テストゲーム",
-                callbacks=(lambda _current, _total: None, lambda _count: None),
-                setting_overrides=SettingOverrides(
-                    write_back_replacement_font_path=str(replacement_font),
-                ),
-                confirm_font_overwrite=True,
-            )
+        _ = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+            setting_overrides=SettingOverrides(
+                write_back_replacement_font_path=str(replacement_font),
+            ),
+            confirm_font_overwrite=True,
+        )
     finally:
         await handler.close()
 
-    assert not (fonts_dir / replacement_font.name).exists()
-    assert not (fonts_dir / "gamefont_origin.css").exists()
-    assert gamefont_css_path.read_text(encoding="utf-8") == original_css
+    assert (fonts_dir / replacement_font.name).read_bytes() == b"new font"
+    assert (fonts_dir / "gamefont_origin.css").read_text(encoding="utf-8") == original_css
+    updated_css = gamefont_css_path.read_text(encoding="utf-8")
+    assert replacement_font.name in updated_css
+    assert old_font not in updated_css
 @pytest.mark.asyncio
 async def test_restore_font_references_restores_mv_gamefont_css_without_rolling_back_other_css(
     minimal_mv_game_dir: Path,

@@ -199,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = quality_report_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；大游戏只读报告默认不启用",
+        help="额外执行 Rust 写回级检查；大游戏普通质量报告默认不启用",
     )
 
     rebuild_text_index_parser = subparsers.add_parser(
@@ -218,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = text_scope_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；大游戏只读清单默认不启用",
+        help="在报告中标记索引可写状态；不执行额外写回级检查",
     )
 
     audit_coverage_parser = subparsers.add_parser(
@@ -230,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = audit_coverage_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；大游戏覆盖审计默认不启用",
+        help="在报告中标记索引可写状态；不执行额外写回级检查",
     )
 
     audit_active_runtime_parser = subparsers.add_parser(
@@ -310,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = export_pending_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；默认只按当前文本范围导出",
+        help="在报告中标记索引可写状态；导出本身不执行额外写回级检查",
     )
 
     export_quality_fix_parser = subparsers.add_parser(
@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = export_quality_fix_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；默认只按质量问题导出修复表",
+        help="在报告中标记索引可写状态；修复表生成不额外执行写回级检查",
     )
 
     import_manual_parser = subparsers.add_parser(

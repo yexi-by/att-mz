@@ -17,6 +17,22 @@ pub(super) fn collect_text_structure_detail(
     item: &NativeTranslationItem,
     rules: &CompiledRules,
 ) -> Option<Value> {
+    if item.item_type == "short_text" {
+        match collect_fast_short_text_structure_errors(item, rules) {
+            Ok(Some(errors)) if errors.is_empty() => return None,
+            Ok(Some(errors)) => {
+                let mut detail = base_detail(item);
+                detail.insert("reason".to_string(), json!(errors.join(";\n")));
+                return Some(Value::Object(detail));
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                let mut detail = base_detail(item);
+                detail.insert("reason".to_string(), json!(reason));
+                return Some(Value::Object(detail));
+            }
+        }
+    }
     match build_placeholders(item, rules).and_then(|placeholder_build| {
         let translation_lines_with_placeholders =
             mask_translation_controls(item, rules, &placeholder_build)?;
@@ -40,6 +56,26 @@ pub(super) fn collect_text_structure_detail(
             Some(Value::Object(detail))
         }
     }
+}
+
+fn collect_fast_short_text_structure_errors(
+    item: &NativeTranslationItem,
+    rules: &CompiledRules,
+) -> Result<Option<Vec<String>>, String> {
+    let mut errors = collect_artifact_errors(item, &item.translation_lines, rules)?;
+    if item.translation_lines.len() != 1 {
+        errors.push(format!(
+            "单字段文本必须只提供 1 条中文译文行，当前提供 {} 条",
+            item.translation_lines.len()
+        ));
+        return Ok(Some(errors));
+    }
+    if has_display_line_break(&item.original_lines)
+        || has_display_line_break(&item.translation_lines)
+    {
+        return Ok(None);
+    }
+    Ok(Some(errors))
 }
 
 fn collect_text_structure_errors(
@@ -240,4 +276,10 @@ fn count_literal_line_breaks(lines: &[String]) -> usize {
                 + line.matches(LITERAL_LINE_BREAK_PLACEHOLDER).count()
         })
         .sum()
+}
+
+fn has_display_line_break(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .any(|line| line.contains('\n') || line.contains(LITERAL_LINE_BREAK_MARKER))
 }

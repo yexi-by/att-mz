@@ -10,35 +10,35 @@ use crate::native_core::write_protocol::decode_json_container_text;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct EventCommandDataFileInput {
-    file_name: String,
-    data: Value,
+    pub(super) file_name: String,
+    pub(super) data: Value,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct EventCommandRuleInput {
-    command_code: i64,
+    pub(super) command_code: i64,
     #[serde(default)]
-    parameter_filters: Vec<EventCommandParameterFilterInput>,
+    pub(super) parameter_filters: Vec<EventCommandParameterFilterInput>,
     #[serde(default)]
-    path_templates: Vec<String>,
+    pub(super) path_templates: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct EventCommandParameterFilterInput {
-    index: usize,
-    value: String,
+pub(super) struct EventCommandParameterFilterInput {
+    pub(super) index: usize,
+    pub(super) value: String,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct EventCommandHitDetailOutput {
-    command_code: i64,
-    command_location_path: String,
-    file_name: String,
-    json_path: String,
-    location_path: String,
-    original_text: String,
-    path_template: String,
-    rule_index: usize,
+    pub(super) command_code: i64,
+    pub(super) command_location_path: String,
+    pub(super) file_name: String,
+    pub(super) json_path: String,
+    pub(super) location_path: String,
+    pub(super) original_text: String,
+    pub(super) path_template: String,
+    pub(super) rule_index: usize,
 }
 
 #[derive(Debug, Serialize)]

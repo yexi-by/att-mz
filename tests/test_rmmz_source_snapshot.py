@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
+from app.rmmz.source_snapshot import validate_plugin_source_snapshot_manifest
 
 @pytest.mark.asyncio
 async def test_loader_only_keeps_standard_rmmz_data_files(minimal_game_dir: Path) -> None:
@@ -86,6 +87,25 @@ async def test_source_snapshot_manifest_ignores_active_plugin_source_drift(
         source_view=GameFileView.TRANSLATION_SOURCE,
     )
     assert "ExtraRuntimeOnly.js" not in game_data.plugin_source_files
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_snapshot_manifest_ignores_unrelated_data_snapshot_drift(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """插件源码命令只校验自己消费的可信源快照文件。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    _ = (minimal_game_dir / "data_origin" / "System.json").write_text("{}", encoding="utf-8")
+
+    async with await registry.open_game("テストゲーム") as session:
+        records = await session.read_source_snapshot_records()
+
+    layout = resolve_game_layout(minimal_game_dir)
+    validate_plugin_source_snapshot_manifest(layout=layout, records=records)
+    with pytest.raises(RuntimeError, match="可信源快照 manifest"):
+        validate_source_snapshot_manifest(layout=layout, records=records)
 @pytest.mark.asyncio
 async def test_add_game_rejects_existing_source_snapshot_artifacts(
     minimal_game_dir: Path,

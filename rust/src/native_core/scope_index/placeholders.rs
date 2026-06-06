@@ -4,7 +4,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{RuleCandidateTextRules, compile_rule_candidate_text_rules};
+use super::RuleCandidateTextRules;
+use super::plugin_source::compile_rule_candidate_text_rules;
 use crate::native_core::controls::{
     RawControlSequenceCandidate, iter_control_sequence_spans, iter_raw_control_sequence_candidates,
 };

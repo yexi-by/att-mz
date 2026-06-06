@@ -162,9 +162,8 @@ pub(super) fn read_plugins_origin_file(path: &Path) -> Result<Value, String> {
 
 pub(super) fn assert_active_plugin_sources_readable(
     layout: &Layout,
-    plugins_js: &Value,
+    file_names: &[String],
 ) -> Result<(), String> {
-    let file_names = enabled_plugin_source_file_names(plugins_js)?;
     file_names
         .par_iter()
         .try_for_each(|file_name| -> Result<(), String> {

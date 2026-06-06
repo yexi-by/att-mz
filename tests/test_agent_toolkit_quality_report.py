@@ -124,39 +124,16 @@ async def test_quality_report_stops_on_coverage_error_before_native_checks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """覆盖审计不通过时，质量报告不能继续执行后续原生质检。"""
+    """include_write_probe 不应回退旧 Python 文本范围写入探针。"""
 
-    def fake_scope_write_protocol(
-        *,
-        game_data: JsonObject,
-        plugins_js: list[JsonValue],
-        items: list[TranslationItem],
-    ) -> list[JsonValue]:
-        """把第一条文本标记为不可写，制造覆盖审计错误。"""
-        _ = (game_data, plugins_js)
-        return [{"location_path": items[0].location_path, "reason": "探针失败"}]
-
-    def forbidden_quality_check(*args: object, **kwargs: object) -> NoReturn:
-        """覆盖错误后不应再进入译文本体质检。"""
+    def forbidden_scope_write_protocol(*args: object, **kwargs: object) -> NoReturn:
+        """质量报告不应再通过 TextScopeService 的写入探针制造覆盖错误。"""
         _ = (args, kwargs)
-        raise AssertionError("覆盖错误后不应继续执行译文本体质检")
-
-    def forbidden_write_protocol(*args: object, **kwargs: object) -> NoReturn:
-        """覆盖错误后不应再进入写入协议质检。"""
-        _ = (args, kwargs)
-        raise AssertionError("覆盖错误后不应继续执行写入协议质检")
+        raise AssertionError("quality-report 不应回退 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
-        fake_scope_write_protocol,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.service.collect_native_quality_details",
-        forbidden_quality_check,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.service.collect_native_write_protocol_details",
-        forbidden_write_protocol,
+        forbidden_scope_write_protocol,
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -165,8 +142,12 @@ async def test_quality_report_stops_on_coverage_error_before_native_checks(
     report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
 
     assert report.status == "error"
-    assert "coverage_unwritable" in {error.code for error in report.errors}
-    assert report.summary["source_residual_count"] == 0
+    assert "coverage_unwritable" not in {error.code for error in report.errors}
+    assert "write_probe_failed" not in {error.code for error in report.errors}
+    assert report.summary["write_back_probe_requested"] is True
+    assert report.summary["write_back_probe_executed"] is True
+    assert report.summary["write_back_probe_mode"] == "rust_write_gate"
+    assert report.summary["write_back_probe_enabled"] is True
     assert report.summary["write_back_protocol_count"] == 0
 @pytest.mark.asyncio
 async def test_quality_report_include_write_probe_uses_rust_quality_gate(
@@ -259,6 +240,9 @@ async def test_quality_report_include_write_probe_uses_rust_quality_gate(
     assert rust_gate_calls
     assert quality_detail_calls == 1
     assert protocol_detail_calls == 1
+    assert report.summary["write_back_probe_requested"] is True
+    assert report.summary["write_back_probe_executed"] is True
+    assert report.summary["write_back_probe_mode"] == "rust_write_gate"
     assert report.summary["write_back_probe_enabled"] is True
     write_back_gate = ensure_json_object(report.summary["write_back_gate"], "write_back_gate")
     assert write_back_gate["status"] == "ok"
@@ -356,7 +340,11 @@ async def test_quality_report_write_probe_and_write_back_share_rust_gate_error(
     finally:
         await handler.close()
 
-    assert str(error_info.value) == gate_message
+    write_back_message = str(error_info.value)
+    assert "游戏控制符可能被改坏" in write_back_message
+    assert "占位符" in write_back_message
+    assert "游戏控制符可能被改坏" in gate_message
+    assert "占位符" in gate_message
 @pytest.mark.asyncio
 async def test_validate_source_residual_rules_rejects_rust_incompatible_structural_regex(
     minimal_game_dir: Path,
@@ -445,6 +433,78 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
     assert coverage["detail_mode"] == "sampled"
     pending_paths = ensure_json_object(coverage["pending_location_paths"], "pending_location_paths")
     assert set(pending_paths) == {"count", "samples", "omitted_count"}
+
+
+@pytest.mark.asyncio
+async def test_quality_report_large_warm_index_uses_count_fast_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """大库 warm index 质量报告不得读取全量索引和全量译文。"""
+
+    async def forbidden_index_items_read(self: TargetGameSession) -> NoReturn:
+        """count 快路径不应读取全量文本范围索引。"""
+        _ = self
+        raise AssertionError("大库 quality-report 不应读取全量文本范围索引")
+
+    async def forbidden_translated_items_read(self: TargetGameSession) -> NoReturn:
+        """count 快路径不应读取全量译文。"""
+        _ = self
+        raise AssertionError("大库 quality-report 不应读取全量译文")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        index_records = await session.read_text_index_items()
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=item.role,
+                    original_lines=[line for line in item.original_lines],
+                    source_line_paths=[path for path in item.source_line_paths],
+                    translation_lines=[
+                        _translated_test_line_preserving_controls(line, text_rules)
+                        for line in item.original_lines
+                    ],
+                )
+                for item in index_records
+                if item.writable
+            ]
+        )
+        run_record = await session.start_translation_run(
+            total_extracted=len(index_records),
+            pending_count=0,
+            deduplicated_count=len(index_records),
+            batch_count=1,
+        )
+        await session.write_translation_run(
+            run_record.model_copy(
+                update={
+                    "status": "completed",
+                    "success_count": len(index_records),
+                    "finished_at": run_record.updated_at,
+                }
+            )
+        )
+
+    monkeypatch.setattr("app.agent_toolkit.services.quality.QUALITY_REPORT_FULL_RECHECK_LIMIT", 0)
+    monkeypatch.setattr(TargetGameSession, "read_text_index_items", forbidden_index_items_read)
+    monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_translated_items_read)
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    assert report.summary["native_quality_payload_item_count"] == 0
+    assert report.summary["native_quality_recheck_mode"] == "saved_error_records"
+    coverage = ensure_json_object(report.details["coverage"], "coverage")
+    assert coverage["detail_mode"] == "count_only"
 @pytest.mark.asyncio
 async def test_quality_report_treats_source_residual_as_error(
     minimal_game_dir: Path,

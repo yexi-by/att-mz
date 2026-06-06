@@ -3,18 +3,23 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    RuleCandidateOutput, RuleCandidateTextRules, compile_rule_candidate_text_rules,
-    normalize_extraction_text, should_translate_plugin_source_text,
+use super::plugin_source::{
+    CompiledRuleCandidateTextRules, ENGLISH_ASSET_EXTENSION_RE, ENGLISH_ASSET_PATH_RE,
+    NUMBER_LIKE_RE, compile_rule_candidate_text_rules, normalize_extraction_text,
+    should_translate_plugin_source_text,
 };
+use super::{RuleCandidateOutput, RuleCandidateTextRules};
 use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct NonstandardDataFileInput {
-    file_name: String,
-    data: Value,
+    pub(super) file_name: String,
+    pub(super) data: Value,
+    #[serde(default)]
+    pub(super) raw_text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +42,21 @@ pub(super) struct NonstandardDataRuleCandidateScan {
     pub(super) candidates: Vec<RuleCandidateOutput>,
     pub(super) file_scans: Vec<NonstandardDataFileScanOutput>,
     pub(super) nonstandard_file_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NonstandardDataTextRuleInput {
+    pub(super) file_name: String,
+    pub(super) file_hash: String,
+    pub(super) path_templates: Vec<String>,
+    pub(super) skipped: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NonstandardDataManagedText {
+    pub(super) file_name: String,
+    pub(super) json_path: String,
+    pub(super) raw_text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,6 +272,118 @@ pub(super) fn scan_nonstandard_data_file_leaves(
         .collect())
 }
 
+pub(super) fn collect_nonstandard_data_managed_texts(
+    files: &[NonstandardDataFileInput],
+    rules: &[NonstandardDataTextRuleInput],
+) -> Result<Vec<NonstandardDataManagedText>, String> {
+    if rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let file_by_name = files
+        .iter()
+        .map(|file| (file.file_name.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    let mut required_files = BTreeSet::new();
+    for rule in rules {
+        if rule.skipped || rule.path_templates.is_empty() {
+            continue;
+        }
+        required_files.insert(rule.file_name.as_str());
+        let file = file_by_name
+            .get(rule.file_name.as_str())
+            .ok_or_else(|| format!("非标准 data 文件规则已过期: 文件不存在: {}", rule.file_name))?;
+        let current_hash = sha256_hex(&file.raw_text);
+        if current_hash != rule.file_hash {
+            return Err(format!(
+                "非标准 data 文件规则已过期: 文件 hash 不匹配: {}",
+                rule.file_name
+            ));
+        }
+    }
+
+    let scans = required_files
+        .into_iter()
+        .map(|file_name| {
+            let file = file_by_name
+                .get(file_name)
+                .ok_or_else(|| format!("非标准 data 文件规则已过期: 文件不存在: {file_name}"))?;
+            scan_nonstandard_data_file(file, None).map(|scan| (file_name.to_string(), scan))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+    let mut rows = Vec::new();
+    let mut seen_paths: BTreeSet<(String, String)> = BTreeSet::new();
+    for rule in rules {
+        if rule.skipped || rule.path_templates.is_empty() {
+            continue;
+        }
+        let scan = scans
+            .get(&rule.file_name)
+            .ok_or_else(|| format!("非标准 data 文件规则已过期: 文件不存在: {}", rule.file_name))?;
+        let string_leaf_map = scan
+            .leaves
+            .iter()
+            .filter_map(|leaf| {
+                if leaf.value_type != "string" {
+                    return None;
+                }
+                leaf.value.as_str().map(|value| (leaf.path.as_str(), value))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for path_template in &rule.path_templates {
+            let matched_paths = expand_rule_to_leaf_output_paths(path_template, &scan.leaves)?;
+            if matched_paths.is_empty() {
+                return Err(format!(
+                    "非标准 data 文件规则已过期: {} 路径没有命中当前字符串叶子: {}",
+                    rule.file_name, path_template
+                ));
+            }
+            for json_path in matched_paths {
+                if !seen_paths.insert((rule.file_name.clone(), json_path.clone())) {
+                    continue;
+                }
+                let Some(raw_text) = string_leaf_map.get(json_path.as_str()) else {
+                    continue;
+                };
+                rows.push(NonstandardDataManagedText {
+                    file_name: rule.file_name.clone(),
+                    json_path,
+                    raw_text: (*raw_text).to_string(),
+                });
+            }
+        }
+    }
+    rows.sort_by(|left, right| {
+        left.file_name
+            .cmp(&right.file_name)
+            .then_with(|| left.json_path.cmp(&right.json_path))
+    });
+    Ok(rows)
+}
+
+fn expand_rule_to_leaf_output_paths(
+    path_template: &str,
+    leaves: &[NonstandardDataLeafOutput],
+) -> Result<Vec<String>, String> {
+    let template_parts = parse_json_path(path_template)?;
+    let mut matched_paths = Vec::new();
+    for leaf in leaves {
+        if leaf.value_type != "string" {
+            continue;
+        }
+        if jsonpath_matches_template(&template_parts, &parse_json_path(&leaf.path)?) {
+            matched_paths.push(leaf.path.clone());
+        }
+    }
+    matched_paths.sort();
+    Ok(matched_paths)
+}
+
+fn sha256_hex(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    format!("{digest:x}")
+}
+
 fn collect_rule_hits(
     file_name: &str,
     path_templates: &[String],
@@ -410,7 +542,7 @@ fn format_path_pairs(path_pairs: &BTreeSet<(String, String)>) -> String {
 
 fn scan_nonstandard_data_file(
     file: &NonstandardDataFileInput,
-    text_rules: Option<&super::CompiledRuleCandidateTextRules>,
+    text_rules: Option<&CompiledRuleCandidateTextRules>,
 ) -> Result<NonstandardDataFileScan, String> {
     let mut scan = NonstandardDataFileScan {
         file_name: file.file_name.clone(),
@@ -436,7 +568,7 @@ fn walk_nonstandard_data_value(
     current_path: &str,
     parent_object_keys: &[String],
     field_name: &str,
-    text_rules: Option<&super::CompiledRuleCandidateTextRules>,
+    text_rules: Option<&CompiledRuleCandidateTextRules>,
     scan: &mut NonstandardDataFileScan,
 ) -> Result<(), String> {
     match value {
@@ -517,7 +649,7 @@ fn nonstandard_data_candidate_from_string(
     raw_text: &str,
     field_name: &str,
     parent_object_keys: &[String],
-    text_rules: &super::CompiledRuleCandidateTextRules,
+    text_rules: &CompiledRuleCandidateTextRules,
 ) -> Result<Option<RuleCandidateOutput>, String> {
     if is_structural_nonstandard_string(field_name, raw_text) {
         return Ok(None);
@@ -590,9 +722,9 @@ fn is_structural_nonstandard_string(field_name: &str, value: &str) -> bool {
     ) || matches!(
         lowered_value.as_str(),
         "true" | "false" | "null" | "undefined"
-    ) || super::NUMBER_LIKE_RE.is_match(stripped_value)
-        || super::ENGLISH_ASSET_PATH_RE.is_match(&lowered_value)
-        || super::ENGLISH_ASSET_EXTENSION_RE.is_match(&lowered_value)
+    ) || NUMBER_LIKE_RE.is_match(stripped_value)
+        || ENGLISH_ASSET_PATH_RE.is_match(&lowered_value)
+        || ENGLISH_ASSET_EXTENSION_RE.is_match(&lowered_value)
 }
 
 fn quote_jsonpath_key(key: &str) -> String {

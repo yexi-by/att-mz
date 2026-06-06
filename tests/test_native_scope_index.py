@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import cast
@@ -14,12 +15,25 @@ from app.native_scope_index import (
     build_native_placeholder_candidates_payload,
     build_native_scope_index,
     evaluate_native_scope_gate,
+    inspect_native_scope_index_storage,
+    native_schema_fingerprint,
+    rebuild_native_scope_index_storage,
     scan_native_rule_candidates,
+    write_native_scope_index_storage,
 )
+from app.persistence import GameRegistry
+from app.persistence.sql import current_schema_fingerprint
 from app.config.schemas import TextRulesSetting
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.rmmz.game_data import System, Terms
-from app.rmmz.schema import FIXED_FILE_NAMES, GameData, GameLayout, TranslationData, TranslationItem
+from app.rmmz.schema import (
+    FIXED_FILE_NAMES,
+    GameData,
+    GameLayout,
+    PluginTextRuleRecord,
+    TranslationData,
+    TranslationItem,
+)
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, ensure_json_array, ensure_json_object
 from app.rmmz.text_rules import TextRules
 
@@ -304,6 +318,220 @@ def test_build_native_scope_index_scans_standard_data_and_event_commands() -> No
     }
     assert domain_summary["event_command"]["item_count"] == 1
     assert domain_summary["standard_data"]["item_count"] == 1
+
+
+def test_native_schema_fingerprint_matches_python_shared_schema() -> None:
+    """Rust 编译期 schema 与 Python 建库 schema 必须来自同一 SQL 资源。"""
+    assert native_schema_fingerprint() == current_schema_fingerprint()
+
+
+@pytest.mark.asyncio
+async def test_inspect_native_scope_index_storage_reads_db_and_game_files(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 能直接打开目标 DB，并读取标准 data、plugins.js、插件源码和非标准 data。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash="hash",
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="System.json/gameTitle",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["テストゲーム"],
+                    source_line_paths=[],
+                    translation_lines=["测试游戏"],
+                )
+            ]
+        )
+
+    result = inspect_native_scope_index_storage(
+        {
+            "db_path": str(record.db_path),
+            "game_path": str(minimal_game_dir),
+        }
+    )
+
+    assert result["status"] == "ok"
+    schema = ensure_json_object(result["schema"], "storage.schema")
+    assert schema["schema_fingerprint"] == current_schema_fingerprint()
+    database = ensure_json_object(result["database"], "storage.database")
+    assert database["plugin_text_rule_count"] == 1
+    assert database["translation_item_count"] == 1
+    game_files = ensure_json_object(result["game_files"], "storage.game_files")
+    assert "System.json" in ensure_json_array(
+        game_files["standard_data_file_names"],
+        "storage.game_files.standard_data_file_names",
+    )
+    assert "UnknownPluginData.json" in ensure_json_array(
+        game_files["nonstandard_data_file_names"],
+        "storage.game_files.nonstandard_data_file_names",
+    )
+    plugins_js_bytes = game_files["plugins_js_bytes"]
+    plugin_source_file_count = game_files["plugin_source_file_count"]
+    assert isinstance(plugins_js_bytes, int)
+    assert isinstance(plugin_source_file_count, int)
+    assert plugins_js_bytes > 0
+    assert plugin_source_file_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_write_native_scope_index_storage_writes_python_readable_index(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 直接写入 text index/summary 后，Python 持久层必须能读回。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    result = write_native_scope_index_storage(
+        {
+            "db_path": str(record.db_path),
+            "metadata": {
+                "source_snapshot_fingerprint": "snapshot-v1",
+                "rules_fingerprint": "rules-v1",
+                "item_count": 1,
+                "workflow_gate_scope_hashes": {"plugin_text_rules": "scope-hash-v1"},
+                "created_at": "2026-06-05T00:00:00",
+            },
+            "text_index_rows": [
+                {
+                    "location_path": "System.json/gameTitle",
+                    "item_type": "short_text",
+                    "role": None,
+                    "original_lines": ["テストゲーム"],
+                    "source_line_paths": [],
+                    "source_type": "standard_data",
+                    "source_file": "System.json",
+                    "writable": True,
+                    "source_snapshot_fingerprint": "snapshot-v1",
+                    "rules_fingerprint": "rules-v1",
+                    "locator_json": json.dumps({"kind": "standard_data"}, ensure_ascii=False),
+                }
+            ],
+            "scope_summary": {
+                "total_count": 1,
+                "active_count": 1,
+                "writable_count": 1,
+                "unwritable_count": 0,
+                "stale_rule_count": 0,
+                "native_thread_count": 4,
+            },
+            "domain_summary": [
+                {
+                    "domain": "standard_data",
+                    "item_count": 1,
+                    "active_count": 1,
+                    "writable_count": 1,
+                    "unwritable_count": 0,
+                    "inactive_rule_hit_count": 0,
+                }
+            ],
+            "rule_hit_summary": [
+                {
+                    "domain": "standard_data",
+                    "rule_key": "gameTitle",
+                    "hit_count": 1,
+                    "extractable_count": 1,
+                    "writable_count": 1,
+                    "unwritable_count": 0,
+                }
+            ],
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert result["written_item_count"] == 1
+    async with await registry.open_game(record.game_title) as session:
+        metadata = await session.read_text_index_metadata()
+        assert metadata is not None
+        assert metadata.source_snapshot_fingerprint == "snapshot-v1"
+        assert metadata.workflow_gate_scope_hashes == {"plugin_text_rules": "scope-hash-v1"}
+        items = await session.read_text_index_items()
+        assert [item.location_path for item in items] == ["System.json/gameTitle"]
+        assert items[0].original_lines == ["テストゲーム"]
+        scope_summary = await session.read_text_index_scope_summary()
+        assert scope_summary is not None
+        assert scope_summary.native_thread_count == 4
+        assert [item.domain for item in await session.read_text_index_domain_summary()] == ["standard_data"]
+        assert [item.rule_key for item in await session.read_text_index_rule_hit_summary()] == ["gameTitle"]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 冷重建必须继承旧范围服务的插件规则新鲜度语义。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash="stale-hash",
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+
+    setting = TextRulesSetting()
+    result = rebuild_native_scope_index_storage(
+        {
+            "db_path": str(record.db_path),
+            "game_path": str(minimal_game_dir),
+            "source_snapshot_fingerprint": "snapshot-v1",
+            "rules_fingerprint": "rules-v1",
+            "source_language": "ja",
+            "target_language": "zh-Hans",
+            "text_rules_setting": setting.model_dump(mode="json"),
+            "source_text_required_pattern": setting.source_text_required_pattern,
+            "workflow_gate_scope_hashes": {},
+            "created_at": "2026-06-05T00:00:00",
+        }
+    )
+
+    assert result["status"] == "ok"
+    async with await registry.open_game(record.game_title) as session:
+        scope_summary = await session.read_text_index_scope_summary()
+        assert scope_summary is not None
+        assert scope_summary.stale_rule_count == 1
+        items = await session.read_text_index_items()
+        assert all(not item.location_path.startswith("plugins.js/") for item in items)
+
+
+def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path) -> None:
+    """Rust storage 结构化错误必须由 Python adapter 渲染为中文摘要。"""
+    db_path = tmp_path / "old.db"
+    with sqlite3.connect(db_path) as connection:
+        _ = connection.execute(
+            "CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)"
+        )
+        _ = connection.execute(
+            "INSERT INTO schema_version (schema_key, version) VALUES ('current', 14)"
+        )
+
+    with pytest.raises(RuntimeError, match="scope_index_storage_schema_version_mismatch"):
+        _ = inspect_native_scope_index_storage(
+            {
+                "db_path": str(db_path),
+                "game_path": str(tmp_path),
+            }
+        )
 
 
 def test_scan_native_rule_candidates_returns_candidate_summary() -> None:

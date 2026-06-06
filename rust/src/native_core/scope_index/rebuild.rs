@@ -1,0 +1,2790 @@
+//! Rust 直连冷重建 text index。
+//!
+//! 本入口服务生产 `rebuild-text-index` 冷路径：Python 只传配置和路径，
+//! Rust 读取 DB/source snapshot/规则表、扫描游戏 data 文件，并在一个 SQLite
+//! 事务中写入持久 text index。
+
+use fancy_regex::{Captures, Regex as FancyRegex};
+use rayon::prelude::*;
+use regex::Regex;
+use rusqlite::{Connection, OpenFlags};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::Digest;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
+use super::nonstandard_data::{
+    NonstandardDataFileInput, NonstandardDataTextRuleInput, collect_nonstandard_data_managed_texts,
+};
+use super::plugin_config::{PluginConfigInput, PluginConfigRuleInput};
+use super::plugin_source::{
+    PluginSourceFileInput, PluginSourceTextRuleInput, collect_plugin_source_managed_texts,
+};
+use super::pool;
+use super::storage;
+use super::{RuleCandidateOutput, RuleCandidateTextRules};
+use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
+
+const TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY: &str = "prompt_context_version";
+
+#[derive(Debug, Deserialize)]
+struct RebuildStoragePayload {
+    db_path: String,
+    game_path: String,
+    source_snapshot_fingerprint: Option<String>,
+    rules_fingerprint: Option<String>,
+    source_language: String,
+    target_language: String,
+    text_rules_setting: Value,
+    source_text_required_pattern: String,
+    #[serde(default)]
+    workflow_gate_scope_hashes: BTreeMap<String, String>,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RebuildStorageOutput {
+    status: &'static str,
+    source_snapshot_fingerprint: String,
+    rules_fingerprint: String,
+    indexed_count: usize,
+    standard_data_file_count: usize,
+    native_thread_count: usize,
+    written_item_count: usize,
+}
+
+#[derive(Debug)]
+struct RebuildContext {
+    source_snapshot_fingerprint: String,
+    rules_fingerprint: String,
+    source_text_required_re: Regex,
+    plugin_text_rules: Vec<PluginConfigRuleInput>,
+    event_command_rules: Vec<EventCommandRuleInput>,
+    note_tag_rules: Vec<NoteTagTextRuleInput>,
+    plugin_source_rules: Vec<PluginSourceTextRuleInput>,
+    rule_candidate_text_rules: RuleCandidateTextRules,
+    nonstandard_data_rules: Vec<NonstandardDataTextRuleInput>,
+    mv_virtual_namebox_rules: Vec<CompiledMvVirtualNameboxRule>,
+    actor_names_by_id: BTreeMap<i64, String>,
+    database_owner_terms_by_key: BTreeMap<String, Vec<String>>,
+    system_owner_terms: Vec<String>,
+    map_display_names_by_file: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct SourceLayout {
+    data_dir: PathBuf,
+    plugins_path: PathBuf,
+    plugin_source_dir: PathBuf,
+}
+
+#[derive(Debug)]
+struct ParsedDataFile {
+    file_name: String,
+    data: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectTextIndexRow {
+    location_path: String,
+    item_type: String,
+    role: Option<String>,
+    original_lines: Vec<String>,
+    source_line_paths: Vec<String>,
+    source_type: String,
+    source_file: String,
+    writable: bool,
+    source_snapshot_fingerprint: String,
+    rules_fingerprint: String,
+    locator_json: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectScopeSummary {
+    total_count: usize,
+    active_count: usize,
+    writable_count: usize,
+    unwritable_count: usize,
+    stale_rule_count: usize,
+    native_thread_count: usize,
+}
+
+#[derive(Debug, Default)]
+struct DomainCounter {
+    item_count: usize,
+    active_count: usize,
+    writable_count: usize,
+    unwritable_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectDomainSummary {
+    domain: String,
+    item_count: usize,
+    active_count: usize,
+    writable_count: usize,
+    unwritable_count: usize,
+    inactive_rule_hit_count: usize,
+}
+
+#[derive(Debug)]
+struct PendingLongText {
+    location_path: String,
+    role: String,
+    original_lines: Vec<String>,
+    source_line_paths: Vec<String>,
+}
+
+#[derive(Debug)]
+struct RawMvVirtualNameboxRule {
+    rule_name: String,
+    pattern_text: String,
+    speaker_group: String,
+    body_group: String,
+    speaker_policy: String,
+}
+
+#[derive(Debug)]
+struct CompiledMvVirtualNameboxRule {
+    rule_name: String,
+    pattern: FancyRegex,
+    speaker_group: String,
+    body_group: String,
+    speaker_policy: String,
+}
+
+#[derive(Debug)]
+struct NoteTagTextRuleInput {
+    file_name: String,
+    tag_names: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct ParsedMvVirtualSpeaker {
+    speaker: String,
+    body_text: String,
+}
+
+pub(crate) fn rebuild_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    let payload: RebuildStoragePayload = serde_json::from_str(payload_json).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_payload_invalid",
+            format!("Scope/Index rebuild 输入 JSON 解析失败: {error}"),
+        )
+    })?;
+    let connection = open_connection_readonly(Path::new(&payload.db_path))?;
+    let source_snapshot_fingerprint = match &payload.source_snapshot_fingerprint {
+        Some(fingerprint) => fingerprint.clone(),
+        None => read_source_snapshot_fingerprint(&connection)?,
+    };
+    let rules_fingerprint = match &payload.rules_fingerprint {
+        Some(fingerprint) => fingerprint.clone(),
+        None => read_rules_fingerprint(&connection, &payload)?,
+    };
+    let plugin_text_rules = read_plugin_text_rule_records(&connection)?;
+    let event_command_rules = read_event_command_text_rule_inputs(&connection)?;
+    let note_tag_rules = read_note_tag_text_rule_inputs(&connection)?;
+    let plugin_source_rules = read_plugin_source_text_rule_inputs(&connection)?;
+    let mv_virtual_namebox_rules =
+        compile_mv_virtual_namebox_rules(read_mv_virtual_namebox_rule_inputs(&connection)?)?;
+    let nonstandard_data_rules = read_nonstandard_data_text_rule_inputs(&connection)?;
+    drop(connection);
+
+    let source_text_required_re =
+        Regex::new(&payload.source_text_required_pattern).map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_text_rule_invalid",
+                format!("源文识别正则无效: {error}"),
+            )
+        })?;
+    let context = RebuildContext {
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        source_text_required_re,
+        plugin_text_rules,
+        event_command_rules,
+        note_tag_rules,
+        plugin_source_rules,
+        rule_candidate_text_rules: rule_candidate_text_rules(&payload),
+        nonstandard_data_rules,
+        mv_virtual_namebox_rules,
+        actor_names_by_id: BTreeMap::new(),
+        database_owner_terms_by_key: BTreeMap::new(),
+        system_owner_terms: Vec::new(),
+        map_display_names_by_file: BTreeMap::new(),
+    };
+    pool::run_with_optional_pool(|| rebuild_with_context(payload, context))?
+}
+
+fn rebuild_with_context(
+    payload: RebuildStoragePayload,
+    mut context: RebuildContext,
+) -> Result<String, String> {
+    let layout = resolve_source_layout(Path::new(&payload.game_path))?;
+    let data_files = read_standard_data_files(&layout.data_dir)?;
+    let nonstandard_data_files =
+        read_nonstandard_data_files(&layout.data_dir, &context.nonstandard_data_rules)?;
+    context.actor_names_by_id = actor_names_by_id(&data_files);
+    context.database_owner_terms_by_key = database_owner_terms_by_key(&data_files);
+    context.system_owner_terms = system_owner_terms(&data_files);
+    context.map_display_names_by_file = map_display_names_by_file(&data_files);
+    let needs_plugin_config =
+        !context.plugin_text_rules.is_empty() || !context.plugin_source_rules.is_empty();
+    let plugin_config_inputs = if needs_plugin_config {
+        read_plugin_config_inputs(&layout.plugins_path)?
+    } else {
+        Vec::new()
+    };
+    let (fresh_plugin_text_rules, stale_plugin_rule_count) = if context.plugin_text_rules.is_empty()
+    {
+        (Vec::new(), 0usize)
+    } else {
+        let (fresh_plugin_text_rules, stale_plugin_rule_count) =
+            filter_fresh_plugin_text_rules(&context.plugin_text_rules, &plugin_config_inputs)?;
+        (fresh_plugin_text_rules, stale_plugin_rule_count)
+    };
+    let plugin_source_files = if context.plugin_source_rules.is_empty() {
+        Vec::new()
+    } else {
+        read_plugin_source_file_inputs(&layout.plugin_source_dir, &plugin_config_inputs)?
+    };
+    let native_thread_count = pool::read_configured_thread_count()
+        .map(|thread_count| thread_count.unwrap_or_else(rayon::current_num_threads))
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_thread_config_invalid",
+                format!("读取 Rust 线程配置失败: {error}"),
+            )
+        })?;
+    let mut rows = scan_text_index_rows(&data_files, &context)?;
+    rows.extend(scan_nonstandard_data_rows(
+        &nonstandard_data_files,
+        &context,
+    )?);
+    rows.extend(scan_plugin_parameter_rows(
+        &plugin_config_inputs,
+        &fresh_plugin_text_rules,
+        &context,
+    )?);
+    rows.extend(scan_plugin_source_rows(&plugin_source_files, &context)?);
+    rows.extend(scan_event_command_rule_rows(&data_files, &context)?);
+    rows.extend(scan_note_tag_rows(&data_files, &context)?);
+    rows.sort_by(|left, right| left.location_path.cmp(&right.location_path));
+    rows.dedup_by(|left, right| left.location_path == right.location_path);
+    let domain_summary = domain_summary_from_rows(&rows);
+    let item_count = rows.len();
+    let scope_summary = DirectScopeSummary {
+        total_count: item_count,
+        active_count: item_count,
+        writable_count: rows.iter().filter(|row| row.writable).count(),
+        unwritable_count: rows.iter().filter(|row| !row.writable).count(),
+        stale_rule_count: stale_plugin_rule_count,
+        native_thread_count,
+    };
+
+    let source_snapshot_fingerprint = context.source_snapshot_fingerprint.clone();
+    let rules_fingerprint = context.rules_fingerprint.clone();
+    let write_payload = storage::WriteStoragePayload {
+        db_path: payload.db_path,
+        metadata: storage::TextIndexMetadataInput {
+            source_snapshot_fingerprint: source_snapshot_fingerprint.clone(),
+            rules_fingerprint: rules_fingerprint.clone(),
+            item_count,
+            workflow_gate_scope_hashes: payload.workflow_gate_scope_hashes,
+            created_at: payload.created_at,
+        },
+        text_index_rows: rows
+            .into_iter()
+            .map(|row| storage::TextIndexRowInput {
+                location_path: row.location_path,
+                item_type: row.item_type,
+                role: row.role,
+                original_lines: row.original_lines,
+                source_line_paths: row.source_line_paths,
+                source_type: row.source_type,
+                source_file: row.source_file,
+                writable: row.writable,
+                source_snapshot_fingerprint: row.source_snapshot_fingerprint,
+                rules_fingerprint: row.rules_fingerprint,
+                locator_json: row.locator_json,
+            })
+            .collect(),
+        scope_summary: storage::ScopeSummaryInput {
+            total_count: scope_summary.total_count,
+            active_count: scope_summary.active_count,
+            writable_count: scope_summary.writable_count,
+            unwritable_count: scope_summary.unwritable_count,
+            stale_rule_count: scope_summary.stale_rule_count,
+            native_thread_count: scope_summary.native_thread_count,
+        },
+        domain_summary: domain_summary
+            .into_iter()
+            .map(|row| storage::DomainSummaryInput {
+                domain: row.domain,
+                item_count: row.item_count,
+                active_count: row.active_count,
+                writable_count: row.writable_count,
+                unwritable_count: row.unwritable_count,
+                inactive_rule_hit_count: row.inactive_rule_hit_count,
+            })
+            .collect(),
+        rule_hit_summary: Vec::new(),
+    };
+    let write_output = storage::write_scope_index_storage_direct(&write_payload)?;
+    let written_item_count = write_output.written_item_count;
+    serialize_output(&RebuildStorageOutput {
+        status: "ok",
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        indexed_count: written_item_count,
+        standard_data_file_count: data_files.len(),
+        native_thread_count,
+        written_item_count,
+    })
+}
+
+fn open_connection_readonly(db_path: &Path) -> Result<Connection, String> {
+    Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_db_open_failed",
+            format!("只读打开数据库失败 {}: {error}", db_path.display()),
+        )
+    })
+}
+
+fn read_source_snapshot_fingerprint(connection: &Connection) -> Result<String, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT relative_path, sha256, byte_size \
+             FROM source_snapshot_files \
+             ORDER BY relative_path",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_source_snapshot_unreadable",
+                format!("读取可信源快照 manifest 失败: {error}"),
+            )
+        })?;
+    let records = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "relative_path": row.get::<_, String>(0)?,
+                "sha256": row.get::<_, String>(1)?,
+                "byte_size": row.get::<_, i64>(2)?,
+            }))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_source_snapshot_unreadable",
+                format!("读取可信源快照 manifest 失败: {error}"),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_source_snapshot_unreadable",
+                format!("解析可信源快照 manifest 失败: {error}"),
+            )
+        })?;
+    stable_json_fingerprint(&Value::Array(records))
+}
+
+fn read_rules_fingerprint(
+    connection: &Connection,
+    payload: &RebuildStoragePayload,
+) -> Result<String, String> {
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "source_language".to_string(),
+        Value::String(payload.source_language.clone()),
+    );
+    root.insert(
+        "target_language".to_string(),
+        Value::String(payload.target_language.clone()),
+    );
+    root.insert(
+        TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY.to_string(),
+        Value::String(
+            payload
+                .text_rules_setting
+                .get(TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY)
+                .and_then(Value::as_str)
+                .unwrap_or("display_name_owner_system_terms_v3")
+                .to_string(),
+        ),
+    );
+    root.insert(
+        "text_rules".to_string(),
+        sanitized_text_rules_setting(&payload.text_rules_setting),
+    );
+    root.insert(
+        "plugin_text_rules".to_string(),
+        read_plugin_text_rules(connection)?,
+    );
+    root.insert(
+        "plugin_source_text_rules".to_string(),
+        read_plugin_source_text_rules(connection)?,
+    );
+    root.insert(
+        "event_command_text_rules".to_string(),
+        read_event_command_text_rules(connection)?,
+    );
+    root.insert(
+        "note_tag_text_rules".to_string(),
+        read_note_tag_text_rules(connection)?,
+    );
+    root.insert(
+        "nonstandard_data_text_rules".to_string(),
+        read_nonstandard_data_text_rules(connection)?,
+    );
+    root.insert(
+        "placeholder_rules".to_string(),
+        read_placeholder_rules(connection)?,
+    );
+    root.insert(
+        "structured_placeholder_rules".to_string(),
+        read_structured_placeholder_rules(connection)?,
+    );
+    root.insert(
+        "mv_virtual_namebox_rules".to_string(),
+        read_mv_virtual_namebox_rules(connection)?,
+    );
+    stable_json_fingerprint(&Value::Object(root))
+}
+
+fn sanitized_text_rules_setting(raw_setting: &Value) -> Value {
+    let mut setting = raw_setting.clone();
+    if let Value::Object(object) = &mut setting {
+        object.remove(TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY);
+    }
+    setting
+}
+
+fn rule_candidate_text_rules(payload: &RebuildStoragePayload) -> RuleCandidateTextRules {
+    RuleCandidateTextRules {
+        custom_placeholder_rules: Vec::new(),
+        structured_placeholder_rules: Vec::new(),
+        strip_wrapping_punctuation_pairs: strip_wrapping_punctuation_pairs(
+            &payload.text_rules_setting,
+        ),
+        source_text_required_pattern: payload.source_text_required_pattern.clone(),
+        source_text_exclusion_profile: payload
+            .text_rules_setting
+            .get("source_text_exclusion_profile")
+            .and_then(Value::as_str)
+            .unwrap_or("none")
+            .to_string(),
+    }
+}
+
+fn strip_wrapping_punctuation_pairs(text_rules_setting: &Value) -> Vec<(String, String)> {
+    text_rules_setting
+        .get("strip_wrapping_punctuation_pairs")
+        .and_then(Value::as_array)
+        .map(|pairs| {
+            pairs
+                .iter()
+                .filter_map(|pair| {
+                    let values = pair.as_array()?;
+                    if values.len() != 2 {
+                        return None;
+                    }
+                    Some((
+                        values.first()?.as_str()?.to_string(),
+                        values.get(1)?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_plugin_text_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT plugin_index, plugin_name, plugin_hash, path_template \
+             FROM plugin_text_rules \
+             ORDER BY plugin_index, path_template",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取插件规则失败: {error}"),
+            )
+        })?;
+    let mut grouped: BTreeMap<(i64, String, String), Vec<String>> = BTreeMap::new();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取插件规则失败: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (plugin_index, plugin_name, plugin_hash, path_template) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析插件规则失败: {error}"),
+            )
+        })?;
+        grouped
+            .entry((plugin_index, plugin_name, plugin_hash))
+            .or_default()
+            .push(path_template);
+    }
+    Ok(Value::Array(
+        grouped
+            .into_iter()
+            .map(
+                |((plugin_index, plugin_name, plugin_hash), path_templates)| {
+                    json!({
+                        "plugin_index": plugin_index,
+                        "plugin_name": plugin_name,
+                        "plugin_hash": plugin_hash,
+                        "path_templates": path_templates,
+                    })
+                },
+            )
+            .collect(),
+    ))
+}
+
+fn read_plugin_text_rule_records(
+    connection: &Connection,
+) -> Result<Vec<PluginConfigRuleInput>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT plugin_index, plugin_name, plugin_hash, path_template \
+             FROM plugin_text_rules \
+             ORDER BY plugin_index, path_template",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取插件规则失败: {error}"),
+            )
+        })?;
+    let mut grouped: BTreeMap<(usize, String, String), Vec<String>> = BTreeMap::new();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, usize>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取插件规则失败: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (plugin_index, plugin_name, plugin_hash, path_template) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析插件规则失败: {error}"),
+            )
+        })?;
+        grouped
+            .entry((plugin_index, plugin_name, plugin_hash))
+            .or_default()
+            .push(path_template);
+    }
+    Ok(grouped
+        .into_iter()
+        .map(
+            |((plugin_index, plugin_name, plugin_hash), path_templates)| PluginConfigRuleInput {
+                plugin_index,
+                plugin_name,
+                plugin_hash: Some(plugin_hash),
+                path_templates,
+            },
+        )
+        .collect())
+}
+
+fn read_plugin_source_text_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT file_name, file_hash, selector, selector_kind \
+             FROM plugin_source_text_rules \
+             ORDER BY file_name, selector",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取插件源码规则失败: {error}"),
+            )
+        })?;
+    let mut grouped: BTreeMap<(String, String), (Vec<String>, Vec<String>)> = BTreeMap::new();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取插件源码规则失败: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (file_name, file_hash, selector, selector_kind) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析插件源码规则失败: {error}"),
+            )
+        })?;
+        let entry = grouped.entry((file_name, file_hash)).or_default();
+        if selector_kind == "excluded" {
+            entry.1.push(selector);
+        } else {
+            entry.0.push(selector);
+        }
+    }
+    Ok(Value::Array(
+        grouped
+            .into_iter()
+            .map(
+                |((file_name, file_hash), (selectors, excluded_selectors))| {
+                    json!({
+                        "file_name": file_name,
+                        "file_hash": file_hash,
+                        "selectors": selectors,
+                        "excluded_selectors": excluded_selectors,
+                    })
+                },
+            )
+            .collect(),
+    ))
+}
+
+fn read_plugin_source_text_rule_inputs(
+    connection: &Connection,
+) -> Result<Vec<PluginSourceTextRuleInput>, String> {
+    serde_json::from_value(read_plugin_source_text_rules(connection)?).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_rules_unreadable",
+            format!("解析插件源码规则失败: {error}"),
+        )
+    })
+}
+
+fn read_event_command_text_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT group_key, command_code \
+             FROM event_command_text_rule_groups \
+             ORDER BY command_code, group_key",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取事件指令规则失败: {error}"),
+            )
+        })?;
+    let groups = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取事件指令规则失败: {error}"),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析事件指令规则失败: {error}"),
+            )
+        })?;
+    let mut output = Vec::new();
+    for (group_key, command_code) in groups {
+        output.push(json!({
+            "command_code": command_code,
+            "parameter_filters": read_event_command_filters(connection, &group_key)?,
+            "path_templates": read_event_command_paths(connection, &group_key)?,
+        }));
+    }
+    Ok(Value::Array(output))
+}
+
+fn read_event_command_text_rule_inputs(
+    connection: &Connection,
+) -> Result<Vec<EventCommandRuleInput>, String> {
+    serde_json::from_value(read_event_command_text_rules(connection)?).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_rules_unreadable",
+            format!("解析事件指令规则失败: {error}"),
+        )
+    })
+}
+
+fn read_event_command_filters(connection: &Connection, group_key: &str) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT parameter_index, parameter_value \
+             FROM event_command_text_rule_filters \
+             WHERE group_key = ?1 \
+             ORDER BY parameter_index, parameter_value",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取事件指令规则过滤条件失败: {error}"),
+            )
+        })?;
+    Ok(Value::Array(
+        statement
+            .query_map([group_key], |row| {
+                Ok(json!({
+                    "index": row.get::<_, i64>(0)?,
+                    "value": row.get::<_, String>(1)?,
+                }))
+            })
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("读取事件指令规则过滤条件失败: {error}"),
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("解析事件指令规则过滤条件失败: {error}"),
+                )
+            })?,
+    ))
+}
+
+fn read_event_command_paths(connection: &Connection, group_key: &str) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT path_template \
+             FROM event_command_text_rule_paths \
+             WHERE group_key = ?1 \
+             ORDER BY path_template",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取事件指令规则路径失败: {error}"),
+            )
+        })?;
+    Ok(Value::Array(
+        statement
+            .query_map([group_key], |row| {
+                Ok(Value::String(row.get::<_, String>(0)?))
+            })
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("读取事件指令规则路径失败: {error}"),
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("解析事件指令规则路径失败: {error}"),
+                )
+            })?,
+    ))
+}
+
+fn read_note_tag_text_rules(connection: &Connection) -> Result<Value, String> {
+    grouped_string_list_rules(
+        connection,
+        "SELECT file_name, tag_name FROM note_tag_text_rules ORDER BY file_name, tag_name",
+        "tag_names",
+        "读取 Note 标签规则失败",
+    )
+}
+
+fn read_note_tag_text_rule_inputs(
+    connection: &Connection,
+) -> Result<Vec<NoteTagTextRuleInput>, String> {
+    let mut statement = connection
+        .prepare("SELECT file_name, tag_name FROM note_tag_text_rules ORDER BY file_name, tag_name")
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取 Note 标签规则失败: {error}"),
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取 Note 标签规则失败: {error}"),
+            )
+        })?;
+    let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in rows {
+        let (file_name, tag_name) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析 Note 标签规则失败: {error}"),
+            )
+        })?;
+        grouped.entry(file_name).or_default().insert(tag_name);
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(file_name, tag_names)| NoteTagTextRuleInput {
+            file_name,
+            tag_names,
+        })
+        .collect())
+}
+
+fn read_nonstandard_data_text_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT file_name, file_hash, path_template, path_kind \
+             FROM nonstandard_data_text_rules \
+             ORDER BY file_name, path_kind, path_template",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取非标准 data 规则失败: {error}"),
+            )
+        })?;
+    type NonstandardRuleBuckets = BTreeMap<(String, String), (Vec<String>, Vec<String>, bool)>;
+
+    let mut grouped: NonstandardRuleBuckets = BTreeMap::new();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取非标准 data 规则失败: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (file_name, file_hash, path_template, path_kind) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析非标准 data 规则失败: {error}"),
+            )
+        })?;
+        let entry = grouped.entry((file_name, file_hash)).or_default();
+        match path_kind.as_str() {
+            "excluded" => entry.1.push(path_template),
+            "skipped" => entry.2 = true,
+            _ => entry.0.push(path_template),
+        }
+    }
+    Ok(Value::Array(
+        grouped
+            .into_iter()
+            .map(
+                |((file_name, file_hash), (path_templates, excluded_path_templates, skipped))| {
+                    json!({
+                        "file_name": file_name,
+                        "file_hash": file_hash,
+                        "path_templates": path_templates,
+                        "excluded_path_templates": excluded_path_templates,
+                        "skipped": skipped,
+                    })
+                },
+            )
+            .collect(),
+    ))
+}
+
+fn read_nonstandard_data_text_rule_inputs(
+    connection: &Connection,
+) -> Result<Vec<NonstandardDataTextRuleInput>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT file_name, file_hash, path_template, path_kind \
+             FROM nonstandard_data_text_rules \
+             ORDER BY file_name, path_kind, path_template",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取非标准 data 文件文本规则失败: {error}"),
+            )
+        })?;
+    let mut grouped: BTreeMap<String, NonstandardDataTextRuleInput> = BTreeMap::new();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取非标准 data 文件文本规则失败: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (file_name, file_hash, path_template, path_kind) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析非标准 data 文件文本规则失败: {error}"),
+            )
+        })?;
+        let entry =
+            grouped
+                .entry(file_name.clone())
+                .or_insert_with(|| NonstandardDataTextRuleInput {
+                    file_name,
+                    file_hash: file_hash.clone(),
+                    path_templates: Vec::new(),
+                    skipped: false,
+                });
+        if entry.file_hash != file_hash {
+            return Err(structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!(
+                    "非标准 data 规则文件哈希不一致，请重新导入规则: {}",
+                    entry.file_name
+                ),
+            ));
+        }
+        match path_kind.as_str() {
+            "translate" => entry.path_templates.push(path_template),
+            "excluded" => {}
+            "skipped" => {
+                if !path_template.is_empty() {
+                    return Err(structured_error(
+                        "scope_index_rebuild_rules_unreadable",
+                        format!(
+                            "非标准 data 跳过规则不应包含路径，请重新导入规则: {}",
+                            entry.file_name
+                        ),
+                    ));
+                }
+                entry.skipped = true;
+            }
+            _ => {
+                return Err(structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("非标准 data 规则 path_kind 非法，请重新导入规则: {path_kind}"),
+                ));
+            }
+        }
+    }
+    Ok(grouped.into_values().collect())
+}
+
+fn read_placeholder_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT pattern_text, placeholder_template \
+             FROM placeholder_rules \
+             ORDER BY pattern_text, placeholder_template",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取普通占位符规则失败: {error}"),
+            )
+        })?;
+    Ok(Value::Array(
+        statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "pattern_text": row.get::<_, String>(0)?,
+                    "placeholder_template": row.get::<_, String>(1)?,
+                }))
+            })
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("读取普通占位符规则失败: {error}"),
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("解析普通占位符规则失败: {error}"),
+                )
+            })?,
+    ))
+}
+
+fn read_structured_placeholder_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT rule_name, rule_type, pattern_text, translatable_group \
+             FROM structured_placeholder_rules \
+             ORDER BY rule_name",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取结构化占位符规则失败: {error}"),
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取结构化占位符规则失败: {error}"),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析结构化占位符规则失败: {error}"),
+            )
+        })?;
+    let mut output = Vec::new();
+    for (rule_name, rule_type, pattern_text, translatable_group) in rows {
+        output.push(json!({
+            "rule_name": rule_name,
+            "rule_type": rule_type,
+            "pattern_text": pattern_text,
+            "translatable_group": translatable_group,
+            "protected_groups": read_structured_placeholder_groups(connection, &rule_name)?,
+        }));
+    }
+    Ok(Value::Array(output))
+}
+
+fn read_structured_placeholder_groups(
+    connection: &Connection,
+    rule_name: &str,
+) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT group_name, placeholder_template \
+             FROM structured_placeholder_rule_groups \
+             WHERE rule_name = ?1 \
+             ORDER BY group_name",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取结构化占位符分组失败: {error}"),
+            )
+        })?;
+    let pairs = statement
+        .query_map([rule_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取结构化占位符分组失败: {error}"),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析结构化占位符分组失败: {error}"),
+            )
+        })?;
+    let mut object = serde_json::Map::new();
+    for (group_name, placeholder_template) in pairs {
+        object.insert(group_name, Value::String(placeholder_template));
+    }
+    Ok(Value::Object(object))
+}
+
+fn read_mv_virtual_namebox_rules(connection: &Connection) -> Result<Value, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template \
+             FROM mv_virtual_namebox_rules \
+             ORDER BY rule_order",
+        )
+        .map_err(|error| structured_error("scope_index_rebuild_rules_unreadable", format!("读取 MV 虚拟名字框规则失败: {error}")))?;
+    Ok(Value::Array(
+        statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "rule_order": row.get::<_, i64>(0)?,
+                    "rule_name": row.get::<_, String>(1)?,
+                    "pattern_text": row.get::<_, String>(2)?,
+                    "speaker_group": row.get::<_, String>(3)?,
+                    "body_group": row.get::<_, String>(4)?,
+                    "speaker_policy": row.get::<_, String>(5)?,
+                    "render_template": row.get::<_, String>(6)?,
+                }))
+            })
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("读取 MV 虚拟名字框规则失败: {error}"),
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!("解析 MV 虚拟名字框规则失败: {error}"),
+                )
+            })?,
+    ))
+}
+
+fn read_mv_virtual_namebox_rule_inputs(
+    connection: &Connection,
+) -> Result<Vec<RawMvVirtualNameboxRule>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT rule_name, pattern_text, speaker_group, body_group, speaker_policy \
+             FROM mv_virtual_namebox_rules \
+             ORDER BY rule_order",
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取 MV 虚拟名字框规则失败: {error}"),
+            )
+        })?;
+    statement
+        .query_map([], |row| {
+            Ok(RawMvVirtualNameboxRule {
+                rule_name: row.get(0)?,
+                pattern_text: row.get(1)?,
+                speaker_group: row.get(2)?,
+                body_group: row.get(3)?,
+                speaker_policy: row.get(4)?,
+            })
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("读取 MV 虚拟名字框规则失败: {error}"),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("解析 MV 虚拟名字框规则失败: {error}"),
+            )
+        })
+}
+
+fn compile_mv_virtual_namebox_rules(
+    raw_rules: Vec<RawMvVirtualNameboxRule>,
+) -> Result<Vec<CompiledMvVirtualNameboxRule>, String> {
+    raw_rules
+        .into_iter()
+        .map(|rule| {
+            if !matches!(
+                rule.speaker_policy.as_str(),
+                "translate" | "preserve" | "actor_name"
+            ) {
+                return Err(structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    "mv_virtual_namebox_rules.speaker_policy 非法，请重新导入规则".to_string(),
+                ));
+            }
+            let pattern = FancyRegex::new(&rule.pattern_text).map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    format!(
+                        "MV 虚拟名字框规则 {} 正则编译失败: Rust fancy-regex 不支持当前表达式: {error}",
+                        rule.rule_name
+                    ),
+                )
+            })?;
+            Ok(CompiledMvVirtualNameboxRule {
+                rule_name: rule.rule_name,
+                pattern,
+                speaker_group: rule.speaker_group,
+                body_group: rule.body_group,
+                speaker_policy: rule.speaker_policy,
+            })
+        })
+        .collect()
+}
+
+fn grouped_string_list_rules(
+    connection: &Connection,
+    sql: &str,
+    list_key: &str,
+    error_label: &str,
+) -> Result<Value, String> {
+    let mut statement = connection.prepare(sql).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_rules_unreadable",
+            format!("{error_label}: {error}"),
+        )
+    })?;
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("{error_label}: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (file_name, item) = row.map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("{error_label}: {error}"),
+            )
+        })?;
+        grouped.entry(file_name).or_default().push(item);
+    }
+    Ok(Value::Array(
+        grouped
+            .into_iter()
+            .map(|(file_name, values)| json!({"file_name": file_name, list_key: values}))
+            .collect(),
+    ))
+}
+
+fn resolve_source_layout(game_path: &Path) -> Result<SourceLayout, String> {
+    let content_root = resolve_content_root(game_path);
+    let data_dir = {
+        let origin = content_root.join("data_origin");
+        if origin.is_dir() {
+            origin
+        } else {
+            content_root.join("data")
+        }
+    };
+    if !data_dir.is_dir() {
+        return Err(structured_error(
+            "scope_index_rebuild_data_dir_missing",
+            format!("找不到可读取的 data 源目录: {}", data_dir.display()),
+        ));
+    }
+    let plugins_path = {
+        let origin = content_root.join("js").join("plugins_origin.js");
+        if origin.is_file() {
+            origin
+        } else {
+            content_root.join("js").join("plugins.js")
+        }
+    };
+    if !plugins_path.is_file() {
+        return Err(structured_error(
+            "scope_index_rebuild_plugins_js_missing",
+            format!("找不到可读取的插件配置文件: {}", plugins_path.display()),
+        ));
+    }
+    let plugin_source_dir = {
+        let origin = content_root.join("js").join("plugins_source_origin");
+        if origin.is_dir() {
+            origin
+        } else {
+            content_root.join("js").join("plugins")
+        }
+    };
+    Ok(SourceLayout {
+        data_dir,
+        plugins_path,
+        plugin_source_dir,
+    })
+}
+
+fn resolve_content_root(game_path: &Path) -> PathBuf {
+    let mv_root = game_path.join("www");
+    if mv_root.join("data").is_dir() && mv_root.join("js").is_dir() {
+        mv_root
+    } else {
+        game_path.to_path_buf()
+    }
+}
+
+fn read_standard_data_files(data_dir: &Path) -> Result<Vec<ParsedDataFile>, String> {
+    let paths = fs::read_dir(data_dir)
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_data_dir_read_failed",
+                format!("读取 data 源目录失败 {}: {error}", data_dir.display()),
+            )
+        })?
+        .map(|entry| entry.map(|item| item.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_data_dir_read_failed",
+                format!("读取 data 源目录项失败 {}: {error}", data_dir.display()),
+            )
+        })?;
+    let mut json_paths = paths
+        .into_iter()
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(is_standard_data_file)
+        })
+        .collect::<Vec<_>>();
+    json_paths.sort();
+    let mut parsed = json_paths
+        .par_iter()
+        .map(|path| read_parsed_data_file(path))
+        .collect::<Result<Vec<_>, String>>()?;
+    parsed.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    Ok(parsed)
+}
+
+fn read_nonstandard_data_files(
+    data_dir: &Path,
+    rules: &[NonstandardDataTextRuleInput],
+) -> Result<Vec<NonstandardDataFileInput>, String> {
+    let file_names = rules
+        .iter()
+        .filter(|rule| !rule.skipped && !rule.path_templates.is_empty())
+        .map(|rule| rule.file_name.as_str())
+        .collect::<BTreeSet<_>>();
+    if file_names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut files = file_names
+        .par_iter()
+        .map(|file_name| {
+            let file_name = *file_name;
+            let rule = rules
+                .iter()
+                .find(|rule| rule.file_name == file_name)
+                .ok_or_else(|| {
+                    structured_error(
+                        "scope_index_rebuild_nonstandard_data_invalid",
+                        format!("非标准 data 规则索引缺失，请重新导入规则: {file_name}"),
+                    )
+                })?;
+            read_nonstandard_data_file(data_dir, rule)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    Ok(files)
+}
+
+fn read_nonstandard_data_file(
+    data_dir: &Path,
+    rule: &NonstandardDataTextRuleInput,
+) -> Result<NonstandardDataFileInput, String> {
+    let file_name = rule.file_name.as_str();
+    if file_name.contains('/') || file_name.contains('\\') || !file_name.ends_with(".json") {
+        return Err(structured_error(
+            "scope_index_rebuild_nonstandard_data_invalid",
+            format!("非标准 data 文件名无效，请重新导入规则: {file_name}"),
+        ));
+    }
+    if is_standard_data_file(file_name) {
+        return Err(structured_error(
+            "scope_index_rebuild_nonstandard_data_invalid",
+            format!("非标准 data 规则引用了标准 data 文件，请重新导入规则: {file_name}"),
+        ));
+    }
+    let path = data_dir.join(file_name);
+    let raw_text = fs::read_to_string(&path).map_err(|error| {
+        structured_error(
+            "stale_nonstandard_data_rules",
+            format!(
+                "非标准 data 规则已过期: {file_name}: 当前源文件不可读取，请重新导出并导入非标准 data 规则: {error}"
+            ),
+        )
+    })?;
+    let current_hash = sha256_text(&raw_text);
+    if current_hash != rule.file_hash {
+        return Err(structured_error(
+            "stale_nonstandard_data_rules",
+            format!(
+                "非标准 data 规则已过期: {file_name}: 当前源文件内容已变化，请重新导出并导入非标准 data 规则"
+            ),
+        ));
+    }
+    let data = serde_json::from_str(&raw_text).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_nonstandard_data_invalid",
+            format!("解析非标准 data 文件 JSON 失败 {}: {error}", path.display()),
+        )
+    })?;
+    Ok(NonstandardDataFileInput {
+        file_name: rule.file_name.clone(),
+        data,
+        raw_text,
+    })
+}
+
+fn sha256_text(text: &str) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn read_parsed_data_file(path: &Path) -> Result<ParsedDataFile, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            structured_error(
+                "scope_index_rebuild_path_invalid",
+                format!("data 文件缺少有效文件名: {}", path.display()),
+            )
+        })?;
+    let text = fs::read_to_string(path).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_data_file_read_failed",
+            format!("读取 data 文件失败 {}: {error}", path.display()),
+        )
+    })?;
+    let data = serde_json::from_str(&text).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_data_json_invalid",
+            format!("解析 data 文件 JSON 失败 {}: {error}", path.display()),
+        )
+    })?;
+    Ok(ParsedDataFile { file_name, data })
+}
+
+fn is_standard_data_file(file_name: &str) -> bool {
+    is_map_data_file(file_name)
+        || matches!(
+            file_name,
+            "Actors.json"
+                | "Animations.json"
+                | "Armors.json"
+                | "Classes.json"
+                | "CommonEvents.json"
+                | "Enemies.json"
+                | "Items.json"
+                | "MapInfos.json"
+                | "Skills.json"
+                | "States.json"
+                | "System.json"
+                | "Tilesets.json"
+                | "Troops.json"
+                | "Weapons.json"
+        )
+}
+
+fn is_map_data_file(file_name: &str) -> bool {
+    let Some(number_part) = file_name
+        .strip_prefix("Map")
+        .and_then(|value| value.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    number_part.len() == 3
+        && number_part
+            .chars()
+            .all(|char_value| char_value.is_ascii_digit())
+}
+
+fn scan_text_index_rows(
+    data_files: &[ParsedDataFile],
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    let row_groups = data_files
+        .par_iter()
+        .map(|data_file| scan_data_file_rows(data_file, context))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(row_groups.into_iter().flatten().collect())
+}
+
+fn scan_nonstandard_data_rows(
+    files: &[NonstandardDataFileInput],
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    collect_nonstandard_data_managed_texts(files, &context.nonstandard_data_rules)
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_nonstandard_data_scan_failed",
+                format!("扫描非标准 data 文件文本失败: {error}"),
+            )
+        })?
+        .into_iter()
+        .filter_map(|managed_text| {
+            let normalized = normalized_extractable_text(&managed_text.raw_text, context)?;
+            Some(row(
+                RowInput {
+                    location_path: format!(
+                        "nonstandard-data/{}/{}",
+                        managed_text.file_name, managed_text.json_path
+                    ),
+                    item_type: "short_text",
+                    role: None,
+                    original_lines: vec![normalized],
+                    source_line_paths: vec![managed_text.json_path],
+                    source_type: "nonstandard_data",
+                    source_file: &managed_text.file_name,
+                },
+                context,
+            ))
+        })
+        .collect()
+}
+
+fn scan_plugin_parameter_rows(
+    plugins: &[PluginConfigInput],
+    plugin_text_rules: &[PluginConfigRuleInput],
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    if plugin_text_rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let scan = super::plugin_config::scan_plugin_config_rule_candidates(
+        plugins,
+        plugin_text_rules,
+        context.rule_candidate_text_rules.clone(),
+    )
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_plugin_config_scan_failed",
+            format!("扫描插件参数文本失败: {error}"),
+        )
+    })?;
+    scan.candidates
+        .iter()
+        .map(|candidate| plugin_parameter_row(candidate, context))
+        .collect()
+}
+
+fn scan_plugin_source_rows(
+    files: &[PluginSourceFileInput],
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    if context.plugin_source_rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    collect_plugin_source_managed_texts(
+        files,
+        &context.plugin_source_rules,
+        context.rule_candidate_text_rules.clone(),
+    )
+    .map_err(|error| structured_error("stale_plugin_source_rules", error))?
+    .iter()
+    .map(|managed_text| {
+        let location_path = format!(
+            "js/plugins/{}/{}",
+            managed_text.file_name, managed_text.selector
+        );
+        row(
+            RowInput {
+                location_path: location_path.clone(),
+                item_type: "short_text",
+                role: None,
+                original_lines: vec![managed_text.text.clone()],
+                source_line_paths: vec![location_path],
+                source_type: "plugin_source",
+                source_file: &managed_text.file_name,
+            },
+            context,
+        )
+    })
+    .collect()
+}
+
+fn filter_fresh_plugin_text_rules(
+    rules: &[PluginConfigRuleInput],
+    plugins: &[PluginConfigInput],
+) -> Result<(Vec<PluginConfigRuleInput>, usize), String> {
+    let mut current_hashes_by_index = BTreeMap::new();
+    for plugin in plugins {
+        let plugin_hash = super::plugin_config::plugin_hash(&plugin.plugin).map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_plugin_config_scan_failed",
+                format!("计算当前插件配置 hash 失败: {error}"),
+            )
+        })?;
+        current_hashes_by_index.insert(plugin.plugin_index, plugin_hash);
+    }
+
+    let mut fresh_rules = Vec::new();
+    let mut stale_rule_count = 0usize;
+    for rule in rules {
+        let Some(rule_hash) = &rule.plugin_hash else {
+            stale_rule_count += 1;
+            continue;
+        };
+        let Some(current_hash) = current_hashes_by_index.get(&rule.plugin_index) else {
+            stale_rule_count += 1;
+            continue;
+        };
+        if rule_hash != current_hash {
+            stale_rule_count += 1;
+            continue;
+        }
+        fresh_rules.push(rule.clone());
+    }
+    Ok((fresh_rules, stale_rule_count))
+}
+
+fn read_plugin_config_inputs(plugins_path: &Path) -> Result<Vec<PluginConfigInput>, String> {
+    let plugins_text = fs::read_to_string(plugins_path).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_plugins_js_read_failed",
+            format!("读取插件配置文件失败 {}: {error}", plugins_path.display()),
+        )
+    })?;
+    let plugins_array = parse_plugins_js_array(&plugins_text)?;
+    let plugins = plugins_array
+        .into_iter()
+        .enumerate()
+        .map(|(plugin_index, plugin)| PluginConfigInput {
+            plugin_index,
+            plugin_name: plugin_name(&plugin, plugin_index),
+            plugin,
+        })
+        .collect();
+    Ok(plugins)
+}
+
+fn read_plugin_source_file_inputs(
+    plugin_source_dir: &Path,
+    plugins: &[PluginConfigInput],
+) -> Result<Vec<PluginSourceFileInput>, String> {
+    if !plugin_source_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let enabled_files = enabled_plugin_source_file_names(plugins);
+    let entries = fs::read_dir(plugin_source_dir).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_plugin_source_dir_read_failed",
+            format!(
+                "读取插件源码目录失败 {}: {error}",
+                plugin_source_dir.display()
+            ),
+        )
+    })?;
+    let mut paths = entries
+        .map(|entry| entry.map(|item| item.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_plugin_source_dir_read_failed",
+                format!(
+                    "读取插件源码目录项失败 {}: {error}",
+                    plugin_source_dir.display()
+                ),
+            )
+        })?
+        .into_iter()
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|file_name| file_name.ends_with(".js"))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_par_iter()
+        .map(|path| {
+            let file_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    structured_error(
+                        "scope_index_rebuild_plugin_source_path_invalid",
+                        format!("插件源码文件缺少有效文件名: {}", path.display()),
+                    )
+                })?;
+            let source = fs::read_to_string(&path).map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_plugin_source_read_failed",
+                    format!("读取插件源码文件失败 {}: {error}", path.display()),
+                )
+            })?;
+            Ok(PluginSourceFileInput {
+                active: enabled_files.contains(&file_name),
+                file_name,
+                source,
+            })
+        })
+        .collect()
+}
+
+fn enabled_plugin_source_file_names(plugins: &[PluginConfigInput]) -> BTreeSet<String> {
+    plugins
+        .iter()
+        .filter(|plugin| {
+            plugin
+                .plugin
+                .get("status")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|plugin| format!("{}.js", plugin.plugin_name))
+        .collect()
+}
+
+fn parse_plugins_js_array(plugins_text: &str) -> Result<Vec<Value>, String> {
+    let plugins_re = Regex::new(r"(?s)var\s+\$plugins\s*=\s*(\[.*\])\s*;").map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_plugins_js_invalid",
+            format!("内置 plugins.js 解析正则无效: {error}"),
+        )
+    })?;
+    let Some(captures) = plugins_re.captures(plugins_text) else {
+        return Err(structured_error(
+            "scope_index_rebuild_plugins_js_invalid",
+            "plugins.js 中未找到 var $plugins = [...] 结构".to_string(),
+        ));
+    };
+    let Some(array_match) = captures.get(1) else {
+        return Err(structured_error(
+            "scope_index_rebuild_plugins_js_invalid",
+            "plugins.js 中未找到插件数组".to_string(),
+        ));
+    };
+    let value: Value = json5::from_str(array_match.as_str()).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_plugins_js_invalid",
+            format!("plugins.js 插件数组解析失败: {error}"),
+        )
+    })?;
+    let Value::Array(plugins) = value else {
+        return Err(structured_error(
+            "scope_index_rebuild_plugins_js_invalid",
+            "plugins.js 中的 $plugins 必须是数组".to_string(),
+        ));
+    };
+    Ok(plugins)
+}
+
+fn plugin_name(plugin: &Value, plugin_index: usize) -> String {
+    plugin
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("unnamed_plugin_{plugin_index}"))
+}
+
+fn plugin_parameter_row(
+    candidate: &RuleCandidateOutput,
+    context: &RebuildContext,
+) -> Result<DirectTextIndexRow, String> {
+    let locator_json = serde_json::to_string(&json!({
+        "file_name": "plugins.js",
+        "source_type": "plugin_parameter",
+        "location_path": candidate.location_path,
+        "source_line_paths": [],
+        "json_path": candidate.json_path,
+        "rule_key": candidate.rule_key,
+    }))
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_locator_invalid",
+            format!(
+                "插件参数 locator JSON 序列化失败 {}: {error}",
+                candidate.location_path
+            ),
+        )
+    })?;
+    Ok(DirectTextIndexRow {
+        location_path: candidate.location_path.clone(),
+        item_type: "short_text".to_string(),
+        role: None,
+        original_lines: vec![candidate.original_text.clone()],
+        source_line_paths: Vec::new(),
+        source_type: "plugin_parameter".to_string(),
+        source_file: "plugins.js".to_string(),
+        writable: true,
+        source_snapshot_fingerprint: context.source_snapshot_fingerprint.clone(),
+        rules_fingerprint: context.rules_fingerprint.clone(),
+        locator_json,
+    })
+}
+
+fn scan_note_tag_rows(
+    data_files: &[ParsedDataFile],
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    if context.note_tag_rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let note_tag_data_files = data_files
+        .iter()
+        .filter(|data_file| data_file.file_name.ends_with(".json") && !data_file.data.is_string())
+        .map(|data_file| (data_file.file_name.clone(), data_file.data.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let scan = super::note_tags::scan_note_tag_rule_candidates(
+        &note_tag_data_files,
+        context.rule_candidate_text_rules.clone(),
+    )
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_note_tag_scan_failed",
+            format!("扫描 Note 标签文本失败: {error}"),
+        )
+    })?;
+    scan.hit_details
+        .iter()
+        .filter(|hit| hit.translatable)
+        .filter(|hit| {
+            context.note_tag_rules.iter().any(|rule| {
+                rule.tag_names.contains(&hit.tag_name)
+                    && note_tag_rule_file_matches(&hit.file_name, &rule.file_name)
+            })
+        })
+        .map(|hit| {
+            row(
+                RowInput {
+                    location_path: hit.location_path.clone(),
+                    item_type: "short_text",
+                    role: None,
+                    original_lines: vec![hit.original_text.clone()],
+                    source_line_paths: Vec::new(),
+                    source_type: "note_tag",
+                    source_file: &hit.file_name,
+                },
+                context,
+            )
+        })
+        .collect()
+}
+
+fn scan_event_command_rule_rows(
+    data_files: &[ParsedDataFile],
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    if context.event_command_rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let event_command_data_files = data_files
+        .iter()
+        .filter(|data_file| data_file.file_name.ends_with(".json") && !data_file.data.is_string())
+        .map(|data_file| EventCommandDataFileInput {
+            file_name: data_file.file_name.clone(),
+            data: data_file.data.clone(),
+        })
+        .collect::<Vec<_>>();
+    let scan = super::event_commands::scan_event_command_rule_candidates(
+        &event_command_data_files,
+        &[],
+        &context.event_command_rules,
+    )
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_event_command_scan_failed",
+            format!("扫描事件指令规则文本失败: {error}"),
+        )
+    })?;
+    scan.hit_details
+        .iter()
+        .filter(|hit| context.source_text_required_re.is_match(&hit.original_text))
+        .map(|hit| {
+            row(
+                RowInput {
+                    location_path: hit.location_path.clone(),
+                    item_type: "short_text",
+                    role: None,
+                    original_lines: vec![hit.original_text.clone()],
+                    source_line_paths: Vec::new(),
+                    source_type: "event_command",
+                    source_file: &hit.file_name,
+                },
+                context,
+            )
+        })
+        .collect()
+}
+
+fn note_tag_rule_file_matches(file_name: &str, rule_file_name: &str) -> bool {
+    rule_file_name == file_name || (rule_file_name == "Map*.json" && is_map_data_file(file_name))
+}
+
+fn scan_data_file_rows(
+    data_file: &ParsedDataFile,
+    context: &RebuildContext,
+) -> Result<Vec<DirectTextIndexRow>, String> {
+    let mut rows = Vec::new();
+    if data_file.file_name == "System.json" {
+        scan_system_rows(data_file, context, &mut rows)?;
+    } else if is_base_data_file(&data_file.file_name) {
+        scan_base_data_rows(data_file, context, &mut rows)?;
+    }
+    scan_command_rows(data_file, context, &mut rows)?;
+    Ok(rows)
+}
+
+fn scan_system_rows(
+    data_file: &ParsedDataFile,
+    context: &RebuildContext,
+    rows: &mut Vec<DirectTextIndexRow>,
+) -> Result<(), String> {
+    let Some(system) = data_file.data.as_object() else {
+        return Ok(());
+    };
+    if let Some(game_title) = normalized_extractable_string(system.get("gameTitle"), context) {
+        rows.push(row(
+            RowInput {
+                location_path: "System.json/gameTitle".to_string(),
+                item_type: "short_text",
+                role: None,
+                original_lines: vec![game_title],
+                source_line_paths: Vec::new(),
+                source_type: "standard_data",
+                source_file: &data_file.file_name,
+            },
+            context,
+        )?);
+    }
+    if let Some(terms) = system.get("terms").and_then(Value::as_object) {
+        for key in ["basic", "commands", "params"] {
+            if let Some(items) = terms.get(key).and_then(Value::as_array) {
+                for (index, item) in items.iter().enumerate() {
+                    if let Some(text) = normalized_extractable_string(Some(item), context) {
+                        rows.push(row(
+                            RowInput {
+                                location_path: format!("System.json/terms/{key}/{index}"),
+                                item_type: "short_text",
+                                role: None,
+                                original_lines: vec![text],
+                                source_line_paths: Vec::new(),
+                                source_type: "standard_data",
+                                source_file: &data_file.file_name,
+                            },
+                            context,
+                        )?);
+                    }
+                }
+            }
+        }
+        if let Some(messages) = terms.get("messages").and_then(Value::as_object) {
+            for (key, value) in messages {
+                if let Some(text) = normalized_extractable_string(Some(value), context) {
+                    rows.push(row(
+                        RowInput {
+                            location_path: format!("System.json/terms/messages/{key}"),
+                            item_type: "short_text",
+                            role: None,
+                            original_lines: vec![text],
+                            source_line_paths: Vec::new(),
+                            source_type: "standard_data",
+                            source_file: &data_file.file_name,
+                        },
+                        context,
+                    )?);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_base_data_file(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "Actors.json"
+            | "Animations.json"
+            | "Armors.json"
+            | "Classes.json"
+            | "Enemies.json"
+            | "Items.json"
+            | "Skills.json"
+            | "States.json"
+            | "Tilesets.json"
+            | "Weapons.json"
+    )
+}
+
+fn scan_base_data_rows(
+    data_file: &ParsedDataFile,
+    context: &RebuildContext,
+    rows: &mut Vec<DirectTextIndexRow>,
+) -> Result<(), String> {
+    let Some(items) = data_file.data.as_array() else {
+        return Ok(());
+    };
+    for item in items {
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        let Some(id) = object.get("id").and_then(Value::as_i64) else {
+            continue;
+        };
+        for field_name in [
+            "profile",
+            "description",
+            "message1",
+            "message2",
+            "message3",
+            "message4",
+        ] {
+            if let Some(text) = normalized_extractable_string(object.get(field_name), context) {
+                rows.push(row(
+                    RowInput {
+                        location_path: format!("{}/{id}/{field_name}", data_file.file_name),
+                        item_type: "short_text",
+                        role: None,
+                        original_lines: vec![text],
+                        source_line_paths: Vec::new(),
+                        source_type: "standard_data",
+                        source_file: &data_file.file_name,
+                    },
+                    context,
+                )?);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn scan_command_rows(
+    data_file: &ParsedDataFile,
+    context: &RebuildContext,
+    rows: &mut Vec<DirectTextIndexRow>,
+) -> Result<(), String> {
+    if is_map_data_file(&data_file.file_name) {
+        let Some(map_object) = data_file.data.as_object() else {
+            return Ok(());
+        };
+        let display_name = map_object
+            .get("displayName")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(events) = map_object.get("events").and_then(Value::as_array) else {
+            return Ok(());
+        };
+        for event in events {
+            let Some(event_object) = event.as_object() else {
+                continue;
+            };
+            let Some(event_id) = event_object.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let Some(pages) = event_object.get("pages").and_then(Value::as_array) else {
+                continue;
+            };
+            for (page_index, page) in pages.iter().enumerate() {
+                if let Some(commands) = page
+                    .as_object()
+                    .and_then(|object| object.get("list"))
+                    .and_then(Value::as_array)
+                {
+                    scan_command_list(
+                        &data_file.file_name,
+                        Some(display_name),
+                        &format!("{}/{event_id}/{page_index}", data_file.file_name),
+                        commands,
+                        context,
+                        rows,
+                    )?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    if data_file.file_name == "CommonEvents.json" {
+        let Some(events) = data_file.data.as_array() else {
+            return Ok(());
+        };
+        for event in events {
+            let Some(event_object) = event.as_object() else {
+                continue;
+            };
+            let Some(event_id) = event_object.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            if let Some(commands) = event_object.get("list").and_then(Value::as_array) {
+                scan_command_list(
+                    &data_file.file_name,
+                    None,
+                    &format!("{}/{event_id}", data_file.file_name),
+                    commands,
+                    context,
+                    rows,
+                )?;
+            }
+        }
+        return Ok(());
+    }
+
+    if data_file.file_name == "Troops.json" {
+        let Some(troops) = data_file.data.as_array() else {
+            return Ok(());
+        };
+        for troop in troops {
+            let Some(troop_object) = troop.as_object() else {
+                continue;
+            };
+            let Some(troop_id) = troop_object.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let Some(pages) = troop_object.get("pages").and_then(Value::as_array) else {
+                continue;
+            };
+            for (page_index, page) in pages.iter().enumerate() {
+                if let Some(commands) = page
+                    .as_object()
+                    .and_then(|object| object.get("list"))
+                    .and_then(Value::as_array)
+                {
+                    scan_command_list(
+                        &data_file.file_name,
+                        None,
+                        &format!("{}/{troop_id}/{page_index}", data_file.file_name),
+                        commands,
+                        context,
+                        rows,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn scan_command_list(
+    file_name: &str,
+    _display_name: Option<&str>,
+    list_prefix: &str,
+    commands: &[Value],
+    context: &RebuildContext,
+    rows: &mut Vec<DirectTextIndexRow>,
+) -> Result<(), String> {
+    let mut pending_scroll: Option<PendingLongText> = None;
+    let mut last_scroll_index: Option<usize> = None;
+
+    for (command_index, command) in commands.iter().enumerate() {
+        let Some(command_object) = command.as_object() else {
+            flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+            continue;
+        };
+        let code = command_object
+            .get("code")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let location_path = format!("{list_prefix}/{command_index}");
+        match code {
+            101 => {
+                flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+                let role = command_object
+                    .get("parameters")
+                    .and_then(Value::as_array)
+                    .and_then(|parameters| parameters.get(4))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("旁白")
+                    .to_string();
+                rows.push(row(
+                    RowInput {
+                        location_path,
+                        item_type: "long_text",
+                        role: Some(role),
+                        original_lines: Vec::new(),
+                        source_line_paths: Vec::new(),
+                        source_type: "event_command",
+                        source_file: file_name,
+                    },
+                    context,
+                )?);
+            }
+            401 => {
+                flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+                let Some(text) = command_text(command_object, context) else {
+                    continue;
+                };
+                if let Some(last) = rows.last_mut()
+                    && last.item_type == "long_text"
+                    && last.source_file == file_name
+                {
+                    if last.role.as_deref() == Some("旁白")
+                        && last.original_lines.is_empty()
+                        && let Some(virtual_speaker) =
+                            parse_mv_virtual_speaker_line(context, &text, &location_path)?
+                    {
+                        last.role = Some(virtual_speaker.speaker);
+                        if virtual_speaker.body_text.is_empty() {
+                            continue;
+                        }
+                        last.original_lines.push(virtual_speaker.body_text);
+                        last.source_line_paths.push(location_path);
+                        continue;
+                    }
+                    last.original_lines.push(text);
+                    last.source_line_paths.push(location_path);
+                }
+            }
+            102 => {
+                flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+                if let Some(lines) = command_choices(command_object, context)
+                    && !lines.is_empty()
+                {
+                    rows.push(row(
+                        RowInput {
+                            location_path,
+                            item_type: "array",
+                            role: Some("旁白".to_string()),
+                            original_lines: lines,
+                            source_line_paths: Vec::new(),
+                            source_type: "event_command",
+                            source_file: file_name,
+                        },
+                        context,
+                    )?);
+                }
+            }
+            405 => {
+                let Some(text) = command_text(command_object, context) else {
+                    flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+                    last_scroll_index = None;
+                    continue;
+                };
+                if pending_scroll.is_none()
+                    || last_scroll_index.is_none_or(|last_index| command_index != last_index + 1)
+                {
+                    flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+                    pending_scroll = Some(PendingLongText {
+                        location_path: location_path.clone(),
+                        role: "旁白".to_string(),
+                        original_lines: Vec::new(),
+                        source_line_paths: Vec::new(),
+                    });
+                }
+                if let Some(scroll) = &mut pending_scroll {
+                    scroll.original_lines.push(text);
+                    scroll.source_line_paths.push(location_path);
+                }
+                last_scroll_index = Some(command_index);
+            }
+            _ => {
+                flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+                last_scroll_index = None;
+            }
+        }
+    }
+    flush_scroll(file_name, &mut pending_scroll, context, rows)?;
+    rows.retain(|row| !(row.item_type == "long_text" && row.original_lines.is_empty()));
+    Ok(())
+}
+
+fn command_text(
+    command_object: &serde_json::Map<String, Value>,
+    context: &RebuildContext,
+) -> Option<String> {
+    command_object
+        .get("parameters")
+        .and_then(Value::as_array)
+        .and_then(|parameters| parameters.first())
+        .and_then(|value| normalized_extractable_string(Some(value), context))
+}
+
+fn command_choices(
+    command_object: &serde_json::Map<String, Value>,
+    context: &RebuildContext,
+) -> Option<Vec<String>> {
+    let lines = command_object
+        .get("parameters")
+        .and_then(Value::as_array)?
+        .first()?
+        .as_array()?
+        .iter()
+        .filter_map(|value| normalized_extractable_string(Some(value), context))
+        .collect::<Vec<_>>();
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
+fn flush_scroll(
+    file_name: &str,
+    pending_scroll: &mut Option<PendingLongText>,
+    context: &RebuildContext,
+    rows: &mut Vec<DirectTextIndexRow>,
+) -> Result<(), String> {
+    let Some(scroll) = pending_scroll.take() else {
+        return Ok(());
+    };
+    if scroll.original_lines.is_empty() {
+        return Ok(());
+    }
+    rows.push(row(
+        RowInput {
+            location_path: scroll.location_path,
+            item_type: "long_text",
+            role: Some(scroll.role),
+            original_lines: scroll.original_lines,
+            source_line_paths: scroll.source_line_paths,
+            source_type: "event_command",
+            source_file: file_name,
+        },
+        context,
+    )?);
+    Ok(())
+}
+
+fn normalized_extractable_string(
+    value: Option<&Value>,
+    context: &RebuildContext,
+) -> Option<String> {
+    let text = value?.as_str()?;
+    normalized_extractable_text(text, context)
+}
+
+fn normalized_extractable_text(text: &str, context: &RebuildContext) -> Option<String> {
+    let normalized = normalize_visible_text_for_extraction(text);
+    if normalized.is_empty() || !context.source_text_required_re.is_match(&normalized) {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn actor_names_by_id(data_files: &[ParsedDataFile]) -> BTreeMap<i64, String> {
+    let Some(actors_file) = data_files
+        .iter()
+        .find(|file| file.file_name == "Actors.json")
+    else {
+        return BTreeMap::new();
+    };
+    let Some(actors) = actors_file.data.as_array() else {
+        return BTreeMap::new();
+    };
+    let mut names = BTreeMap::new();
+    for actor in actors {
+        let Some(actor_object) = actor.as_object() else {
+            continue;
+        };
+        let Some(actor_id) = actor_object.get("id").and_then(Value::as_i64) else {
+            continue;
+        };
+        let Some(name) = actor_object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        names.insert(actor_id, name.to_string());
+    }
+    names
+}
+
+fn database_owner_terms_by_key(data_files: &[ParsedDataFile]) -> BTreeMap<String, Vec<String>> {
+    let mut owner_terms_by_key = BTreeMap::new();
+    for data_file in data_files {
+        if !is_terminology_base_name_file(&data_file.file_name) {
+            continue;
+        }
+        let Some(items) = data_file.data.as_array() else {
+            continue;
+        };
+        for item in items {
+            let Some(object) = item.as_object() else {
+                continue;
+            };
+            let Some(id) = object.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let mut terms = Vec::new();
+            push_unique_trimmed_term(&mut terms, object.get("name").and_then(Value::as_str));
+            if data_file.file_name == "Actors.json" {
+                push_unique_trimmed_term(
+                    &mut terms,
+                    object.get("nickname").and_then(Value::as_str),
+                );
+            }
+            if !terms.is_empty() {
+                owner_terms_by_key.insert(format!("{}/{}", data_file.file_name, id), terms);
+            }
+        }
+    }
+    owner_terms_by_key
+}
+
+fn is_terminology_base_name_file(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "Actors.json"
+            | "Classes.json"
+            | "Skills.json"
+            | "Items.json"
+            | "Weapons.json"
+            | "Armors.json"
+            | "Enemies.json"
+            | "States.json"
+    )
+}
+
+fn system_owner_terms(data_files: &[ParsedDataFile]) -> Vec<String> {
+    let Some(system_file) = data_files
+        .iter()
+        .find(|data_file| data_file.file_name == "System.json")
+    else {
+        return Vec::new();
+    };
+    let Some(system) = system_file.data.as_object() else {
+        return Vec::new();
+    };
+    let mut terms = Vec::new();
+    for field_name in [
+        "elements",
+        "skillTypes",
+        "weaponTypes",
+        "armorTypes",
+        "equipTypes",
+    ] {
+        let Some(values) = system.get(field_name).and_then(Value::as_array) else {
+            continue;
+        };
+        for value in values {
+            push_unique_trimmed_term(&mut terms, value.as_str());
+        }
+    }
+    terms
+}
+
+fn map_display_names_by_file(data_files: &[ParsedDataFile]) -> BTreeMap<String, String> {
+    let mut names = BTreeMap::new();
+    for data_file in data_files {
+        if !is_map_data_file(&data_file.file_name) {
+            continue;
+        }
+        let Some(display_name) = data_file
+            .data
+            .as_object()
+            .and_then(|object| object.get("displayName"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        names.insert(data_file.file_name.clone(), display_name.to_string());
+    }
+    names
+}
+
+fn push_unique_trimmed_term(terms: &mut Vec<String>, value: Option<&str>) {
+    let Some(term) = value.map(str::trim).filter(|term| !term.is_empty()) else {
+        return;
+    };
+    if !terms.iter().any(|existing| existing == term) {
+        terms.push(term.to_string());
+    }
+}
+
+fn terminology_owner_terms(location_path: &str, context: &RebuildContext) -> Vec<String> {
+    if location_path.starts_with("System.json/") {
+        return context.system_owner_terms.clone();
+    }
+    let mut parts = location_path.split('/');
+    let Some(file_name) = parts.next() else {
+        return Vec::new();
+    };
+    let Some(id) = parts.next() else {
+        return Vec::new();
+    };
+    context
+        .database_owner_terms_by_key
+        .get(&format!("{file_name}/{id}"))
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn parse_mv_virtual_speaker_line(
+    context: &RebuildContext,
+    text: &str,
+    location_path: &str,
+) -> Result<Option<ParsedMvVirtualSpeaker>, String> {
+    if context.mv_virtual_namebox_rules.is_empty() {
+        return Ok(None);
+    }
+    let normalized_text = text.trim();
+    if normalized_text.is_empty() {
+        return Ok(None);
+    }
+    let mut matches: Vec<ParsedMvVirtualSpeaker> = Vec::new();
+    let mut matched_rule_names: Vec<String> = Vec::new();
+    for rule in &context.mv_virtual_namebox_rules {
+        let captures = rule.pattern.captures(normalized_text).map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_mv_virtual_namebox_failed",
+                format!("MV 虚拟名字框规则匹配失败 {}: {error}", rule.rule_name),
+            )
+        })?;
+        let Some(captures) = captures else {
+            continue;
+        };
+        let Some(full_match) = captures.get(0) else {
+            continue;
+        };
+        if full_match.start() != 0 || full_match.end() != normalized_text.len() {
+            continue;
+        }
+        matches.push(build_mv_virtual_speaker(
+            context,
+            rule,
+            &captures,
+            location_path,
+        )?);
+        matched_rule_names.push(rule.rule_name.clone());
+    }
+    if matches.len() > 1 {
+        return Err(structured_error(
+            "scope_index_rebuild_mv_virtual_namebox_failed",
+            format!(
+                "MV 虚拟名字框规则命中冲突; 文本路径={location_path}: 规则={}; 文本={normalized_text}",
+                matched_rule_names.join(", ")
+            ),
+        ));
+    }
+    Ok(matches.into_iter().next())
+}
+
+fn build_mv_virtual_speaker(
+    context: &RebuildContext,
+    rule: &CompiledMvVirtualNameboxRule,
+    captures: &Captures<'_>,
+    location_path: &str,
+) -> Result<ParsedMvVirtualSpeaker, String> {
+    let source_speaker = capture_group(captures, &rule.speaker_group)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if source_speaker.is_empty() {
+        return Err(structured_error(
+            "scope_index_rebuild_mv_virtual_namebox_failed",
+            format!(
+                "MV 虚拟名字框规则 {} 命中了空说话人; 文本路径={location_path}",
+                rule.rule_name
+            ),
+        ));
+    }
+    let body_text = if rule.body_group.is_empty() {
+        String::new()
+    } else {
+        capture_group(captures, &rule.body_group)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let speaker = if rule.speaker_policy == "actor_name" {
+        actor_name_from_control(context, &source_speaker, location_path)?
+    } else {
+        source_speaker
+    };
+    Ok(ParsedMvVirtualSpeaker { speaker, body_text })
+}
+
+fn capture_group<'a>(captures: &'a Captures<'_>, group_name: &str) -> Option<&'a str> {
+    captures.name(group_name).map(|matched| matched.as_str())
+}
+
+fn actor_name_from_control(
+    context: &RebuildContext,
+    text: &str,
+    location_path: &str,
+) -> Result<String, String> {
+    let pattern = Regex::new(r"^\\[Nn]\[(?P<actor_id>\d+)\]$").map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_mv_virtual_namebox_failed",
+            format!("MV actor_name 控制符正则初始化失败: {error}"),
+        )
+    })?;
+    let captures = pattern.captures(text).ok_or_else(|| {
+        structured_error(
+            "scope_index_rebuild_mv_virtual_namebox_failed",
+            format!(
+                "actor_name 规则命中的说话人不是角色名控制符: {text}; 文本路径={location_path}"
+            ),
+        )
+    })?;
+    let actor_id = captures
+        .name("actor_id")
+        .ok_or_else(|| {
+            structured_error(
+                "scope_index_rebuild_mv_virtual_namebox_failed",
+                format!("actor_name 规则无法解析角色 ID: {text}; 文本路径={location_path}"),
+            )
+        })?
+        .as_str()
+        .parse::<i64>()
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_mv_virtual_namebox_failed",
+                format!(
+                    "actor_name 规则角色 ID 不是数字: {text}: {error}; 文本路径={location_path}"
+                ),
+            )
+        })?;
+    context
+        .actor_names_by_id
+        .get(&actor_id)
+        .cloned()
+        .ok_or_else(|| {
+            structured_error(
+                "scope_index_rebuild_mv_virtual_namebox_failed",
+                format!("actor_name 规则无法解析角色 ID: {actor_id}; 文本路径={location_path}"),
+            )
+        })
+}
+
+struct RowInput<'a> {
+    location_path: String,
+    item_type: &'static str,
+    role: Option<String>,
+    original_lines: Vec<String>,
+    source_line_paths: Vec<String>,
+    source_type: &'static str,
+    source_file: &'a str,
+}
+
+fn row(input: RowInput<'_>, context: &RebuildContext) -> Result<DirectTextIndexRow, String> {
+    let terminology_owner_terms = terminology_owner_terms(&input.location_path, context);
+    let display_name = context
+        .map_display_names_by_file
+        .get(input.source_file)
+        .cloned();
+    let locator_json = serde_json::to_string(&json!({
+        "file_name": input.source_file,
+        "source_type": input.source_type,
+        "location_path": &input.location_path,
+        "source_line_paths": &input.source_line_paths,
+        "terminology_owner_terms": terminology_owner_terms,
+        "display_name": display_name,
+    }))
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_locator_invalid",
+            format!(
+                "索引 locator JSON 序列化失败 {}: {error}",
+                input.location_path
+            ),
+        )
+    })?;
+    Ok(DirectTextIndexRow {
+        location_path: input.location_path,
+        item_type: input.item_type.to_string(),
+        role: input.role,
+        original_lines: input.original_lines,
+        source_line_paths: input.source_line_paths,
+        source_type: input.source_type.to_string(),
+        source_file: input.source_file.to_string(),
+        writable: true,
+        source_snapshot_fingerprint: context.source_snapshot_fingerprint.clone(),
+        rules_fingerprint: context.rules_fingerprint.clone(),
+        locator_json,
+    })
+}
+
+fn domain_summary_from_rows(rows: &[DirectTextIndexRow]) -> Vec<DirectDomainSummary> {
+    let mut counters: BTreeMap<String, DomainCounter> = BTreeMap::new();
+    for row in rows {
+        let counter = counters.entry(row.source_type.clone()).or_default();
+        counter.item_count += 1;
+        counter.active_count += 1;
+        if row.writable {
+            counter.writable_count += 1;
+        } else {
+            counter.unwritable_count += 1;
+        }
+    }
+    counters
+        .into_iter()
+        .map(|(domain, counter)| DirectDomainSummary {
+            domain,
+            item_count: counter.item_count,
+            active_count: counter.active_count,
+            writable_count: counter.writable_count,
+            unwritable_count: counter.unwritable_count,
+            inactive_rule_hit_count: 0,
+        })
+        .collect()
+}
+
+fn stable_json_fingerprint(value: &Value) -> Result<String, String> {
+    let canonical = canonical_json(value);
+    let encoded = serde_json::to_string(&canonical).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_fingerprint_failed",
+            format!("生成稳定 JSON 指纹失败: {error}"),
+        )
+    })?;
+    Ok(sha256_text(&encoded))
+}
+
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
+        Value::Object(object) => {
+            let keys = object.keys().collect::<BTreeSet<_>>();
+            let mut sorted = serde_json::Map::new();
+            for key in keys {
+                if let Some(child) = object.get(key) {
+                    sorted.insert(key.clone(), canonical_json(child));
+                }
+            }
+            Value::Object(sorted)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn serialize_output(output: &RebuildStorageOutput) -> Result<String, String> {
+    serde_json::to_string(output).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_output_failed",
+            format!("Scope/Index rebuild 输出 JSON 序列化失败: {error}"),
+        )
+    })
+}
+
+fn structured_error(code: &str, message: String) -> String {
+    match serde_json::to_string(&json!({
+        "status": "error",
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    })) {
+        Ok(text) => text,
+        Err(_) => format!("{code}: {message}"),
+    }
+}

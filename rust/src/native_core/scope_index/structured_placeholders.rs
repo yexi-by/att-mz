@@ -5,7 +5,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-use super::{RuleCandidateTextRules, compile_rule_candidate_text_rules};
+use super::RuleCandidateTextRules;
+use super::plugin_source::compile_rule_candidate_text_rules;
 use crate::native_core::controls::iter_structured_placeholder_spans;
 use crate::native_core::models::{CompiledRules, CompiledStructuredRule};
 

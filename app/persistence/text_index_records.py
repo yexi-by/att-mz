@@ -30,6 +30,7 @@ from .sql import (
     INSERT_TEXT_INDEX_ITEM,
     INSERT_TEXT_INDEX_RULE_HIT_SUMMARY,
     SELECT_PENDING_TEXT_INDEX_COUNT,
+    SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_PATHS,
     SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_TYPE_COUNTS,
     SELECT_PENDING_TEXT_INDEX_ITEMS,
     SELECT_TEXT_INDEX_DOMAIN_SUMMARY,
@@ -38,12 +39,14 @@ from .sql import (
     SELECT_TEXT_INDEX_ITEMS,
     SELECT_TEXT_INDEX_LOCATION_PATHS,
     SELECT_TEXT_INDEX_META,
+    SELECT_TEXT_INDEX_PLACEHOLDER_TEXTS,
     SELECT_TEXT_INDEX_QUALITY_ERROR_PATHS,
     SELECT_TEXT_INDEX_RULE_HIT_SUMMARY,
     SELECT_TEXT_INDEX_SCOPE_SUMMARY,
     SELECT_WRITABLE_TEXT_INDEX_LOCATION_PATHS,
     TEXT_INDEX_ITEMS_TABLE_NAME,
     TEXT_INDEX_META_KEY,
+    UPDATE_TEXT_INDEX_WORKFLOW_GATE_SCOPE_HASHES,
     UPSERT_TEXT_INDEX_SCOPE_SUMMARY,
     UPSERT_TEXT_INDEX_META,
 )
@@ -162,11 +165,31 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
             created_at=row_str(row, "created_at", self.db_path),
         )
 
+    async def update_text_index_workflow_gate_scope_hashes(self, scope_hashes: dict[str, str]) -> None:
+        """只更新当前文本范围索引的 workflow gate 摘要。"""
+        _ = await self.connection.execute(
+            UPDATE_TEXT_INDEX_WORKFLOW_GATE_SCOPE_HASHES,
+            (_encode_workflow_gate_scope_hashes(scope_hashes), TEXT_INDEX_META_KEY),
+        )
+        await self.connection.commit()
+
     async def read_text_index_items(self) -> list[TextIndexItemRecord]:
         """读取全部文本范围索引项。"""
         async with self.connection.execute(SELECT_TEXT_INDEX_ITEMS) as cursor:
             rows = await cursor.fetchall()
         return [self._text_index_item_from_row(row) for row in rows]
+
+    async def read_text_index_placeholder_texts(self) -> list[tuple[str, list[str]]]:
+        """读取占位符候选扫描所需的最小索引字段。"""
+        async with self.connection.execute(SELECT_TEXT_INDEX_PLACEHOLDER_TEXTS) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            (
+                row_str(row, "location_path", self.db_path),
+                decode_string_list(row_str(row, "original_lines", self.db_path), "original_lines"),
+            )
+            for row in rows
+        ]
 
     async def read_text_index_scope_summary(self) -> TextIndexScopeSummaryRecord | None:
         """读取当前文本范围索引的静态范围摘要。"""
@@ -255,6 +278,12 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
             row_str(row, "error_type", self.db_path): row_int(row, "error_count", self.db_path)
             for row in rows
         }
+
+    async def read_pending_text_index_quality_error_paths(self, run_id: str) -> set[str]:
+        """读取当前索引 pending 范围内指定运行没通过项目检查的定位路径。"""
+        async with self.connection.execute(SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_PATHS, (run_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return {row_str(row, "location_path", self.db_path) for row in rows}
 
     async def read_text_index_quality_error_paths(self, run_id: str) -> set[str]:
         """读取当前文本索引范围内指定运行没通过项目检查的定位路径。"""

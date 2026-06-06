@@ -7,7 +7,7 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-const NATIVE_CONTRACT_VERSION: usize = 9;
+const NATIVE_CONTRACT_VERSION: usize = 10;
 
 #[pyfunction]
 fn native_contract_version() -> usize {
@@ -92,6 +92,38 @@ fn evaluate_scope_gate(py: Python<'_>, payload_json: String) -> PyResult<String>
 }
 
 #[pyfunction]
+fn native_schema_fingerprint() -> String {
+    native_core::native_schema_fingerprint_impl()
+}
+
+#[pyfunction]
+fn inspect_scope_index_storage(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::inspect_scope_index_storage_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn write_scope_index_storage(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::write_scope_index_storage_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn rebuild_scope_index_storage(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::rebuild_scope_index_storage_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
 fn collect_note_tag_sources(py: Python<'_>, payload_json: String) -> PyResult<String> {
     let result = py.detach(move || {
         native_core::collect_note_tag_sources_impl(&payload_json).map_err(|error| error.to_string())
@@ -160,6 +192,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_scope_index, m)?)?;
     m.add_function(wrap_pyfunction!(scan_rule_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_scope_gate, m)?)?;
+    m.add_function(wrap_pyfunction!(native_schema_fingerprint, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect_scope_index_storage, m)?)?;
+    m.add_function(wrap_pyfunction!(write_scope_index_storage, m)?)?;
+    m.add_function(wrap_pyfunction!(rebuild_scope_index_storage, m)?)?;
     m.add_function(wrap_pyfunction!(collect_note_tag_sources, m)?)?;
     m.add_function(wrap_pyfunction!(scan_font_replacements, m)?)?;
     m.add_function(wrap_pyfunction!(parse_javascript_string_spans, m)?)?;

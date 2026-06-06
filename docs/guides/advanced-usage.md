@@ -233,7 +233,7 @@ uv run python main.py quality-report --game <游戏标题>
 uv run python main.py audit-active-runtime --game <游戏标题>
 ```
 
-`translation-status` 默认读取数据库中的最近运行统计；需要按当前范围刷新数量时加 `--refresh-scope`，warm index 下会优先使用索引，索引缺失或过期时会自动重建并在报告里说明。只读范围和普通质量报告默认不执行写入可行性探针；需要在报告里查看写入可行性时给 `text-scope`、`audit-coverage`、`quality-report`、`export-pending-translations` 或 `export-quality-fix-template` 加 `--include-write-probe`。
+`translation-status` 默认读取数据库中的最近运行统计；需要按当前范围刷新数量时加 `--refresh-scope`，warm index 下会优先使用索引，索引缺失或过期时会自动重建并在报告里说明。`text-scope` 和 `audit-coverage --include-write-probe` 只在报告里标记索引可写状态，不额外执行写回级检查；需要真正检查写回级风险时运行 `quality-report --include-write-probe`，报告会标明 `write_back_probe_executed=true` 和 `write_back_probe_mode=rust_write_gate`。手动导出命令的 `--include-write-probe` 只保留请求状态和索引可写状态，导出本身不额外执行写回级检查。
 
 继续全量翻译：
 

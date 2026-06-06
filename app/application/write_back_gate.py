@@ -12,7 +12,7 @@ from app.native_quality import collect_native_quality_counts, count_native_write
 from app.persistence import TargetGameSession
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import TextRules
-from app.text_scope import TextScopeResult, TextScopeService
+from app.text_scope import TextScopeResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,13 +63,7 @@ async def collect_write_back_quality_errors(
 ) -> list[WriteBackQualityIssue]:
     """收集当前已保存译文是否允许写入游戏文件的质量错误。"""
     if scope is None:
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-            translated_items=translated_items,
-            include_write_probe=True,
-        )
+        raise RuntimeError("collect_write_back_quality_errors 需要调用者传入 Rust/index 生成的文本范围，不能回退构建 Python 完整文本范围")
     errors: list[WriteBackQualityIssue] = []
     translated_paths = {item.location_path for item in translated_items}
     active_paths = scope.active_paths

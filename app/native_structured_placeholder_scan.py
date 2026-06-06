@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+
 from app.native_scope_index import (
+    build_native_rule_candidate_text_rules_payload,
     build_native_structured_placeholder_candidates_payload,
     scan_native_rule_candidates,
 )
@@ -25,6 +28,47 @@ def collect_native_structured_placeholder_candidate_details(
     """调用 native 结构化占位符候选入口并返回旧报告同形明细。"""
     payload = build_native_structured_placeholder_candidates_payload(translation_data_map, text_rules)
     result = scan_native_rule_candidates(payload)
+    summary_value = result.scan_summary.get("structured_placeholders")
+    if summary_value is None:
+        return []
+    summary = ensure_json_object(
+        summary_value,
+        "native_structured_placeholder_candidates.structured_placeholders",
+    )
+    raw_candidates = ensure_json_array(
+        summary.get("candidates", []),
+        "native_structured_placeholder_candidates.structured_placeholders.candidates",
+    )
+    return [
+        _normalize_native_structured_placeholder_candidate_detail(
+            ensure_json_object(item, f"native_structured_placeholder_candidates.candidates[{index}]"),
+            f"native_structured_placeholder_candidates.candidates[{index}]",
+        )
+        for index, item in enumerate(raw_candidates)
+    ]
+
+
+def collect_native_structured_placeholder_candidate_details_from_entries(
+    *,
+    entries: Iterable[tuple[str, Sequence[str]]],
+    text_rules: TextRules,
+) -> JsonArray:
+    """用轻量索引正文条目调用 native 结构化占位符候选入口。"""
+    structured_placeholder_texts: JsonArray = [
+        {
+            "location_path": location_path,
+            "line_number": line_index + 1,
+            "text": text,
+        }
+        for location_path, original_lines in entries
+        for line_index, text in enumerate(original_lines)
+    ]
+    result = scan_native_rule_candidates(
+        {
+            "structured_placeholder_texts": structured_placeholder_texts,
+            "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
+        }
+    )
     summary_value = result.scan_summary.get("structured_placeholders")
     if summary_value is None:
         return []
@@ -87,5 +131,6 @@ def _normalize_native_structured_placeholder_candidate_detail(
 
 __all__: list[str] = [
     "collect_native_structured_placeholder_candidate_details",
+    "collect_native_structured_placeholder_candidate_details_from_entries",
     "count_uncovered_structured_placeholder_candidate_details",
 ]

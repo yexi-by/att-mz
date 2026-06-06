@@ -154,6 +154,59 @@ def validate_source_snapshot_manifest(
         raise RuntimeError("可信源快照 manifest 与磁盘文件不一致：" + "；".join(parts))
 
 
+def validate_plugin_source_snapshot_manifest(
+    *,
+    layout: GameLayout,
+    records: list[SourceSnapshotFileRecord],
+) -> None:
+    """确认数据库 manifest 与插件源码相关可信源快照一致。"""
+    if not layout.plugins_origin_path.is_file():
+        raise FileNotFoundError(f"缺少原始插件配置备份: {layout.plugins_origin_path}")
+    if not layout.plugin_source_origin_dir.is_dir():
+        raise NotADirectoryError(f"缺少原始插件源码备份目录: {layout.plugin_source_origin_dir}")
+    snapshot_paths = [
+        layout.plugins_origin_path,
+        *sorted(_iter_direct_plugin_source_files(layout.plugin_source_origin_dir), key=lambda path: path.name),
+    ]
+    expected = {
+        file_path.relative_to(layout.content_root).as_posix(): SourceSnapshotFileRecord(
+            relative_path=file_path.relative_to(layout.content_root).as_posix(),
+            sha256=file_sha256(file_path),
+            byte_size=file_path.stat().st_size,
+            updated_at="",
+        )
+        for file_path in snapshot_paths
+    }
+    plugin_source_prefix = f"{layout.plugin_source_origin_dir.relative_to(layout.content_root).as_posix()}/"
+    plugins_origin_relative_path = layout.plugins_origin_path.relative_to(layout.content_root).as_posix()
+    actual = {
+        record.relative_path: record
+        for record in records
+        if record.relative_path == plugins_origin_relative_path
+        or record.relative_path.startswith(plugin_source_prefix)
+    }
+    missing = sorted(set(expected) - set(actual))
+    stale = sorted(set(actual) - set(expected))
+    mismatched = sorted(
+        relative_path
+        for relative_path, expected_record in expected.items()
+        if relative_path in actual
+        and (
+            actual[relative_path].sha256 != expected_record.sha256
+            or actual[relative_path].byte_size != expected_record.byte_size
+        )
+    )
+    if missing or stale or mismatched:
+        parts: list[str] = []
+        if missing:
+            parts.append("缺少 " + "、".join(missing[:20]))
+        if stale:
+            parts.append("多出 " + "、".join(stale[:20]))
+        if mismatched:
+            parts.append("hash 不一致 " + "、".join(mismatched[:20]))
+        raise RuntimeError("插件源码可信源快照 manifest 与磁盘文件不一致：" + "；".join(parts))
+
+
 def file_sha256(file_path: Path) -> str:
     """计算单个文件的 SHA-256。"""
     digest = hashlib.sha256()
@@ -183,6 +236,7 @@ __all__ = [
     "file_sha256",
     "remove_source_snapshot_artifacts",
     "validate_clean_source_snapshot_target",
+    "validate_plugin_source_snapshot_manifest",
     "validate_source_snapshot_files",
     "validate_source_snapshot_manifest",
 ]

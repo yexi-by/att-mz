@@ -49,6 +49,32 @@ class NativeScopeIndexModule(Protocol):
         """评估范围门禁并返回 JSON 文本。"""
         raise NotImplementedError
 
+    def native_schema_fingerprint(self) -> str:
+        """返回共享 SQLite schema SQL 的 SHA-256 指纹。"""
+        raise NotImplementedError
+
+    def inspect_scope_index_storage(self, payload_json: str) -> str:
+        """直读 Scope/Index 所需的 DB 状态和游戏文件摘要。"""
+        raise NotImplementedError
+
+    def write_scope_index_storage(self, payload_json: str) -> str:
+        """直接写入 text index 存储表并返回 JSON 文本。"""
+        raise NotImplementedError
+
+    def rebuild_scope_index_storage(self, payload_json: str) -> str:
+        """直读 DB/游戏目录并重建 text index 存储。"""
+        raise NotImplementedError
+
+
+class NativeScopeIndexStorageError(RuntimeError):
+    """Rust Scope/Index storage 结构化错误。"""
+
+    def __init__(self, *, code: str, message: str) -> None:
+        """保留 Rust error code，供 Agent 报告返回稳定错误码。"""
+        super().__init__(message)
+        self.code: str = code
+        self.message: str = message
+
 
 @dataclass(frozen=True, slots=True)
 class NativeScopeIndexResult:
@@ -138,6 +164,42 @@ def evaluate_native_scope_gate(payload: JsonObject) -> NativeScopeGateResult:
             "native_scope_gate_result",
         ),
     )
+
+
+def native_schema_fingerprint() -> str:
+    """读取 Rust 编译期包含的共享 SQLite schema SQL 指纹。"""
+    native_module = _load_native_scope_index_module()
+    return native_module.native_schema_fingerprint()
+
+
+def inspect_native_scope_index_storage(payload: JsonObject) -> JsonObject:
+    """调用 Rust 直读 Scope/Index 所需的 DB 与游戏文件状态。"""
+    native_module = _load_native_scope_index_module()
+    try:
+        result_text = native_module.inspect_scope_index_storage(json.dumps(payload, ensure_ascii=False))
+    except ValueError as error:
+        raise _native_storage_error(str(error)) from error
+    return _load_result_object(result_text, "native_scope_index_storage_inspect")
+
+
+def write_native_scope_index_storage(payload: JsonObject) -> JsonObject:
+    """调用 Rust 直接写入 text index 存储表。"""
+    native_module = _load_native_scope_index_module()
+    try:
+        result_text = native_module.write_scope_index_storage(json.dumps(payload, ensure_ascii=False))
+    except ValueError as error:
+        raise _native_storage_error(str(error)) from error
+    return _load_result_object(result_text, "native_scope_index_storage_write")
+
+
+def rebuild_native_scope_index_storage(payload: JsonObject) -> JsonObject:
+    """调用 Rust 直读 DB/游戏目录并重建 text index 存储。"""
+    native_module = _load_native_scope_index_module()
+    try:
+        result_text = native_module.rebuild_scope_index_storage(json.dumps(payload, ensure_ascii=False))
+    except ValueError as error:
+        raise _native_storage_error(str(error)) from error
+    return _load_result_object(result_text, "native_scope_index_storage_rebuild")
 
 
 def build_native_rule_candidate_text_rules_payload(text_rules: TextRules) -> JsonObject:
@@ -407,7 +469,15 @@ def _load_native_scope_index_module() -> NativeScopeIndexModule:
     except ImportError as error:
         raise RuntimeError("Rust 原生扩展不可用，请先执行 uv run maturin develop") from error
     ensure_native_contract_version(cast(object, native_module))
-    for entry_name in ("build_scope_index", "scan_rule_candidates", "evaluate_scope_gate"):
+    for entry_name in (
+        "build_scope_index",
+        "scan_rule_candidates",
+        "evaluate_scope_gate",
+        "native_schema_fingerprint",
+        "inspect_scope_index_storage",
+        "write_scope_index_storage",
+        "rebuild_scope_index_storage",
+    ):
         if not hasattr(native_module, entry_name):
             raise RuntimeError(f"Rust 原生扩展缺少 Scope/Index Engine 入口 {entry_name}，请重新执行 uv run maturin develop")
     return cast(NativeScopeIndexModule, cast(object, native_module))
@@ -419,6 +489,30 @@ def _load_result_object(result_text: str, label: str) -> JsonObject:
         coerce_json_value(cast(object, json.loads(result_text))),
         label,
     )
+
+
+def _native_storage_error(raw_text: str) -> NativeScopeIndexStorageError:
+    """把 Rust storage 结构化错误转成带 code 的 Python 异常。"""
+    try:
+        payload = ensure_json_object(
+            coerce_json_value(cast(object, json.loads(raw_text))),
+            "native_scope_index_storage_error",
+        )
+        error = ensure_json_object(payload["error"], "native_scope_index_storage_error.error")
+        code = error.get("code")
+        message = error.get("message")
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=raw_text)
+    if isinstance(message, str) and isinstance(code, str):
+        public_code = (
+            "mv_virtual_namebox_rules_invalid"
+            if code == "scope_index_rebuild_rules_unreadable" and "MV 虚拟名字框规则" in message
+            else code
+        )
+        return NativeScopeIndexStorageError(code=public_code, message=f"{message}（{public_code}）")
+    if isinstance(message, str):
+        return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=message)
+    return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=raw_text)
 
 
 def _read_object_array(result: JsonObject, field_name: str, label: str) -> list[JsonObject]:
@@ -451,6 +545,7 @@ __all__ = [
     "NativeRuleCandidatesResult",
     "NativeScopeGateResult",
     "NativeScopeIndexResult",
+    "NativeScopeIndexStorageError",
     "build_native_event_command_data_files",
     "build_native_event_command_candidates_payload",
     "build_native_mv_virtual_namebox_candidates_payload",
@@ -464,6 +559,10 @@ __all__ = [
     "build_native_scope_index",
     "build_native_structured_placeholder_candidates_payload",
     "evaluate_native_scope_gate",
+    "inspect_native_scope_index_storage",
     "mv_virtual_namebox_rule_records_to_native_rules",
+    "native_schema_fingerprint",
+    "rebuild_native_scope_index_storage",
     "scan_native_rule_candidates",
+    "write_native_scope_index_storage",
 ]

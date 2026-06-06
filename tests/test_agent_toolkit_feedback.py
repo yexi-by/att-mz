@@ -496,7 +496,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
                     translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
                     runtime_file_name="BadSource.js",
                     runtime_selector=runtime_literal.selector,
-                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
+                    runtime_file_hash=f"stale-{build_plugin_source_file_hash(runtime_source)}",
                     runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
                     runtime_line=runtime_literal.line,
                     created_at="2026-05-24T00:00:00",
@@ -523,6 +523,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
     diagnosis = ensure_json_object(diagnosis_item, "diagnosis_item")
     assert diagnosis["diagnosis_status"] == "mapped_translate"
     assert diagnosis["location_path"] == location_path
+    assert diagnosis["runtime_file_hash_matches"] is False
     assert diagnosis["current_translation_lines"] == ["努力忍耐着的\nn[0]君…真棒哦♥"]
     assert "无法反推" not in json.dumps(diagnosis, ensure_ascii=False)
 
@@ -763,7 +764,7 @@ async def test_diagnose_active_runtime_skips_translation_source_scan_when_source
                     translation_lines_hash=plugin_source_runtime_hash_lines(translation_item.translation_lines),
                     runtime_file_name="BadSource.js",
                     runtime_selector=runtime_literal.selector,
-                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
+                    runtime_file_hash=f"stale-{build_plugin_source_file_hash(runtime_source)}",
                     runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
                     runtime_line=runtime_literal.line,
                     created_at="2026-05-24T00:00:00",
@@ -1004,7 +1005,7 @@ async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime
                     translation_lines_hash=plugin_source_runtime_hash_lines([]),
                     runtime_file_name="BadSource.js",
                     runtime_selector=runtime_literal.selector,
-                    runtime_file_hash=build_plugin_source_file_hash(runtime_source),
+                    runtime_file_hash=f"stale-{build_plugin_source_file_hash(runtime_source)}",
                     runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
                     runtime_line=runtime_literal.line,
                     created_at="2026-05-24T00:00:00",

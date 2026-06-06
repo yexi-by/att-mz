@@ -245,6 +245,8 @@ def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonOb
         payload["text_index_status"] = summary.text_index_status
     if summary.text_index_rebuild_summary is not None:
         payload["text_index_rebuild_summary"] = summary.text_index_rebuild_summary
+    if summary.stage_timings is not None:
+        payload["stage_timings"] = summary.stage_timings
     return payload
 
 

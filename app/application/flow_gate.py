@@ -62,7 +62,7 @@ from app.rule_review import (
     structured_placeholder_rule_scope_hash,
 )
 from app.terminology import collect_terminology_bundle_errors
-from app.text_scope import TextScopeResult, TextScopeService, read_fresh_plugin_text_rules
+from app.text_scope import TextScopeResult, read_fresh_plugin_text_rules
 
 
 def collect_native_note_tag_candidate_details(*, game_data: GameData, text_rules: TextRules) -> JsonArray:
@@ -88,12 +88,8 @@ async def collect_workflow_gate_errors(
 ) -> list[WorkflowGateIssue]:
     """收集当前游戏不能继续翻译或写入的全部硬闸错误。"""
     if scope is None:
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-            translated_items=translated_items,
-        )
+        _ = translated_items
+        raise RuntimeError("collect_workflow_gate_errors 需要调用者传入 Rust/index 生成的文本范围，不能回退构建 Python 完整文本范围")
     errors: list[WorkflowGateIssue] = []
     if plugin_source_rule_gate_errors is None:
         errors.extend(

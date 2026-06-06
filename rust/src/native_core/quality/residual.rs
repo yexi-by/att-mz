@@ -92,6 +92,9 @@ pub(super) fn collect_residual_detail(
     rules: &CompiledRules,
     residual_rules: &IndexedResidualRules,
 ) -> Option<Value> {
+    if !translation_has_residual_candidate(&item.translation_lines, rules) {
+        return None;
+    }
     let allowed_terms = residual_rules
         .position_rules
         .get(&item.location_path)
@@ -136,6 +139,13 @@ pub(super) fn collect_residual_detail(
             Some(Value::Object(detail))
         }
     }
+}
+
+fn translation_has_residual_candidate(lines: &[String], rules: &CompiledRules) -> bool {
+    lines.iter().any(|line| {
+        let cleaned_line = strip_non_content_for_residual(line, rules);
+        rules.source_residual_segment_re.is_match(&cleaned_line)
+    })
 }
 
 fn mask_structural_terms(

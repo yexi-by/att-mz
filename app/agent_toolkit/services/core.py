@@ -11,7 +11,6 @@ from .common import (
     StructuredPlaceholderRule,
     TargetGameSession,
     TextRules,
-    TextScopeService,
     TranslationData,
     TranslationItem,
     build_source_residual_rule_records_from_import,
@@ -25,7 +24,12 @@ from .common import (
 from app.plugin_source_text import PluginSourceScan
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
-from app.text_index import detect_text_index_invalidations, text_index_item_to_translation_item
+from app.text_index import (
+    detect_text_index_invalidations,
+    rebuild_text_index_native_storage,
+    text_index_item_to_translation_item,
+    text_index_items_to_translation_data_map,
+)
 
 
 class CoreAgentMixin:
@@ -100,15 +104,34 @@ class CoreAgentMixin:
         text_rules: TextRules,
         plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
-        """按当前数据库规则提取本轮正文条目，不执行写入探针。"""
-        scope = await TextScopeService().build(
+        """兼容旧内部调用点，从 Rust 持久索引读取当前正文条目。"""
+        _ = (game_data, plugin_source_scan)
+        return await self._read_active_translation_data_map_from_text_index(
             session=session,
-            game_data=game_data,
             text_rules=text_rules,
-            include_write_probe=False,
-            plugin_source_scan=plugin_source_scan,
         )
-        return scope.translation_data_map
+
+    async def _read_active_translation_data_map_from_text_index(
+        self: AgentServiceContext,
+        *,
+        session: TargetGameSession,
+        text_rules: TextRules,
+    ) -> dict[str, TranslationData]:
+        """读取当前持久文本索引；失效时用 Rust 原生入口重建。"""
+        text_index_invalidations = await detect_text_index_invalidations(
+            session=session,
+            text_rules=text_rules,
+        )
+        if text_index_invalidations:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            _ = await rebuild_text_index_native_storage(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
+                include_write_probe=False,
+                source_branch_workflow_gates_prechecked=False,
+            )
+        return text_index_items_to_translation_data_map(await session.read_text_index_items())
 
     async def _build_source_residual_rule_records(
         self: AgentServiceContext,

@@ -95,6 +95,26 @@ pub fn evaluate_scope_gate_impl(payload_json: &str) -> Result<String, String> {
     scope_index::evaluate_scope_gate_impl(payload_json)
 }
 
+/// 返回 Python/Rust 共享 SQLite schema SQL 的 SHA-256 指纹。
+pub fn native_schema_fingerprint_impl() -> String {
+    scope_index::native_schema_fingerprint_impl()
+}
+
+/// 直读 Scope/Index Engine 所需的 DB 状态和游戏文件摘要。
+pub fn inspect_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::inspect_scope_index_storage_impl(payload_json)
+}
+
+/// 由 Rust 直接写入 text index 及摘要表。
+pub fn write_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::write_scope_index_storage_impl(payload_json)
+}
+
+/// Rust 直读 DB 和游戏目录并重建 text index 存储。
+pub fn rebuild_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::rebuild_scope_index_storage_impl(payload_json)
+}
+
 /// 读取原生核心配置的线程数覆盖值。
 pub fn read_configured_thread_count() -> Result<Option<usize>, String> {
     pool::read_configured_thread_count()

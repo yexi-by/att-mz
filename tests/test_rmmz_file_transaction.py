@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
+from app.agent_toolkit import AgentToolkitService
+from app.text_index import text_index_item_to_translation_item
 
 @pytest.mark.asyncio
 async def test_english_visible_401_short_fragment_is_extracted(
@@ -212,6 +214,26 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
                 for item in active_items
             ]
         )
+
+    _ = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title="テストゲーム")
+    async with await registry.open_game("テストゲーム") as session:
+        index_items = await session.read_text_index_items()
+        indexed_translation_items: list[TranslationItem] = []
+        for index_record in index_items:
+            item = text_index_item_to_translation_item(index_record)
+            item.translation_lines = (
+                ["但是——"]
+                if item.location_path == "CommonEvents.json/3/0"
+                else [
+                    _translated_test_line_preserving_controls(line, text_rules)
+                    for line in item.original_lines
+                ]
+            )
+            indexed_translation_items.append(item)
+        await session.write_translation_items(indexed_translation_items)
 
     handler = TranslationHandler(registry, LLMHandler())
     try:

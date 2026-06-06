@@ -34,39 +34,6 @@ from .source_snapshot_records import SourceSnapshotRecordSessionMixin
 from .session_utils import build_event_command_group_key, current_timestamp_text
 from .sql import (
     CHECK_CONNECTION_READABLE,
-    CREATE_SCHEMA_VERSION_TABLE,
-    CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE,
-    CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE,
-    CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE,
-    CREATE_FONT_REPLACEMENT_RECORDS_TABLE,
-    CREATE_LANGUAGE_SETTINGS_TABLE,
-    CREATE_LLM_FAILURES_TABLE,
-    CREATE_METADATA_TABLE,
-    CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
-    CREATE_NONSTANDARD_DATA_TEXT_RULES_TABLE,
-    CREATE_NOTE_TAG_TEXT_RULES_TABLE,
-    CREATE_PLACEHOLDER_RULES_TABLE,
-    CREATE_PLUGIN_TEXT_RULES_TABLE,
-    CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE,
-    CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE,
-    CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
-    CREATE_RULE_REVIEW_STATES_TABLE,
-    CREATE_SOURCE_SNAPSHOT_FILES_TABLE,
-    CREATE_SOURCE_RESIDUAL_RULES_TABLE,
-    CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE,
-    CREATE_STRUCTURED_PLACEHOLDER_RULES_TABLE,
-    CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
-    CREATE_TRANSLATION_RUNS_TABLE,
-    CREATE_TRANSLATION_TABLE,
-    CREATE_TEXT_INDEX_INVALIDATIONS_TABLE,
-    CREATE_TEXT_INDEX_DOMAIN_SUMMARY_TABLE,
-    CREATE_TEXT_INDEX_ITEMS_TABLE,
-    CREATE_TEXT_INDEX_META_TABLE,
-    CREATE_TEXT_INDEX_RULE_HIT_SUMMARY_TABLE,
-    CREATE_TEXT_INDEX_SCOPE_SUMMARY_TABLE,
-    CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE,
-    CREATE_TEXT_GLOSSARY_TERMS_TABLE,
-    CREATE_FIELD_TRANSLATION_TERMS_TABLE,
     CURRENT_SCHEMA_VERSION,
     EXPECTED_STATIC_TABLE_NAMES,
     DELETE_ALL_SOURCE_SNAPSHOT_FILES,
@@ -81,7 +48,7 @@ from .sql import (
     SELECT_TABLE_NAMES,
     UPSERT_LANGUAGE_SETTINGS,
     UPSERT_METADATA,
-    UPSERT_SCHEMA_VERSION,
+    current_schema_sql,
 )
 from .terminology_records import TerminologyRecordSessionMixin
 from .text_index_records import TextIndexRecordSessionMixin
@@ -313,43 +280,7 @@ def row_int_value(row: aiosqlite.Row, key: str) -> int:
 
 async def create_static_tables(connection: aiosqlite.Connection) -> None:
     """初始化当前数据库要求的全部静态表。"""
-    _ = await connection.execute(CREATE_SCHEMA_VERSION_TABLE)
-    _ = await connection.execute(CREATE_TRANSLATION_TABLE)
-    _ = await connection.execute(CREATE_METADATA_TABLE)
-    _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_NONSTANDARD_DATA_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE)
-    _ = await connection.execute(CREATE_SOURCE_SNAPSHOT_FILES_TABLE)
-    _ = await connection.execute(CREATE_NOTE_TAG_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE)
-    _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE)
-    _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE)
-    _ = await connection.execute(CREATE_FIELD_TRANSLATION_TERMS_TABLE)
-    _ = await connection.execute(CREATE_TEXT_GLOSSARY_TERMS_TABLE)
-    _ = await connection.execute(CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE)
-    _ = await connection.execute(CREATE_PLACEHOLDER_RULES_TABLE)
-    _ = await connection.execute(CREATE_STRUCTURED_PLACEHOLDER_RULES_TABLE)
-    _ = await connection.execute(CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE)
-    _ = await connection.execute(CREATE_SOURCE_RESIDUAL_RULES_TABLE)
-    _ = await connection.execute(CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE)
-    _ = await connection.execute(CREATE_RULE_REVIEW_STATES_TABLE)
-    _ = await connection.execute(CREATE_FONT_REPLACEMENT_RECORDS_TABLE)
-    _ = await connection.execute(CREATE_TRANSLATION_RUNS_TABLE)
-    _ = await connection.execute(CREATE_LLM_FAILURES_TABLE)
-    _ = await connection.execute(CREATE_TRANSLATION_QUALITY_ERRORS_TABLE)
-    _ = await connection.execute(CREATE_TEXT_INDEX_META_TABLE)
-    _ = await connection.execute(CREATE_TEXT_INDEX_ITEMS_TABLE)
-    _ = await connection.execute(CREATE_TEXT_INDEX_SCOPE_SUMMARY_TABLE)
-    _ = await connection.execute(CREATE_TEXT_INDEX_DOMAIN_SUMMARY_TABLE)
-    _ = await connection.execute(CREATE_TEXT_INDEX_RULE_HIT_SUMMARY_TABLE)
-    _ = await connection.execute(CREATE_TEXT_INDEX_INVALIDATIONS_TABLE)
-    _ = await connection.execute(
-        UPSERT_SCHEMA_VERSION,
-        (SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION),
-    )
+    _ = await connection.executescript(current_schema_sql())
     await connection.commit()
 
 

@@ -217,12 +217,25 @@ def test_legacy_plugin_source_scanner_helpers_are_not_public_or_production_paths
         assert marker not in scanner_source
         assert _python_paths_containing(marker, roots=(Path("app"),)) == set()
 
-    for function_name in (
-        "build_native_plugin_source_risk_report",
-        "build_native_plugin_source_ast_map_payload",
-        "build_native_plugin_source_scan",
-    ):
-        assert "scan_native_rule_candidates" in _call_names_for_function(native_source, function_name)
+    native_entrypoints = {
+        "build_native_plugin_source_risk_report": "build_native_plugin_source_risk_report_from_inputs",
+        "build_native_plugin_source_ast_map_payload": "build_native_plugin_source_ast_map_payload_from_inputs",
+        "build_native_plugin_source_scan": "",
+    }
+    for function_name, delegated_function_name in native_entrypoints.items():
+        call_names = _call_names_for_function(native_source, function_name)
+        if "scan_native_rule_candidates" in call_names:
+            continue
+        assert delegated_function_name
+        assert delegated_function_name in call_names
+        delegated_call_names = _call_names_for_function(native_source, delegated_function_name)
+        if "scan_native_rule_candidates" in delegated_call_names:
+            continue
+        assert "build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs" in delegated_call_names
+        assert "scan_native_rule_candidates" in _call_names_for_function(
+            native_source,
+            "build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs",
+        )
 
 
 def test_nonstandard_data_scanner_helpers_are_not_package_root_exports() -> None:
@@ -290,6 +303,50 @@ def test_current_runtime_and_p1c_commands_do_not_rebuild_text_scope_by_default()
     assert "TextScopeService" not in language_probe
 
 
+def test_agent_toolkit_scope_map_helper_uses_rust_text_index_not_python_scope_build() -> None:
+    """Agent 小命令读取正文事实时不能回退到 Python 完整文本范围构建。"""
+    core_source = Path("app/agent_toolkit/services/core.py").read_text(encoding="utf-8")
+
+    extract_source = _source_for_function(core_source, "_extract_active_translation_data_map")
+    read_index_source = _source_for_function(core_source, "_read_active_translation_data_map_from_text_index")
+    read_index_calls = _call_names_for_function(core_source, "_read_active_translation_data_map_from_text_index")
+
+    assert "TextScopeService" not in extract_source
+    assert "TextScopeService" not in read_index_source
+    assert "rebuild_text_index_native_storage" in read_index_calls
+    assert "text_index_items_to_translation_data_map" in read_index_calls
+
+
+def test_batch7_production_paths_do_not_keep_python_text_scope_fallbacks() -> None:
+    """批次 7 后核心生产路径不得保留旧 Python 完整文本范围回退入口。"""
+    production_paths = (
+        Path("app/application/handler.py"),
+        Path("app/application/flow_gate.py"),
+        Path("app/application/write_back_gate.py"),
+        Path("app/agent_toolkit/services/coverage.py"),
+        Path("app/agent_toolkit/services/quality.py"),
+        Path("app/text_index.py"),
+    )
+    for path in production_paths:
+        source = path.read_text(encoding="utf-8")
+        assert "TextScopeService" not in source, path.as_posix()
+
+    text_index_source = Path("app/text_index.py").read_text(encoding="utf-8")
+    text_index_exports = _exported_names(Path("app/text_index.py"))
+    assert "async def rebuild_text_index(" not in text_index_source
+    assert "rebuild_text_index" not in text_index_exports
+    assert "build_text_index_workflow_gate_scope_hashes" not in text_index_source
+    assert "build_text_index_workflow_gate_scope_hashes" not in text_index_exports
+    for old_bridge_marker in (
+        "_scope_index_payload_from_scope",
+        "_text_index_records_from_native_rows",
+        "_scope_summary_record_from_native",
+        "_domain_summary_records_from_native",
+        "_rule_hit_summary_records_from_native",
+    ):
+        assert old_bridge_marker not in text_index_source
+
+
 def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> None:
     """工作区、MV 虚拟名字框和插件配置导出保持薄适配当前边界。"""
     workspace_source = Path("app/agent_toolkit/services/workspace.py").read_text(encoding="utf-8")
@@ -299,11 +356,13 @@ def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> N
 
     workspace_index_calls = _call_names_for_function(
         workspace_source,
-        "_read_workspace_translation_data_map_from_text_index",
+        "_read_workspace_placeholder_entries_from_text_index",
     )
     assert "detect_text_index_invalidations" in workspace_index_calls
-    assert "rebuild_persistent_text_index" in workspace_index_calls
-    assert "text_index_items_to_translation_data_map" in workspace_index_calls
+    assert "rebuild_text_index_native_storage" in workspace_index_calls
+    assert "rebuild_persistent_text_index" not in workspace_source
+    assert "read_text_index_placeholder_texts" in workspace_index_calls
+    assert "text_index_items_to_translation_data_map" not in workspace_source
 
     assert "scan_native_rule_candidates" in _call_names_for_function(mv_native_source, "scan_native_mv_virtual_namebox")
     assert "collect_mv_virtual_namebox_candidates" not in mv_native_source

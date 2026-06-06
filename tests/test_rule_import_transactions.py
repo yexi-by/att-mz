@@ -19,7 +19,6 @@ from app.plugin_source_text import (
 from app.rmmz import load_game_data
 from app.rmmz.schema import PluginSourceRuntimeWriteMapRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array
-from app.rule_review import PLUGIN_SOURCE_TEXT_RULE_DOMAIN, RuleReviewDomain
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -98,19 +97,14 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         await session.write_translation_items([old_item])
         await session.replace_plugin_source_runtime_write_maps([runtime_map])
 
-    real_delete_rule_review_state = TargetGameSession.delete_rule_review_state
-
-    async def failing_delete_rule_review_state(
+    async def failing_clear_runtime_maps(
         self: TargetGameSession,
-        *,
-        rule_domain: RuleReviewDomain,
     ) -> None:
-        """模拟规则替换后、审查状态更新前的尾部失败。"""
-        if rule_domain == PLUGIN_SOURCE_TEXT_RULE_DOMAIN:
-            raise RuntimeError("forced rule import tail failure")
-        await real_delete_rule_review_state(self, rule_domain=rule_domain)
+        """模拟规则替换后、运行映射清理前的尾部失败。"""
+        _ = self
+        raise RuntimeError("forced rule import tail failure")
 
-    monkeypatch.setattr(TargetGameSession, "delete_rule_review_state", failing_delete_rule_review_state)
+    monkeypatch.setattr(TargetGameSession, "clear_plugin_source_runtime_write_maps", failing_clear_runtime_maps)
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     new_rules_text = json.dumps(
         [
@@ -134,4 +128,3 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         assert await session.read_plugin_source_text_rules() == old_records
         assert [item.location_path for item in await session.read_translated_items()] == [old_item.location_path]
         assert await session.read_plugin_source_runtime_write_maps() == [runtime_map]
-        assert await session.read_rule_review_state(rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN) is None

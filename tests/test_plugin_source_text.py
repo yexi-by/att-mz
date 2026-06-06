@@ -10,7 +10,13 @@ import pytest
 
 import app.plugin_source_text as plugin_source_text_package
 import app.plugin_source_text.scanner as plugin_source_text_scanner
-from app.application.flow_gate import collect_workflow_gate_errors
+from app.application.flow_gate import (
+    collect_workflow_gate_errors,
+    event_command_rule_scope_hash_for_setting,
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
+)
 from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import Setting, TextRulesSetting
 from app.native_scope_index import (
@@ -38,6 +44,15 @@ from app.rmmz import load_active_game_data, load_game_data
 from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, PluginSourceTextRuleRecord, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    plugin_rule_scope_hash,
+)
+from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeService
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
@@ -99,6 +114,65 @@ def _forbid_legacy_plugin_source_scan(monkeypatch: pytest.MonkeyPatch) -> None:
         "app.plugin_source_text.importer.build_plugin_source_scan",
     ):
         monkeypatch.setattr(target, forbidden_scan, raising=False)
+
+
+async def _install_minimal_external_workflow_reviews(
+    *,
+    registry: GameRegistry,
+    game_title: str,
+    game_dir: Path,
+) -> None:
+    """为插件源码测试补齐无关外部规则 gate，隔离源码分支断言。"""
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    game_data = await load_game_data(game_dir)
+    text_rules = TextRules.from_setting(setting.text_rules)
+    async with await registry.open_game(game_title) as session:
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+            scope_hash=plugin_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+            scope_hash=event_command_rule_scope_hash_for_setting(
+                game_data=game_data,
+                setting=setting,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
+            reviewed_empty=True,
+        )
 
 
 def _create_test_source_snapshot(game_data: GameData) -> None:
@@ -350,8 +424,10 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_extraction_rejects_stale_rule_hash(minimal_game_dir: Path) -> None:
-    """插件源码文件变化后，提取阶段不能静默跳过过期 selector 规则。"""
+async def test_plugin_source_extraction_allows_stale_rule_hash_when_selector_matches(
+    minimal_game_dir: Path,
+) -> None:
+    """插件源码规则文件 hash 只做诊断；selector 和原文仍命中时可以继续提取。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
@@ -372,8 +448,49 @@ async def test_plugin_source_extraction_rejects_stale_rule_hash(minimal_game_dir
         selectors=[candidate.selector],
     )
 
+    extracted = PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()
+
+    item = extracted["js/plugins/HardcodedText.js"].translation_items[0]
+    assert item.location_path == plugin_source_location_path(
+        file_name="HardcodedText.js",
+        selector=candidate.selector,
+    )
+    assert item.original_lines == ["プラグイン直書き"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_extraction_rejects_missing_selector_after_source_change(
+    minimal_game_dir: Path,
+) -> None:
+    """插件源码规则 selector 失效时仍必须显式报过期。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    source_path = plugin_source_dir / "HardcodedText.js"
+    _ = source_path.write_text(
+        "const Messages = { title: 'プラグイン直書き' };\n",
+        encoding="utf-8",
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    initial_game_data = await load_game_data(minimal_game_dir)
+    initial_scan = build_native_plugin_source_scan(game_data=initial_game_data, text_rules=text_rules)
+    initial_candidate = next(candidate for candidate in initial_scan.candidates if candidate.file_name == "HardcodedText.js")
+    _ = source_path.write_text(
+        "const Messages = { title: '変更後プラグイン直書き' };\n",
+        encoding="utf-8",
+    )
+    changed_game_data = await load_game_data(minimal_game_dir)
+    record = PluginSourceTextRuleRecord(
+        file_name="HardcodedText.js",
+        file_hash="stale-hash",
+        selectors=[initial_candidate.selector],
+    )
+
     with pytest.raises(RuntimeError, match="插件源码规则已过期"):
-        _ = PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()
+        _ = PluginSourceTextExtraction(changed_game_data, [record], text_rules).extract_all_text()
 
 
 @pytest.mark.asyncio
@@ -458,6 +575,95 @@ async def test_plugin_source_write_back_returns_runtime_write_maps_after_length_
     second_record = next(record for record in translated_maps if record.source_selector == second_candidate.selector)
     assert second_record.runtime_selector != second_candidate.selector
     assert runtime_literals[second_record.runtime_selector].text == "短"
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_write_back_allows_stale_rule_file_hash_when_selector_and_text_match(
+    minimal_game_dir: Path,
+) -> None:
+    """Rust 写回不应因规则 file_hash 过旧阻断仍精确命中的 selector。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "HashOnlySource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HashOnlySource.js").write_text(
+        "const Messages = { line: 'ハッシュだけ古い' };\n",
+        encoding="utf-8",
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "HashOnlySource.js")
+    records = [
+        PluginSourceTextRuleRecord(
+            file_name="HashOnlySource.js",
+            file_hash="stale-hash",
+            selectors=[candidate.selector],
+        )
+    ]
+    item = PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()[
+        "js/plugins/HashOnlySource.js"
+    ].translation_items[0]
+    item.translation_lines = ["只有哈希旧"]
+
+    _create_test_source_snapshot(game_data)
+    reset_writable_copies(game_data)
+    runtime_write_maps = write_plugin_source_text(
+        game_data,
+        [item],
+        text_rules=text_rules,
+        plugin_source_rule_records=records,
+    )
+
+    assert "只有哈希旧" in game_data.writable_plugin_source_files["HashOnlySource.js"]
+    assert len(runtime_write_maps) == 1
+    assert runtime_write_maps[0].source_selector == candidate.selector
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_write_back_rejects_changed_original_text_even_when_selector_matches(
+    minimal_game_dir: Path,
+) -> None:
+    """Rust 写回仍必须用 TranslationItem.original_lines 防止旧译文写错文本。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "OriginalGuardSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "OriginalGuardSource.js").write_text(
+        "const Messages = { line: '原文ガード' };\n",
+        encoding="utf-8",
+    )
+    game_data = await load_game_data(minimal_game_dir)
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "OriginalGuardSource.js")
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "OriginalGuardSource.js")
+    records = [
+        PluginSourceTextRuleRecord(
+            file_name="OriginalGuardSource.js",
+            file_hash=file_scan.file_hash,
+            selectors=[candidate.selector],
+        )
+    ]
+    item = PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()[
+        "js/plugins/OriginalGuardSource.js"
+    ].translation_items[0]
+    item.original_lines = ["旧原文"]
+    item.translation_lines = ["错误译文"]
+
+    _create_test_source_snapshot(game_data)
+    reset_writable_copies(game_data)
+    with pytest.raises(ValueError, match="插件源码原文已变化"):
+        _ = write_plugin_source_text(
+            game_data,
+            [item],
+            text_rules=text_rules,
+            plugin_source_rule_records=records,
+        )
 
 
 @pytest.mark.asyncio
@@ -675,7 +881,7 @@ async def test_data_write_back_ignores_plugin_source_location_paths(minimal_game
     )
 
     _create_test_source_snapshot(game_data)
-    with pytest.raises(ValueError, match="插件源码文件不存在"):
+    with pytest.raises(ValueError, match="插件源码读取失败"):
         write_data_text(game_data, [item], text_rules=TextRules.from_setting(TextRulesSetting()))
 
 
@@ -1336,12 +1542,22 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_external_workflow_reviews(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         game_data = await load_game_data(session.game_path)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
         plugin_source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
 
         errors = await collect_workflow_gate_errors(
             session=session,
@@ -1349,6 +1565,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=scope,
             plugin_source_scan=plugin_source_scan,
         )
 
@@ -1406,12 +1623,18 @@ async def test_plugin_source_stale_rule_hash_blocks_workflow(
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         changed_game_data = await load_game_data(session.game_path)
         session.set_game_data(changed_game_data)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=changed_game_data,
+            text_rules=text_rules,
+        )
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=changed_game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=scope,
         )
 
     assert not any(error.code == "stale_plugin_source_rules" for error in errors)
@@ -1966,6 +2189,11 @@ async def test_quality_report_errors_when_high_risk_plugin_source_review_is_inco
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(records)
+    await _install_minimal_external_workflow_reviews(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
     report = await AgentToolkitService(
         game_registry=registry,
         setting_path=EXAMPLE_SETTING_PATH,
@@ -2392,6 +2620,11 @@ async def test_quality_report_uses_native_plugin_source_scan_before_branch_start
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_external_workflow_reviews(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
     _forbid_legacy_plugin_source_scan(monkeypatch)
 
     report = await AgentToolkitService(
@@ -2425,6 +2658,11 @@ async def test_quality_report_write_probe_loads_plugin_source_for_high_risk_gate
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_external_workflow_reviews(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
     native_scan_count = 0
 
     def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
@@ -2493,6 +2731,11 @@ async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(records)
+    await _install_minimal_external_workflow_reviews(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
     _forbid_legacy_plugin_source_scan(monkeypatch)
 
     def forbidden_write_probe_plugin_source_scan(
@@ -2515,8 +2758,9 @@ async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
         setting_path=EXAMPLE_SETTING_PATH,
     ).quality_report(game_title="テストゲーム", include_write_probe=True)
 
-    assert report.summary["plugin_source_reviewed_selector_count"] == len(scan.candidates)
-    assert report.summary["plugin_source_unreviewed_count"] == 0
+    assert report.summary["plugin_source_review_status"] == "prechecked_from_text_index"
+    assert "plugin_source_reviewed_selector_count" not in report.summary
+    assert "plugin_source_unreviewed_count" not in report.summary
 
 
 @pytest.mark.asyncio

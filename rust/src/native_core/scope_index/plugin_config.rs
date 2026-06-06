@@ -4,26 +4,28 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    RuleCandidateOutput, RuleCandidateTextRules, compile_rule_candidate_text_rules,
-    should_translate_plugin_source_text,
+use super::plugin_source::{
+    compile_rule_candidate_text_rules, sha256_text, should_translate_plugin_source_text,
 };
+use super::{RuleCandidateOutput, RuleCandidateTextRules};
 use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
 use crate::native_core::write_protocol::decode_json_container_text;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct PluginConfigInput {
-    plugin_index: usize,
-    plugin_name: String,
-    plugin: Value,
+    pub(super) plugin_index: usize,
+    pub(super) plugin_name: String,
+    pub(super) plugin: Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct PluginConfigRuleInput {
-    plugin_index: usize,
-    plugin_name: String,
+    pub(super) plugin_index: usize,
+    pub(super) plugin_name: String,
     #[serde(default)]
-    path_templates: Vec<String>,
+    pub(super) plugin_hash: Option<String>,
+    #[serde(default)]
+    pub(super) path_templates: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -519,10 +521,10 @@ fn extract_plugin_name(plugin: &Value, plugin_index: usize) -> String {
         .unwrap_or_else(|| format!("unnamed_plugin_{plugin_index}"))
 }
 
-fn plugin_hash(plugin: &Value) -> Result<String, String> {
+pub(super) fn plugin_hash(plugin: &Value) -> Result<String, String> {
     let canonical_text = serde_json::to_string(&canonicalize_json_value(plugin))
         .map_err(|error| format!("插件配置 hash JSON 序列化失败: {error}"))?;
-    Ok(super::sha256_text(&canonical_text))
+    Ok(sha256_text(&canonical_text))
 }
 
 fn canonicalize_json_value(value: &Value) -> Value {

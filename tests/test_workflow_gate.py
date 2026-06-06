@@ -8,6 +8,10 @@ import pytest
 
 from app.agent_toolkit import AgentToolkitService
 from app.application.handler import TranslationHandler, TranslationRunLimits
+from app.application.flow_gate import (
+    normal_placeholder_scope_hash,
+    structured_placeholder_scope_hash,
+)
 from app.utils.config_loader_utils import load_setting
 from app.llm import LLMHandler
 from app.note_tag_text.exporter import collect_note_tag_candidates
@@ -16,8 +20,14 @@ from app.plugin_text import build_plugin_hash
 from app.rmmz import load_game_data
 from app.rmmz.schema import EventCommandParameterFilter, EventCommandTextRuleRecord, PluginTextRuleRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
-from app.rule_review import NOTE_TAG_TEXT_RULE_DOMAIN, note_tag_rule_scope_hash_for_candidates
+from app.rule_review import (
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    note_tag_rule_scope_hash_for_candidates,
+)
 from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_scope import TextScopeService
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -111,6 +121,27 @@ async def _install_non_plugin_source_gate_prerequisites(
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
+            reviewed_empty=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -157,12 +188,12 @@ async def test_translate_max_items_blocks_unreviewed_high_risk_plugin_source(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_text_index_blocks_unreviewed_high_risk_plugin_source(
+async def test_rebuild_text_index_records_high_risk_plugin_source_without_python_gate(
     minimal_game_dir: Path,
     tmp_path: Path,
     app_home_with_example_setting: Path,
 ) -> None:
-    """重建文本索引也必须由 gate 自己识别无规则高风险插件源码。"""
+    """重建索引不再回退旧 Python 高风险插件源码 gate。"""
     _ = app_home_with_example_setting
     _add_high_risk_plugin_source(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
@@ -172,17 +203,17 @@ async def test_rebuild_text_index_blocks_unreviewed_high_risk_plugin_source(
         setting_path=EXAMPLE_SETTING_PATH,
     ).rebuild_text_index(game_title="テストゲーム")
 
-    assert report.status == "error"
-    assert {error.code for error in report.errors} == {"plugin_source_text_high_risk"}
+    assert report.status == "ok"
+    assert report.summary["index_status"] == "rebuilt"
 
 
 @pytest.mark.asyncio
-async def test_rebuild_text_index_blocks_unreviewed_high_risk_nonstandard_data(
+async def test_rebuild_text_index_records_high_risk_nonstandard_data_without_python_gate(
     minimal_game_dir: Path,
     tmp_path: Path,
     app_home_with_example_setting: Path,
 ) -> None:
-    """重建文本索引写入前必须阻断未归类的高风险非标准 data。"""
+    """重建索引不再回退旧 Python 高风险非标准 data gate。"""
     _ = app_home_with_example_setting
     _add_high_risk_nonstandard_data(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
@@ -192,5 +223,5 @@ async def test_rebuild_text_index_blocks_unreviewed_high_risk_nonstandard_data(
         setting_path=EXAMPLE_SETTING_PATH,
     ).rebuild_text_index(game_title="テストゲーム")
 
-    assert report.status == "error"
-    assert {error.code for error in report.errors} == {"nonstandard_data_high_risk"}
+    assert report.status == "ok"
+    assert report.summary["index_status"] == "rebuilt"

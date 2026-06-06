@@ -5,11 +5,23 @@
 import time
 
 from app.application.flow_gate import (
-    collect_nonstandard_data_workflow_gate_errors,
-    collect_plugin_source_workflow_gate_errors,
+    collect_indexed_workflow_gate_errors,
+    collect_workflow_gate_errors,
+    format_workflow_gate_error,
 )
-from app.rmmz.text_rules import JsonObject
-from app.text_index import rebuild_text_index as rebuild_persistent_text_index
+from app.native_scope_index import NativeScopeIndexStorageError
+from app.rmmz.text_rules import JsonArray, JsonObject
+from app.text_index import (
+    collect_text_index_external_rule_gate_errors,
+    collect_text_index_placeholder_gate_errors,
+    collect_text_index_scope_gate_errors,
+    mark_text_index_source_branch_gates_prechecked,
+    rebuild_text_index_native_storage,
+    refresh_text_index_external_rule_gate_metadata,
+    text_index_source_branch_gate_errors,
+    text_index_source_branch_gates_prechecked,
+    text_index_items_to_scope,
+)
 
 from .common import (
     AgentReport,
@@ -17,15 +29,11 @@ from .common import (
     QualityProgressCallbacks,
     SettingOverrides,
     TextRules,
-    TextScopeService,
     _noop_quality_progress_callbacks,
-    _text_scope_blocking_errors,
     issue,
     load_setting,
     native_thread_count,
-    rule_contract_issues_to_agent_issues,
 )
-from app.regex_contract import RegexContractValidationError
 
 
 class TextIndexAgentMixin:
@@ -58,7 +66,7 @@ class TextIndexAgentMixin:
                 "native_thread_count": native_thread_count(),
             }
 
-        set_progress(0, 5)
+        set_progress(0, 3)
         set_status("加载配置和规则")
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(
@@ -79,108 +87,138 @@ class TextIndexAgentMixin:
             advance_progress(1)
             finish_stage("load_config_and_rules")
 
-            set_status("加载翻译源视图")
-            game_data = await self._load_translation_source_game_data(
-                session,
-                include_plugin_source_files=True,
-            )
-            translated_items = await session.read_translated_items()
-            advance_progress(1)
-            finish_stage("load_translation_source")
-
-            set_status("构建统一文本范围")
+            set_status("原生重建持久文本范围索引")
             try:
-                scope = await TextScopeService().build(
+                metadata = await rebuild_text_index_native_storage(
                     session=session,
-                    game_data=game_data,
+                    setting=setting,
                     text_rules=text_rules,
-                    translated_items=translated_items,
+                    setting_overrides=setting_overrides,
                     include_write_probe=include_write_probe,
+                    source_branch_workflow_gates_prechecked=False,
                 )
-            except RegexContractValidationError as error:
-                finish_stage("build_text_scope")
-                set_progress(5, 5)
-                set_status("文本规则检查没通过，未重建文本范围索引")
+            except NativeScopeIndexStorageError as error:
+                error_message = str(error)
+                error_code = error.code
+                finish_stage("rust_rebuild_text_index")
+                set_progress(3, 3)
+                set_status("文本范围索引重建失败")
                 summary = base_summary()
                 summary.update(
                     {
-                        "index_status": "not_rebuilt",
+                        "index_status": "rebuild_failed",
                         "indexed_count": 0,
                         "index_item_count": 0,
                         "include_write_probe": include_write_probe,
                     }
                 )
                 return AgentReport.from_parts(
-                    errors=rule_contract_issues_to_agent_issues(error),
+                    errors=[issue(error_code, error_message)],
                     warnings=[],
                     summary=summary,
                     details={},
                 )
-            finish_stage("build_text_scope")
-            blocking_errors = _text_scope_blocking_errors(scope)
-            if blocking_errors:
-                set_progress(5, 5)
-                set_status("检查没通过，未重建文本范围索引")
+            except RuntimeError as error:
+                error_message = str(error)
+                error_code = (
+                    "mv_virtual_namebox_rules_invalid"
+                    if "MV 虚拟名字框规则" in error_message
+                    else "text_index_rebuild_failed"
+                )
+                finish_stage("rust_rebuild_text_index")
+                set_progress(3, 3)
+                set_status("文本范围索引重建失败")
                 summary = base_summary()
                 summary.update(
                     {
-                        "index_status": "not_rebuilt",
+                        "index_status": "rebuild_failed",
                         "indexed_count": 0,
+                        "index_item_count": 0,
                         "include_write_probe": include_write_probe,
                     }
                 )
                 return AgentReport.from_parts(
-                    errors=blocking_errors,
-                    warnings=[],
-                    summary=summary,
-                    details={},
-                )
-            workflow_gate_errors = [
-                *await collect_plugin_source_workflow_gate_errors(
-                    session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
-                ),
-                *await collect_nonstandard_data_workflow_gate_errors(
-                    session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
-                ),
-            ]
-            if workflow_gate_errors:
-                set_progress(5, 5)
-                set_status("工作流前置检查没通过，未重建文本范围索引")
-                summary = base_summary()
-                summary.update(
-                    {
-                        "index_status": "not_rebuilt",
-                        "indexed_count": 0,
-                        "include_write_probe": include_write_probe,
-                    }
-                )
-                return AgentReport.from_parts(
-                    errors=[issue(error.code, error.message) for error in workflow_gate_errors],
+                    errors=[issue(error_code, error_message)],
                     warnings=[],
                     summary=summary,
                     details={},
                 )
             advance_progress(1)
+            finish_stage("rust_rebuild_text_index")
 
-            set_status("写入持久文本范围索引")
-            metadata = await rebuild_persistent_text_index(
-                session=session,
-                game_data=game_data,
-                setting=setting,
-                text_rules=text_rules,
-                setting_overrides=setting_overrides,
-                scope=scope,
-                include_write_probe=include_write_probe,
-                source_branch_workflow_gates_prechecked=True,
-            )
-            advance_progress(1)
-            finish_stage("write_text_index")
+            set_status("检查源分支前置条件")
+            source_branch_gate_summary: str | None = None
+            source_branch_gate_details: JsonArray = []
+            if text_index_source_branch_gates_prechecked(metadata):
+                external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+                    session=session,
+                    metadata=metadata,
+                )
+                source_branch_gate_status = "prechecked_from_previous_index"
+                placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
+                    session=session,
+                    metadata=metadata,
+                    custom_placeholder_rules_supplied=False,
+                )
+                text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+                workflow_gate_errors = await collect_indexed_workflow_gate_errors(
+                    session=session,
+                    text_rules=text_rules,
+                    custom_placeholder_rules_supplied=False,
+                    scope=None,
+                    plugin_source_rule_gate_errors=[],
+                    nonstandard_data_rule_gate_errors=[],
+                    external_rule_gate_errors=external_rule_gate_errors,
+                    placeholder_gate_errors=placeholder_gate_errors,
+                    text_scope_gate_errors=text_scope_gate_errors,
+                )
+                stage_timings["source_branch_workflow_gate"] = 0
+                if workflow_gate_errors:
+                    source_branch_gate_status = "needs_review"
+                    source_branch_gate_summary = format_workflow_gate_error(workflow_gate_errors)
+                    source_branch_gate_details = [
+                        {"code": item.code, "message": item.message}
+                        for item in workflow_gate_errors
+                    ]
+            else:
+                stage_started = time.perf_counter()
+                index_items = await session.read_text_index_items()
+                scope = text_index_items_to_scope(index_items)
+                game_data = await self._load_translation_source_game_data(
+                    session,
+                    include_plugin_source_files=True,
+                )
+                workflow_gate_errors = await collect_workflow_gate_errors(
+                    session=session,
+                    game_data=game_data,
+                    setting=setting,
+                    text_rules=text_rules,
+                    custom_placeholder_rules_supplied=False,
+                    scope=scope,
+                )
+                metadata = await refresh_text_index_external_rule_gate_metadata(
+                    session=session,
+                    metadata=metadata,
+                    game_data=game_data,
+                    setting=setting,
+                    text_rules=text_rules,
+                )
+                source_branch_gate_status = "prechecked"
+                if workflow_gate_errors:
+                    source_branch_gate_status = "needs_review"
+                    source_branch_gate_summary = format_workflow_gate_error(workflow_gate_errors)
+                    source_branch_gate_details = [
+                        {"code": item.code, "message": item.message}
+                        for item in workflow_gate_errors
+                    ]
+                if not text_index_source_branch_gate_errors(workflow_gate_errors):
+                    metadata = await mark_text_index_source_branch_gates_prechecked(
+                        session=session,
+                        metadata=metadata,
+                    )
+                stage_timings["source_branch_workflow_gate"] = int((time.perf_counter() - stage_started) * 1000)
 
-        set_progress(5, 5)
+        set_progress(3, 3)
         set_status("文本范围索引重建完成")
         summary = base_summary()
         summary.update(
@@ -192,14 +230,17 @@ class TextIndexAgentMixin:
                 "rules_fingerprint": metadata.rules_fingerprint,
                 "created_at": metadata.created_at,
                 "include_write_probe": include_write_probe,
+                "source_branch_gate_status": source_branch_gate_status,
                 "performance_notes": [
-                    "首次重建会完整扫描翻译源视图；后续小任务应复用 warm index。",
+                    "首次重建由 Rust 直读游戏目录并写入持久索引；后续小任务应复用 warm index。",
                 ],
             }
         )
+        if source_branch_gate_summary is not None:
+            summary["source_branch_gate_summary"] = source_branch_gate_summary
         return AgentReport.from_parts(
             errors=[],
             warnings=[],
             summary=summary,
-            details={},
+            details={"source_branch_gate_errors": source_branch_gate_details},
         )

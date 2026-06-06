@@ -101,11 +101,6 @@ pub(super) fn write_single_plugin_source_file(
         return Err(format!("插件源码 JS 语法检查失败: {file_name}"));
     }
     let source_file_hash = sha256_text(source);
-    if let Some(rule_record) = rule
-        && rule_record.file_hash != source_file_hash
-    {
-        return Err(format!("插件源码规则文件哈希已失效: {file_name}"));
-    }
     let mut spans_by_selector: HashMap<String, (JavaScriptStringSpan, String, String)> =
         HashMap::new();
     for span in scan.spans {

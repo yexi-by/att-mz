@@ -106,7 +106,7 @@ description: 仅在用户明确要求使用 A.T.T MZ 发行版执行或继续 RP
 ## 写进游戏文件前硬门槛
 
 - 用户明确允许写回。
-- `audit-coverage` 和 `quality-report` 没有 error；需要在检查报告里查看写入可行性时加 `--include-write-probe`；普通写回和重建当前运行文件都要求当前规则范围内正文译文完整，并会执行写文件前检查。
+- `audit-coverage` 没有 error；需要确认写回级风险时运行 `quality-report --include-write-probe`，它会执行 Rust 写回级检查。`text-scope` / `audit-coverage --include-write-probe` 只在报告里标记索引可写状态，不额外执行写回级检查。普通写回和重建当前运行文件都要求当前规则范围内正文译文完整，并会执行写文件前检查。
 - `write-terminology` 是术语专用写入，只允许正文仍有还没成功保存译文的文本；术语表、规则前置、可信源快照、写入目标和已保存译文质量仍必须通过检查。
 - 若当前运行文件已损坏，需要从可信源快照和已保存译文记录重建，使用 `rebuild-active-runtime`；普通写入和重建都必须先通过写文件前检查，并在写入后验收当前运行文件。
 - `audit-active-runtime` 默认只把当前运行插件源码读取失败和 JS 语法错误当作完成阻断；插件源码文本支线已启动或已有写回映射时，才把可确定属于已管理 selector 的坏控制符、已翻译文本残留和未映射残留纳入诊断。若命令有 error，先运行 `diagnose-active-runtime --output <诊断文件>`。诊断只解释会阻止写入验收的问题，并使用写回映射精确反推已保存译文记录；`mapped_excluded` 表示已审查但不翻译，不能加入重置清单；没有写回映射时只报告无法反推，禁止按当前 JS 文本、行号、上下文或 AST 顺序猜测。JS 语法错误和文件读取失败没有字符串 selector，只能先恢复或修复当前运行文件。其他修复必须落到规则、已保存译文记录、重置或手动导入，再重新写回。

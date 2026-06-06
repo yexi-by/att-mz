@@ -16,7 +16,6 @@ from .common import (
     _build_placeholder_coverage_report_with_context,
     _build_structured_placeholder_coverage_report_with_context,
     _build_unprotected_control_warnings,
-    _collect_unprotected_control_warning_samples,
     _joined_text_boundary_markers_from_details,
     _validate_placeholder_rules_with_context,
     _validate_structured_placeholder_rules_with_context,
@@ -28,13 +27,12 @@ from .common import (
     load_setting,
 )
 from app.native_placeholder_scan import (
-    collect_native_placeholder_candidate_details,
+    collect_native_placeholder_candidate_details_from_entries,
     count_uncovered_placeholder_candidate_details,
 )
 from app.application.flow_gate import (
     build_normal_placeholder_coverage_result,
     build_structured_placeholder_coverage_result,
-    collect_external_text_rule_gate_errors,
     ensure_empty_rule_import_allowed,
 )
 from app.persistence import RuleImportUnitOfWork
@@ -43,7 +41,13 @@ from app.rule_review import (
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
 )
 from app.rule_review_decision import RuleCoverageResult
-from app.text_index import detect_text_index_invalidations, text_index_items_to_translation_data_map
+from app.text_index import (
+    collect_text_index_external_rule_gate_errors,
+    detect_text_index_invalidations,
+    rebuild_text_index_native_storage,
+    refresh_text_index_external_rule_gate_metadata,
+    text_index_items_to_translation_data_map,
+)
 
 
 class PlaceholderRuleAgentMixin:
@@ -73,10 +77,8 @@ class PlaceholderRuleAgentMixin:
                 text_rules=text_rules,
             )
             if text_index_invalidations:
-                game_data = await self._load_translation_source_game_data(session)
-                translation_data_map = await self._extract_active_translation_data_map(
+                translation_data_map = await self._read_active_translation_data_map_from_text_index(
                     session=session,
-                    game_data=game_data,
                     text_rules=text_rules,
                 )
             else:
@@ -369,10 +371,8 @@ class PlaceholderRuleAgentMixin:
                     structured_placeholder_rules=structured_rules,
                 )
                 if not sample_texts:
-                    game_data = await self._load_translation_source_game_data(session)
-                    translation_data_map = await self._extract_active_translation_data_map(
+                    translation_data_map = await self._read_active_translation_data_map_from_text_index(
                         session=session,
-                        game_data=game_data,
                         text_rules=text_rules,
                     )
                 else:
@@ -422,10 +422,8 @@ class PlaceholderRuleAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
-                translation_data_map = await self._extract_active_translation_data_map(
+                translation_data_map = await self._read_active_translation_data_map_from_text_index(
                     session=session,
-                    game_data=game_data,
                     text_rules=text_rules,
                 )
         except Exception as error:
@@ -478,10 +476,8 @@ class PlaceholderRuleAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
-                translation_data_map = await self._extract_active_translation_data_map(
+                translation_data_map = await self._read_active_translation_data_map_from_text_index(
                     session=session,
-                    game_data=game_data,
                     text_rules=text_rules,
                 )
                 validation_report = _validate_structured_placeholder_rules_with_context(
@@ -628,12 +624,48 @@ class PlaceholderRuleAgentMixin:
                 custom_placeholder_rules=(),
                 structured_placeholder_rules=structured_rules,
             )
-            game_data = await self._load_translation_source_game_data(session)
-            external_rule_errors = await collect_external_text_rule_gate_errors(
+            text_index_invalidations = await detect_text_index_invalidations(
                 session=session,
-                game_data=game_data,
-                setting=setting,
                 text_rules=empty_rules,
+            )
+            metadata = await session.read_text_index_metadata()
+            if text_index_invalidations:
+                metadata = await rebuild_text_index_native_storage(
+                    session=session,
+                    setting=setting,
+                    text_rules=empty_rules,
+                    include_write_probe=False,
+                    source_branch_workflow_gates_prechecked=False,
+                )
+                game_data = await self._load_translation_source_game_data(
+                    session,
+                    include_plugin_source_files=False,
+                )
+                metadata = await refresh_text_index_external_rule_gate_metadata(
+                    session=session,
+                    metadata=metadata,
+                    game_data=game_data,
+                    setting=setting,
+                    text_rules=empty_rules,
+                )
+            if metadata is None:
+                return AgentReport.from_parts(
+                    errors=[issue("text_index_missing", "当前游戏尚未建立持久文本范围索引，请先重建文本范围索引")],
+                    warnings=[],
+                    summary={
+                        "game": game_title,
+                        "candidate_count": 0,
+                        "uncovered_count_before_draft": 0,
+                        "uncovered_count_after_draft_preview": 0,
+                        "draft_rule_count": 0,
+                        "manual_boundary_candidate_count": 0,
+                        "output": str(output_path),
+                    },
+                    details={},
+                )
+            external_rule_errors = await collect_text_index_external_rule_gate_errors(
+                session=session,
+                metadata=metadata,
             )
             if external_rule_errors:
                 return AgentReport.from_parts(
@@ -650,13 +682,9 @@ class PlaceholderRuleAgentMixin:
                     },
                     details={},
                 )
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=empty_rules,
-            )
-        candidate_details = collect_native_placeholder_candidate_details(
-            translation_data_map=translation_data_map,
+            placeholder_entries = await session.read_text_index_placeholder_texts()
+        candidate_details = collect_native_placeholder_candidate_details_from_entries(
+            entries=placeholder_entries,
             text_rules=empty_rules,
         )
         uncovered_count_before_draft = count_uncovered_placeholder_candidate_details(candidate_details)
@@ -668,15 +696,15 @@ class PlaceholderRuleAgentMixin:
             custom_placeholder_rules=draft_custom_rules,
             structured_placeholder_rules=structured_rules,
         )
-        draft_preview_candidate_details = collect_native_placeholder_candidate_details(
-            translation_data_map=translation_data_map,
+        draft_preview_candidate_details = collect_native_placeholder_candidate_details_from_entries(
+            entries=placeholder_entries,
             text_rules=draft_text_rules,
         )
         uncovered_count_after_draft_preview = count_uncovered_placeholder_candidate_details(
             draft_preview_candidate_details
         )
         warnings = _build_unprotected_control_warnings(
-            _collect_unprotected_control_warning_samples(translation_data_map, empty_rules),
+            _collect_unprotected_control_warning_samples_from_entries(placeholder_entries, empty_rules),
             empty_rules,
         )
         warnings.extend(_build_joined_text_boundary_warnings(manual_boundary_markers))
@@ -701,6 +729,22 @@ class PlaceholderRuleAgentMixin:
                 "manual_boundary_candidates": [marker for marker in manual_boundary_markers],
             },
         )
+
+
+def _collect_unprotected_control_warning_samples_from_entries(
+    entries: Sequence[tuple[str, Sequence[str]]],
+    text_rules: TextRules,
+) -> list[str]:
+    """从轻量索引正文收集裸露控制符边界风险样本。"""
+    samples: list[str] = []
+    for _location_path, original_lines in entries:
+        for text in original_lines:
+            if not text_rules.iter_unprotected_control_sequence_candidates(text):
+                continue
+            samples.append(text)
+            if len(samples) >= 10:
+                return samples
+    return samples
 
 
 def _structured_placeholder_rule_records_from_runtime(

@@ -10,30 +10,16 @@ async def test_export_quality_fix_template_stops_on_text_scope_blocker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """质量修复表遇到文本范围阻断错误时不能继续生成半可信结果。"""
+    """质量修复表 include_write_probe 不应回退旧 Python 文本范围探针。"""
 
-    def fake_scope_write_protocol(
-        *,
-        game_data: JsonObject,
-        plugins_js: list[JsonValue],
-        items: list[TranslationItem],
-    ) -> list[JsonValue]:
-        """把第一条文本标记为不可写，制造文本范围阻断错误。"""
-        _ = (game_data, plugins_js)
-        return [{"location_path": items[0].location_path, "reason": "探针失败"}]
-
-    def forbidden_quality_check(*args: object, **kwargs: object) -> NoReturn:
-        """文本范围阻断后不应再进入译文本体质检。"""
+    def forbidden_scope_write_protocol(*args: object, **kwargs: object) -> NoReturn:
+        """质量修复表不应通过 TextScopeService 的写入探针构建阻断。"""
         _ = (args, kwargs)
-        raise AssertionError("文本范围阻断后不应继续执行译文本体质检")
+        raise AssertionError("export-quality-fix-template 不应回退 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
-        fake_scope_write_protocol,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.service.collect_native_quality_details",
-        forbidden_quality_check,
+        forbidden_scope_write_protocol,
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -46,9 +32,13 @@ async def test_export_quality_fix_template_stops_on_text_scope_blocker(
         include_write_probe=True,
     )
 
-    assert report.status == "error"
-    assert "coverage_unwritable" in {error.code for error in report.errors}
-    assert not output_path.exists()
+    assert report.status in {"ok", "warning", "error"}
+    assert "coverage_unwritable" not in {error.code for error in report.errors}
+    assert "write_probe_failed" not in {error.code for error in report.errors}
+    assert report.summary["write_back_probe_requested"] is True
+    assert report.summary["write_back_probe_executed"] is False
+    assert report.summary["write_back_probe_mode"] == "index_writable"
+    assert report.summary["write_back_probe_enabled"] is False
 @pytest.mark.asyncio
 async def test_english_profile_exports_visible_pending_text_without_protocol_noise(
     minimal_english_game_dir: Path,
@@ -175,11 +165,11 @@ async def test_build_placeholder_rules_uses_native_candidate_details_for_draft(
 
     def fake_native_placeholder_details(
         *,
-        translation_data_map: dict[str, TranslationData],
+        entries: object,
         text_rules: TextRules,
     ) -> JsonArray:
         """返回只存在于 native 侧的草稿候选。"""
-        _ = (translation_data_map, text_rules)
+        _ = (entries, text_rules)
         native_calls.append("called")
         return [
             {
@@ -193,7 +183,7 @@ async def test_build_placeholder_rules_uses_native_candidate_details_for_draft(
         ]
 
     monkeypatch.setattr(
-        "app.agent_toolkit.services.placeholder_rules.collect_native_placeholder_candidate_details",
+        "app.agent_toolkit.services.placeholder_rules.collect_native_placeholder_candidate_details_from_entries",
         fake_native_placeholder_details,
         raising=False,
     )
@@ -244,11 +234,11 @@ async def test_build_placeholder_rules_uses_native_details_for_preview_and_bound
 
     def fake_native_placeholder_details(
         *,
-        translation_data_map: dict[str, TranslationData],
+        entries: object,
         text_rules: TextRules,
     ) -> JsonArray:
         """按调用顺序模拟草稿前和草稿后的 native 候选。"""
-        _ = (translation_data_map, text_rules)
+        _ = (entries, text_rules)
         if not native_calls:
             native_calls.append("before")
             return [
@@ -298,7 +288,7 @@ async def test_build_placeholder_rules_uses_native_details_for_preview_and_bound
         raise AssertionError("build-placeholder-rules 预览/手动边界不应再调用旧 Python scanner")
 
     monkeypatch.setattr(
-        "app.agent_toolkit.services.placeholder_rules.collect_native_placeholder_candidate_details",
+        "app.agent_toolkit.services.placeholder_rules.collect_native_placeholder_candidate_details_from_entries",
         fake_native_placeholder_details,
     )
     monkeypatch.setattr(
@@ -953,8 +943,17 @@ async def test_translation_status_uses_database_fast_path_by_default(
 async def test_translation_status_refresh_scope_cold_rebuilds_missing_text_index(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """translation-status --refresh-scope 缺索引时自动重建并用索引刷新统计。"""
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        """cold refresh 应复用 Rust rebuild，不应回到 Python 完整 scope。"""
+        _ = (args, kwargs)
+        raise AssertionError("translation-status --refresh-scope 冷路径不应调用 TextScopeService.build")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:

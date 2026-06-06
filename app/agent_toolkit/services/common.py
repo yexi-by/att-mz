@@ -34,7 +34,9 @@ from app.config.environment import load_environment_overrides
 from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.llm import ChatMessage, LLMHandler
 from app.native_quality import (
+    NativeQualityCounts,
     NativeQualityDetails,
+    collect_native_quality_counts,
     collect_native_quality_details,
     collect_native_write_protocol_details,
     native_thread_count,
@@ -167,7 +169,6 @@ from app.source_residual import (
 from app.text_scope import (
     TextScopeEntry,
     TextScopeResult,
-    TextScopeService,
     TextSourceType,
     collect_translation_data_paths,
     read_fresh_plugin_text_rules,
@@ -229,6 +230,15 @@ class AgentServiceContext(Protocol):
         plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
         """按当前规则提取本轮可处理文本。"""
+        ...
+
+    async def _read_active_translation_data_map_from_text_index(
+        self,
+        *,
+        session: TargetGameSession,
+        text_rules: TextRules,
+    ) -> dict[str, TranslationData]:
+        """从持久文本索引读取本轮可处理文本。"""
         ...
 
     async def rebuild_text_index(
@@ -459,6 +469,30 @@ def collect_agent_service_native_quality_details(
     )
 
 
+def collect_agent_service_native_quality_counts(
+    *,
+    items: list[TranslationItem],
+    text_rules: TextRules,
+    source_residual_rules: list[SourceResidualRuleRecord],
+) -> NativeQualityCounts:
+    """读取服务门面上的可替换 Rust 质检计数函数并执行。"""
+    service_module = sys.modules.get("app.agent_toolkit.service")
+    if service_module is not None:
+        candidate = cast(object, service_module.__dict__.get("collect_native_quality_counts"))
+        if candidate is not None and candidate is not collect_native_quality_counts and callable(candidate):
+            native_quality_func = cast(Callable[..., NativeQualityCounts], candidate)
+            return native_quality_func(
+                items=items,
+                text_rules=text_rules,
+                source_residual_rules=source_residual_rules,
+            )
+    return collect_native_quality_counts(
+        items=items,
+        text_rules=text_rules,
+        source_residual_rules=source_residual_rules,
+    )
+
+
 def collect_agent_service_native_write_protocol_details(
     *,
     game_data: JsonObject,
@@ -639,6 +673,7 @@ async def _write_terminology_subtask_files(*, field_terms_path: Path, subtasks_d
 def _agent_workflow_manifest(
     *,
     engine_kind: str,
+    include_mv_virtual_namebox_round: bool = True,
     terminology_subtask_summary: JsonObject,
 ) -> JsonObject:
     """生成写入 manifest 的 Agent 工作流说明。"""
@@ -671,7 +706,7 @@ def _agent_workflow_manifest(
             "description": "两轮子代理任务全部完成并导入后，主代理才能亲自生成、审查、覆盖扫描、校验并导入占位符规则。",
         },
     }
-    if engine_kind == "mv":
+    if engine_kind == "mv" and include_mv_virtual_namebox_round:
         manifest["main_agent_rounds"] = [
             {
                 "round": 0,
@@ -1223,10 +1258,26 @@ def text_index_records_to_scope(
     return TextScopeResult(translation_data_map=translation_data_map, entries=entries)
 
 
+def write_back_probe_report_fields(
+    *,
+    requested: bool,
+    executed: bool,
+    mode: str,
+) -> JsonObject:
+    """统一渲染写回探针请求、执行和模式字段。"""
+    return {
+        "write_back_probe_requested": requested,
+        "write_back_probe_executed": executed,
+        "write_back_probe_mode": mode,
+        "write_back_probe_enabled": executed,
+    }
+
+
 def build_text_index_text_scope_report(
     *,
     index_records: list[TextIndexItemRecord],
     translated_items: list[TranslationItem],
+    include_write_probe: bool = False,
 ) -> AgentReport:
     """用持久索引生成默认文本清单报告，不读取游戏文件。"""
     translated_paths = {item.location_path for item in translated_items}
@@ -1240,6 +1291,11 @@ def build_text_index_text_scope_report(
         if not entry.enters_translation
     ]
     unwritable_entries = scope.unwritable_entries
+    probe_fields = write_back_probe_report_fields(
+        requested=include_write_probe,
+        executed=False,
+        mode="index_writable" if include_write_probe else "disabled",
+    )
     return AgentReport.from_parts(
         errors=_text_scope_blocking_errors(scope),
         warnings=[],
@@ -1252,7 +1308,7 @@ def build_text_index_text_scope_report(
             "inactive_rule_hit_count": len(inactive_entries),
             "stale_plugin_rule_count": len(scope.stale_plugin_rules),
             "write_back_probe_failed": bool(scope.write_back_probe_error),
-            "write_back_probe_enabled": scope.write_back_probe_enabled,
+            **probe_fields,
             "text_index_status": "used",
         },
         details={
@@ -1260,7 +1316,7 @@ def build_text_index_text_scope_report(
             "unwritable_items": [entry.to_json_object() for entry in unwritable_entries],
             "stale_plugin_rules": scope.stale_plugin_rules_json(),
             "write_back_probe_error": scope.write_back_probe_error,
-            "write_back_probe_enabled": scope.write_back_probe_enabled,
+            **probe_fields,
         },
     )
 
@@ -1272,6 +1328,7 @@ def build_text_index_coverage_report(
     *,
     index_records: list[TextIndexItemRecord],
     translated_items: list[TranslationItem],
+    include_write_probe: bool = False,
 ) -> AgentReport:
     """用持久索引生成轻量覆盖结果，避免构造完整 Python scope。"""
     errors: list[AgentIssue] = []
@@ -1310,6 +1367,11 @@ def build_text_index_coverage_report(
     if stale_count:
         errors.append(issue("stale_saved_translations", f"发现 {stale_count} 条已保存译文不在当前可写范围内"))
 
+    probe_fields = write_back_probe_report_fields(
+        requested=include_write_probe,
+        executed=False,
+        mode="index_writable" if include_write_probe else "disabled",
+    )
     return AgentReport.from_parts(
         errors=errors,
         warnings=[],
@@ -1324,7 +1386,7 @@ def build_text_index_coverage_report(
             "stale_translation_count": stale_count,
             "stale_plugin_rule_count": 0,
             "write_back_probe_failed": False,
-            "write_back_probe_enabled": False,
+            **probe_fields,
         },
         details={
             "detail_mode": "sampled",
@@ -1335,7 +1397,7 @@ def build_text_index_coverage_report(
             "stale_translation_paths": _sampled_text_index_coverage_detail(total=stale_count, samples=stale_samples),
             "stale_plugin_rules": _sampled_text_index_coverage_detail(total=0, samples=[]),
             "write_back_probe_error": "",
-            "write_back_probe_enabled": False,
+            **probe_fields,
         },
     )
 
@@ -3225,7 +3287,9 @@ __all__: list[str] = [
     'SourceLanguage',
     'ChatMessage',
     'LLMHandler',
+    'NativeQualityCounts',
     'NativeQualityDetails',
+    'collect_native_quality_counts',
     'collect_native_quality_details',
     'collect_native_write_protocol_details',
     'native_thread_count',
@@ -3303,7 +3367,6 @@ __all__: list[str] = [
     'parse_source_residual_rule_import_text',
     'TextScopeEntry',
     'TextScopeResult',
-    'TextScopeService',
     'collect_translation_data_paths',
     'read_fresh_plugin_text_rules',
     'LlmCheckFunc',
@@ -3315,6 +3378,7 @@ __all__: list[str] = [
     '_noop_set_status',
     'TERMINOLOGY_SUBTASK_GROUPS',
     'run_default_llm_check',
+    'collect_agent_service_native_quality_counts',
     'collect_agent_service_native_quality_details',
     'collect_agent_service_native_write_protocol_details',
     '_append_check',

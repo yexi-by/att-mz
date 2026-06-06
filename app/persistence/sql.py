@@ -1,5 +1,10 @@
 """多游戏数据库管理器使用的 SQL 语句模块。"""
 
+from __future__ import annotations
+
+import hashlib
+from importlib import resources
+
 TRANSLATION_TABLE_NAME = "translation_items"
 METADATA_TABLE_NAME = "metadata"
 LANGUAGE_SETTINGS_TABLE_NAME = "language_settings"
@@ -38,6 +43,8 @@ LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
 TEXT_INDEX_META_KEY = "current"
 CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_RESOURCE_PACKAGE = "app.persistence.schema"
+CURRENT_SCHEMA_RESOURCE_NAME = "current.sql"
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
 EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     SCHEMA_VERSION_TABLE_NAME,
@@ -759,6 +766,14 @@ UPSERT_TEXT_INDEX_META = f"""
 ;
 """
 
+UPDATE_TEXT_INDEX_WORKFLOW_GATE_SCOPE_HASHES = f"""
+--sql
+    UPDATE [{TEXT_INDEX_META_TABLE_NAME}]
+    SET workflow_gate_scope_hashes = ?
+    WHERE index_key = ?
+;
+"""
+
 INSERT_TEXT_INDEX_ITEM = f"""
 --sql
     INSERT OR REPLACE INTO [{TEXT_INDEX_ITEMS_TABLE_NAME}]
@@ -1223,6 +1238,16 @@ SELECT_TEXT_INDEX_ITEMS = f"""
 ;
 """
 
+SELECT_TEXT_INDEX_PLACEHOLDER_TEXTS = f"""
+--sql
+    SELECT
+        location_path,
+        original_lines
+    FROM [{TEXT_INDEX_ITEMS_TABLE_NAME}]
+    ORDER BY location_path
+;
+"""
+
 SELECT_TEXT_INDEX_SCOPE_SUMMARY = f"""
 --sql
     SELECT
@@ -1293,6 +1318,21 @@ COUNT_PENDING_TEXT_INDEX_QUALITY_ERRORS = f"""
     WHERE quality_errors.run_id = ?
         AND index_items.writable = 1
         AND translations.location_path IS NULL
+;
+"""
+
+SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_PATHS = f"""
+--sql
+    SELECT quality_errors.location_path
+    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
+    INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items
+        ON index_items.location_path = quality_errors.location_path
+    LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+        ON translations.location_path = quality_errors.location_path
+    WHERE quality_errors.run_id = ?
+        AND index_items.writable = 1
+        AND translations.location_path IS NULL
+    ORDER BY quality_errors.location_path
 ;
 """
 
@@ -1564,6 +1604,18 @@ CHECK_CONNECTION_READABLE = """
 ;
 """
 
+
+def current_schema_sql() -> str:
+    """读取 Python 建库和 Rust native 共用的当前 SQLite schema SQL。"""
+    return resources.files(CURRENT_SCHEMA_RESOURCE_PACKAGE).joinpath(CURRENT_SCHEMA_RESOURCE_NAME).read_text(
+        encoding="utf-8",
+    )
+
+
+def current_schema_fingerprint() -> str:
+    """返回共享 schema SQL 的稳定 SHA-256 指纹。"""
+    return hashlib.sha256(current_schema_sql().encode("utf-8")).hexdigest()
+
 __all__: list[str] = [
     "CHECK_CONNECTION_READABLE",
     "CREATE_SCHEMA_VERSION_TABLE",
@@ -1705,6 +1757,7 @@ __all__: list[str] = [
     "SELECT_RULE_REVIEW_STATE",
     "COUNT_TRANSLATION_QUALITY_ERRORS_BY_RUN",
     "SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_TYPE_COUNTS",
+    "SELECT_PENDING_TEXT_INDEX_QUALITY_ERROR_PATHS",
     "SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN",
     "SELECT_TRANSLATION_QUALITY_ERROR_BY_RUN_AND_PATH",
     "SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN",
@@ -1725,6 +1778,7 @@ __all__: list[str] = [
     "SELECT_TEXT_INDEX_ITEM_COUNT",
     "SELECT_TEXT_INDEX_ITEMS",
     "SELECT_TEXT_INDEX_ITEM_BY_PATH",
+    "SELECT_TEXT_INDEX_PLACEHOLDER_TEXTS",
     "SELECT_TEXT_INDEX_QUALITY_ERROR_PATHS",
     "SELECT_TEXT_INDEX_LOCATION_PATHS",
     "SELECT_WRITABLE_TEXT_INDEX_LOCATION_PATHS",
@@ -1752,6 +1806,11 @@ __all__: list[str] = [
     "UPSERT_SCHEMA_VERSION",
     "UPSERT_TERMINOLOGY_BUNDLE_STATE",
     "UPSERT_TEXT_INDEX_META",
+    "UPDATE_TEXT_INDEX_WORKFLOW_GATE_SCOPE_HASHES",
     "UPSERT_TRANSLATION_RUN",
     "CURRENT_SCHEMA_VERSION",
+    "CURRENT_SCHEMA_RESOURCE_NAME",
+    "CURRENT_SCHEMA_RESOURCE_PACKAGE",
+    "current_schema_fingerprint",
+    "current_schema_sql",
 ]

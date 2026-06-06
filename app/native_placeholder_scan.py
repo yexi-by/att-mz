@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+
 from app.native_scope_index import (
+    build_native_rule_candidate_text_rules_payload,
     build_native_placeholder_candidates_payload,
     scan_native_rule_candidates,
 )
@@ -25,6 +28,43 @@ def collect_native_placeholder_candidate_details(
     """调用 native 普通占位符候选入口并返回旧报告同形明细。"""
     payload = build_native_placeholder_candidates_payload(translation_data_map, text_rules)
     result = scan_native_rule_candidates(payload)
+    summary_value = result.scan_summary.get("placeholders")
+    if summary_value is None:
+        return []
+    summary = ensure_json_object(summary_value, "native_placeholder_candidates.placeholders")
+    raw_candidates = ensure_json_array(
+        summary.get("candidates", []),
+        "native_placeholder_candidates.placeholders.candidates",
+    )
+    return [
+        _normalize_native_placeholder_candidate_detail(
+            ensure_json_object(item, f"native_placeholder_candidates.candidates[{index}]"),
+            f"native_placeholder_candidates.candidates[{index}]",
+        )
+        for index, item in enumerate(raw_candidates)
+    ]
+
+
+def collect_native_placeholder_candidate_details_from_entries(
+    *,
+    entries: Iterable[tuple[str, Sequence[str]]],
+    text_rules: TextRules,
+) -> JsonArray:
+    """用轻量索引正文条目调用 native 普通占位符候选入口。"""
+    placeholder_texts: JsonArray = [
+        {
+            "source_name": f"{location_path}#{line_index}",
+            "text": text,
+        }
+        for location_path, original_lines in entries
+        for line_index, text in enumerate(original_lines)
+    ]
+    result = scan_native_rule_candidates(
+        {
+            "placeholder_texts": placeholder_texts,
+            "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
+        }
+    )
     summary_value = result.scan_summary.get("placeholders")
     if summary_value is None:
         return []
@@ -85,5 +125,6 @@ def _normalize_native_placeholder_candidate_detail(candidate: JsonObject, label:
 
 __all__: list[str] = [
     "collect_native_placeholder_candidate_details",
+    "collect_native_placeholder_candidate_details_from_entries",
     "count_uncovered_placeholder_candidate_details",
 ]

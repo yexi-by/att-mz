@@ -700,6 +700,45 @@ async def test_validate_structured_placeholder_rules_rejects_rust_incompatible_r
     assert report.status == "error"
     assert "structured_placeholder_rules_invalid" in {error.code for error in report.errors}
     assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_structured_placeholder_rule_commands_use_warm_text_index_without_full_scope_build(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 可用时，结构化占位符规则命令不再构建完整文本范围。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    rules_text = '{"paired_shell_rules": []}'
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("结构化占位符规则命令命中 warm index 时不应构建完整文本范围")
+
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    validate_report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=[],
+    )
+    scan_report = await service.scan_structured_placeholder_candidates(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+    import_report = await service.import_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        confirm_empty=True,
+    )
+
+    assert validate_report.status in {"ok", "warning"}
+    assert scan_report.status in {"ok", "warning"}
+    assert import_report.status in {"ok", "warning"}
 @pytest.mark.asyncio
 async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_files(
     minimal_game_dir: Path,
@@ -1045,14 +1084,14 @@ async def test_import_structured_placeholder_rules_saves_separate_records(
         )
     ]
 @pytest.mark.asyncio
-async def test_import_structured_placeholder_rules_loads_translation_source_once(
+async def test_import_structured_placeholder_rules_reads_text_index_once(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """结构化占位符规则导入复用同一正文上下文完成验证和覆盖检查。"""
+    """结构化占位符规则导入复用 Rust 文本索引完成验证和覆盖检查。"""
     load_count = 0
-    extract_count = 0
+    read_index_count = 0
 
     async def counting_load_game_data_for_view(
         game_path: str | Path,
@@ -1074,21 +1113,17 @@ async def test_import_structured_placeholder_rules_loads_translation_source_once
 
     class CountingExtractService(AgentToolkitService):
         @override
-        async def _extract_active_translation_data_map(
+        async def _read_active_translation_data_map_from_text_index(
             self,
             *,
             session: TargetGameSession,
-            game_data: GameData,
             text_rules: TextRules,
-            plugin_source_scan: PluginSourceScan | None = None,
         ) -> dict[str, TranslationData]:
-            nonlocal extract_count
-            extract_count += 1
-            return await super()._extract_active_translation_data_map(
+            nonlocal read_index_count
+            read_index_count += 1
+            return await super()._read_active_translation_data_map_from_text_index(
                 session=session,
-                game_data=game_data,
                 text_rules=text_rules,
-                plugin_source_scan=plugin_source_scan,
             )
 
     registry = GameRegistry(tmp_path / "db")
@@ -1103,8 +1138,8 @@ async def test_import_structured_placeholder_rules_loads_translation_source_once
     )
 
     assert report.status in {"ok", "warning"}
-    assert load_count == 1
-    assert extract_count == 1
+    assert load_count == 0
+    assert read_index_count == 1
 @pytest.mark.asyncio
 async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
     minimal_game_dir: Path,
@@ -2606,9 +2641,9 @@ async def test_agent_reports_error_on_stale_plugin_rules(
     )
 
     error_codes = {error.code for error in quality_report.errors}
-    assert quality_report.summary["text_index_status"] == "rebuild_failed"
+    assert quality_report.summary["text_index_status"] == "cold_rebuilt"
     rebuild_summary = ensure_json_object(quality_report.summary["text_index_rebuild_summary"], "rebuild_summary")
-    assert rebuild_summary["index_status"] == "not_rebuilt"
+    assert rebuild_summary["index_status"] == "rebuilt"
     assert "stale_plugin_rules" in error_codes
     assert export_report.status == "error"
     assert {error.code for error in export_report.errors} == {"stale_plugin_rules"}
@@ -2795,12 +2830,12 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
     ]
     assert hit_counts == [1, 3]
 @pytest.mark.asyncio
-async def test_validate_event_command_rules_uses_prefix_read_for_translated_count(
+async def test_validate_event_command_rules_uses_precise_hit_paths_for_translated_count(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """事件指令规则校验只读取匹配指令前缀内的已保存译文。"""
+    """事件指令规则校验用 native 精确命中路径统计已保存译文。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -2822,17 +2857,16 @@ async def test_validate_event_command_rules_uses_prefix_read_for_translated_coun
             ]
         )
 
-    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("事件指令规则校验不能全量读取已保存路径")
+    async def forbidden_prefix_read(
+        _self: TargetGameSession,
+        _prefixes: Sequence[str],
+    ) -> list[TranslationItem]:
+        raise AssertionError("事件指令规则校验不能逐前缀读取已保存译文")
 
-    def forbidden_event_command_rule_prefixes(**_kwargs: object) -> NoReturn:
-        raise AssertionError("事件指令规则校验必须消费 native command prefixes")
-
-    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
     monkeypatch.setattr(
-        "app.agent_toolkit.services.rule_validation._event_command_rule_prefixes",
-        forbidden_event_command_rule_prefixes,
-        raising=False,
+        TargetGameSession,
+        "read_translated_items_by_prefixes",
+        forbidden_prefix_read,
     )
 
     report = await service.validate_event_command_rules(

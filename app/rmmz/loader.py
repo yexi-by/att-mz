@@ -141,6 +141,28 @@ async def load_translation_source_game_data(
     )
 
 
+async def load_plugin_source_files_for_view(
+    game_path: str | Path,
+    *,
+    source_view: GameFileView,
+) -> tuple[GameLayout, list[dict[str, JsonValue]], dict[str, str], dict[str, str]]:
+    """轻量读取插件配置和插件源码文件，不加载标准 data JSON。"""
+    layout = resolve_game_layout(game_path)
+    use_origin_backups = source_view == GameFileView.TRANSLATION_SOURCE
+    plugins_path = resolve_plugins_source_file(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+        require_origin_backups=use_origin_backups,
+    )
+    plugins_content = await _read_text_file(plugins_path)
+    plugin_source_files, plugin_source_read_errors = await _read_plugin_source_files(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+        require_origin_backups=use_origin_backups,
+    )
+    return layout, _parse_plugins_js_text(plugins_content), plugin_source_files, plugin_source_read_errors
+
+
 async def _load_game_data(
     game_path: str | Path,
     *,
@@ -632,6 +654,7 @@ __all__: list[str] = [
     "load_active_game_data",
     "load_game_data",
     "load_game_data_for_view",
+    "load_plugin_source_files_for_view",
     "load_translation_source_game_data",
     "read_game_title",
     "read_game_title_from_package",

@@ -17,7 +17,21 @@ from app.nonstandard_data import (
     validate_nonstandard_data_rules,
 )
 from app.nonstandard_data.scanner import build_nonstandard_data_scan, export_nonstandard_data_workspace
+from app.persistence import TargetGameSession
 from app.rmmz.game_file_view import GameFileView
+from app.rmmz.loader import resolve_game_layout
+from app.rmmz.schema import GameLayout
+from app.rmmz.source_snapshot import validate_source_snapshot_manifest
+
+
+async def _resolve_translation_source_layout(session: TargetGameSession) -> GameLayout:
+    """解析翻译源布局并校验可信源快照，不加载完整标准 data。"""
+    layout = resolve_game_layout(session.game_path)
+    snapshot_records = await session.read_source_snapshot_records()
+    if not snapshot_records:
+        raise RuntimeError("当前游戏缺少可信源快照 manifest，请使用干净游戏目录重新执行 add-game")
+    validate_source_snapshot_manifest(layout=layout, records=snapshot_records)
+    return layout
 
 
 class NonstandardDataAgentMixin:
@@ -42,9 +56,9 @@ class NonstandardDataAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
+                layout = await _resolve_translation_source_layout(session)
                 scan = await build_nonstandard_data_scan(
-                    layout=game_data.layout,
+                    layout=layout,
                     source_view=GameFileView.TRANSLATION_SOURCE,
                     text_rules=text_rules,
                 )
@@ -92,9 +106,9 @@ class NonstandardDataAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
+                layout = await _resolve_translation_source_layout(session)
                 scan = await build_nonstandard_data_scan(
-                    layout=game_data.layout,
+                    layout=layout,
                     source_view=GameFileView.TRANSLATION_SOURCE,
                     text_rules=text_rules,
                 )
@@ -152,9 +166,9 @@ class NonstandardDataAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
+                layout = await _resolve_translation_source_layout(session)
                 scan = await build_nonstandard_data_scan(
-                    layout=game_data.layout,
+                    layout=layout,
                     source_view=GameFileView.TRANSLATION_SOURCE,
                     text_rules=text_rules,
                 )
@@ -222,9 +236,9 @@ class NonstandardDataAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                game_data = await self._load_translation_source_game_data(session)
+                layout = await _resolve_translation_source_layout(session)
                 scan = await build_nonstandard_data_scan(
-                    layout=game_data.layout,
+                    layout=layout,
                     source_view=GameFileView.TRANSLATION_SOURCE,
                     text_rules=text_rules,
                 )

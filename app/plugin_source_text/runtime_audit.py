@@ -245,7 +245,6 @@ def audit_active_runtime_plugin_source(
                 _audit_literal(
                     literal=literal,
                     text_rules=text_rules,
-                    runtime_file_hash=file_scan.file_hash,
                     runtime_write_map_by_key=runtime_write_map_by_key,
                 )
             )
@@ -459,13 +458,11 @@ def _audit_literal(
     *,
     literal: PluginSourceStringLiteral,
     text_rules: TextRules,
-    runtime_file_hash: str,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
 ) -> list[ActiveRuntimePluginSourceIssue]:
     """审计单个当前运行字符串字面量。"""
     if _is_excluded_runtime_literal(
         literal=literal,
-        runtime_file_hash=runtime_file_hash,
         runtime_write_map_by_key=runtime_write_map_by_key,
     ):
         return []
@@ -508,17 +505,13 @@ def _audit_literal(
 def _is_excluded_runtime_literal(
     *,
     literal: PluginSourceStringLiteral,
-    runtime_file_hash: str,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
 ) -> bool:
     """判断当前运行字面量是否由已审查排除 selector 精确覆盖。"""
     record = runtime_write_map_by_key.get((literal.file_name, literal.selector))
     if record is None or record.mapping_kind != "excluded":
         return False
-    return (
-        record.runtime_file_hash == runtime_file_hash
-        and record.runtime_text_hash == plugin_source_runtime_hash_text(literal.text)
-    )
+    return record.runtime_text_hash == plugin_source_runtime_hash_text(literal.text)
 
 
 def _collect_bad_control_fragments(literal: PluginSourceStringLiteral) -> list[str]:

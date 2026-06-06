@@ -27,24 +27,24 @@ use self::command_writer::{
 use self::data_writer::{write_base_item, write_system_item};
 use self::font::apply_font_replacement;
 use self::layout::{
-    assert_active_plugin_sources_readable, origin_data_file_names, read_origin_data_files,
-    read_origin_plugin_source_files, read_plugins_origin_file, read_selected_origin_data_files,
-    resolve_layout,
+    assert_active_plugin_sources_readable, enabled_plugin_source_file_names,
+    origin_data_file_names, read_origin_data_files, read_origin_plugin_source_files,
+    read_plugins_origin_file, read_selected_origin_data_files, resolve_layout,
 };
 use self::models::{
     COMMON_EVENTS_FILE_NAME, FontPlanSummary, MvVirtualNameboxRule, MvVirtualSpeakerPolicy,
-    PLUGINS_FILE_NAME, PlanSummary, PlannedFile, SYSTEM_FILE_NAME, SettingPayload,
-    TROOPS_FILE_NAME, TextPlanRules, TranslationItem, WriteBackPlan, WritePlanMode,
+    PLUGINS_FILE_NAME, PlanSummary, PlannedFile, PluginSourceTextRule, SYSTEM_FILE_NAME,
+    SettingPayload, TROOPS_FILE_NAME, TextPlanRules, TranslationItem, WriteBackPlan, WritePlanMode,
 };
 use self::nonstandard_data_writer::{
     is_nonstandard_data_item, nonstandard_data_file_name, write_nonstandard_data_item,
 };
 use self::note_writer::{is_note_tag_path, write_note_tag_item};
 use self::plugin_config_writer::write_plugin_config_item;
-use self::plugin_source::write_plugin_source_files;
 pub(crate) use self::plugin_source::{
     candidate_selector_for_span, normalize_visible_text_for_extraction, unescape_js_text,
 };
+use self::plugin_source::{parse_plugin_source_location_path, write_plugin_source_files};
 use self::quality_gate::{
     assert_saved_translation_quality_passed, quality_gate_items_for_write_plan,
 };
@@ -133,7 +133,15 @@ fn build_write_back_plan_inner(
     );
 
     let active_audit_started = Instant::now();
-    assert_active_plugin_sources_readable(&layout, &plugins_js)?;
+    let active_plugin_source_file_names = active_plugin_source_file_names_for_audit(
+        plan_mode,
+        &plugins_js,
+        &translated_items,
+        &plugin_source_text_rules,
+    )?;
+    if !active_plugin_source_file_names.is_empty() {
+        assert_active_plugin_sources_readable(&layout, &active_plugin_source_file_names)?;
+    }
     timings_ms.insert(
         "active_runtime_audit".to_string(),
         active_audit_started.elapsed().as_millis(),
@@ -192,21 +200,13 @@ fn build_write_back_plan_inner(
         data_item_count += 1;
     }
 
-    let mut command_items_with_keys: Vec<(CommandSortKey, TranslationItem)> = command_items
-        .into_iter()
-        .map(|item| command_sort_key(&item).map(|key| (key, item)))
-        .collect::<Result<Vec<_>, String>>()?;
-    command_items_with_keys.sort_by(|left, right| left.0.cmp(&right.0));
-    command_items_with_keys.reverse();
-    for (_key, item) in &command_items_with_keys {
-        write_command_item(
-            &mut data_files,
-            item,
-            &mv_virtual_namebox_rules,
-            &terminology,
-            &text_rules,
-        )?;
-    }
+    write_command_items_by_file(
+        &mut data_files,
+        command_items,
+        &mv_virtual_namebox_rules,
+        &terminology,
+        &text_rules,
+    )?;
 
     let terminology_written_count = apply_terminology(
         &mut data_files,
@@ -391,6 +391,87 @@ fn font_replacement_requested(
             .replacement_font_path
             .as_deref()
             .is_some_and(|path| !path.trim().is_empty())
+}
+
+fn active_plugin_source_file_names_for_audit(
+    plan_mode: WritePlanMode,
+    plugins_js: &serde_json::Value,
+    translated_items: &[TranslationItem],
+    plugin_source_text_rules: &[PluginSourceTextRule],
+) -> Result<Vec<String>, String> {
+    if plan_mode == WritePlanMode::RebuildActiveRuntime {
+        return enabled_plugin_source_file_names(plugins_js);
+    }
+
+    let mut file_names: BTreeSet<String> = BTreeSet::new();
+    for item in translated_items {
+        if !item.location_path.starts_with("js/plugins/") {
+            continue;
+        }
+        let (file_name, _) = parse_plugin_source_location_path(&item.location_path)?;
+        file_names.insert(file_name);
+    }
+    file_names.extend(
+        plugin_source_text_rules
+            .iter()
+            .map(|rule| rule.file_name.clone()),
+    );
+    Ok(file_names.into_iter().collect())
+}
+
+fn write_command_items_by_file(
+    data_files: &mut BTreeMap<String, serde_json::Value>,
+    command_items: Vec<TranslationItem>,
+    mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    terminology: &HashMap<String, HashMap<String, String>>,
+    text_rules: &TextPlanRules,
+) -> Result<(), String> {
+    let mut grouped_items: BTreeMap<String, Vec<(CommandSortKey, TranslationItem)>> =
+        BTreeMap::new();
+    for item in command_items {
+        let key = command_sort_key(&item)?;
+        grouped_items
+            .entry(key.0.clone())
+            .or_default()
+            .push((key, item));
+    }
+    let source_data_files = &*data_files;
+    let updates = grouped_items
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|(file_name, mut keyed_items)| {
+            keyed_items.sort_by(|left, right| left.0.cmp(&right.0));
+            keyed_items.reverse();
+            let file_value = source_data_files
+                .get(&file_name)
+                .cloned()
+                .ok_or_else(|| format!("事件文件不存在: {file_name}"))?;
+            let mut local_data_files = BTreeMap::new();
+            local_data_files.insert(file_name.clone(), file_value);
+            if let Some(actors) = source_data_files.get("Actors.json") {
+                local_data_files.insert("Actors.json".to_string(), actors.clone());
+            }
+            for (_key, item) in &keyed_items {
+                write_command_item(
+                    &mut local_data_files,
+                    item,
+                    mv_virtual_namebox_rules,
+                    terminology,
+                    text_rules,
+                )?;
+            }
+            let updated_file = local_data_files
+                .remove(&file_name)
+                .ok_or_else(|| format!("事件文件写入后丢失: {file_name}"))?;
+            Ok((file_name, updated_file))
+        })
+        .collect::<Vec<Result<(String, serde_json::Value), String>>>();
+    for update in updates {
+        let (file_name, file_value) = update?;
+        data_files.insert(file_name, file_value);
+    }
+    Ok(())
 }
 
 fn data_file_names_for_load(

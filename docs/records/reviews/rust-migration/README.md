@@ -11,3 +11,4 @@
 | [Rust 迁移 Review 修复进度](rust-migration-review-fix-progress.md) | 当前有效修复摘要、已删除的过度产物和验证快照。 |
 | [Rust 迁移 Review 第一批发现](rust-migration-review-findings-batch-01.md) | 早期 review 批次记录，作为遗漏检查参考。 |
 | [大游戏性能缺陷分析](large-game-performance-defect-report.md) | 大样本性能瓶颈、重复扫描、并发和诊断路径分析。 |
+| [非网络 CLI 高压收束技术复盘](non-network-cli-pressure-lessons.md) | 高压性能指标下暴露出的逻辑边界、测试假设和验收要求。 |

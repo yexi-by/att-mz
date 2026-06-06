@@ -6,12 +6,28 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
+from app.application.flow_gate import (
+    event_command_rule_scope_hash_for_setting,
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
+)
 from app.native_quality import NativeQualityDetails
 from app.persistence import GameRegistry
 from app.rmmz import load_game_data
 from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import JsonArray, TextRules
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+    plugin_rule_scope_hash,
+)
 from app.text_scope import TextScopeService
+from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_index import text_index_item_to_translation_item
 from app.utils.config_loader_utils import load_setting
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +52,47 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
             game_data=game_data,
             text_rules=text_rules,
         )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+            scope_hash=plugin_rule_scope_hash(game_data),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+            scope_hash=event_command_rule_scope_hash_for_setting(
+                game_data=game_data,
+                setting=setting,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                text_rules=text_rules,
+            ),
+            reviewed_empty=True,
+        )
+        await session.replace_rule_review_state(
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
+            reviewed_empty=True,
+        )
         target_item = next(item for item in scope.active_items() if item.item_type != "array")
         target_path = target_item.location_path
         await session.write_translation_items(
@@ -50,6 +107,18 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
                 )
             ]
         )
+    _ = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title="テストゲーム")
+    async with await registry.open_game("テストゲーム") as session:
+        index_items = await session.read_text_index_items()
+        translated_items: list[TranslationItem] = []
+        for index_item in index_items:
+            item = text_index_item_to_translation_item(index_item)
+            item.translation_lines = ["结构化质量结果测试译文" for _line in item.original_lines]
+            translated_items.append(item)
+        await session.write_translation_items(translated_items)
 
     def fake_native_quality_details(**kwargs: object) -> NativeQualityDetails:
         _ = kwargs

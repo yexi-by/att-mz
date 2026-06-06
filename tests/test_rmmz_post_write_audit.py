@@ -168,12 +168,12 @@ async def test_native_write_back_helper_saves_runtime_map_after_post_write_audit
     assert session.runtime_scan_cache_replace_count == 0
     assert session.runtime_scan_cache_read_calls == 1
 @pytest.mark.asyncio
-async def test_direct_write_back_rejects_active_runtime_read_error_before_writing_data(
+async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_before_writing_data(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """当前运行插件源码读取失败时，Rust 计划阶段直接失败且不写 data。"""
+    """普通写回没有插件源码工作时，不因无关当前源码读取失败跳过 data 写入。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_text = _example_setting_text_with_absolute_prompt_files()
@@ -287,12 +287,16 @@ async def test_direct_write_back_rejects_active_runtime_read_error_before_writin
 
     handler = TranslationHandler(registry, LLMHandler())
     try:
-        with pytest.raises(RuntimeError, match="插件源码读取失败"):
-            _ = await handler.write_back(
-                game_title="テストゲーム",
-                callbacks=(lambda _current, _total: None, lambda _count: None),
-            )
+        _ = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
     finally:
         await handler.close()
 
-    assert _read_test_json(common_events_path) == original_events
+    updated_events = _read_test_json(common_events_path)
+    original_text = json.dumps(original_events, ensure_ascii=False)
+    updated_text = json.dumps(updated_events, ensure_ascii=False)
+    assert updated_events != original_events
+    assert "测试" not in original_text
+    assert "测试" in updated_text

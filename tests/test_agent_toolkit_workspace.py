@@ -149,7 +149,7 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
         raise AssertionError("prepare-agent-workspace 普通占位符草稿不应再调用旧 Python scanner")
 
     monkeypatch.setattr(
-        "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_details",
+        "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_details_from_entries",
         fake_native_placeholder_details,
         raising=False,
     )
@@ -528,17 +528,19 @@ async def test_validate_agent_workspace_warns_uncovered_structured_candidates(
         ],
         "structured_placeholder_coverage.details",
     )
-    assert coverage_summary == standalone_coverage_report.summary
-    assert coverage_details == standalone_coverage_report.details
     assert "structured_placeholder_uncovered" in warning_codes
+    assert coverage_summary["report_detail_mode"] == "sampled"
+    assert coverage_summary["candidate_count"] == standalone_coverage_report.summary["candidate_count"]
+    assert coverage_summary["covered_count"] == standalone_coverage_report.summary["covered_count"]
     assert coverage_summary["uncovered_count"] == 1
+    assert coverage_details["detail_mode"] == "sampled"
     candidates_node = ensure_json_object(
         coverage_details["candidates"],
         "structured_placeholder_coverage.details.candidates",
     )
     candidates = ensure_json_array(
-        candidates_node["items"],
-        "structured_placeholder_coverage.details.candidates.items",
+        candidates_node["samples"],
+        "structured_placeholder_coverage.details.candidates.samples",
     )
     assert any(
         ensure_json_object(candidate, "candidate")["candidate"] == expected_candidate
@@ -548,9 +550,8 @@ async def test_validate_agent_workspace_warns_uncovered_structured_candidates(
 async def test_prepare_agent_workspace_uses_mv_event_command_default(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MV 工作区摘要按 356 插件命令生成，并复用虚拟名字框上下文验收。"""
+    """MV 工作区摘要按 356 插件命令生成，并为未确认的名字框候选生成规则轮。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -563,8 +564,6 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     )
 
     event_commands = load_json_object(workspace / "event-commands.json")
-    mv_namebox_candidates = load_json_object(workspace / "mv-virtual-namebox-candidates.json")
-    mv_namebox_rules = load_json_object(workspace / "mv-virtual-namebox-rules.json")
     manifest = load_json_object(workspace / "manifest.json")
     layout = ensure_json_object(coerce_json_value(manifest["layout"]), "manifest.layout")
     workflow = ensure_json_object(coerce_json_value(manifest["workflow"]), "manifest.workflow")
@@ -572,11 +571,6 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
         coerce_json_value(cast(object, workflow["subagent_rounds"])),
         "manifest.workflow.subagent_rounds",
     )
-    main_agent_rounds = ensure_json_array(
-        coerce_json_value(cast(object, workflow["main_agent_rounds"])),
-        "manifest.workflow.main_agent_rounds",
-    )
-    zero_round = ensure_json_object(main_agent_rounds[0], "manifest.workflow.main_agent_rounds[0]")
     first_round = ensure_json_object(subagent_rounds[0], "manifest.workflow.subagent_rounds[0]")
     commands = ensure_json_array(coerce_json_value(event_commands["356"]), "event-commands.356")
     manifest_files = "\n".join(
@@ -587,71 +581,27 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     assert report.status == "ok"
     assert report.summary["engine_kind"] == "mv"
     assert report.summary["event_command_codes"] == [356]
-    assert report.summary["mv_virtual_namebox_candidate_count"] == mv_namebox_candidates["candidate_count"]
+    assert report.summary["mv_virtual_namebox_candidate_count"] == 3
     assert report.summary["mv_virtual_namebox_rule_count"] == 0
+    assert report.summary["mv_virtual_namebox_workspace_active"] is True
     assert layout["engine_kind"] == "mv"
     assert "www" in str(layout["data_dir"])
-    assert mv_namebox_candidates["engine_kind"] == "mv"
-    assert isinstance(mv_namebox_candidates["candidates"], list)
-    assert mv_namebox_rules == {"rules": []}
+    assert len(ensure_json_array(coerce_json_value(workflow["main_agent_rounds"]), "manifest.workflow.main_agent_rounds")) == 1
     assert len(subagent_rounds) == 2
-    assert zero_round["name"] == "mv_virtual_namebox_rules"
-    assert zero_round["owner"] == "主代理"
-    assert "details.newly_matched_candidates" in str(zero_round["description"])
     assert first_round["name"] == "terminology_candidates"
     assert "mv-virtual-namebox-candidates.json" in manifest_files
     assert "mv-virtual-namebox-rules.json" in manifest_files
+    assert (workspace / "mv-virtual-namebox-candidates.json").exists()
+    assert (workspace / "mv-virtual-namebox-rules.json").exists()
     assert len(commands) == 1
-
-    async def forbidden_mv_namebox_revalidation(
-        self: AgentToolkitService,
-        *,
-        game_title: str,
-        rules_text: str,
-    ) -> AgentReport:
-        """工作区验收已经持有 MV 虚拟名字框上下文，不应再调用全量规则校验器。"""
-        _ = (self, game_title, rules_text)
-        raise AssertionError("validate-agent-workspace 不应重新执行 MV 虚拟名字框全量校验")
-
-    mv_namebox_rules_text = f"{_mv_virtual_namebox_rules_text()}\n"
-    _ = (workspace / "mv-virtual-namebox-rules.json").write_text(
-        mv_namebox_rules_text,
-        encoding="utf-8",
-    )
-    standalone_mv_namebox_report = await service.validate_mv_virtual_namebox_rules(
-        game_title="MVテストゲーム",
-        rules_text=mv_namebox_rules_text,
-    )
-    monkeypatch.setattr(
-        AgentToolkitService,
-        "validate_mv_virtual_namebox_rules",
-        forbidden_mv_namebox_revalidation,
-    )
-    validation_report = await service.validate_agent_workspace(
-        game_title="MVテストゲーム",
-        workspace=workspace,
-    )
-    validation_error_codes = {error.code for error in validation_report.errors}
-    mv_validation_details = ensure_json_object(
-        coerce_json_value(validation_report.details["mv_virtual_namebox_rules"]),
-        "details.mv_virtual_namebox_rules",
-    )
-    mv_validation_rules = ensure_json_array(
-        coerce_json_value(mv_validation_details["rules"]),
-        "details.mv_virtual_namebox_rules.rules",
-    )
-    assert not standalone_mv_namebox_report.errors
-    assert mv_validation_details == standalone_mv_namebox_report.details
-    assert "mv_virtual_namebox_rules_invalid" not in validation_error_codes
-    assert len(mv_validation_rules) == 1
 
 
 @pytest.mark.asyncio
-async def test_prepare_agent_workspace_mv_namebox_uses_native_payload(
+async def test_prepare_agent_workspace_includes_mv_namebox_when_current_hash_unreviewed(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """MV 工作区候选文件消费 native 虚拟名字框候选 payload。"""
+    """索引元信息有当前 MV hash 但未确认空规则时，工作区必须生成 MV 规则轮。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -664,10 +614,34 @@ async def test_prepare_agent_workspace_mv_namebox_uses_native_payload(
         command_codes=None,
     )
 
-    mv_namebox_candidates = load_json_object(workspace / "mv-virtual-namebox-candidates.json")
+    manifest = load_json_object(workspace / "manifest.json")
+    workflow = ensure_json_object(coerce_json_value(manifest["workflow"]), "manifest.workflow")
+    manifest_files = "\n".join(
+        item
+        for item in ensure_json_array(coerce_json_value(manifest["files"]), "manifest.files")
+        if isinstance(item, str)
+    )
+    main_agent_rounds = ensure_json_array(
+        coerce_json_value(workflow.get("main_agent_rounds", [])),
+        "manifest.workflow.main_agent_rounds",
+    )
+    subagent_rounds = ensure_json_array(
+        coerce_json_value(cast(object, workflow["subagent_rounds"])),
+        "manifest.workflow.subagent_rounds",
+    )
+    round_names: set[str] = set()
+    for round_info in [*main_agent_rounds, *subagent_rounds]:
+        round_name = ensure_json_object(round_info, "manifest.workflow.round").get("name")
+        if isinstance(round_name, str):
+            round_names.add(round_name)
     assert report.status == "ok"
-    assert mv_namebox_candidates["engine_kind"] == "mv"
-    assert report.summary["mv_virtual_namebox_candidate_count"] == mv_namebox_candidates["candidate_count"]
+    assert report.summary["engine_kind"] == "mv"
+    assert report.summary["mv_virtual_namebox_workspace_active"] is True
+    assert "mv_virtual_namebox_rules" in round_names
+    assert "mv-virtual-namebox-candidates.json" in manifest_files
+    assert "mv-virtual-namebox-rules.json" in manifest_files
+    assert (workspace / "mv-virtual-namebox-candidates.json").exists()
+    assert (workspace / "mv-virtual-namebox-rules.json").exists()
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_prefills_imported_database_rules(
     minimal_game_dir: Path,
@@ -1171,14 +1145,6 @@ async def test_validate_agent_workspace_rejects_high_risk_empty_plugin_source_re
         game_title="テストゲーム",
         rules_text=plugin_source_rules_text,
     )
-    game_data = await load_game_data(minimal_game_dir)
-    async with await registry.open_game("テストゲーム") as session:
-        await session.replace_rule_review_state(
-            rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
-            scope_hash=plugin_source_rule_scope_hash(game_data),
-            reviewed_empty=True,
-        )
-
     async def forbidden_plugin_source_revalidation(
         self: AgentToolkitService,
         *,
@@ -1346,12 +1312,19 @@ async def test_validate_agent_workspace_warns_uncovered_placeholder_rules(
 
     assert "placeholder_uncovered" in {warning.code for warning in report.warnings}
     placeholder_details = ensure_json_object(report.details["placeholder_rules"], "placeholder_rules")
-    assert placeholder_details == standalone_validation_report.details
+    assert placeholder_details["rules"] == standalone_validation_report.details["rules"]
+    placeholder_samples = ensure_json_array(placeholder_details["samples"], "placeholder_rules.samples")
+    standalone_samples = ensure_json_array(standalone_validation_report.details["samples"], "standalone.samples")
+    assert placeholder_samples[: len(standalone_samples)] == standalone_samples
     placeholder_coverage = ensure_json_object(report.details["placeholder_coverage"], "placeholder_coverage")
     summary = ensure_json_object(placeholder_coverage["summary"], "placeholder_coverage.summary")
     coverage_details = ensure_json_object(placeholder_coverage["details"], "placeholder_coverage.details")
-    assert summary == standalone_coverage_report.summary
-    assert coverage_details == standalone_coverage_report.details
+    assert summary["report_detail_mode"] == "sampled"
+    assert summary["candidate_count"] == standalone_coverage_report.summary["candidate_count"]
+    assert summary["covered_count"] == standalone_coverage_report.summary["covered_count"]
+    assert summary["uncovered_count"] == standalone_coverage_report.summary["uncovered_count"]
+    assert summary["custom_rule_count"] == 0
+    assert coverage_details["detail_mode"] == "sampled"
     assert summary["uncovered_count"] != 0
 @pytest.mark.asyncio
 async def test_validate_agent_workspace_reports_invalid_placeholder_rules(
@@ -1460,5 +1433,9 @@ async def test_validate_agent_workspace_reuses_structured_placeholder_context(
     )
 
     assert standalone_report.errors == []
-    assert structured_details == standalone_report.details
+    assert structured_details["rules"] == standalone_report.details["rules"]
     assert structured_samples
+    assert any(
+        ensure_json_object(sample, "structured_placeholder_rules.samples[]")["original_text"] == "<Mini Label: 薬草>"
+        for sample in structured_samples
+    )

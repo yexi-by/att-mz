@@ -22,12 +22,18 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
         game_data = await load_game_data(minimal_mv_game_dir)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
         before_errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=scope,
         )
     empty_rejected_report = await service.import_mv_virtual_namebox_rules(
         game_title="MVテストゲーム",
@@ -43,12 +49,18 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
         game_data = await load_game_data(minimal_mv_game_dir)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
         after_errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=scope,
         )
         state = await session.read_rule_review_state(rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
 

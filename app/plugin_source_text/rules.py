@@ -38,7 +38,7 @@ def filter_fresh_plugin_source_text_rules(
     text_rules: TextRules,
     scan: PluginSourceScan | None = None,
 ) -> tuple[list[PluginSourceTextRuleRecord], list[StalePluginSourceTextRule]]:
-    """按当前源码文件、启用状态、文件哈希和 selector 命中筛出仍有效的源码规则。"""
+    """按当前源码文件、启用状态和 selector 命中筛出仍有效的源码规则。"""
     if not rule_records:
         return [], []
     if scan is None:
@@ -70,14 +70,6 @@ def filter_fresh_plugin_source_text_rules(
                 StalePluginSourceTextRule(
                     file_name=record.file_name,
                     reason="插件源码文件未在 plugins.js 中启用",
-                )
-            )
-            continue
-        if file_scan.file_hash != record.file_hash:
-            stale_rules.append(
-                StalePluginSourceTextRule(
-                    file_name=record.file_name,
-                    reason="插件源码文件内容已经变化，规则哈希不匹配",
                 )
             )
             continue

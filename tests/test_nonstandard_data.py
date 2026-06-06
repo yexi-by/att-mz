@@ -482,12 +482,18 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
+        before_scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
         before_errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=before_scope,
         )
 
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -506,12 +512,18 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
         ),
     )
     async with await registry.open_game("テストゲーム") as session:
+        after_scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
         after_errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=after_scope,
         )
 
     assert "nonstandard_data_high_risk" in {error.code for error in before_errors}
@@ -542,12 +554,18 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
                 )
             ]
         )
+        scope = await TextScopeService().build(
+            session=session,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=scope,
         )
 
     assert "stale_nonstandard_data_rules" in {error.code for error in errors}

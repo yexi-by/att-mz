@@ -80,6 +80,10 @@ class TranslationRunState:
     sent_after_stop_completed_batch_count: int = 0
     sent_after_stop_completed_item_count: int = 0
     llm_failure: LLMRequestFailure | None = None
+    model_request_ms: int = 0
+    response_verify_ms: int = 0
+    save_success_ms: int = 0
+    save_error_ms: int = 0
 
     def request_stop(self, *, reason: str, last_error: str = "stopped") -> None:
         """记录运行中止原因。"""
@@ -255,6 +259,7 @@ class TranslationRunController:
 
     async def _translate_batch(self, batch: TranslationBatch) -> TranslationBatchResult:
         """发送并校验单个模型批次。"""
+        request_started = time.perf_counter()
         ai_result = await request_with_recoverable_retry(
             llm_handler=self._llm_handler,
             model=self._model,
@@ -263,8 +268,10 @@ class TranslationRunController:
             retry_delay=self._retry_delay,
             task_label="正文翻译",
         )
+        self.state.model_request_ms += int((time.perf_counter() - request_started) * 1000)
         right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
         error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+        verify_started = time.perf_counter()
         await verify_translation_batch(
             ai_result=ai_result,
             items=batch.items,
@@ -274,14 +281,19 @@ class TranslationRunController:
             text_rules=self._text_rules,
             source_residual_rule_set=self._source_residual_rule_set,
         )
+        self.state.response_verify_ms += int((time.perf_counter() - verify_started) * 1000)
         right_items = await _drain_translation_queue(right_queue)
         error_items = await _drain_translation_error_queue(error_queue)
         return TranslationBatchResult(batch=batch, right_items=right_items, error_items=error_items)
 
     async def _save_batch_result(self, result: TranslationBatchResult) -> None:
         """保存单个批次结果并更新统一状态。"""
+        save_success_started = time.perf_counter()
         saved_success_count = await self._save_success_items(result.right_items)
+        self.state.save_success_ms += int((time.perf_counter() - save_success_started) * 1000)
+        save_error_started = time.perf_counter()
         saved_error_count = await self._save_error_items(result.error_items)
+        self.state.save_error_ms += int((time.perf_counter() - save_error_started) * 1000)
         processed_count = saved_success_count + saved_error_count
         self.state.success_count += saved_success_count
         self.state.quality_error_count += saved_error_count

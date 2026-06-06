@@ -16,7 +16,7 @@ from app.cli.arguments import (
     read_required_path_arg,
 )
 from app.cli.progress import build_progress_reporter
-from app.cli.reports import build_translate_summary_report, write_report_outputs
+from app.cli.reports import build_sampled_stdout_report, build_translate_summary_report, write_report_outputs
 from app.cli.runtime import (
     HandlerSession,
     build_setting_overrides,
@@ -62,7 +62,12 @@ async def run_text_scope_command(args: argparse.Namespace) -> int:
         game_title=game_title,
         include_write_probe=read_bool_arg(args, "include_write_probe"),
     )
-    write_report_outputs(report=report, args=args, title="统一文本清单")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="统一文本清单",
+        stdout_report=build_sampled_stdout_report(report),
+    )
     return 1 if report.status == "error" else 0
 
 
