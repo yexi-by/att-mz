@@ -14,6 +14,7 @@ from app.llm_request_body_extra import LLMRequestBodyExtra, normalize_request_bo
 from app.observability.llm_messages import (
     LLMMessageRequest,
     current_llm_message_recorder,
+    validate_llm_message_task_key,
 )
 
 from .errors import EmptyLLMResponseError
@@ -92,6 +93,9 @@ class LLMHandler:
         if self.client is None:
             raise ValueError("LLM 客户端尚未配置")
 
+        validate_llm_message_task_key(task_key)
+        llm_message_recorder = current_llm_message_recorder()
+        llm_message_sequence = llm_message_recorder.reserve_sequence()
         request_messages = format_chat_messages(messages)
         request_started_at = _now_iso()
         if temperature is None:
@@ -114,7 +118,7 @@ class LLMHandler:
         content = response.choices[0].message.content
         if not content:
             raise EmptyLLMResponseError("LLM 响应中未返回文本内容")
-        current_llm_message_recorder().record_success(
+        _ = llm_message_recorder.record_success(
             request=LLMMessageRequest(
                 task_key=task_key,
                 task_label=task_label,
@@ -128,6 +132,7 @@ class LLMHandler:
             ),
             assistant_text=content,
             response_received_at=_now_iso(),
+            sequence=llm_message_sequence,
         )
         return content
 

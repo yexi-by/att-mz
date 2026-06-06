@@ -11,10 +11,13 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from app.llm.schemas import ChatMessage
 from app.llm_request_body_extra import LLMRequestBodyExtra, LLMRequestBodyValue
 from app.runtime_paths import resolve_app_home_path
+
+if TYPE_CHECKING:
+    from app.llm.schemas import ChatMessage
 
 REDACTED_VALUE = "<redacted>"
 SENSITIVE_KEY_PARTS = (
@@ -27,6 +30,7 @@ SENSITIVE_KEY_PARTS = (
     "credential",
     "authorization",
 )
+TASK_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 class LLMMessageWriteError(RuntimeError):
@@ -50,6 +54,7 @@ class LLMMessageRequest:
 
 @dataclass(frozen=True, slots=True)
 class _LLMMessageIndexRecord:
+    sequence: int
     sequence_text: str
     task_label: str
     model: str
@@ -74,9 +79,14 @@ class NoopLLMMessageRecorder:
         request: LLMMessageRequest,
         assistant_text: str,
         response_received_at: str,
+        sequence: int | None = None,
     ) -> Path | None:
         """忽略成功响应。"""
-        _ = (request, assistant_text, response_received_at)
+        _ = (request, assistant_text, response_received_at, sequence)
+        return None
+
+    def reserve_sequence(self) -> int | None:
+        """未启用时不预留编号。"""
         return None
 
     def finalize(self) -> Path | None:
@@ -116,11 +126,13 @@ class LLMMessageRecorder:
         request: LLMMessageRequest,
         assistant_text: str,
         response_received_at: str,
+        sequence: int | None = None,
     ) -> Path:
         """写出一次成功 LLM 调用的 Markdown 文件。"""
+        validate_llm_message_task_key(request.task_key)
         with self._lock:
-            sequence = self._next_sequence
-            self._next_sequence += 1
+            if sequence is None:
+                sequence = self._allocate_sequence_unlocked()
             sequence_text = f"{sequence:06d}"
             safe_task_key = _safe_task_key(request.task_key)
             file_name = f"{sequence_text}_{safe_task_key}.md"
@@ -140,6 +152,7 @@ class LLMMessageRecorder:
 
             self._records.append(
                 _LLMMessageIndexRecord(
+                    sequence=sequence,
                     sequence_text=sequence_text,
                     task_label=request.task_label,
                     model=request.model,
@@ -151,6 +164,11 @@ class LLMMessageRecorder:
                 )
             )
             return output_path
+
+    def reserve_sequence(self) -> int:
+        """在请求发起时预留文件编号，保证并发下按发起顺序编号。"""
+        with self._lock:
+            return self._allocate_sequence_unlocked()
 
     def finalize(self) -> Path | None:
         """正常收尾时写出索引 Markdown。"""
@@ -174,6 +192,11 @@ class LLMMessageRecorder:
             self._run_dir.mkdir(parents=True, exist_ok=True)
         return self._run_dir
 
+    def _allocate_sequence_unlocked(self) -> int:
+        sequence = self._next_sequence
+        self._next_sequence += 1
+        return sequence
+
 
 _CURRENT_LLM_MESSAGE_RECORDER: ContextVar[LLMMessageRecorder | NoopLLMMessageRecorder] = ContextVar(
     "att_mz_current_llm_message_recorder",
@@ -184,6 +207,12 @@ _CURRENT_LLM_MESSAGE_RECORDER: ContextVar[LLMMessageRecorder | NoopLLMMessageRec
 def current_llm_message_recorder() -> LLMMessageRecorder | NoopLLMMessageRecorder:
     """读取当前 CLI 运行的 LLM 消息记录器。"""
     return _CURRENT_LLM_MESSAGE_RECORDER.get()
+
+
+def validate_llm_message_task_key(task_key: str) -> None:
+    """校验 LLM 消息观测任务标识，避免路径或文本位置进入文件名语义。"""
+    if not TASK_KEY_PATTERN.fullmatch(task_key):
+        raise ValueError("task_key 必须是 1-64 位 ASCII 标识，只能包含字母、数字、下划线、点和短横线")
 
 
 @contextmanager
@@ -250,7 +279,7 @@ def _render_index_markdown(records: list[_LLMMessageIndexRecord]) -> str:
         "| 序号 | 任务 | 模型 | 发起时间 | 返回时间 | user 字符 | assistant 字符 | 文件 |",
         "|---|---|---|---|---|---:|---:|---|",
     ]
-    for record in records:
+    for record in sorted(records, key=lambda item: item.sequence):
         lines.append(
             " | ".join(
                 [
@@ -313,7 +342,7 @@ def _format_optional_number(value: float | None) -> str:
 
 
 def _write_text(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
+    _ = path.write_text(text, encoding="utf-8")
 
 
 __all__ = [
@@ -323,4 +352,5 @@ __all__ = [
     "NoopLLMMessageRecorder",
     "bind_llm_message_recorder",
     "current_llm_message_recorder",
+    "validate_llm_message_task_key",
 ]

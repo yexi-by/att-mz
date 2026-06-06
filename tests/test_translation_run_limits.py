@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import asyncio
 from collections.abc import Iterable
+from pathlib import Path
 from typing import cast, override
 
 import pytest

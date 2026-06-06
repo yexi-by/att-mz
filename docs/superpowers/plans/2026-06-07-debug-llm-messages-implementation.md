@@ -38,11 +38,11 @@
 - Test: `tests/test_config_overrides.py`
 - Test: `tests/test_observability.py`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Add tests that validate `[debug.llm_messages]`, `ATT_MZ_DEBUG_LLM_MESSAGES`, CLI precedence, output dir, and parser attributes.
 
-- [ ] **Step 2: Run focused tests and confirm RED**
+- [x] **Step 2: Run focused tests and confirm RED**
 
 Run:
 
@@ -52,11 +52,11 @@ uv run pytest tests/test_config_overrides.py tests/test_observability.py -q
 
 Expected: tests fail because `DebugSetting.llm_messages`, `debug_llm_messages`, and `ATT_MZ_DEBUG_LLM_MESSAGES` do not exist yet.
 
-- [ ] **Step 3: Implement config and parser fields**
+- [x] **Step 3: Implement config and parser fields**
 
 Add pydantic config, parser flags, runtime setting fields, resolver logic, and setting example entries.
 
-- [ ] **Step 4: Run focused tests and confirm GREEN**
+- [x] **Step 4: Run focused tests and confirm GREEN**
 
 Run:
 
@@ -75,11 +75,11 @@ Expected: config/parser/debug runtime tests pass.
 - Modify: `app/observability/__init__.py`
 - Test: `tests/test_observability.py`
 
-- [ ] **Step 1: Write failing recorder tests**
+- [x] **Step 1: Write failing recorder tests**
 
 Cover successful write, lazy run-dir creation, `index.md`, API key and nested secret redaction, dynamic fenced blocks, Markdown table escaping, no-op behavior, and write failure raising `LLMMessageWriteError`.
 
-- [ ] **Step 2: Run focused tests and confirm RED**
+- [x] **Step 2: Run focused tests and confirm RED**
 
 Run:
 
@@ -89,11 +89,11 @@ uv run pytest tests/test_observability.py -q
 
 Expected: tests fail because `app.observability.llm_messages` does not exist.
 
-- [ ] **Step 3: Implement recorder and Markdown helpers**
+- [x] **Step 3: Implement recorder and Markdown helpers**
 
 Implement `LLMMessageRecorder`, `NoopLLMMessageRecorder`, `LLMMessageRequest`, contextvar binding, safe file names, redaction, fenced block selection, table escaping, per-call Markdown, and final index writing.
 
-- [ ] **Step 4: Run focused tests and confirm GREEN**
+- [x] **Step 4: Run focused tests and confirm GREEN**
 
 Run:
 
@@ -114,11 +114,11 @@ Expected: recorder tests pass.
 - Test: `tests/test_observability.py`
 - Test: `tests/test_translation_run_limits.py`
 
-- [ ] **Step 1: Write failing LLM integration tests**
+- [x] **Step 1: Write failing LLM integration tests**
 
 Add tests proving `LLMHandler.get_ai_response()` records successful calls, does not record empty/failing responses, records API-success responses even when later verification fails, and `LLMMessageWriteError` is not retried as an LLM failure.
 
-- [ ] **Step 2: Run focused tests and confirm RED**
+- [x] **Step 2: Run focused tests and confirm RED**
 
 Run:
 
@@ -128,11 +128,11 @@ uv run pytest tests/test_observability.py tests/test_translation_run_limits.py -
 
 Expected: tests fail because `LLMHandler` has no recorder integration and `request_with_recoverable_retry()` has no `task_key`.
 
-- [ ] **Step 3: Implement LLM integration**
+- [x] **Step 3: Implement LLM integration**
 
 Persist safe request metadata in `LLMHandler.configure()`, call the current recorder after non-empty content is received, add optional `task_key`/`task_label`, and make retry bypass `LLMMessageWriteError`.
 
-- [ ] **Step 4: Run focused tests and confirm GREEN**
+- [x] **Step 4: Run focused tests and confirm GREEN**
 
 Run:
 
@@ -150,11 +150,11 @@ Expected: LLM integration tests pass.
 - Modify: `app/cli_main.py`
 - Test: `tests/test_cli_json_output.py`
 
-- [ ] **Step 1: Write failing CLI lifecycle tests**
+- [x] **Step 1: Write failing CLI lifecycle tests**
 
 Add tests for explicit `--debug-llm-messages` without `--debug`, explicit non-LLM command usage, `--no-debug-llm-messages` on non-LLM commands, setting/env enabled on non-LLM command not creating a directory, and recorder finalize artifact behavior.
 
-- [ ] **Step 2: Run focused tests and confirm RED**
+- [x] **Step 2: Run focused tests and confirm RED**
 
 Run:
 
@@ -164,11 +164,11 @@ uv run pytest tests/test_cli_json_output.py -q
 
 Expected: tests fail because CLI validation and recorder lifecycle are not implemented.
 
-- [ ] **Step 3: Implement CLI lifecycle**
+- [x] **Step 3: Implement CLI lifecycle**
 
 Create `LLM_MESSAGE_COMMANDS`, validate explicit CLI usage after resolving debug settings, create/bind the recorder around command dispatch, finalize before diagnostics, attach artifacts, and convert recorder finalization failures into non-zero CLI errors.
 
-- [ ] **Step 4: Run focused tests and confirm GREEN**
+- [x] **Step 4: Run focused tests and confirm GREEN**
 
 Run:
 
@@ -185,7 +185,7 @@ Expected: CLI lifecycle tests pass.
 **Files:**
 - All touched files.
 
-- [ ] **Step 1: Run type checking**
+- [x] **Step 1: Run type checking**
 
 Run:
 
@@ -195,7 +195,7 @@ uv run basedpyright
 
 Expected: `0 errors, 0 warnings, 0 notes`.
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 Run:
 
@@ -205,7 +205,7 @@ uv run pytest
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run diff check**
+- [x] **Step 3: Run diff check**
 
 Run:
 
@@ -215,6 +215,6 @@ git diff --check
 
 Expected: no whitespace errors.
 
-- [ ] **Step 4: Completion audit**
+- [x] **Step 4: Completion audit**
 
 Compare the implementation against every explicit requirement in `docs/superpowers/specs/2026-06-07-debug-llm-messages-design.md`, then summarize evidence before marking the goal complete.
