@@ -40,13 +40,7 @@ pub(crate) fn iter_control_sequence_spans(
     text: &str,
     rules: &CompiledRules,
 ) -> Result<Vec<ControlSpan>, String> {
-    let mut standard_spans = Vec::new();
-    standard_spans.extend(iter_indexed_standard_spans(text));
-    standard_spans.extend(iter_no_param_standard_spans(text));
-    standard_spans.extend(iter_symbol_standard_spans(text));
-    standard_spans.extend(iter_terms_percent_spans(text));
-    standard_spans.extend(iter_literal_escape_spans(text));
-    let mut base_spans = filter_standard_prefix_conflicts(text, standard_spans);
+    let mut base_spans = iter_standard_control_sequence_spans(text);
     base_spans.extend(iter_custom_placeholder_spans(text, rules));
     let structured_result = iter_structured_placeholder_spans(text, rules)?;
     validate_structured_placeholder_conflicts(
@@ -63,13 +57,7 @@ pub(crate) fn iter_control_sequence_spans_lossy(
     text: &str,
     rules: &CompiledRules,
 ) -> Vec<ControlSpan> {
-    let mut standard_spans = Vec::new();
-    standard_spans.extend(iter_indexed_standard_spans(text));
-    standard_spans.extend(iter_no_param_standard_spans(text));
-    standard_spans.extend(iter_symbol_standard_spans(text));
-    standard_spans.extend(iter_terms_percent_spans(text));
-    standard_spans.extend(iter_literal_escape_spans(text));
-    let mut spans = filter_standard_prefix_conflicts(text, standard_spans);
+    let mut spans = iter_standard_control_sequence_spans(text);
     spans.extend(iter_custom_placeholder_spans(text, rules));
     if let Ok(structured_result) = iter_structured_placeholder_spans(text, rules)
         && validate_structured_placeholder_conflicts(
@@ -82,6 +70,16 @@ pub(crate) fn iter_control_sequence_spans_lossy(
         spans.extend(structured_result.spans);
     }
     select_non_overlapping_spans(spans)
+}
+
+pub(crate) fn iter_standard_control_sequence_spans(text: &str) -> Vec<ControlSpan> {
+    let mut standard_spans = Vec::new();
+    standard_spans.extend(iter_indexed_standard_spans(text));
+    standard_spans.extend(iter_no_param_standard_spans(text));
+    standard_spans.extend(iter_symbol_standard_spans(text));
+    standard_spans.extend(iter_terms_percent_spans(text));
+    standard_spans.extend(iter_literal_escape_spans(text));
+    filter_standard_prefix_conflicts(text, standard_spans)
 }
 
 pub(crate) fn iter_indexed_standard_spans(text: &str) -> Vec<ControlSpan> {

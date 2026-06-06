@@ -1,5 +1,6 @@
 //! Note 标签候选扫描。
 
+use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,14 +66,30 @@ pub(super) fn scan_note_tag_rule_candidates(
     data_files: &BTreeMap<String, Value>,
     text_rules: RuleCandidateTextRules,
 ) -> Result<NoteTagRuleCandidateScan, String> {
+    let data_file_refs = data_files
+        .iter()
+        .map(|(file_name, data)| (file_name.as_str(), data))
+        .collect::<Vec<_>>();
+    scan_note_tag_rule_candidates_from_refs(&data_file_refs, text_rules)
+}
+
+pub(super) fn scan_note_tag_rule_candidates_from_refs(
+    data_files: &[(&str, &Value)],
+    text_rules: RuleCandidateTextRules,
+) -> Result<NoteTagRuleCandidateScan, String> {
     let compiled_rules = compile_rule_candidate_text_rules(text_rules)?;
-    let mut sources = Vec::new();
-    for (file_name, data) in data_files {
-        if file_name == "plugins.js" || !file_name.ends_with(".json") || data.is_string() {
-            continue;
-        }
-        collect_note_tag_sources_in_value(file_name, data, &mut Vec::new(), &mut sources);
-    }
+    let source_groups = data_files
+        .par_iter()
+        .filter(|(file_name, data)| {
+            *file_name != "plugins.js" && file_name.ends_with(".json") && !data.is_string()
+        })
+        .map(|(file_name, data)| {
+            let mut sources = Vec::new();
+            collect_note_tag_sources_in_value(file_name, data, &mut Vec::new(), &mut sources);
+            sources
+        })
+        .collect::<Vec<_>>();
+    let sources = source_groups.into_iter().flatten().collect::<Vec<_>>();
 
     let mut candidates_by_key: BTreeMap<(String, String), NoteTagCandidateAccumulator> =
         BTreeMap::new();

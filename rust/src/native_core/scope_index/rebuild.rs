@@ -10,10 +10,11 @@ use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
 use super::mv_virtual_namebox::{MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput};
@@ -74,6 +75,7 @@ struct RebuildStorageOutput {
     standard_data_file_count: usize,
     native_thread_count: usize,
     written_item_count: usize,
+    internal_stage_timings: BTreeMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -243,15 +245,48 @@ fn rebuild_with_context(
     payload: RebuildStoragePayload,
     mut context: RebuildContext,
 ) -> Result<String, String> {
+    let mut internal_stage_timings = BTreeMap::new();
+
+    let stage_started = Instant::now();
     let layout = resolve_source_layout(Path::new(&payload.game_path))?;
+    record_stage(
+        &mut internal_stage_timings,
+        "resolve_source_layout",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let data_files = read_standard_data_files(&layout.data_dir)?;
+    record_stage(
+        &mut internal_stage_timings,
+        "read_standard_data_files",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let nonstandard_data_files =
         read_nonstandard_data_files(&layout.data_dir, &context.nonstandard_data_rules)?;
+    record_stage(
+        &mut internal_stage_timings,
+        "read_nonstandard_data_files",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     context.actor_names_by_id = actor_names_by_id(&data_files);
     context.database_owner_terms_by_key = database_owner_terms_by_key(&data_files);
     context.system_owner_terms = system_owner_terms(&data_files);
     context.map_display_names_by_file = map_display_names_by_file(&data_files);
+    record_stage(
+        &mut internal_stage_timings,
+        "derive_standard_data_context",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let plugin_config_inputs = read_plugin_config_inputs(&layout.plugins_path)?;
+    record_stage(
+        &mut internal_stage_timings,
+        "read_plugin_config",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let (fresh_plugin_text_rules, stale_plugin_rule_count) = if context.plugin_text_rules.is_empty()
     {
         (Vec::new(), 0usize)
@@ -260,6 +295,12 @@ fn rebuild_with_context(
             filter_fresh_plugin_text_rules(&context.plugin_text_rules, &plugin_config_inputs)?;
         (fresh_plugin_text_rules, stale_plugin_rule_count)
     };
+    record_stage(
+        &mut internal_stage_timings,
+        "filter_plugin_config_rules",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let plugin_source_files = if context.plugin_source_rules.is_empty() {
         Vec::new()
     } else {
@@ -269,6 +310,12 @@ fn rebuild_with_context(
             &context.plugin_source_rules,
         )?
     };
+    record_stage(
+        &mut internal_stage_timings,
+        "read_plugin_source_files",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let native_thread_count = pool::read_configured_thread_count()
         .map(|thread_count| thread_count.unwrap_or_else(rayon::current_num_threads))
         .map_err(|error| {
@@ -277,21 +324,65 @@ fn rebuild_with_context(
                 format!("读取 Rust 线程配置失败: {error}"),
             )
         })?;
+    record_stage(
+        &mut internal_stage_timings,
+        "read_thread_config",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let mut rows = scan_text_index_rows(&data_files, &context)?;
+    record_stage(
+        &mut internal_stage_timings,
+        "scan_standard_data",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     rows.extend(scan_nonstandard_data_rows(
         &nonstandard_data_files,
         &context,
     )?);
+    record_stage(
+        &mut internal_stage_timings,
+        "scan_nonstandard_data",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     rows.extend(scan_plugin_parameter_rows(
         &plugin_config_inputs,
         &fresh_plugin_text_rules,
         &context,
     )?);
+    record_stage(
+        &mut internal_stage_timings,
+        "scan_plugin_config",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     rows.extend(scan_plugin_source_rows(&plugin_source_files, &context)?);
+    record_stage(
+        &mut internal_stage_timings,
+        "scan_plugin_source",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     rows.extend(scan_event_command_rule_rows(&data_files, &context)?);
+    record_stage(
+        &mut internal_stage_timings,
+        "scan_event_commands",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     rows.extend(scan_note_tag_rows(&data_files, &context)?);
+    record_stage(&mut internal_stage_timings, "scan_note_tags", stage_started);
+    let stage_started = Instant::now();
     rows.sort_by(|left, right| left.location_path.cmp(&right.location_path));
     rows.dedup_by(|left, right| left.location_path == right.location_path);
+    record_stage(
+        &mut internal_stage_timings,
+        "sort_dedup_rows",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let domain_summary = domain_summary_from_rows(&rows);
     let item_count = rows.len();
     let scope_summary = DirectScopeSummary {
@@ -302,16 +393,29 @@ fn rebuild_with_context(
         stale_rule_count: stale_plugin_rule_count,
         native_thread_count,
     };
+    record_stage(
+        &mut internal_stage_timings,
+        "build_summaries",
+        stage_started,
+    );
 
     let source_snapshot_fingerprint = context.source_snapshot_fingerprint.clone();
     let rules_fingerprint = context.rules_fingerprint.clone();
+    let stage_started = Instant::now();
     let workflow_gate_scope_hashes = build_workflow_gate_scope_hashes(
         &payload,
         &context,
         &data_files,
         &plugin_config_inputs,
         &rows,
+        &mut internal_stage_timings,
     )?;
+    record_stage(
+        &mut internal_stage_timings,
+        "build_workflow_gate_metadata",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
         metadata: storage::TextIndexMetadataInput {
@@ -358,7 +462,14 @@ fn rebuild_with_context(
             .collect(),
         rule_hit_summary: Vec::new(),
     };
+    record_stage(
+        &mut internal_stage_timings,
+        "build_write_payload",
+        stage_started,
+    );
+    let stage_started = Instant::now();
     let write_output = storage::write_scope_index_storage_direct(&write_payload)?;
+    record_stage(&mut internal_stage_timings, "write_storage", stage_started);
     let written_item_count = write_output.written_item_count;
     serialize_output(&RebuildStorageOutput {
         status: "ok",
@@ -368,7 +479,13 @@ fn rebuild_with_context(
         standard_data_file_count: data_files.len(),
         native_thread_count,
         written_item_count,
+        internal_stage_timings,
     })
+}
+
+fn record_stage(stage_timings: &mut BTreeMap<String, u64>, stage_name: &str, started: Instant) {
+    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    stage_timings.insert(stage_name.to_string(), elapsed_ms);
 }
 
 fn build_workflow_gate_scope_hashes(
@@ -377,6 +494,7 @@ fn build_workflow_gate_scope_hashes(
     data_files: &[ParsedDataFile],
     plugin_config_inputs: &[PluginConfigInput],
     rows: &[DirectTextIndexRow],
+    stage_timings: &mut BTreeMap<String, u64>,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut metadata = BTreeMap::new();
     metadata.insert(
@@ -388,16 +506,24 @@ fn build_workflow_gate_scope_hashes(
         TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE.to_string(),
     );
 
-    let plugins_payload = Value::Array(
-        plugin_config_inputs
-            .iter()
-            .map(|input| input.plugin.clone())
-            .collect(),
-    );
-    metadata.insert(
-        PLUGIN_TEXT_RULE_DOMAIN.to_string(),
-        stable_json_fingerprint(&plugins_payload)?,
-    );
+    if context.plugin_text_rules.is_empty() {
+        let stage_started = Instant::now();
+        let plugins_payload = Value::Array(
+            plugin_config_inputs
+                .iter()
+                .map(|input| input.plugin.clone())
+                .collect(),
+        );
+        metadata.insert(
+            PLUGIN_TEXT_RULE_DOMAIN.to_string(),
+            stable_json_fingerprint(&plugins_payload)?,
+        );
+        record_stage(
+            stage_timings,
+            "workflow_gate_plugin_config_hash",
+            stage_started,
+        );
+    }
 
     if payload.event_command_default_codes.is_empty() {
         return Err(structured_error(
@@ -405,27 +531,40 @@ fn build_workflow_gate_scope_hashes(
             "事件指令默认编码为空，请检查配置".to_string(),
         ));
     }
-    let event_data_files = event_command_data_file_inputs(data_files);
-    let event_payload = super::event_commands::event_command_scope_hash_payload(
-        &event_data_files,
-        &payload.event_command_default_codes,
-    );
-    metadata.insert(
-        EVENT_COMMAND_TEXT_RULE_DOMAIN.to_string(),
-        stable_json_fingerprint(&event_payload)?,
-    );
+    if context.event_command_rules.is_empty() {
+        let stage_started = Instant::now();
+        let event_data_files = event_command_data_file_inputs(data_files);
+        let event_payload = super::event_commands::event_command_scope_hash_payload(
+            &event_data_files,
+            &payload.event_command_default_codes,
+        );
+        metadata.insert(
+            EVENT_COMMAND_TEXT_RULE_DOMAIN.to_string(),
+            stable_json_fingerprint(&event_payload)?,
+        );
+        record_stage(
+            stage_timings,
+            "workflow_gate_event_command_hash",
+            stage_started,
+        );
+    }
 
-    let note_data_files = data_file_map(data_files);
-    let note_scan = super::note_tags::scan_note_tag_rule_candidates(
-        &note_data_files,
-        context.rule_candidate_text_rules.clone(),
-    )?;
-    metadata.insert(
-        NOTE_TAG_TEXT_RULE_DOMAIN.to_string(),
-        stable_json_fingerprint(&to_json_value(&note_scan.candidates, "Note 标签候选")?)?,
-    );
+    if context.note_tag_rules.is_empty() {
+        let stage_started = Instant::now();
+        let note_data_files = note_tag_data_file_refs(data_files);
+        let note_scan = super::note_tags::scan_note_tag_rule_candidates_from_refs(
+            &note_data_files,
+            context.rule_candidate_text_rules.clone(),
+        )?;
+        metadata.insert(
+            NOTE_TAG_TEXT_RULE_DOMAIN.to_string(),
+            stable_json_fingerprint(&to_json_value(&note_scan.candidates, "Note 标签候选")?)?,
+        );
+        record_stage(stage_timings, "workflow_gate_note_tag_hash", stage_started);
+    }
 
-    if payload.engine_kind == "mv" {
+    if payload.engine_kind == "mv" && context.mv_virtual_namebox_rules.is_empty() {
+        let stage_started = Instant::now();
         let mv_data_files = mv_virtual_namebox_data_file_inputs(data_files);
         let actor_names = context
             .actor_names_by_id
@@ -447,8 +586,14 @@ fn build_workflow_gate_scope_hashes(
                 "MV 虚拟名字框候选",
             )?)?,
         );
+        record_stage(
+            stage_timings,
+            "workflow_gate_mv_virtual_namebox_hash",
+            stage_started,
+        );
     }
 
+    let stage_started = Instant::now();
     let placeholder_texts = placeholder_text_inputs(rows);
     let placeholder_scan = scan_placeholder_rule_candidates(
         &placeholder_texts,
@@ -469,7 +614,13 @@ fn build_workflow_gate_scope_hashes(
             .filter(|candidate| candidate.covered)
             .count(),
     )?;
+    record_stage(
+        stage_timings,
+        "workflow_gate_placeholder_hash",
+        stage_started,
+    );
 
+    let stage_started = Instant::now();
     let structured_placeholder_texts = structured_placeholder_text_inputs(rows);
     let structured_scan = scan_structured_placeholder_rule_candidates(
         &structured_placeholder_texts,
@@ -490,6 +641,11 @@ fn build_workflow_gate_scope_hashes(
             .filter(|candidate| candidate.covered)
             .count(),
     )?;
+    record_stage(
+        stage_timings,
+        "workflow_gate_structured_placeholder_hash",
+        stage_started,
+    );
 
     Ok(metadata)
 }
@@ -528,10 +684,10 @@ fn to_json_value<T: Serialize>(value: &T, label: &str) -> Result<Value, String> 
     })
 }
 
-fn data_file_map(data_files: &[ParsedDataFile]) -> BTreeMap<String, Value> {
+fn note_tag_data_file_refs(data_files: &[ParsedDataFile]) -> Vec<(&str, &Value)> {
     data_files
         .iter()
-        .map(|file| (file.file_name.clone(), file.data.clone()))
+        .map(|file| (file.file_name.as_str(), &file.data))
         .collect()
 }
 
@@ -563,6 +719,7 @@ fn placeholder_text_inputs(rows: &[DirectTextIndexRow]) -> Vec<PlaceholderTextIn
             row.original_lines
                 .iter()
                 .enumerate()
+                .filter(|(_line_index, text)| text.contains('\\'))
                 .map(|(line_index, text)| PlaceholderTextInput {
                     source_name: format!("{}#{line_index}", row.location_path),
                     text: text.clone(),
@@ -579,6 +736,7 @@ fn structured_placeholder_text_inputs(
             row.original_lines
                 .iter()
                 .enumerate()
+                .filter(|(_line_index, text)| may_contain_structured_shell_candidate(text))
                 .map(|(line_index, text)| StructuredPlaceholderTextInput {
                     location_path: row.location_path.clone(),
                     line_number: line_index + 1,
@@ -586,6 +744,10 @@ fn structured_placeholder_text_inputs(
                 })
         })
         .collect()
+}
+
+fn may_contain_structured_shell_candidate(text: &str) -> bool {
+    (text.contains('<') && text.contains('>')) || (text.contains('【') && text.contains('】'))
 }
 
 fn open_connection_readonly(db_path: &Path) -> Result<Connection, String> {
@@ -1795,7 +1957,7 @@ fn scan_plugin_parameter_rows(
     if plugin_text_rules.is_empty() {
         return Ok(Vec::new());
     }
-    let scan = super::plugin_config::scan_plugin_config_rule_candidates(
+    let candidates = super::plugin_config::scan_plugin_config_rule_text_candidates(
         plugins,
         plugin_text_rules,
         context.rule_candidate_text_rules.clone(),
@@ -1806,7 +1968,7 @@ fn scan_plugin_parameter_rows(
             format!("扫描插件参数文本失败: {error}"),
         )
     })?;
-    scan.candidates
+    candidates
         .iter()
         .map(|candidate| plugin_parameter_row(candidate, context))
         .collect()
@@ -2125,9 +2287,8 @@ fn scan_event_command_rule_rows(
             data: data_file.data.clone(),
         })
         .collect::<Vec<_>>();
-    let scan = super::event_commands::scan_event_command_rule_candidates(
+    let hit_details = super::event_commands::scan_event_command_rule_hit_details(
         &event_command_data_files,
-        &[],
         &context.event_command_rules,
     )
     .map_err(|error| {
@@ -2136,7 +2297,7 @@ fn scan_event_command_rule_rows(
             format!("扫描事件指令规则文本失败: {error}"),
         )
     })?;
-    scan.hit_details
+    hit_details
         .iter()
         .filter(|hit| context.source_text_required_re.is_match(&hit.original_text))
         .map(|hit| {
@@ -2961,30 +3122,60 @@ fn domain_summary_from_rows(rows: &[DirectTextIndexRow]) -> Vec<DirectDomainSumm
 }
 
 fn stable_json_fingerprint(value: &Value) -> Result<String, String> {
-    let canonical = canonical_json(value);
-    let encoded = serde_json::to_string(&canonical).map_err(|error| {
-        structured_error(
-            "scope_index_rebuild_fingerprint_failed",
-            format!("生成稳定 JSON 指纹失败: {error}"),
-        )
-    })?;
-    Ok(sha256_text(&encoded))
+    let mut hasher = Sha256::new();
+    update_canonical_json_hash(value, &mut hasher)?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
-fn canonical_json(value: &Value) -> Value {
+fn update_canonical_json_hash(value: &Value, hasher: &mut Sha256) -> Result<(), String> {
     match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
+        Value::Array(items) => {
+            hasher.update(b"[");
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    hasher.update(b",");
+                }
+                update_canonical_json_hash(item, hasher)?;
+            }
+            hasher.update(b"]");
+            Ok(())
+        }
         Value::Object(object) => {
+            hasher.update(b"{");
             let keys = object.keys().collect::<BTreeSet<_>>();
-            let mut sorted = serde_json::Map::new();
-            for key in keys {
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    hasher.update(b",");
+                }
+                let encoded_key = serde_json::to_string(key).map_err(|error| {
+                    structured_error(
+                        "scope_index_rebuild_fingerprint_failed",
+                        format!("生成稳定 JSON 指纹失败: {error}"),
+                    )
+                })?;
+                hasher.update(encoded_key.as_bytes());
+                hasher.update(b":");
                 if let Some(child) = object.get(key) {
-                    sorted.insert(key.clone(), canonical_json(child));
+                    update_canonical_json_hash(child, hasher)?;
                 }
             }
-            Value::Object(sorted)
+            hasher.update(b"}");
+            Ok(())
         }
-        _ => value.clone(),
+        _ => {
+            let encoded = serde_json::to_string(value).map_err(|error| {
+                structured_error(
+                    "scope_index_rebuild_fingerprint_failed",
+                    format!("生成稳定 JSON 指纹失败: {error}"),
+                )
+            })?;
+            hasher.update(encoded.as_bytes());
+            Ok(())
+        }
     }
 }
 

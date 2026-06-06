@@ -8,6 +8,7 @@ use super::RuleCandidateTextRules;
 use super::plugin_source::compile_rule_candidate_text_rules;
 use crate::native_core::controls::{
     RawControlSequenceCandidate, iter_control_sequence_spans, iter_raw_control_sequence_candidates,
+    iter_standard_control_sequence_spans,
 };
 use crate::native_core::models::{CompiledRules, ControlSpan, SpanSource};
 
@@ -121,9 +122,22 @@ fn scan_placeholder_text(
     input: &PlaceholderTextInput,
     rules: &CompiledRules,
 ) -> Result<Vec<PlaceholderOccurrence>, String> {
-    let covered_spans = iter_control_sequence_spans(&input.text, rules)?;
+    if !input.text.contains('\\') {
+        return Ok(Vec::new());
+    }
+    let raw_candidates = iter_raw_control_sequence_candidates(&input.text);
+    if raw_candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let covered_spans = if rules.custom_placeholder_rules.is_empty()
+        && rules.structured_placeholder_rules.is_empty()
+    {
+        iter_standard_control_sequence_spans(&input.text)
+    } else {
+        iter_control_sequence_spans(&input.text, rules)?
+    };
     let mut occurrences = Vec::new();
-    for raw_candidate in iter_raw_control_sequence_candidates(&input.text) {
+    for raw_candidate in raw_candidates {
         let Some(covered_span) = find_covering_span(&raw_candidate, &covered_spans) else {
             occurrences.push(PlaceholderOccurrence {
                 marker: raw_candidate.original,

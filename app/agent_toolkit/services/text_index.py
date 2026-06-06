@@ -14,7 +14,7 @@ from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     collect_text_index_placeholder_gate_errors,
     collect_text_index_scope_gate_errors,
-    rebuild_text_index_native_storage,
+    rebuild_text_index_native_storage_with_summary,
 )
 
 from .common import (
@@ -82,14 +82,23 @@ class TextIndexAgentMixin:
             finish_stage("load_config_and_rules")
 
             set_status("原生重建持久文本范围索引")
+            rust_stage_timings: JsonObject = {}
             try:
-                metadata = await rebuild_text_index_native_storage(
+                native_rebuild = await rebuild_text_index_native_storage_with_summary(
                     session=session,
                     setting=setting,
                     text_rules=text_rules,
                     setting_overrides=setting_overrides,
                     include_write_probe=include_write_probe,
                 )
+                metadata = native_rebuild.metadata
+                raw_rust_stage_timings = native_rebuild.native_summary.get("internal_stage_timings", {})
+                if isinstance(raw_rust_stage_timings, dict):
+                    rust_stage_timings = {
+                        str(key): value
+                        for key, value in raw_rust_stage_timings.items()
+                        if isinstance(value, int) and value >= 0
+                    }
             except NativeScopeIndexStorageError as error:
                 error_message = str(error)
                 error_code = error.code
@@ -185,6 +194,7 @@ class TextIndexAgentMixin:
                 "created_at": metadata.created_at,
                 "include_write_probe": include_write_probe,
                 "source_branch_gate_status": source_branch_gate_status,
+                "rust_stage_timings": rust_stage_timings,
                 "performance_notes": [
                     "首次重建由 Rust 直读游戏目录并写入持久索引；后续小任务应复用 warm index。",
                 ],

@@ -517,6 +517,14 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     )
 
     assert result["status"] == "ok"
+    internal_timings = ensure_json_object(
+        result["internal_stage_timings"],
+        "native_scope_index_storage_rebuild.internal_stage_timings",
+    )
+    assert "scan_standard_data" in internal_timings
+    assert "build_workflow_gate_metadata" in internal_timings
+    assert "write_storage" in internal_timings
+    assert all(isinstance(value, int) and value >= 0 for value in internal_timings.values())
     async with await registry.open_game(record.game_title) as session:
         scope_summary = await session.read_text_index_scope_summary()
         assert scope_summary is not None

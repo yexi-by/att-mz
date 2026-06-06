@@ -1,6 +1,7 @@
 //! MV 虚拟名字框候选和规则命中扫描。
 
 use fancy_regex::{Captures, Regex};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -150,8 +151,11 @@ pub(super) fn scan_mv_virtual_namebox_rule_candidates(
     let mut scanned_command_count = 0usize;
     let mut sorted_files = data_files.iter().collect::<Vec<_>>();
     sorted_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
-    for file in sorted_files {
-        let groups = collect_command_groups(file);
+    let file_group_sets = sorted_files
+        .par_iter()
+        .map(|file| collect_command_groups(file))
+        .collect::<Vec<_>>();
+    for groups in file_group_sets {
         scanned_command_count += groups.iter().map(std::vec::Vec::len).sum::<usize>();
         command_groups.extend(groups);
     }

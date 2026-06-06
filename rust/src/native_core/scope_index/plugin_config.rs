@@ -1,5 +1,6 @@
 //! 插件参数规则候选扫描。
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,8 +125,8 @@ pub(super) fn scan_plugin_config_rule_candidates(
     let mut plugin_refs = plugins.iter().collect::<Vec<_>>();
     plugin_refs.sort_by_key(|plugin| plugin.plugin_index);
     let plugin_scans = plugin_refs
-        .into_iter()
-        .map(scan_plugin_config)
+        .par_iter()
+        .map(|plugin| scan_plugin_config(plugin))
         .collect::<Result<Vec<_>, String>>()?;
     let plugin_scans_by_index = plugin_scans
         .iter()
@@ -263,6 +264,93 @@ pub(super) fn scan_plugin_config_rule_candidates(
         rule_summaries,
         string_leaf_count,
     })
+}
+
+pub(super) fn scan_plugin_config_rule_text_candidates(
+    plugins: &[PluginConfigInput],
+    rules: &[PluginConfigRuleInput],
+    text_rules: RuleCandidateTextRules,
+) -> Result<Vec<RuleCandidateOutput>, String> {
+    let compiled_rules = compile_rule_candidate_text_rules(text_rules)?;
+    let mut plugin_refs = plugins.iter().collect::<Vec<_>>();
+    plugin_refs.sort_by_key(|plugin| plugin.plugin_index);
+    let plugin_scans = plugin_refs
+        .par_iter()
+        .map(|plugin| scan_plugin_config(plugin))
+        .collect::<Result<Vec<_>, String>>()?;
+    let plugin_scans_by_index = plugin_scans
+        .iter()
+        .map(|scan| (scan.plugin_index, scan))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen_rule_plugin_indices = BTreeSet::new();
+    let mut candidates = Vec::new();
+    let mut seen_candidate_paths = BTreeSet::new();
+
+    for (rule_index, rule) in rules.iter().enumerate() {
+        if !seen_rule_plugin_indices.insert(rule.plugin_index) {
+            return Err(format!(
+                "插件规则不能重复声明 plugin_index: {}",
+                rule.plugin_index
+            ));
+        }
+        let Some(plugin_scan) = plugin_scans_by_index.get(&rule.plugin_index) else {
+            return Err(format!(
+                "插件规则索引超出当前 plugins.js 范围: {}",
+                rule.plugin_index
+            ));
+        };
+        if rule.plugin_name != plugin_scan.plugin_name {
+            return Err(format!(
+                "插件规则名称与当前 plugins.js 不匹配: plugin_index={}, 规则={}, 当前={}",
+                rule.plugin_index, rule.plugin_name, plugin_scan.plugin_name
+            ));
+        }
+
+        for path_template in &rule.path_templates {
+            let matched_leaves = expand_rule_to_leaf_paths(path_template, &plugin_scan.leaves)?;
+            for leaf in matched_leaves {
+                let original_text = normalize_visible_text_for_extraction(&leaf.text);
+                if !should_translate_plugin_source_text(&original_text, &compiled_rules)? {
+                    continue;
+                }
+                let location_path =
+                    jsonpath_to_plugin_location_path(&leaf.path, plugin_scan.plugin_index)?;
+                if seen_candidate_paths.insert(location_path.clone()) {
+                    candidates.push(RuleCandidateOutput {
+                        domain: "plugin_config".to_string(),
+                        location_path: location_path.clone(),
+                        rule_key: format!("plugin_config.{}.rule.{rule_index}", rule.plugin_index),
+                        original_text: original_text.clone(),
+                        source_file: "plugins.js".to_string(),
+                        file: None,
+                        json_path: Some(leaf.path.clone()),
+                        source_text: None,
+                        field_name: None,
+                        sibling_field_names: None,
+                        parent_object_keys: None,
+                        selector: None,
+                        text: None,
+                        raw_text: Some(leaf.text.clone()),
+                        quote: None,
+                        line: None,
+                        start_index: None,
+                        end_index: None,
+                        content_start_index: None,
+                        content_end_index: None,
+                        context: None,
+                        api: None,
+                        key: None,
+                        ast_context: None,
+                        active: None,
+                        confidence: None,
+                        structural_flags: None,
+                        file_hash: Some(plugin_scan.plugin_hash.clone()),
+                    });
+                }
+            }
+        }
+    }
+    Ok(candidates)
 }
 
 impl PluginConfigRuleStats {

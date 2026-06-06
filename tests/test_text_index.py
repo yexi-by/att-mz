@@ -248,6 +248,11 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
     assert set(stage_timings) == {"load_config_and_rules", "rust_rebuild_text_index"}
     assert "source_branch_workflow_gate" not in stage_timings
     assert all(isinstance(value, int) and value >= 0 for value in stage_timings.values())
+    rust_stage_timings = ensure_json_object(report.summary["rust_stage_timings"], "rust_stage_timings")
+    assert "scan_standard_data" in rust_stage_timings
+    assert "build_workflow_gate_metadata" in rust_stage_timings
+    assert "write_storage" in rust_stage_timings
+    assert all(isinstance(value, int) and value >= 0 for value in rust_stage_timings.values())
     async with await registry.open_game(record.game_title) as session:
         metadata = await session.read_text_index_metadata()
         assert metadata is not None

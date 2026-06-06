@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import cast
 
 from app.config import SettingOverrides
@@ -62,6 +63,14 @@ TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX = "workflow_gate:structured_placeh
 TEXT_INDEX_PROMPT_CONTEXT_VERSION = "display_name_owner_system_terms_v3"
 
 
+@dataclass(frozen=True, slots=True)
+class TextIndexNativeRebuildResult:
+    """Rust 原生重建后的 metadata 和原生报告摘要。"""
+
+    metadata: TextIndexMetadata
+    native_summary: JsonObject
+
+
 async def rebuild_text_index_native_storage(
     *,
     session: TargetGameSession,
@@ -71,6 +80,26 @@ async def rebuild_text_index_native_storage(
     include_write_probe: bool = False,
 ) -> TextIndexMetadata:
     """由 Rust 直读 DB/游戏目录并重建持久 text index。"""
+    return (
+        await rebuild_text_index_native_storage_with_summary(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+            setting_overrides=setting_overrides,
+            include_write_probe=include_write_probe,
+        )
+    ).metadata
+
+
+async def rebuild_text_index_native_storage_with_summary(
+    *,
+    session: TargetGameSession,
+    setting: Setting,
+    text_rules: TextRules,
+    setting_overrides: SettingOverrides | None = None,
+    include_write_probe: bool = False,
+) -> TextIndexNativeRebuildResult:
+    """由 Rust 重建持久 text index，并保留 Rust 内部阶段耗时。"""
     _ = include_write_probe
     source_snapshot_fingerprint = await collect_source_snapshot_fingerprint(session)
     rules_fingerprint = await collect_text_index_rules_fingerprint(
@@ -110,7 +139,7 @@ async def rebuild_text_index_native_storage(
     metadata = await session.read_text_index_metadata()
     if metadata is None:
         raise RuntimeError("Rust 原生文本范围索引重建后没有写入元信息")
-    return metadata
+    return TextIndexNativeRebuildResult(metadata=metadata, native_summary=result)
 
 
 async def detect_text_index_invalidations(
@@ -853,6 +882,7 @@ __all__ = [
     "detect_text_index_invalidations",
     "evaluate_text_index_scope_gate",
     "rebuild_text_index_native_storage",
+    "rebuild_text_index_native_storage_with_summary",
     "source_snapshot_records_fingerprint",
     "stable_json_fingerprint",
     "text_index_item_to_translation_item",

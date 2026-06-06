@@ -1,5 +1,6 @@
 //! 事件指令候选扫描。
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -128,8 +129,11 @@ pub(super) fn scan_event_command_rule_candidates(
 
     let mut sorted_files = data_files.iter().collect::<Vec<_>>();
     sorted_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
-    for file in sorted_files {
-        let snapshots = collect_event_command_snapshots(file);
+    let snapshot_groups = sorted_files
+        .par_iter()
+        .map(|file| collect_event_command_snapshots(file))
+        .collect::<Vec<_>>();
+    for snapshots in snapshot_groups {
         scanned_command_count += snapshots.len();
         for snapshot in snapshots {
             if !command_code_set.contains(&snapshot.command_code) {
@@ -207,24 +211,84 @@ pub(super) fn scan_event_command_rule_candidates(
     })
 }
 
+pub(super) fn scan_event_command_rule_hit_details(
+    data_files: &[EventCommandDataFileInput],
+    rules: &[EventCommandRuleInput],
+) -> Result<Vec<EventCommandHitDetailOutput>, String> {
+    if rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let command_code_set = rules
+        .iter()
+        .map(|rule| rule.command_code)
+        .collect::<BTreeSet<_>>();
+    let mut sorted_files = data_files.iter().collect::<Vec<_>>();
+    sorted_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    let snapshot_groups = sorted_files
+        .par_iter()
+        .map(|file| collect_event_command_snapshots(file))
+        .collect::<Vec<_>>();
+    let mut hit_details = Vec::new();
+    for snapshot in snapshot_groups.into_iter().flatten() {
+        if !command_code_set.contains(&snapshot.command_code) {
+            continue;
+        }
+        let leaves = resolve_event_command_leaves(&snapshot.parameters);
+        for (rule_index, rule) in rules.iter().enumerate() {
+            if rule.command_code != snapshot.command_code
+                || !command_matches_filters(&snapshot.parameters, &rule.parameter_filters)
+            {
+                continue;
+            }
+            for path_template in &rule.path_templates {
+                let matched_leaves = expand_rule_to_leaf_paths(path_template, &leaves)?;
+                for leaf in matched_leaves {
+                    let location_path = jsonpath_to_event_command_location_path(
+                        &leaf.path,
+                        &snapshot.command_location_path,
+                    )?;
+                    let original_text = normalize_visible_text_for_extraction(&leaf.text);
+                    hit_details.push(EventCommandHitDetailOutput {
+                        command_code: snapshot.command_code,
+                        command_location_path: snapshot.command_location_path.clone(),
+                        file_name: snapshot.file_name.clone(),
+                        json_path: leaf.path.clone(),
+                        location_path,
+                        original_text,
+                        path_template: path_template.clone(),
+                        rule_index,
+                    });
+                }
+            }
+        }
+    }
+    Ok(hit_details)
+}
+
 pub(super) fn event_command_scope_hash_payload(
     data_files: &[EventCommandDataFileInput],
     event_command_codes: &[i64],
 ) -> Value {
     let command_code_set = event_command_codes.iter().copied().collect::<BTreeSet<_>>();
-    let mut command_snapshots = Vec::new();
-    for file in python_event_command_scope_order(data_files) {
-        for snapshot in collect_event_command_snapshots(file) {
-            if !command_code_set.contains(&snapshot.command_code) {
-                continue;
-            }
-            command_snapshots.push(json!({
-                "path": command_location_path_parts(&snapshot.command_location_path),
-                "code": snapshot.command_code,
-                "parameters": snapshot.parameters,
-            }));
-        }
-    }
+    let command_snapshots = python_event_command_scope_order(data_files)
+        .par_iter()
+        .map(|file| {
+            collect_event_command_snapshots(file)
+                .into_iter()
+                .filter(|snapshot| command_code_set.contains(&snapshot.command_code))
+                .map(|snapshot| {
+                    json!({
+                        "path": command_location_path_parts(&snapshot.command_location_path),
+                        "code": snapshot.command_code,
+                        "parameters": snapshot.parameters,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     json!({
         "command_codes": command_code_set.into_iter().collect::<Vec<_>>(),
         "commands": command_snapshots,

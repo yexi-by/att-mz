@@ -7,7 +7,6 @@ use std::sync::LazyLock;
 
 use super::RuleCandidateTextRules;
 use super::plugin_source::compile_rule_candidate_text_rules;
-use crate::native_core::controls::iter_structured_placeholder_spans;
 use crate::native_core::models::{CompiledRules, CompiledStructuredRule};
 
 pub(super) static STRUCTURED_SHELL_CANDIDATE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -73,10 +72,13 @@ fn scan_structured_placeholder_text(
     input: &StructuredPlaceholderTextInput,
     rules: &CompiledRules,
 ) -> Result<Vec<StructuredPlaceholderCandidateOutput>, String> {
-    let _ = iter_structured_placeholder_spans(&input.text, rules)?;
+    let candidate_matches = iter_structured_shell_candidate_matches(&input.text);
+    if candidate_matches.is_empty() {
+        return Ok(Vec::new());
+    }
     let covered_ranges =
         structured_rule_covered_ranges(&input.text, &rules.structured_placeholder_rules)?;
-    let candidates = iter_structured_shell_candidate_matches(&input.text)
+    let candidates = candidate_matches
         .into_iter()
         .map(|candidate_match| {
             let matching_rules = covered_ranges
@@ -99,6 +101,9 @@ fn scan_structured_placeholder_text(
 }
 
 fn iter_structured_shell_candidate_matches(text: &str) -> Vec<StructuredCandidateMatch> {
+    if !may_contain_structured_shell_candidate(text) {
+        return Vec::new();
+    }
     let mut matches = Vec::new();
     for pattern in STRUCTURED_SHELL_CANDIDATE_PATTERNS.iter() {
         for matched in pattern.find_iter(text) {
@@ -132,6 +137,10 @@ fn iter_structured_shell_candidate_matches(text: &str) -> Vec<StructuredCandidat
         selected.push(candidate_match);
     }
     selected
+}
+
+fn may_contain_structured_shell_candidate(text: &str) -> bool {
+    (text.contains('<') && text.contains('>')) || (text.contains('【') && text.contains('】'))
 }
 
 fn structured_rule_covered_ranges(

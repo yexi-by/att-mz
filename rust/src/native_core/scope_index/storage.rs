@@ -525,28 +525,38 @@ fn write_text_index_storage(
             )
         })?;
 
-    for row in &payload.text_index_rows {
-        let original_lines = serde_json::to_string(&row.original_lines).map_err(|error| {
-            structured_error(
-                "scope_index_storage_payload_invalid",
-                format!("original_lines 序列化失败 {}: {error}", row.location_path),
-            )
-        })?;
-        let source_line_paths = serde_json::to_string(&row.source_line_paths).map_err(|error| {
-            structured_error(
-                "scope_index_storage_payload_invalid",
-                format!(
-                    "source_line_paths 序列化失败 {}: {error}",
-                    row.location_path
-                ),
-            )
-        })?;
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO text_index_items \
+    {
+        let mut insert_item_statement = transaction
+            .prepare_cached(
+                "INSERT INTO text_index_items \
                  (location_path, item_type, role, original_lines, source_line_paths, source_type, source_file, writable, source_snapshot_fingerprint, rules_fingerprint, locator_json) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
+            )
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_storage_write_failed",
+                    format!("准备 text_index_items 写入语句失败: {error}"),
+                )
+            })?;
+        for row in &payload.text_index_rows {
+            let original_lines = serde_json::to_string(&row.original_lines).map_err(|error| {
+                structured_error(
+                    "scope_index_storage_payload_invalid",
+                    format!("original_lines 序列化失败 {}: {error}", row.location_path),
+                )
+            })?;
+            let source_line_paths =
+                serde_json::to_string(&row.source_line_paths).map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_payload_invalid",
+                        format!(
+                            "source_line_paths 序列化失败 {}: {error}",
+                            row.location_path
+                        ),
+                    )
+                })?;
+            insert_item_statement
+                .execute(params![
                     row.location_path,
                     row.item_type,
                     row.role,
@@ -558,14 +568,14 @@ fn write_text_index_storage(
                     row.source_snapshot_fingerprint,
                     row.rules_fingerprint,
                     row.locator_json,
-                ],
-            )
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_storage_write_failed",
-                    format!("写入 text_index_items 失败 {}: {error}", row.location_path),
-                )
-            })?;
+                ])
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_write_failed",
+                        format!("写入 text_index_items 失败 {}: {error}", row.location_path),
+                    )
+                })?;
+        }
     }
 
     transaction
@@ -590,53 +600,74 @@ fn write_text_index_storage(
             )
         })?;
 
-    for row in &payload.domain_summary {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO text_index_domain_summary \
+    {
+        let mut insert_domain_statement = transaction
+            .prepare_cached(
+                "INSERT INTO text_index_domain_summary \
                  (domain, item_count, active_count, writable_count, unwritable_count, inactive_rule_hit_count) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
+            )
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_storage_write_failed",
+                    format!("准备 text_index_domain_summary 写入语句失败: {error}"),
+                )
+            })?;
+        for row in &payload.domain_summary {
+            insert_domain_statement
+                .execute(params![
                     row.domain,
                     row.item_count as i64,
                     row.active_count as i64,
                     row.writable_count as i64,
                     row.unwritable_count as i64,
                     row.inactive_rule_hit_count as i64,
-                ],
+                ])
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_write_failed",
+                        format!(
+                            "写入 text_index_domain_summary 失败 {}: {error}",
+                            row.domain
+                        ),
+                    )
+                })?;
+        }
+    }
+
+    {
+        let mut insert_rule_hit_statement = transaction
+            .prepare_cached(
+                "INSERT INTO text_index_rule_hit_summary \
+                 (domain, rule_key, hit_count, extractable_count, writable_count, unwritable_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|error| {
                 structured_error(
                     "scope_index_storage_write_failed",
-                    format!("写入 text_index_domain_summary 失败 {}: {error}", row.domain),
+                    format!("准备 text_index_rule_hit_summary 写入语句失败: {error}"),
                 )
             })?;
-    }
-
-    for row in &payload.rule_hit_summary {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO text_index_rule_hit_summary \
-                 (domain, rule_key, hit_count, extractable_count, writable_count, unwritable_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
+        for row in &payload.rule_hit_summary {
+            insert_rule_hit_statement
+                .execute(params![
                     row.domain,
                     row.rule_key,
                     row.hit_count as i64,
                     row.extractable_count as i64,
                     row.writable_count as i64,
                     row.unwritable_count as i64,
-                ],
-            )
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_storage_write_failed",
-                    format!(
-                        "写入 text_index_rule_hit_summary 失败 {}/{}: {error}",
-                        row.domain, row.rule_key
-                    ),
-                )
-            })?;
+                ])
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_write_failed",
+                        format!(
+                            "写入 text_index_rule_hit_summary 失败 {}/{}: {error}",
+                            row.domain, row.rule_key
+                        ),
+                    )
+                })?;
+        }
     }
 
     transaction.commit().map_err(|error| {
