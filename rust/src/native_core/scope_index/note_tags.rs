@@ -204,3 +204,60 @@ fn push_sample(samples: &mut Vec<String>, value: &str) {
     }
     samples.push(value.to_string());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::scan_note_tag_rule_candidates;
+    use crate::native_core::scope_index::RuleCandidateTextRules;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn text_rules() -> RuleCandidateTextRules {
+        RuleCandidateTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules: Vec::new(),
+            strip_wrapping_punctuation_pairs: Vec::new(),
+            source_text_required_pattern: r"[\s\S]".to_string(),
+            source_text_exclusion_profile: "none".to_string(),
+        }
+    }
+
+    #[test]
+    fn note_tag_candidates_group_map_files_and_return_hit_details() {
+        let mut data_files = BTreeMap::new();
+        data_files.insert(
+            "Map001.json".to_string(),
+            json!({
+                "events": [
+                    null,
+                    {"id": 1, "note": "<Flavor:古い井戸>\n<Empty:>"}
+                ]
+            }),
+        );
+        data_files.insert(
+            "Items.json".to_string(),
+            json!([null, {"id": 1, "note": "<Flavor:薬草>"}]),
+        );
+
+        let scan = scan_note_tag_rule_candidates(&data_files, text_rules()).expect("扫描应成功");
+
+        assert_eq!(scan.scanned_source_count, 2);
+        assert_eq!(scan.candidate_value_count, 3);
+        assert_eq!(scan.value_hit_count, 3);
+        assert_eq!(scan.translatable_value_count, 2);
+        assert!(
+            scan.candidates
+                .iter()
+                .any(|candidate| candidate.file_name == "Map*.json"
+                    && candidate.tag_name == "Flavor"
+                    && candidate.translatable_hit_count == 1)
+        );
+        assert!(
+            scan.hit_details
+                .iter()
+                .any(|hit| hit.location_path == "Items.json/1/note/Flavor"
+                    && hit.original_text == "薬草"
+                    && hit.translatable)
+        );
+    }
+}

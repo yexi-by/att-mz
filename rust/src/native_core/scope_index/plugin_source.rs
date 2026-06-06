@@ -621,3 +621,218 @@ pub(super) fn sha256_text(text: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PluginSourceFileInput, PluginSourceManagedTextError, PluginSourceTextRuleInput,
+        collect_plugin_source_managed_texts, scan_plugin_source_rule_candidates,
+    };
+    use crate::native_core::scope_index::RuleCandidateTextRules;
+
+    fn text_rules() -> RuleCandidateTextRules {
+        RuleCandidateTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules: Vec::new(),
+            strip_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
+            source_text_required_pattern: r"[\p{Han}\p{Hiragana}\p{Katakana}]".to_string(),
+            source_text_exclusion_profile: "none".to_string(),
+        }
+    }
+
+    fn source_file(file_name: &str, source: &str, active: bool) -> PluginSourceFileInput {
+        PluginSourceFileInput {
+            file_name: file_name.to_string(),
+            source: source.to_string(),
+            active,
+        }
+    }
+
+    #[test]
+    fn scan_plugin_source_candidates_decodes_escapes_and_reports_active_syntax_summary() {
+        let files = vec![
+            source_file(
+                "EnabledSource.js",
+                r"
+const Messages = {
+  title: '\u52C7\u8005',
+  wrapped: '「包まれた文」',
+  control: '頑張って\\nn[0]くん',
+  resource: 'audio/se/cursor.ogg'
+};
+Window_Base.prototype.drawText('短い', 0, 0, 320);
+",
+                true,
+            ),
+            source_file(
+                "DisabledSource.js",
+                "const Disabled = { title: '未使用の文' };",
+                false,
+            ),
+            source_file(
+                "BrokenSource.js",
+                "const Broken = { title: '壊れた本文',",
+                true,
+            ),
+        ];
+
+        let scan = scan_plugin_source_rule_candidates(&files, text_rules()).expect("扫描应成功");
+
+        let texts = scan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.original_text.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            texts,
+            std::collections::BTreeSet::from([
+                "勇者",
+                "「包まれた文」",
+                r"頑張って\nn[0]くん",
+                "短い",
+                "未使用の文",
+            ])
+        );
+        assert_eq!(scan.scanned_file_count, 2);
+        assert_eq!(scan.ignored_file_count, 1);
+        assert_eq!(scan.syntax_error_file_count, 1);
+        assert_eq!(scan.syntax_errors[0]["file"], "BrokenSource.js");
+
+        let short = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "短い")
+            .expect("短い 候选应存在");
+        assert_eq!(short.source_file, "EnabledSource.js");
+        assert_eq!(short.active, Some(true));
+        assert_eq!(short.confidence.as_deref(), Some("strong"));
+        assert_eq!(short.raw_text.as_deref(), Some("短い"));
+        assert_eq!(short.quote.as_deref(), Some("'"));
+        assert_eq!(short.line, Some(8));
+        assert!(short.selector.as_deref().is_some_and(|selector| {
+            short.location_path == format!("js/plugins/EnabledSource.js/{selector}")
+        }));
+
+        let disabled = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "未使用の文")
+            .expect("禁用插件候选应保留以便报告 ignored 状态");
+        assert_eq!(disabled.active, Some(false));
+
+        let control = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text.contains("nn[0]"))
+            .expect("控制符字面量候选应存在");
+        assert!(!control.original_text.contains('\n'));
+        assert!(control.original_text.contains(r"\nn[0]"));
+    }
+
+    #[test]
+    fn collect_plugin_source_managed_texts_requires_review_for_each_active_candidate() {
+        let files = vec![source_file(
+            "HardcodedText.js",
+            "const Messages = { first: '一番目', second: '二番目' };",
+            true,
+        )];
+        let scan = scan_plugin_source_rule_candidates(&files, text_rules()).expect("扫描应成功");
+        let first_selector = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "一番目")
+            .and_then(|candidate| candidate.selector.clone())
+            .expect("一番目 selector 应存在");
+        let second_selector = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "二番目")
+            .and_then(|candidate| candidate.selector.clone())
+            .expect("二番目 selector 应存在");
+
+        let incomplete = collect_plugin_source_managed_texts(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "HardcodedText.js".to_string(),
+                selectors: vec![first_selector.clone()],
+                excluded_selectors: Vec::new(),
+            }],
+            text_rules(),
+        );
+        assert!(matches!(
+            incomplete,
+            Err(PluginSourceManagedTextError::ReviewIncomplete {
+                unreviewed_count: 1
+            })
+        ));
+
+        let managed_result = collect_plugin_source_managed_texts(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "HardcodedText.js".to_string(),
+                selectors: vec![first_selector.clone()],
+                excluded_selectors: vec![second_selector],
+            }],
+            text_rules(),
+        );
+        let managed = match managed_result {
+            Ok(managed) => managed,
+            Err(_) => panic!("完整审查后应返回 managed 文本"),
+        };
+        assert_eq!(managed.len(), 1);
+        assert_eq!(managed[0].file_name, "HardcodedText.js");
+        assert_eq!(managed[0].selector, first_selector);
+        assert_eq!(managed[0].text, "一番目");
+    }
+
+    #[test]
+    fn collect_plugin_source_managed_texts_rejects_stale_file_selector_or_inactive_file() {
+        let files = vec![
+            source_file("Active.js", "const Messages = { title: '有効本文' };", true),
+            source_file(
+                "Inactive.js",
+                "const Messages = { title: '無効本文' };",
+                false,
+            ),
+        ];
+
+        let missing_file = collect_plugin_source_managed_texts(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "Missing.js".to_string(),
+                selectors: vec!["ast:string:0:1:missing".to_string()],
+                excluded_selectors: Vec::new(),
+            }],
+            text_rules(),
+        );
+        assert!(
+            matches!(missing_file, Err(PluginSourceManagedTextError::Stale(message)) if message.contains("文件不存在"))
+        );
+
+        let inactive_file = collect_plugin_source_managed_texts(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "Inactive.js".to_string(),
+                selectors: Vec::new(),
+                excluded_selectors: Vec::new(),
+            }],
+            text_rules(),
+        );
+        assert!(
+            matches!(inactive_file, Err(PluginSourceManagedTextError::Stale(message)) if message.contains("未在 plugins.js 中启用"))
+        );
+
+        let stale_selector = collect_plugin_source_managed_texts(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "Active.js".to_string(),
+                selectors: vec!["ast:string:0:1:missing".to_string()],
+                excluded_selectors: Vec::new(),
+            }],
+            text_rules(),
+        );
+        assert!(
+            matches!(stale_selector, Err(PluginSourceManagedTextError::Stale(message)) if message.contains("selector 已无法命中"))
+        );
+    }
+}

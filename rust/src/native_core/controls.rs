@@ -698,3 +698,81 @@ pub(crate) struct UnexpectedEscapeFragment {
     pub(crate) fragment: String,
     pub(crate) trailing: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        collect_unexpected_escape_fragments, iter_control_sequence_spans,
+        iter_raw_control_sequence_candidates,
+    };
+    use crate::native_core::models::{
+        NativeStructuredPlaceholderRule, NativeTextRules, SpanSource,
+    };
+    use crate::native_core::rules::compile_rules;
+    use std::collections::HashMap;
+
+    fn compile_test_rules(
+        structured_placeholder_rules: Vec<NativeStructuredPlaceholderRule>,
+    ) -> crate::native_core::models::CompiledRules {
+        compile_rules(NativeTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules,
+            source_residual_allowed_chars: vec!["ぁ-ん".to_string()],
+            source_residual_allowed_tail_chars: Vec::new(),
+            source_residual_segment_pattern: r"[ぁ-ん]+".to_string(),
+            source_residual_label: "日文".to_string(),
+            allowed_source_residual_terms: Vec::new(),
+            source_residual_terms_ignore_case: false,
+            source_residual_detection_profile: "japanese_strict".to_string(),
+            english_source_copy_min_words: 4,
+            english_source_copy_min_letters: 12,
+            line_width_count_pattern: r"[\s\S]".to_string(),
+            residual_escape_sequence_pattern: r"\\[A-Za-z]+".to_string(),
+            long_text_line_width_limit: 20,
+        })
+        .expect("测试规则应可编译")
+    }
+
+    #[test]
+    fn structured_placeholder_allows_standard_control_inside_translatable_group() {
+        let mut protected_groups = HashMap::new();
+        protected_groups.insert("label".to_string(), "[CUSTOM_LABEL_{index}]".to_string());
+        let rules = compile_test_rules(vec![NativeStructuredPlaceholderRule {
+            rule_name: "angle-label".to_string(),
+            rule_type: "paired_shell".to_string(),
+            pattern_text: r"<(?P<label>[^:：]+)[:：](?P<body>[^>]+)>".to_string(),
+            translatable_group: "body".to_string(),
+            protected_groups,
+        }]);
+
+        let spans = iter_control_sequence_spans(r"<名前:\C[1]本文>", &rules).expect("扫描应成功");
+
+        assert!(spans.iter().any(|span| {
+            span.original == "名前" && matches!(span.source, SpanSource::Structured)
+        }));
+        assert!(spans.iter().any(|span| {
+            span.original == r"\C[1]" && matches!(span.source, SpanSource::Standard)
+        }));
+    }
+
+    #[test]
+    fn raw_control_candidates_keep_long_custom_marker_as_single_candidate() {
+        let candidates = iter_raw_control_sequence_candidates(r"\F3[66]「ふーん？」");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, r"\F3[66]");
+    }
+
+    #[test]
+    fn unexpected_escape_fragments_ignore_known_controls_and_report_bare_slash() {
+        let rules = compile_test_rules(Vec::new());
+        let lines = vec![r"\C[1]安全".to_string(), "坏尾\\".to_string()];
+
+        let fragments = collect_unexpected_escape_fragments(&lines, &rules).expect("扫描应成功");
+
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].line_number, 2);
+        assert_eq!(fragments[0].fragment, "\\");
+        assert!(fragments[0].trailing);
+    }
+}

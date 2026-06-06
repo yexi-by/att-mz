@@ -165,3 +165,51 @@ fn structured_rule_covered_ranges(
     }
     Ok(ranges)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{StructuredPlaceholderTextInput, scan_structured_placeholder_rule_candidates};
+    use crate::native_core::models::NativeStructuredPlaceholderRule;
+    use crate::native_core::scope_index::RuleCandidateTextRules;
+    use std::collections::HashMap;
+
+    fn text_rules(
+        structured_placeholder_rules: Vec<NativeStructuredPlaceholderRule>,
+    ) -> RuleCandidateTextRules {
+        RuleCandidateTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules,
+            strip_wrapping_punctuation_pairs: Vec::new(),
+            source_text_required_pattern: r"[\s\S]".to_string(),
+            source_text_exclusion_profile: "none".to_string(),
+        }
+    }
+
+    #[test]
+    fn structured_placeholder_candidates_report_covered_and_uncovered_shells() {
+        let mut protected_groups = HashMap::new();
+        protected_groups.insert("label".to_string(), "[CUSTOM_LABEL_{index}]".to_string());
+        let rules = text_rules(vec![NativeStructuredPlaceholderRule {
+            rule_name: "angle-label".to_string(),
+            rule_type: "paired_shell".to_string(),
+            pattern_text: r"<(?P<label>[^:：]+)[:：](?P<body>[^>]+)>".to_string(),
+            translatable_group: "body".to_string(),
+            protected_groups,
+        }]);
+        let texts = vec![StructuredPlaceholderTextInput {
+            location_path: "Map001.json/1/0".to_string(),
+            line_number: 7,
+            text: "<名前:アリス> と 【未登録:本文】".to_string(),
+        }];
+
+        let scan = scan_structured_placeholder_rule_candidates(&texts, rules).expect("扫描应成功");
+
+        assert_eq!(scan.scanned_text_count, 1);
+        assert_eq!(scan.candidates.len(), 2);
+        assert_eq!(scan.candidates[0].candidate, "<名前:アリス>");
+        assert!(scan.candidates[0].covered);
+        assert_eq!(scan.candidates[0].matching_rules, vec!["angle-label"]);
+        assert_eq!(scan.candidates[1].candidate, "【未登録:本文】");
+        assert!(!scan.candidates[1].covered);
+    }
+}

@@ -96,3 +96,84 @@ pub(crate) fn scan_quality_items(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::scan_quality_impl;
+    use serde_json::{Value, json};
+
+    fn quality_payload(items: Value) -> Value {
+        json!({
+            "items": items,
+            "text_rules": {
+                "custom_placeholder_rules": [],
+                "structured_placeholder_rules": [],
+                "source_residual_allowed_chars": ["ぁ-んァ-ヶ一-龯"],
+                "source_residual_allowed_tail_chars": [],
+                "source_residual_segment_pattern": "[ぁ-んァ-ヶ一-龯]+",
+                "source_residual_label": "源文",
+                "allowed_source_residual_terms": [],
+                "source_residual_terms_ignore_case": false,
+                "source_residual_detection_profile": "japanese_strict",
+                "english_source_copy_min_words": 4,
+                "english_source_copy_min_letters": 12,
+                "line_width_count_pattern": "[\\s\\S]",
+                "residual_escape_sequence_pattern": "\\\\[A-Za-z]+(?:\\[[^\\]]*\\])?",
+                "long_text_line_width_limit": 4
+            },
+            "source_residual_rules": []
+        })
+    }
+
+    #[test]
+    fn quality_scan_reports_structure_errors_and_overwide_display_lines() {
+        let payload = quality_payload(json!([
+            {
+                "location_path": "Map001.json/1/short/literal",
+                "item_type": "short_text",
+                "role": null,
+                "original_lines": ["説明\\n本文"],
+                "translation_lines": ["说明"]
+            },
+            {
+                "location_path": "Map001.json/1/short/width",
+                "item_type": "short_text",
+                "role": null,
+                "original_lines": ["元\n短"],
+                "translation_lines": ["甲乙丙丁戊\n短"]
+            },
+            {
+                "location_path": "Map001.json/1/long/artifact",
+                "item_type": "long_text",
+                "role": null,
+                "original_lines": ["原文"],
+                "translation_lines": ["正文", ""]
+            }
+        ]));
+
+        let output_text = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let output: Value = serde_json::from_str(&output_text).expect("输出应是 JSON");
+
+        let structure_reasons = output["text_structure_items"]
+            .as_array()
+            .expect("结构错误应为数组")
+            .iter()
+            .map(|item| item["reason"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>();
+        assert!(
+            structure_reasons
+                .iter()
+                .any(|reason| reason.contains("字面量换行标记数量不一致"))
+        );
+        assert!(
+            structure_reasons
+                .iter()
+                .any(|reason| reason.contains("原文没有空行"))
+        );
+        assert_eq!(output["overwide_line_items"][0]["line_index"], json!(0));
+        assert_eq!(
+            output["overwide_line_items"][0]["line"],
+            json!("甲乙丙丁戊")
+        );
+    }
+}

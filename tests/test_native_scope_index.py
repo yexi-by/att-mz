@@ -15,7 +15,6 @@ from app.native_scope_index import (
     build_native_placeholder_candidates_payload,
     build_native_rule_candidate_text_rules_payload,
     build_native_scope_index,
-    evaluate_native_scope_gate,
     inspect_native_scope_index_storage,
     native_schema_fingerprint,
     rebuild_native_scope_index_storage,
@@ -553,46 +552,6 @@ def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path
         )
 
 
-def test_scan_native_rule_candidates_returns_candidate_summary() -> None:
-    """scan_rule_candidates 返回候选清单和按 domain 汇总的数量。"""
-    result = scan_native_rule_candidates(
-        cast(
-            JsonObject,
-            {
-                "candidates": [
-                    {
-                        "domain": "plugin_source",
-                        "location_path": "js/plugins/Foo.js/0",
-                        "rule_key": "FooRule",
-                        "original_text": "Foo text",
-                        "source_file": "Foo.js",
-                    },
-                    {
-                        "domain": "plugin_source",
-                        "location_path": "js/plugins/Foo.js/1",
-                        "rule_key": "FooRule",
-                        "original_text": "Bar text",
-                        "source_file": "Foo.js",
-                    },
-                    {
-                        "domain": "note_tag",
-                        "location_path": "Actors.json/1/note/foo",
-                        "rule_key": "note.foo",
-                        "original_text": "Note text",
-                        "source_file": "Actors.json",
-                    },
-                ]
-            },
-        )
-    )
-
-    assert len(result.candidates) == 3
-    assert result.candidate_summary == [
-        {"domain": "note_tag", "candidate_count": 1},
-        {"domain": "plugin_source", "candidate_count": 2},
-    ]
-
-
 def test_build_native_event_command_candidates_payload_includes_data_codes_and_rules() -> None:
     """事件指令 Rust 候选载荷必须包含排序后的 data 文件、编码和可选规则。"""
     rules = cast(
@@ -954,89 +913,6 @@ def test_scan_native_rule_candidates_scans_mv_virtual_namebox_rule_hits() -> Non
             "rule_name": "actor-inline",
         },
     ]
-
-
-def test_scan_native_rule_candidates_scans_plugin_source_files() -> None:
-    """scan_rule_candidates 可直接从插件源码输入生成候选和扫描摘要。"""
-    result = scan_native_rule_candidates(
-        cast(
-            JsonObject,
-            {
-                "plugin_source_files": [
-                    {
-                        "file_name": "EnabledSource.js",
-                        "source": "\n".join(
-                            [
-                                "const Messages = {",
-                                "  title: '勇者の台詞',",
-                                "  wrapped: '「包まれた文」',",
-                                "  resource: 'audio/se/cursor.ogg',",
-                                "  control: '\\\\V[1]',",
-                                "};",
-                                "Window_Base.prototype.drawText('短い', 0, 0, 320);",
-                            ]
-                        ),
-                        "active": True,
-                    },
-                    {
-                        "file_name": "DisabledSource.js",
-                        "source": "const Disabled = { title: '未使用の文' };",
-                        "active": False,
-                    },
-                    {
-                        "file_name": "BrokenSource.js",
-                        "source": "const Broken = { title: '壊れた本文',",
-                        "active": True,
-                    },
-                ],
-                "text_rules": _plugin_source_text_rules_payload(),
-            },
-        )
-    )
-
-    candidates = [
-        ensure_json_object(candidate, f"candidate[{index}]")
-        for index, candidate in enumerate(result.candidates)
-    ]
-    candidates_by_text = {str(candidate["original_text"]): candidate for candidate in candidates}
-    short_candidate = candidates_by_text["短い"]
-    assert set(candidates_by_text) == {"勇者の台詞", "「包まれた文」", "短い", "未使用の文"}
-    assert short_candidate["confidence"] == "strong"
-    assert candidates_by_text["未使用の文"]["active"] is False
-    assert short_candidate["raw_text"] == "短い"
-    assert short_candidate["quote"] == "'"
-    assert short_candidate["line"] == 7
-    start_index = short_candidate["start_index"]
-    end_index = short_candidate["end_index"]
-    content_start_index = short_candidate["content_start_index"]
-    content_end_index = short_candidate["content_end_index"]
-    assert isinstance(start_index, int) and not isinstance(start_index, bool)
-    assert isinstance(end_index, int) and not isinstance(end_index, bool)
-    assert isinstance(content_start_index, int) and not isinstance(content_start_index, bool)
-    assert isinstance(content_end_index, int) and not isinstance(content_end_index, bool)
-    assert content_start_index > start_index
-    assert content_end_index < end_index
-    assert str(candidates_by_text["勇者の台詞"]["location_path"]).startswith(
-        "js/plugins/EnabledSource.js/ast:string:"
-    )
-    assert candidates_by_text["勇者の台詞"]["selector"] == str(
-        candidates_by_text["勇者の台詞"]["location_path"]
-    ).removeprefix("js/plugins/EnabledSource.js/")
-    assert result.candidate_summary == [{"domain": "plugin_source", "candidate_count": 4}]
-    assert result.scan_summary["plugin_source"] == {
-        "active_candidate_count": 3,
-        "candidate_count": 4,
-        "ignored_file_count": 1,
-        "scanned_file_count": 2,
-        "syntax_error_file_count": 1,
-        "syntax_errors": [
-            {
-                "active": True,
-                "file": "BrokenSource.js",
-                "syntax_error": "原生 AST 解析报告 JS 语法错误",
-            }
-        ],
-    }
 
 
 def test_scan_native_rule_candidates_scans_nonstandard_data_files() -> None:
@@ -1765,31 +1641,6 @@ def test_collect_native_note_tag_source_details_returns_native_note_sources() ->
     )
 
 
-def test_scan_native_rule_candidates_decodes_plugin_source_unicode_escapes() -> None:
-    """插件源码候选扫描必须像旧 Python 扫描器一样解析 JS Unicode 转义。"""
-    result = scan_native_rule_candidates(
-        cast(
-            JsonObject,
-            {
-                "plugin_source_files": [
-                    {
-                        "file_name": "EscapedSource.js",
-                        "source": "const Messages = { title: '\\u52C7\\u8005', label: '\\u{77ED}\\u{3044}' };",
-                        "active": True,
-                    }
-                ],
-                "text_rules": _plugin_source_text_rules_payload(),
-            },
-        )
-    )
-
-    candidates = [
-        ensure_json_object(candidate, f"candidate[{index}]")
-        for index, candidate in enumerate(result.candidates)
-    ]
-    assert {str(candidate["original_text"]) for candidate in candidates} == {"勇者", "短い"}
-
-
 def test_scan_native_rule_candidates_requires_plugin_source_active_flag() -> None:
     """插件源码 active 状态必须显式传入，避免启用文件被静默当作禁用文件。"""
     with pytest.raises(ValueError, match="active"):
@@ -1807,29 +1658,3 @@ def test_scan_native_rule_candidates_requires_plugin_source_active_flag() -> Non
                 },
             )
         )
-
-
-def test_evaluate_native_scope_gate_returns_compact_gate_summary() -> None:
-    """evaluate_scope_gate 返回 compact 门禁摘要，不重新计算第二套范围事实。"""
-    result = evaluate_native_scope_gate(
-        cast(
-            JsonObject,
-            {
-                "entries": _scope_entries_payload(),
-                "translated_paths": ["Map001.json/events/1/pages/0/list/0"],
-                "quality_error_paths": ["System.json/gameTitle"],
-                "required_paths": [
-                    "Map001.json/events/1/pages/0/list/0",
-                    "missing/path",
-                ],
-            },
-        )
-    )
-
-    assert result.pending_count == 0
-    assert result.translated_count == 1
-    assert result.quality_error_count == 1
-    assert result.writable_location_paths == ["Map001.json/events/1/pages/0/list/0"]
-    assert result.workflow_gate["status"] == "error"
-    assert result.workflow_gate["missing_required_paths"] == ["missing/path"]
-    assert result.quality_gate["status"] == "error"

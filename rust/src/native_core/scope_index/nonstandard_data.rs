@@ -833,3 +833,150 @@ fn quote_jsonpath_key(key: &str) -> String {
     let escaped_key = key.replace('\\', "\\\\").replace('\'', "\\'");
     format!("'{escaped_key}'")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        NonstandardDataFileInput, NonstandardDataRuleCoverageInput, NonstandardDataTextRuleInput,
+        collect_nonstandard_data_managed_texts, scan_nonstandard_data_rule_candidates,
+        scan_nonstandard_data_rule_coverage,
+    };
+    use crate::native_core::scope_index::RuleCandidateTextRules;
+    use serde_json::{Value, json};
+
+    fn text_rules() -> RuleCandidateTextRules {
+        RuleCandidateTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules: Vec::new(),
+            strip_wrapping_punctuation_pairs: Vec::new(),
+            source_text_required_pattern: r"[\s\S]".to_string(),
+            source_text_exclusion_profile: "none".to_string(),
+        }
+    }
+
+    fn english_protocol_text_rules() -> RuleCandidateTextRules {
+        RuleCandidateTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules: Vec::new(),
+            strip_wrapping_punctuation_pairs: Vec::new(),
+            source_text_required_pattern: r"[A-Za-z]".to_string(),
+            source_text_exclusion_profile: "english_protocol_noise".to_string(),
+        }
+    }
+
+    #[test]
+    fn scan_nonstandard_data_candidates_skips_structural_strings_and_reports_leaf_context() {
+        let files = vec![NonstandardDataFileInput {
+            file_name: "UnknownPluginData.json".to_string(),
+            raw_text: r#"{"title":"古い掲示板","file":"Actor1.png","items":["説明文"]}"#
+                .to_string(),
+            data: json!({
+                "title": "古い掲示板",
+                "file": "Actor1.png",
+                "items": ["説明文"]
+            }),
+        }];
+
+        let scan = scan_nonstandard_data_rule_candidates(&files, text_rules()).expect("扫描应成功");
+
+        assert_eq!(scan.nonstandard_file_count, 1);
+        assert_eq!(scan.candidates.len(), 2);
+        assert_eq!(
+            scan.candidates
+                .iter()
+                .map(|candidate| candidate.json_path.as_deref().unwrap_or(""))
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["$['items'][0]", "$['title']"])
+        );
+        assert!(
+            scan.candidates
+                .iter()
+                .all(|candidate| candidate.original_text != "Actor1.png")
+        );
+        assert_eq!(scan.file_scans[0].string_leaf_count, 3);
+    }
+
+    #[test]
+    fn scan_nonstandard_data_candidates_ignores_english_protocol_noise() {
+        let raw_text = r#"[{"id":"recipe_001","icon":"img/pictures/Meal.png","enabled":"true","formula":"a.hpRate() >= 0.5"}]"#;
+        let files = vec![NonstandardDataFileInput {
+            file_name: "Recipes.json".to_string(),
+            raw_text: raw_text.to_string(),
+            data: serde_json::from_str::<Value>(raw_text).expect("fixture JSON 应合法"),
+        }];
+
+        let scan = scan_nonstandard_data_rule_candidates(&files, english_protocol_text_rules())
+            .expect("英文协议噪声扫描应成功");
+
+        assert_eq!(scan.nonstandard_file_count, 1);
+        assert!(scan.candidates.is_empty());
+        assert_eq!(scan.file_scans[0].string_leaf_count, 4);
+        assert_eq!(scan.file_scans[0].candidate_count, 0);
+    }
+
+    #[test]
+    fn nonstandard_data_rule_coverage_expands_wildcards_and_reports_unreviewed_candidates() {
+        let input: NonstandardDataRuleCoverageInput = serde_json::from_value(json!({
+            "rules": [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$['items'][*]['name']"],
+                    "excluded_paths": []
+                }
+            ],
+            "files": [
+                {
+                    "file": "UnknownPluginData.json",
+                    "leaves": [
+                        {"path": "$['items'][0]['name']", "value_type": "string"},
+                        {"path": "$['items'][1]['name']", "value_type": "string"}
+                    ]
+                }
+            ],
+            "candidates": [
+                {"file": "UnknownPluginData.json", "json_path": "$['items'][0]['name']"},
+                {"file": "UnknownPluginData.json", "json_path": "$['items'][1]['name']"},
+                {"file": "UnknownPluginData.json", "json_path": "$['title']"}
+            ]
+        }))
+        .expect("coverage 输入应可解析");
+
+        let output = scan_nonstandard_data_rule_coverage(input).expect("覆盖检查应成功");
+
+        assert_eq!(output["reviewed_candidate_count"], json!(2));
+        assert_eq!(
+            output["unreviewed_candidates"],
+            json!([{"file": "UnknownPluginData.json", "json_path": "$['title']"}])
+        );
+    }
+
+    #[test]
+    fn collect_nonstandard_data_managed_texts_rejects_incomplete_review() {
+        let raw_text = r#"{"title":"古い掲示板","body":"本文"}"#;
+        let files = vec![NonstandardDataFileInput {
+            file_name: "UnknownPluginData.json".to_string(),
+            raw_text: raw_text.to_string(),
+            data: serde_json::from_str::<Value>(raw_text).expect("fixture JSON 应合法"),
+        }];
+        let _scan =
+            scan_nonstandard_data_rule_candidates(&files, text_rules()).expect("扫描应成功");
+        let file_hash = super::sha256_hex(raw_text);
+        let rules = vec![NonstandardDataTextRuleInput {
+            file_name: "UnknownPluginData.json".to_string(),
+            file_hash,
+            path_templates: vec!["$['title']".to_string()],
+            excluded_path_templates: Vec::new(),
+            skipped: false,
+        }];
+
+        match collect_nonstandard_data_managed_texts(&files, &rules, text_rules()) {
+            Ok(_) => panic!("未审查 body 候选时应失败"),
+            Err(super::NonstandardDataManagedTextError::ReviewIncomplete { unreviewed_count }) => {
+                assert_eq!(unreviewed_count, 1);
+            }
+            Err(super::NonstandardDataManagedTextError::Stale(reason)) => {
+                panic!("不应返回过期规则错误: {reason}");
+            }
+        }
+    }
+}

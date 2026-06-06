@@ -138,3 +138,45 @@ pub(super) fn encode_json_container_like(
     }
     Ok(encoded_text)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_json_container_text, set_nested_text_value};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn set_nested_text_value_preserves_json_string_container_shell() {
+        let mut value = Value::String(
+            serde_json::to_string(&json!({"texts": ["古い本文", "残す"]}))
+                .expect("fixture JSON 应可编码"),
+        );
+
+        set_nested_text_value(
+            &mut value,
+            &["texts", "0"],
+            "新しい本文",
+            "plugins.js/0/Nested/texts/0",
+        )
+        .expect("嵌套 JSON 字符串容器应可写回");
+
+        let Value::String(encoded) = value else {
+            panic!("写回后仍应是字符串外壳");
+        };
+        let (decoded, shell_depth) =
+            decode_json_container_text(&encoded).expect("写回后容器仍应可解析");
+        assert_eq!(shell_depth, 0);
+        assert_eq!(decoded["texts"][0], json!("新しい本文"));
+        assert_eq!(decoded["texts"][1], json!("残す"));
+    }
+
+    #[test]
+    fn set_nested_text_value_rejects_plain_string_when_path_continues() {
+        let mut value = Value::String("ただの文字列".to_string());
+
+        let error =
+            set_nested_text_value(&mut value, &["child"], "译文", "plugins.js/0/Message/child")
+                .expect_err("普通字符串不能继续按 JSON 容器下钻");
+
+        assert!(error.contains("JSON 字符串容器解析失败"));
+    }
+}

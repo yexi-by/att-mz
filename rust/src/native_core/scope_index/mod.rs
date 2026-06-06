@@ -978,7 +978,7 @@ fn sorted_candidate_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_scope_index_impl, scan_rule_candidates_impl};
+    use super::{build_scope_index_impl, evaluate_scope_gate_impl, scan_rule_candidates_impl};
     use serde_json::{Value, json};
 
     #[test]
@@ -1056,6 +1056,106 @@ mod tests {
             value["text_index_rows"][1]["location_path"],
             json!("Map001.json/events/1/pages/0/list/0/parameters/0")
         );
+    }
+
+    #[test]
+    fn scan_rule_candidates_summarizes_direct_candidates_by_sorted_domain() {
+        let payload = json!({
+            "candidates": [
+                {
+                    "domain": "plugin_source",
+                    "location_path": "js/plugins/Foo.js/0",
+                    "rule_key": "FooRule",
+                    "original_text": "Foo text",
+                    "source_file": "Foo.js"
+                },
+                {
+                    "domain": "plugin_source",
+                    "location_path": "js/plugins/Foo.js/1",
+                    "rule_key": "FooRule",
+                    "original_text": "Bar text",
+                    "source_file": "Foo.js"
+                },
+                {
+                    "domain": "note_tag",
+                    "location_path": "Actors.json/1/note/foo",
+                    "rule_key": "note.foo",
+                    "original_text": "Note text",
+                    "source_file": "Actors.json"
+                }
+            ]
+        });
+
+        let output = scan_rule_candidates_impl(&payload.to_string()).expect("候选汇总应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+
+        assert_eq!(value["candidates"].as_array().map(Vec::len), Some(3));
+        assert_eq!(
+            value["candidate_summary"],
+            json!([
+                {"domain": "note_tag", "candidate_count": 1},
+                {"domain": "plugin_source", "candidate_count": 2}
+            ])
+        );
+    }
+
+    #[test]
+    fn evaluate_scope_gate_outputs_compact_workflow_and_quality_summary() {
+        let payload = json!({
+            "entries": [
+                {
+                    "location_path": "Map001.json/events/1/pages/0/list/0",
+                    "item_type": "long_text",
+                    "role": null,
+                    "original_lines": ["Hello"],
+                    "source_line_paths": ["Map001.json/events/1/pages/0/list/0"],
+                    "source_type": "event_command",
+                    "source_file": "Map001.json",
+                    "rule_source": "event_command.default",
+                    "enters_translation": true,
+                    "can_write_back": true,
+                    "cannot_process_reason": "",
+                    "locator": {"kind": "event_command"}
+                },
+                {
+                    "location_path": "System.json/gameTitle",
+                    "item_type": "short_text",
+                    "role": null,
+                    "original_lines": ["Fixture"],
+                    "source_line_paths": ["System.json/gameTitle"],
+                    "source_type": "system",
+                    "source_file": "System.json",
+                    "rule_source": "system.title",
+                    "enters_translation": true,
+                    "can_write_back": false,
+                    "cannot_process_reason": "只读",
+                    "locator": {"kind": "system"}
+                }
+            ],
+            "translated_paths": ["Map001.json/events/1/pages/0/list/0"],
+            "quality_error_paths": ["System.json/gameTitle"],
+            "required_paths": [
+                "Map001.json/events/1/pages/0/list/0",
+                "missing/path"
+            ]
+        });
+
+        let output = evaluate_scope_gate_impl(&payload.to_string()).expect("范围门禁评估应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+
+        assert_eq!(value["pending_count"], json!(0));
+        assert_eq!(value["translated_count"], json!(1));
+        assert_eq!(value["quality_error_count"], json!(1));
+        assert_eq!(
+            value["writable_location_paths"],
+            json!(["Map001.json/events/1/pages/0/list/0"])
+        );
+        assert_eq!(value["workflow_gate"]["status"], json!("error"));
+        assert_eq!(
+            value["workflow_gate"]["missing_required_paths"],
+            json!(["missing/path"])
+        );
+        assert_eq!(value["quality_gate"]["status"], json!("error"));
     }
 
     #[test]

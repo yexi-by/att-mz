@@ -538,3 +538,101 @@ pub(crate) fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        candidate_selector_for_span, normalize_visible_text_for_extraction,
+        write_single_plugin_source_file,
+    };
+    use crate::native_core::javascript_ast::parse_javascript_string_spans;
+    use crate::native_core::write_back_plan::models::{PluginSourceTextRule, TranslationItem};
+
+    fn selector_for_visible_text(source: &str, expected_visible_text: &str) -> String {
+        let scan = parse_javascript_string_spans(source).expect("JS 字符串扫描应成功");
+        let span = scan
+            .spans
+            .into_iter()
+            .find(|span| {
+                let raw_text = &source[span.content_start_byte_index..span.content_end_byte_index];
+                normalize_visible_text_for_extraction(&super::unescape_js_text(raw_text))
+                    == expected_visible_text
+            })
+            .expect("应找到目标字符串");
+        let raw_text = &source[span.content_start_byte_index..span.content_end_byte_index];
+        candidate_selector_for_span(span.start_index, span.end_index, raw_text)
+    }
+
+    fn translation_item(
+        file_name: &str,
+        selector: &str,
+        original: &str,
+        translated: &str,
+    ) -> TranslationItem {
+        TranslationItem {
+            location_path: format!("js/plugins/{file_name}/{selector}"),
+            item_type: "short_text".to_string(),
+            role: None,
+            original_lines: vec![original.to_string()],
+            source_line_paths: Vec::new(),
+            translation_lines: vec![translated.to_string()],
+        }
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_generates_translated_and_excluded_runtime_maps() {
+        let source = "const a = \"古い本文\";\nconst b = \"除外\";";
+        let translated_selector = selector_for_visible_text(source, "古い本文");
+        let excluded_selector = selector_for_visible_text(source, "除外");
+        let item = translation_item(
+            "Sample.js",
+            &translated_selector,
+            "古い本文",
+            "新しい本文です",
+        );
+        let rule = PluginSourceTextRule {
+            file_name: "Sample.js".to_string(),
+            file_hash: "stale-hash-is-not-used-for-selector-write".to_string(),
+            selectors: vec![translated_selector.clone()],
+            excluded_selectors: vec![excluded_selector.clone()],
+        };
+
+        let (content, maps) = write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(translated_selector.clone(), item)],
+            Some(&rule),
+            "2026-06-06T00:00:00Z",
+        )
+        .expect("插件源码写回应成功");
+
+        assert!(content.contains("新しい本文です"));
+        assert_eq!(maps.len(), 2);
+        assert!(maps.iter().any(|map| map.mapping_kind == "translated"
+            && map.source_selector == translated_selector
+            && map.runtime_selector != translated_selector));
+        assert!(maps.iter().any(|map| map.mapping_kind == "excluded"
+            && map.source_selector == excluded_selector
+            && map.runtime_line == 2));
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_rejects_original_text_mismatch() {
+        let source = "const a = \"現在の本文\";";
+        let selector = selector_for_visible_text(source, "現在の本文");
+        let item = translation_item("Sample.js", &selector, "古い本文", "新しい本文");
+
+        let error = match write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(selector, item)],
+            None,
+            "2026-06-06T00:00:00Z",
+        ) {
+            Ok(_) => panic!("selector 存在但原文不一致时应失败"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("插件源码原文已变化"));
+    }
+}

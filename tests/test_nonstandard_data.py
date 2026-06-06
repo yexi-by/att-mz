@@ -47,26 +47,6 @@ def _write_high_risk_nonstandard_data(game_root: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_nonstandard_data_scan_reports_high_risk_candidates(minimal_game_dir: Path) -> None:
-    """扫描只把非标准 data JSON 中的源语言自然文本列为候选。"""
-    _write_high_risk_nonstandard_data(minimal_game_dir)
-    layout = resolve_game_layout(minimal_game_dir)
-    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
-    text_rules = TextRules.from_setting(setting.text_rules)
-
-    scan = await build_nonstandard_data_scan(
-        layout=layout,
-        source_view=GameFileView.ACTIVE_RUNTIME,
-        text_rules=text_rules,
-    )
-
-    assert scan.high_risk
-    assert [candidate.json_path for candidate in scan.candidates] == ["$[0]['name']"]
-    assert scan.candidates[0].file_name == "UnknownPluginData.json"
-    assert scan.candidates[0].source_text == "これは無視される"
-
-
-@pytest.mark.asyncio
 async def test_nonstandard_data_scan_uses_native_candidate_scan(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -98,43 +78,14 @@ async def test_nonstandard_data_scan_uses_native_candidate_scan(
     native_payload = native_payloads[0]
     assert "nonstandard_data_files" in native_payload
     assert "text_rules" in native_payload
+    assert scan.high_risk
     assert [candidate.json_path for candidate in scan.candidates] == ["$[0]['name']"]
+    assert scan.candidates[0].file_name == "UnknownPluginData.json"
+    assert scan.candidates[0].source_text == "これは無視される"
     assert scan.file_scans[0].string_leaf_count == 1
     assert scan.file_scans[0].candidate_count == 1
     leaves = scan.leaves_by_file["UnknownPluginData.json"]
     assert {leaf.path for leaf in leaves} == {"$[0]['id']", "$[0]['name']"}
-
-
-@pytest.mark.asyncio
-async def test_nonstandard_data_scan_respects_english_protocol_noise(
-    minimal_english_game_dir: Path,
-) -> None:
-    """英文项目不会把资源名、公式和协议值误报为高风险。"""
-    data_dir = minimal_english_game_dir / "data"
-    write_json(
-        data_dir / "Recipes.json",
-        [
-            {
-                "id": "recipe_001",
-                "icon": "img/pictures/Meal.png",
-                "enabled": "true",
-                "formula": "a.hpRate() >= 0.5",
-            }
-        ],
-    )
-    layout = resolve_game_layout(minimal_english_game_dir)
-    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="en")
-    text_rules = TextRules.from_setting(setting.text_rules)
-
-    scan = await build_nonstandard_data_scan(
-        layout=layout,
-        source_view=GameFileView.ACTIVE_RUNTIME,
-        text_rules=text_rules,
-    )
-
-    assert not scan.high_risk
-    assert scan.summary_json()["nonstandard_file_count"] == 1
-    assert scan.summary_json()["candidate_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -233,41 +184,6 @@ async def test_validate_agent_workspace_blocks_empty_nonstandard_data_review(
 
 
 @pytest.mark.asyncio
-async def test_nonstandard_data_rules_validate_full_classification(
-    minimal_game_dir: Path,
-) -> None:
-    """规则必须把全部源语言自然文本候选归入翻译或排除。"""
-    _write_high_risk_nonstandard_data(minimal_game_dir)
-    layout = resolve_game_layout(minimal_game_dir)
-    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
-    text_rules = TextRules.from_setting(setting.text_rules)
-    scan = await build_nonstandard_data_scan(
-        layout=layout,
-        source_view=GameFileView.ACTIVE_RUNTIME,
-        text_rules=text_rules,
-    )
-    import_file = parse_nonstandard_data_rule_import_text(
-        json.dumps(
-            [
-                {
-                    "file": "UnknownPluginData.json",
-                    "paths": ["$[*]['name']"],
-                    "excluded_paths": [],
-                    "skipped": False,
-                }
-            ],
-            ensure_ascii=False,
-        )
-    )
-
-    validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
-
-    assert validation.rule_count == 1
-    assert validation.reviewed_candidate_count == 1
-    assert validation.unreviewed_candidate_paths == ()
-
-
-@pytest.mark.asyncio
 async def test_nonstandard_data_rules_validate_uses_native_rule_coverage(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -311,7 +227,9 @@ async def test_nonstandard_data_rules_validate_uses_native_rule_coverage(
 
     assert len(native_payloads) == 1
     assert "nonstandard_data_rule_coverage" in native_payloads[0]
+    assert validation.rule_count == 1
     assert validation.reviewed_candidate_count == 1
+    assert validation.unreviewed_candidate_paths == ()
     assert validation.details["translated_candidates"] == [
         {"file": "UnknownPluginData.json", "json_path": "$[0]['name']"}
     ]

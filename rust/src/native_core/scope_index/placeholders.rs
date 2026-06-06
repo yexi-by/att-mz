@@ -174,3 +174,56 @@ fn find_covering_span<'a>(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PlaceholderTextInput, scan_placeholder_rule_candidates};
+    use crate::native_core::models::NativeCustomPlaceholderRule;
+    use crate::native_core::scope_index::RuleCandidateTextRules;
+
+    fn text_rules(
+        custom_placeholder_rules: Vec<NativeCustomPlaceholderRule>,
+    ) -> RuleCandidateTextRules {
+        RuleCandidateTextRules {
+            custom_placeholder_rules,
+            structured_placeholder_rules: Vec::new(),
+            strip_wrapping_punctuation_pairs: Vec::new(),
+            source_text_required_pattern: r"[\s\S]".to_string(),
+            source_text_exclusion_profile: "none".to_string(),
+        }
+    }
+
+    #[test]
+    fn placeholder_candidates_distinguish_standard_custom_and_uncovered_controls() {
+        let texts = vec![
+            PlaceholderTextInput {
+                source_name: "standard".to_string(),
+                text: r"\C[1]色".to_string(),
+            },
+            PlaceholderTextInput {
+                source_name: "custom".to_string(),
+                text: r"\F3[66]顔".to_string(),
+            },
+            PlaceholderTextInput {
+                source_name: "uncovered".to_string(),
+                text: r"\Shake[fast]揺れ".to_string(),
+            },
+        ];
+        let rules = text_rules(vec![NativeCustomPlaceholderRule {
+            pattern_text: r"\\F3\[\d+\]".to_string(),
+            placeholder_template: "[CUSTOM_FACE_{index}]".to_string(),
+        }]);
+
+        let scan = scan_placeholder_rule_candidates(&texts, rules).expect("候选扫描应成功");
+
+        let by_marker = scan
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.marker.as_str(), candidate))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(by_marker[r"\C[1]"].standard_covered);
+        assert!(by_marker[r"\F3[66]"].custom_covered);
+        assert!(!by_marker[r"\Shake[fast]"].covered);
+        assert_eq!(scan.scanned_text_count, 3);
+    }
+}
