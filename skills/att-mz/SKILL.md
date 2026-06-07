@@ -31,10 +31,10 @@ description: 仅在用户明确要求执行或继续 A.T.T MZ 的 RPG Maker MV/M
 | 主要工作 | 必读参考资料 | 读取时机 |
 | --- | --- | --- |
 | 启动与注册 | `cli-command-contract.md`、`workspace-schema.md` | 运行或排查启动、注册、状态检查和危险回溯前 |
-| 工作区与基础候选 | `cli-command-contract.md`、`workspace-schema.md`、`agent-review-workflow.md` | 读取、填写、修复、审查或清理工作区 JSON 前 |
+| 工作区与基础候选 | `cli-command-contract.md`、`workspace-schema.md`、`agent-review-workflow.md`、`subtask-package-mode.md` | 读取、填写、修复、审查、分发任务包或清理工作区 JSON 前 |
 | MV 虚拟名字框 | `agent-review-workflow.md`、`mv-virtual-namebox-rules.md`、`rpg-maker-mv-mz-world-knowledge.md` | MV 游戏第零轮规则发现、审查、编写或修复前 |
-| 术语工程 | `agent-review-workflow.md`、`terminology-workflow.md`、`translation-rule-examples.md`、`subagent-collaboration.md` | 进入术语工程、派发术语候选、审查术语质量、合并字段译名表或制作正文术语表前 |
-| 外部文本规则 | `agent-review-workflow.md`、`external-rules-workflow.md`、`plugin-rules-agent-task.md`、`event-command-rules-agent-task.md`、`note-tag-rules-agent-task.md`、`translation-rule-examples.md`、`subagent-collaboration.md` | 处理、主动发现或审查插件、事件指令或 Note 标签规则前 |
+| 术语工程 | `agent-review-workflow.md`、`terminology-workflow.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` | 进入术语工程、派发术语候选、分发术语任务包、审查术语质量、合并字段译名表或制作正文术语表前 |
+| 外部文本规则 | `agent-review-workflow.md`、`external-rules-workflow.md`、`plugin-rules-agent-task.md`、`event-command-rules-agent-task.md`、`note-tag-rules-agent-task.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` | 处理、主动发现、分发任务包或审查插件、事件指令、Note 标签规则前 |
 | 非标准 data 与插件源码支线 | `agent-review-workflow.md`、`nonstandard-data-agent-task.md`、`plugin-source-text-agent-task.md`、`workspace-schema.md`、`subagent-collaboration.md` | 风险报告提示高风险，或用户要求处理、主动发现、审查非标准 data / 插件源码文本前 |
 | 占位符收束 | `agent-review-workflow.md`、`placeholder-rules.md`、`structured-placeholder-rules.md`、`translation-rule-examples.md`、`subagent-collaboration.md` | 编写、审查、覆盖扫描或修复普通/结构化占位符规则前 |
 | 正文翻译与手动修复 | `cli-command-contract.md`、`failure-recovery.md`、`placeholder-rules.md`、`structured-placeholder-rules.md` | 启动正文翻译、解释失败、导出修复表、导入手动译文或重置译文前 |
@@ -48,10 +48,10 @@ description: 仅在用户明确要求执行或继续 A.T.T MZ 的 RPG Maker MV/M
 | 阶段 | 目标 | 命令 | 必读参考 |
 | --- | --- | --- | --- |
 | 启动与注册 | 确认工具入口、游戏结构、工作区、源语言和模型配置可用 | `doctor`、`probe-source-language`、`add-game`、`list`、`reset-game` | `cli-command-contract.md`、`workspace-schema.md` |
-| 工作区与基础候选 | 建立 Agent 分析边界并导出候选、草稿规则和术语上下文 | `prepare-agent-workspace`、`validate-agent-workspace`、`cleanup-agent-workspace`、`export-plugins-json`、`export-event-commands-json` | `cli-command-contract.md`、`workspace-schema.md`、`agent-review-workflow.md` |
+| 工作区与基础候选 | 建立 Agent 分析边界并导出候选、草稿规则和术语上下文 | `prepare-agent-workspace`、`validate-agent-workspace`、`cleanup-agent-workspace`、`export-plugins-json`、`export-event-commands-json` | `cli-command-contract.md`、`workspace-schema.md`、`agent-review-workflow.md`、`subtask-package-mode.md` |
 | MV 虚拟名字框 | 为 MV 游戏确认首行虚拟名字框规则 | `export-mv-virtual-namebox-candidates`、`validate-mv-virtual-namebox-rules`、`import-mv-virtual-namebox-rules` | `agent-review-workflow.md`、`mv-virtual-namebox-rules.md`、`rpg-maker-mv-mz-world-knowledge.md` |
-| 术语工程 | 统一字段译名和正文术语，避免字段写回表与提示词术语表混用 | `export-terminology`、`import-terminology` | `agent-review-workflow.md`、`terminology-workflow.md`、`translation-rule-examples.md`、`subagent-collaboration.md` |
-| 外部文本规则 | 判断插件参数、事件指令参数和 Note 标签中的玩家可见文本 | `validate-plugin-rules`、`import-plugin-rules`、`validate-event-command-rules`、`import-event-command-rules`、`export-note-tag-candidates`、`validate-note-tag-rules`、`import-note-tag-rules` | `agent-review-workflow.md`、`external-rules-workflow.md`、`plugin-rules-agent-task.md`、`event-command-rules-agent-task.md`、`note-tag-rules-agent-task.md`、`translation-rule-examples.md`、`subagent-collaboration.md` |
+| 术语工程 | 统一字段译名和正文术语，避免字段写回表与提示词术语表混用 | `export-terminology`、`import-terminology` | `agent-review-workflow.md`、`terminology-workflow.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` |
+| 外部文本规则 | 判断插件参数、事件指令参数和 Note 标签中的玩家可见文本 | `validate-plugin-rules`、`import-plugin-rules`、`validate-event-command-rules`、`import-event-command-rules`、`export-note-tag-candidates`、`validate-note-tag-rules`、`import-note-tag-rules` | `agent-review-workflow.md`、`external-rules-workflow.md`、`plugin-rules-agent-task.md`、`event-command-rules-agent-task.md`、`note-tag-rules-agent-task.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` |
 | 非标准 data 与插件源码支线 | 处理少见的非标准 data 文本和 js/plugins 源码硬编码显示文本 | `scan-nonstandard-data`、`export-nonstandard-data-json`、`validate-nonstandard-data-rules`、`import-nonstandard-data-rules`、`scan-plugin-source-text`、`export-plugin-source-ast-map`、`validate-plugin-source-rules`、`import-plugin-source-rules` | `agent-review-workflow.md`、`nonstandard-data-agent-task.md`、`plugin-source-text-agent-task.md`、`workspace-schema.md`、`subagent-collaboration.md` |
 | 占位符收束 | 保护必须原样保留的控制符和协议片段，同时不吞掉玩家可见文本 | `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates`、`import-placeholder-rules`、`validate-structured-placeholder-rules`、`scan-structured-placeholder-candidates`、`import-structured-placeholder-rules` | `agent-review-workflow.md`、`placeholder-rules.md`、`structured-placeholder-rules.md`、`translation-rule-examples.md`、`subagent-collaboration.md` |
 | 正文翻译与手动修复 | 用小批量发现严重风险，再靠全量多轮重试保存译文，最后小规模手动收尾 | `rebuild-text-index`、`translate`、`translation-status`、`text-scope`、`audit-coverage`、`quality-report`、`export-quality-fix-template`、`export-pending-translations`、`import-manual-translations`、`reset-translations`、`validate-source-residual-rules`、`import-source-residual-rules`、`run-all` | `cli-command-contract.md`、`failure-recovery.md`、`placeholder-rules.md`、`structured-placeholder-rules.md` |
@@ -82,6 +82,7 @@ description: 仅在用户明确要求执行或继续 A.T.T MZ 的 RPG Maker MV/M
 - 子代理的优势是并行探索、隔离噪声、独立审查和压缩证据；它们不是“替主代理拍板”的执行者。
 - 分析与规则产出阶段采用审查型工作流：工作子代理产出候选和证据，审查子代理用 `blocker`、`warning`、`info` 分级反向审查，主代理写 `review-decisions/<阶段ID>.json` 后才允许 validate/import。
 - 子代理可以在任务授权范围内把一次性 Python、PowerShell、Node.js 或其他本机可用脚本写到 `<工作区>/agent-scratch/<阶段ID>/<任务ID>/scripts/`，也可以运行只读、导出、扫描、诊断和 validate 类 CLI 命令；禁止任何 import、写回、重建、重置、数据库写入或游戏文件写入。
+- 外部协作任务包只用于术语候选、插件规则、事件指令规则和 Note 标签规则的工作候选；生成、回收和验收任务包前必须读取 `references/subtask-package-mode.md`，任务包不能替代审查子代理或主代理裁决。
 - 当前平台支持子代理时，当前会话完成模式必须并行处理无依赖候选；不支持子代理时，按同一任务契约串行执行或使用外部协作任务包。
 - 每个子代理或任务包都必须有明确输入、逻辑、唯一输出、空结果条件、校验命令和完成报告。
 - 派发子代理时不能只概括任务，必须复制对应任务契约并填入 `<项目目录>`、`<工作区>`、`<游戏标题>`、必要时的 `<游戏目录>`、输入文件、唯一可写文件和校验命令。

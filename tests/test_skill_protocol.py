@@ -55,6 +55,7 @@ REQUIRED_AGENT_REVIEW_AGENT_IDS = frozenset(
         "att_mz_placeholder_sentinel",
     }
 )
+REQUIRED_SUBTASK_PACKAGE_STAGE_IDS = frozenset({"workspace", "terminology", "external_rules"})
 COMMAND_LINE_PATTERNS = (
     re.compile(r"uv\s+run\s+python\s+main\.py\s+([a-z][a-z0-9-]+)"),
     re.compile(r"(?:\.\\att-mz\.exe|att-mz\.exe)\s+([a-z][a-z0-9-]+)"),
@@ -135,6 +136,21 @@ def test_agent_review_workflow_reference_is_attached_to_analysis_stages() -> Non
     for stage_id in REQUIRED_AGENT_REVIEW_STAGE_IDS:
         references = set(cast(list[str], stage_by_id[stage_id]["references"]))
         assert "agent-review-workflow.md" in references, stage_id
+
+
+def test_subtask_package_mode_reference_is_attached_to_package_stages() -> None:
+    """外部协作任务包契约必须挂到会创建或回收任务包的阶段。"""
+    workflow = _read_toml(PROTOCOL_DIR / "workflow.toml")
+    stages = cast(list[dict[str, object]], workflow["stages"])
+    stage_by_id = {cast(str, stage["id"]): stage for stage in stages}
+
+    assert REQUIRED_SUBTASK_PACKAGE_STAGE_IDS <= set(stage_by_id)
+    for stage_id in REQUIRED_SUBTASK_PACKAGE_STAGE_IDS:
+        references = set(cast(list[str], stage_by_id[stage_id]["references"]))
+        assert "subtask-package-mode.md" in references, stage_id
+
+    for skill_dir in (DEV_SKILL_DIR, RELEASE_SKILL_DIR):
+        assert "references/subtask-package-mode.md" in _read_text(skill_dir / "SKILL.md")
 
 
 def test_agent_review_protocol_exposes_auditable_reports_and_gates() -> None:
