@@ -203,7 +203,9 @@ def write_native_scope_index_storage(payload: JsonObject) -> JsonObject:
         result_text = native_module.write_scope_index_storage(json.dumps(payload, ensure_ascii=False))
     except ValueError as error:
         raise _native_storage_error(str(error)) from error
-    return _load_result_object(result_text, "native_scope_index_storage_write")
+    result = _load_result_object(result_text, "native_scope_index_storage_write")
+    _validate_text_fact_storage_contract(result, "native_scope_index_storage_write")
+    return result
 
 
 def rebuild_native_scope_index_storage(payload: JsonObject) -> JsonObject:
@@ -213,7 +215,9 @@ def rebuild_native_scope_index_storage(payload: JsonObject) -> JsonObject:
         result_text = native_module.rebuild_scope_index_storage(json.dumps(payload, ensure_ascii=False))
     except ValueError as error:
         raise _native_storage_error(str(error)) from error
-    return _load_result_object(result_text, "native_scope_index_storage_rebuild")
+    result = _load_result_object(result_text, "native_scope_index_storage_rebuild")
+    _validate_text_fact_storage_contract(result, "native_scope_index_storage_rebuild")
+    return result
 
 
 def build_native_rule_candidate_text_rules_payload(text_rules: TextRules) -> JsonObject:
@@ -527,6 +531,36 @@ def _native_storage_error(raw_text: str) -> NativeScopeIndexStorageError:
     if isinstance(message, str):
         return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=message)
     return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=raw_text)
+
+
+def _validate_text_fact_storage_contract(result: JsonObject, label: str) -> None:
+    """校验 native storage 输出包含当前 v2 fact contract 字段。"""
+    text_fact_schema_version = _text_fact_schema_version()
+    schema_version = _read_int(result, "text_fact_schema_version", label)
+    if schema_version != text_fact_schema_version:
+        raise RuntimeError(
+            "text fact v2 schema_version 不受支持: "
+            + f"Rust 返回 {schema_version}，Python 支持 {text_fact_schema_version}"
+        )
+    text_fact_count = _read_int(result, "text_fact_count", label)
+    render_part_count = _read_int(result, "render_part_count", label)
+    if text_fact_count < 0:
+        raise ValueError(f"{label}.text_fact_count 必须是非负整数")
+    if render_part_count < 0:
+        raise ValueError(f"{label}.render_part_count 必须是非负整数")
+    scope_key = result["scope_key"]
+    if not isinstance(scope_key, str) or not scope_key:
+        raise TypeError(f"{label}.scope_key 必须是非空字符串")
+    scope_hash = result["scope_hash"]
+    if not isinstance(scope_hash, str) or len(scope_hash) != 64:
+        raise TypeError(f"{label}.scope_hash 必须是 64 位 SHA-256 字符串")
+
+
+def _text_fact_schema_version() -> int:
+    """延迟读取 Python 持久层 v2 fact schema，避免 native adapter 顶层循环导入。"""
+    from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+
+    return TEXT_FACT_SCHEMA_VERSION
 
 
 def _read_object_array(result: JsonObject, field_name: str, label: str) -> list[JsonObject]:

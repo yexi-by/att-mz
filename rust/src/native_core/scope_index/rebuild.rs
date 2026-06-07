@@ -72,6 +72,11 @@ struct RebuildStorageOutput {
     source_snapshot_fingerprint: String,
     rules_fingerprint: String,
     indexed_count: usize,
+    text_fact_count: usize,
+    render_part_count: usize,
+    scope_key: String,
+    scope_hash: String,
+    text_fact_schema_version: i64,
     standard_data_file_count: usize,
     native_thread_count: usize,
     written_item_count: usize,
@@ -415,12 +420,14 @@ fn rebuild_with_context(
         "build_workflow_gate_metadata",
         stage_started,
     );
+    let text_rules_hash = stable_json_fingerprint(&payload.text_rules_setting)?;
     let stage_started = Instant::now();
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
         metadata: storage::TextIndexMetadataInput {
             source_snapshot_fingerprint: source_snapshot_fingerprint.clone(),
             rules_fingerprint: rules_fingerprint.clone(),
+            text_rules_hash: Some(text_rules_hash),
             item_count,
             workflow_gate_scope_hashes,
             created_at: payload.created_at,
@@ -461,6 +468,10 @@ fn rebuild_with_context(
             })
             .collect(),
         rule_hit_summary: Vec::new(),
+        text_fact_scope: None,
+        text_facts: Vec::new(),
+        text_fact_render_parts: Vec::new(),
+        text_fact_domain_payloads: Vec::new(),
     };
     record_stage(
         &mut internal_stage_timings,
@@ -476,6 +487,11 @@ fn rebuild_with_context(
         source_snapshot_fingerprint,
         rules_fingerprint,
         indexed_count: written_item_count,
+        text_fact_count: write_output.text_fact_count,
+        render_part_count: write_output.render_part_count,
+        scope_key: write_output.scope_key,
+        scope_hash: write_output.scope_hash,
+        text_fact_schema_version: write_output.text_fact_schema_version,
         standard_data_file_count: data_files.len(),
         native_thread_count,
         written_item_count,

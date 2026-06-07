@@ -7,9 +7,13 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::native_core::text_facts::{
+    TEXT_FACT_SCHEMA_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart, TextFactScope,
+};
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
 const CURRENT_SCHEMA_VERSION: i64 = 16;
@@ -77,12 +81,22 @@ pub(crate) struct WriteStoragePayload {
     pub(crate) domain_summary: Vec<DomainSummaryInput>,
     #[serde(default)]
     pub(crate) rule_hit_summary: Vec<RuleHitSummaryInput>,
+    #[serde(default)]
+    pub(crate) text_fact_scope: Option<TextFactScope>,
+    #[serde(default)]
+    pub(crate) text_facts: Vec<TextFact>,
+    #[serde(default)]
+    pub(crate) text_fact_render_parts: Vec<TextFactRenderPart>,
+    #[serde(default)]
+    pub(crate) text_fact_domain_payloads: Vec<TextFactDomainPayload>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct TextIndexMetadataInput {
     pub(crate) source_snapshot_fingerprint: String,
     pub(crate) rules_fingerprint: String,
+    #[serde(default)]
+    pub(crate) text_rules_hash: Option<String>,
     pub(crate) item_count: usize,
     #[serde(default)]
     pub(crate) workflow_gate_scope_hashes: BTreeMap<String, String>,
@@ -141,6 +155,12 @@ pub(crate) struct WriteStorageOutput {
     pub(crate) written_item_count: usize,
     domain_summary_count: usize,
     rule_hit_summary_count: usize,
+    pub(crate) text_fact_count: usize,
+    pub(crate) render_part_count: usize,
+    domain_payload_count: usize,
+    pub(crate) scope_key: String,
+    pub(crate) scope_hash: String,
+    pub(crate) text_fact_schema_version: i64,
 }
 
 pub(crate) fn current_schema_fingerprint() -> String {
@@ -194,14 +214,22 @@ pub(crate) fn write_scope_index_storage_direct(
             ),
         ));
     }
+    let text_fact_scope = effective_text_fact_scope(payload)?;
+    validate_text_fact_write_payload(payload, &text_fact_scope)?;
     let mut connection = open_connection_readwrite(Path::new(&payload.db_path))?;
     validate_schema_version(&connection)?;
-    write_text_index_storage(&mut connection, payload)?;
+    write_text_index_storage(&mut connection, payload, &text_fact_scope)?;
     Ok(WriteStorageOutput {
         status: "ok",
         written_item_count: payload.text_index_rows.len(),
         domain_summary_count: payload.domain_summary.len(),
         rule_hit_summary_count: payload.rule_hit_summary.len(),
+        text_fact_count: payload.text_facts.len(),
+        render_part_count: payload.text_fact_render_parts.len(),
+        domain_payload_count: payload.text_fact_domain_payloads.len(),
+        scope_key: text_fact_scope.scope_key,
+        scope_hash: text_fact_scope.scope_hash,
+        text_fact_schema_version: TEXT_FACT_SCHEMA_VERSION,
     })
 }
 
@@ -469,9 +497,141 @@ fn is_map_data_file(file_name: &str) -> bool {
             .all(|char_value| char_value.is_ascii_digit())
 }
 
+fn effective_text_fact_scope(payload: &WriteStoragePayload) -> Result<TextFactScope, String> {
+    if let Some(scope) = &payload.text_fact_scope {
+        return Ok(scope.clone());
+    }
+    let text_rules_hash = match &payload.metadata.text_rules_hash {
+        Some(value) if !value.trim().is_empty() => value.clone(),
+        _ => {
+            let text = serde_json::to_string(&payload.metadata.workflow_gate_scope_hashes)
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_payload_invalid",
+                        format!("workflow_gate_scope_hashes 序列化失败: {error}"),
+                    )
+                })?;
+            sha256_text(&text)
+        }
+    };
+    Ok(TextFactScope::from_hashes(
+        payload.metadata.source_snapshot_fingerprint.clone(),
+        payload.metadata.rules_fingerprint.clone(),
+        text_rules_hash,
+        payload.metadata.created_at.clone(),
+    ))
+}
+
+fn validate_text_fact_write_payload(
+    payload: &WriteStoragePayload,
+    scope: &TextFactScope,
+) -> Result<(), String> {
+    scope
+        .validate()
+        .map_err(|message| structured_error("scope_index_storage_text_fact_invalid", message))?;
+    let has_explicit_text_fact_payload = payload.text_fact_scope.is_some()
+        || !payload.text_facts.is_empty()
+        || !payload.text_fact_render_parts.is_empty()
+        || !payload.text_fact_domain_payloads.is_empty();
+    if has_explicit_text_fact_payload && payload.metadata.item_count != payload.text_facts.len() {
+        return Err(structured_error(
+            "scope_index_storage_text_fact_count_mismatch",
+            format!(
+                "text index 元信息 item_count={} 与 v2 fact 数量 {} 不一致",
+                payload.metadata.item_count,
+                payload.text_facts.len()
+            ),
+        ));
+    }
+
+    let mut fact_ids = BTreeSet::new();
+    for fact in &payload.text_facts {
+        fact.validate().map_err(|message| {
+            structured_error("scope_index_storage_text_fact_invalid", message)
+        })?;
+        if fact.scope_key != scope.scope_key {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!(
+                    "text fact v2 scope_key 与当前 scope 不一致: fact_id={}",
+                    fact.fact_id
+                ),
+            ));
+        }
+        if fact.schema_version != scope.schema_version {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!(
+                    "text fact v2 schema_version 与当前 scope 不一致: fact_id={}",
+                    fact.fact_id
+                ),
+            ));
+        }
+        if !fact_ids.insert(fact.fact_id.clone()) {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!("text fact v2 fact_id 重复: {}", fact.fact_id),
+            ));
+        }
+    }
+
+    let mut render_part_keys = BTreeSet::new();
+    for part in &payload.text_fact_render_parts {
+        part.validate().map_err(|message| {
+            structured_error("scope_index_storage_text_fact_invalid", message)
+        })?;
+        if !fact_ids.contains(&part.fact_id) {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!(
+                    "text fact v2 render part 引用了未知 fact_id: {}",
+                    part.fact_id
+                ),
+            ));
+        }
+        let key = (part.fact_id.clone(), part.part_order);
+        if !render_part_keys.insert(key) {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!(
+                    "text fact v2 render part 重复: fact_id={}, part_order={}",
+                    part.fact_id, part.part_order
+                ),
+            ));
+        }
+    }
+
+    let mut payload_fact_ids = BTreeSet::new();
+    for domain_payload in &payload.text_fact_domain_payloads {
+        domain_payload.validate().map_err(|message| {
+            structured_error("scope_index_storage_text_fact_invalid", message)
+        })?;
+        if !fact_ids.contains(&domain_payload.fact_id) {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!(
+                    "text fact v2 domain payload 引用了未知 fact_id: {}",
+                    domain_payload.fact_id
+                ),
+            ));
+        }
+        if !payload_fact_ids.insert(domain_payload.fact_id.clone()) {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!(
+                    "text fact v2 domain payload 重复: fact_id={}",
+                    domain_payload.fact_id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn write_text_index_storage(
     connection: &mut Connection,
     payload: &WriteStoragePayload,
+    text_fact_scope: &TextFactScope,
 ) -> Result<(), String> {
     let transaction = connection.transaction().map_err(|error| {
         structured_error(
@@ -480,6 +640,10 @@ fn write_text_index_storage(
         )
     })?;
     for table_name in [
+        "text_fact_domain_payloads_v2",
+        "text_fact_render_parts_v2",
+        "text_facts_v2",
+        "text_fact_scope_v2",
         "text_index_invalidations",
         "text_index_rule_hit_summary",
         "text_index_domain_summary",
@@ -495,6 +659,133 @@ fn write_text_index_storage(
                     format!("清空 {table_name} 失败: {error}"),
                 )
             })?;
+    }
+
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO text_fact_scope_v2 \
+             (scope_key, schema_version, scope_hash, source_snapshot_hash, rule_hash, text_rules_hash, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                text_fact_scope.scope_key,
+                text_fact_scope.schema_version,
+                text_fact_scope.scope_hash,
+                text_fact_scope.source_snapshot_hash,
+                text_fact_scope.rule_hash,
+                text_fact_scope.text_rules_hash,
+                text_fact_scope.created_at,
+            ],
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_storage_write_failed",
+                format!("写入 text_fact_scope_v2 失败: {error}"),
+            )
+        })?;
+
+    {
+        let mut insert_fact_statement = transaction
+            .prepare_cached(
+                "INSERT INTO text_facts_v2 \
+                 (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            )
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_storage_write_failed",
+                    format!("准备 text_facts_v2 写入语句失败: {error}"),
+                )
+            })?;
+        for fact in &payload.text_facts {
+            insert_fact_statement
+                .execute(params![
+                    fact.fact_id,
+                    fact.schema_version,
+                    fact.domain,
+                    fact.location_path,
+                    fact.source_file,
+                    fact.source_type,
+                    fact.item_type,
+                    fact.role,
+                    fact.selector,
+                    fact.raw_text,
+                    fact.visible_text,
+                    fact.translatable_text,
+                    fact.raw_hash,
+                    fact.visible_hash,
+                    fact.translatable_hash,
+                    fact.scope_key,
+                ])
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_write_failed",
+                        format!("写入 text_facts_v2 失败 {}: {error}", fact.fact_id),
+                    )
+                })?;
+        }
+    }
+
+    {
+        let mut insert_render_part_statement = transaction
+            .prepare_cached(
+                "INSERT INTO text_fact_render_parts_v2 \
+                 (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_storage_write_failed",
+                    format!("准备 text_fact_render_parts_v2 写入语句失败: {error}"),
+                )
+            })?;
+        for part in &payload.text_fact_render_parts {
+            insert_render_part_statement
+                .execute(params![
+                    part.fact_id,
+                    part.part_order,
+                    part.part_kind,
+                    part.raw_text,
+                    part.semantic_text,
+                    part.template_key,
+                ])
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_write_failed",
+                        format!(
+                            "写入 text_fact_render_parts_v2 失败 {}/{}: {error}",
+                            part.fact_id, part.part_order
+                        ),
+                    )
+                })?;
+        }
+    }
+
+    {
+        let mut insert_payload_statement = transaction
+            .prepare_cached(
+                "INSERT INTO text_fact_domain_payloads_v2 \
+                 (fact_id, payload_json) \
+                 VALUES (?1, ?2)",
+            )
+            .map_err(|error| {
+                structured_error(
+                    "scope_index_storage_write_failed",
+                    format!("准备 text_fact_domain_payloads_v2 写入语句失败: {error}"),
+                )
+            })?;
+        for domain_payload in &payload.text_fact_domain_payloads {
+            insert_payload_statement
+                .execute(params![domain_payload.fact_id, domain_payload.payload_json])
+                .map_err(|error| {
+                    structured_error(
+                        "scope_index_storage_write_failed",
+                        format!(
+                            "写入 text_fact_domain_payloads_v2 失败 {}: {error}",
+                            domain_payload.fact_id
+                        ),
+                    )
+                })?;
+        }
     }
 
     let workflow_gate_scope_hashes =
@@ -713,8 +1004,12 @@ fn sha256_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, current_schema_fingerprint,
+        CURRENT_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, WriteStoragePayload,
+        current_schema_fingerprint, write_scope_index_storage_direct,
         write_scope_index_storage_impl,
+    };
+    use crate::native_core::text_facts::{
+        TextFact, TextFactDomainPayload, TextFactInput, TextFactRenderPart, TextFactScope, domains,
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
@@ -823,5 +1118,315 @@ mod tests {
         }
 
         fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_writes_text_fact_v2_rows() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_storage_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = TextFact::from_input(
+            TextFactInput {
+                domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
+                location_path: "Map001.json/events/1/pages/0/list/0".to_string(),
+                source_file: "Map001.json".to_string(),
+                source_type: "event_command".to_string(),
+                item_type: "long_text".to_string(),
+                role: "Dan".to_string(),
+                selector: "event:1/page:0/list:0".to_string(),
+                raw_text: "\\n<Dan:> Hello".to_string(),
+                visible_text: "\\n<Dan:> Hello".to_string(),
+                translatable_text: "Hello".to_string(),
+            },
+            scope.scope_key.clone(),
+        )
+        .expect("MV 虚拟名字框 fact 应可创建");
+
+        let payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact.clone()],
+            vec![
+                TextFactRenderPart::new(
+                    fact.fact_id.clone(),
+                    0,
+                    "literal",
+                    "\\n<",
+                    "\\n<",
+                    "prefix",
+                ),
+                TextFactRenderPart::new(
+                    fact.fact_id.clone(),
+                    1,
+                    "speaker",
+                    "Dan",
+                    "Dan",
+                    "speaker",
+                ),
+                TextFactRenderPart::new(
+                    fact.fact_id.clone(),
+                    2,
+                    "literal",
+                    ":> ",
+                    ":> ",
+                    "separator",
+                ),
+                TextFactRenderPart::new(
+                    fact.fact_id.clone(),
+                    3,
+                    "translated_body",
+                    "Hello",
+                    "Hello",
+                    "body",
+                ),
+            ],
+            vec![TextFactDomainPayload::new(
+                fact.fact_id.clone(),
+                json!({"speaker_policy": "translate"}).to_string(),
+            )],
+        );
+
+        let output = write_scope_index_storage_direct(&payload).expect("写入 v2 fact 应成功");
+        assert_eq!(output.text_fact_count, 1);
+        assert_eq!(output.render_part_count, 4);
+        assert_eq!(output.scope_key, fact.scope_key);
+
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可重新打开");
+            let fact_count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM text_facts_v2", [], |row| row.get(0))
+                .expect("text_facts_v2 应可读取");
+            let render_part_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM text_fact_render_parts_v2",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("text_fact_render_parts_v2 应可读取");
+            let payload_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM text_fact_domain_payloads_v2",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("text_fact_domain_payloads_v2 应可读取");
+            assert_eq!(fact_count, 1);
+            assert_eq!(render_part_count, 4);
+            assert_eq!(payload_count, 1);
+        }
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_rejects_text_fact_count_mismatch() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_mismatch_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        payload.metadata.item_count = 1;
+        payload.text_index_rows.push(dummy_text_index_row());
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("text index item_count 与 v2 fact 数量不一致必须拒绝");
+        assert!(error.contains("scope_index_storage_text_fact_count_mismatch"));
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_replaces_old_text_fact_v2_scope_atomically() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_replace_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let first_scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let first_fact = TextFact::from_input(
+            TextFactInput {
+                domain: domains::STANDARD_DATA.to_string(),
+                location_path: "System.json/gameTitle".to_string(),
+                source_file: "System.json".to_string(),
+                source_type: "standard_data".to_string(),
+                item_type: "short_text".to_string(),
+                role: String::new(),
+                selector: "gameTitle".to_string(),
+                raw_text: "旧标题".to_string(),
+                visible_text: "旧标题".to_string(),
+                translatable_text: "旧标题".to_string(),
+            },
+            first_scope.scope_key.clone(),
+        )
+        .expect("旧 fact 应可创建");
+        let first_payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            first_scope,
+            vec![first_fact],
+            Vec::new(),
+            Vec::new(),
+        );
+        write_scope_index_storage_direct(&first_payload).expect("第一次写入应成功");
+
+        let second_scope = TextFactScope::from_hashes(
+            "snapshot-v2".to_string(),
+            "rules-v2".to_string(),
+            "text-rules-v2".to_string(),
+            "2026-06-05T00:01:00".to_string(),
+        );
+        let second_payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            second_scope.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        write_scope_index_storage_direct(&second_payload).expect("第二次写入应成功");
+
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可重新打开");
+            let fact_count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM text_facts_v2", [], |row| row.get(0))
+                .expect("text_facts_v2 应可读取");
+            let scope_key: String = connection
+                .query_row("SELECT scope_key FROM text_fact_scope_v2", [], |row| {
+                    row.get(0)
+                })
+                .expect("text_fact_scope_v2 应可读取");
+            assert_eq!(fact_count, 0);
+            assert_eq!(scope_key, second_scope.scope_key);
+        }
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    fn text_fact_payload(
+        db_path: String,
+        scope: TextFactScope,
+        text_facts: Vec<TextFact>,
+        text_fact_render_parts: Vec<TextFactRenderPart>,
+        text_fact_domain_payloads: Vec<TextFactDomainPayload>,
+    ) -> WriteStoragePayload {
+        let text_index_rows = text_facts
+            .iter()
+            .map(|fact| super::TextIndexRowInput {
+                location_path: fact.location_path.clone(),
+                item_type: fact.item_type.clone(),
+                role: if fact.role.is_empty() {
+                    None
+                } else {
+                    Some(fact.role.clone())
+                },
+                original_lines: vec![fact.raw_text.clone()],
+                source_line_paths: Vec::new(),
+                source_type: fact.source_type.clone(),
+                source_file: fact.source_file.clone(),
+                writable: true,
+                source_snapshot_fingerprint: scope.source_snapshot_hash.clone(),
+                rules_fingerprint: scope.rule_hash.clone(),
+                locator_json: "{}".to_string(),
+            })
+            .collect::<Vec<_>>();
+        WriteStoragePayload {
+            db_path,
+            metadata: super::TextIndexMetadataInput {
+                source_snapshot_fingerprint: scope.source_snapshot_hash.clone(),
+                rules_fingerprint: scope.rule_hash.clone(),
+                text_rules_hash: Some(scope.text_rules_hash.clone()),
+                item_count: text_index_rows.len(),
+                workflow_gate_scope_hashes: Default::default(),
+                created_at: scope.created_at.clone(),
+            },
+            text_index_rows,
+            scope_summary: super::ScopeSummaryInput {
+                total_count: 0,
+                active_count: 0,
+                writable_count: 0,
+                unwritable_count: 0,
+                stale_rule_count: 0,
+                native_thread_count: 1,
+            },
+            domain_summary: Vec::new(),
+            rule_hit_summary: Vec::new(),
+            text_fact_scope: Some(scope),
+            text_facts,
+            text_fact_render_parts,
+            text_fact_domain_payloads,
+        }
+    }
+
+    fn dummy_text_index_row() -> super::TextIndexRowInput {
+        super::TextIndexRowInput {
+            location_path: "System.json/gameTitle".to_string(),
+            item_type: "short_text".to_string(),
+            role: None,
+            original_lines: vec!["Fixture".to_string()],
+            source_line_paths: Vec::new(),
+            source_type: "standard_data".to_string(),
+            source_file: "System.json".to_string(),
+            writable: true,
+            source_snapshot_fingerprint: "snapshot-v1".to_string(),
+            rules_fingerprint: "rules-v1".to_string(),
+            locator_json: "{}".to_string(),
+        }
     }
 }

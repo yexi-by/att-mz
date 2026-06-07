@@ -7,7 +7,7 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-const NATIVE_CONTRACT_VERSION: usize = 11;
+const NATIVE_CONTRACT_VERSION: usize = 12;
 
 #[pyfunction]
 fn native_contract_version() -> usize {

@@ -15,6 +15,7 @@ mod quality;
 mod regex_contract;
 mod rules;
 mod scope_index;
+pub(crate) mod text_facts;
 mod write_back_plan;
 mod write_protocol;
 

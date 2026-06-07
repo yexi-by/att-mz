@@ -22,7 +22,7 @@ from app.native_scope_index import (
     write_native_scope_index_storage,
 )
 from app.persistence import GameRegistry
-from app.persistence.sql import current_schema_fingerprint
+from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION, current_schema_fingerprint
 from app.config.schemas import TextRulesSetting
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.rmmz.game_data import System, Terms
@@ -462,6 +462,11 @@ async def test_write_native_scope_index_storage_writes_python_readable_index(
 
     assert result["status"] == "ok"
     assert result["written_item_count"] == 1
+    assert result["text_fact_count"] == 0
+    assert result["render_part_count"] == 0
+    assert isinstance(result["scope_key"], str) and result["scope_key"]
+    assert isinstance(result["scope_hash"], str) and len(result["scope_hash"]) == 64
+    assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
     async with await registry.open_game(record.game_title) as session:
         metadata = await session.read_text_index_metadata()
         assert metadata is not None
@@ -516,6 +521,11 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     )
 
     assert result["status"] == "ok"
+    assert result["text_fact_count"] == 0
+    assert result["render_part_count"] == 0
+    assert isinstance(result["scope_key"], str) and result["scope_key"]
+    assert isinstance(result["scope_hash"], str) and len(result["scope_hash"]) == 64
+    assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
     internal_timings = ensure_json_object(
         result["internal_stage_timings"],
         "native_scope_index_storage_rebuild.internal_stage_timings",
@@ -550,6 +560,39 @@ def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path
                 "game_path": str(tmp_path),
             }
         )
+
+
+def test_write_native_scope_index_storage_rejects_unsupported_text_fact_schema_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python native adapter 必须拒绝 Rust 返回的不支持 v2 fact schema。"""
+
+    class FakeNativeScopeIndexModule:
+        def write_scope_index_storage(self, payload_json: str) -> str:
+            _ = payload_json
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "written_item_count": 0,
+                    "domain_summary_count": 0,
+                    "rule_hit_summary_count": 0,
+                    "text_fact_count": 0,
+                    "render_part_count": 0,
+                    "scope_key": "scope-v999",
+                    "scope_hash": "0" * 64,
+                    "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION + 1,
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(
+        native_scope_index,
+        "_load_native_scope_index_module",
+        lambda: FakeNativeScopeIndexModule(),
+    )
+
+    with pytest.raises(RuntimeError, match="text fact v2 schema_version"):
+        _ = write_native_scope_index_storage({})
 
 
 def test_build_native_event_command_candidates_payload_includes_data_codes_and_rules() -> None:
