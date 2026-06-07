@@ -1019,6 +1019,60 @@ async def test_active_runtime_audit_errors_for_unreviewed_source_candidate(
 
 
 @pytest.mark.asyncio
+async def test_active_runtime_audit_consumes_native_literal_warning_fact(
+    minimal_game_dir: Path,
+) -> None:
+    """运行审计必须消费 native 字符串分类，不能用 Python 源语言判定覆盖告警事实。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "NativeFacts", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    source = "const matcher = /unused/;\n"
+    game_data = await load_game_data(minimal_game_dir)
+    literal = plugin_source_text_scanner.PluginSourceStringLiteral(
+        file_name="NativeFacts.js",
+        selector="ast:string:0:1:test",
+        text="未審査テキスト",
+        raw_text="未審査テキスト",
+        line=1,
+        start_index=0,
+        end_index=1,
+        active=True,
+        context="literal",
+        literal_kind="regex_pattern",
+        audit_default_severity="warning",
+    )
+    batch_scan = PluginSourceBatchTextScan(
+        file_scans={
+            "NativeFacts.js": plugin_source_text_scanner.PluginSourceFileTextScan(
+                file_name="NativeFacts.js",
+                file_hash=build_plugin_source_file_hash(source),
+                literals=(literal,),
+                candidate_index=plugin_source_text_scanner.PluginSourceCandidateIndex(candidates=(), by_selector={}),
+            )
+        },
+        syntax_errors={},
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+        plugin_source_files={"NativeFacts.js": source},
+        plugin_source_batch_scan=batch_scan,
+    )
+
+    issue = next(issue for issue in audit.issues if issue.code == "active_runtime_source_residual")
+    assert issue.blocking is False
+    payload = issue.to_json_object()
+    assert payload["literal_kind"] == "regex_pattern"
+    assert payload["audit_default_severity"] == "warning"
+    assert payload["mapping_status"] == "runtime_mapping_missing"
+    assert payload["actionability"] == "review_plugin_source_code"
+    assert payload["source_review_required"] is False
+
+
+@pytest.mark.asyncio
 async def test_active_runtime_audit_warns_for_unmapped_regex_control_fragment(
     minimal_game_dir: Path,
 ) -> None:

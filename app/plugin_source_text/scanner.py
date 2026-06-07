@@ -14,6 +14,7 @@ from app.native_javascript_ast import (
     parse_native_javascript_string_spans,
     parse_native_javascript_string_spans_batch,
 )
+from app.rmmz.schema import PluginSourceRuntimeLiteralAuditSeverity, PluginSourceRuntimeLiteralKind
 from app.rmmz.text_rules import JsonObject, TextRules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
@@ -117,6 +118,8 @@ class PluginSourceStringLiteral:
     end_index: int
     active: bool
     context: str
+    literal_kind: PluginSourceRuntimeLiteralKind
+    audit_default_severity: PluginSourceRuntimeLiteralAuditSeverity
 
     def to_json_object(self) -> JsonObject:
         """转换成审计报告 JSON 对象。"""
@@ -128,6 +131,8 @@ class PluginSourceStringLiteral:
             "raw_text": self.raw_text,
             "active": self.active,
             "context": self.context,
+            "literal_kind": self.literal_kind,
+            "audit_default_severity": self.audit_default_severity,
         }
 
 
@@ -278,6 +283,8 @@ def _build_literals_and_candidates_from_spans(
                 end_index=span.end_index,
                 active=active,
                 context=_candidate_context(api=api, key=key),
+                literal_kind=span.literal_kind,
+                audit_default_severity=span.audit_default_severity,
             )
         )
         if text_rules is None:
@@ -339,6 +346,8 @@ class _StringLiteralSpan:
     content_start_index: int
     content_end_index: int
     ast_context: "_StringAstContext"
+    literal_kind: PluginSourceRuntimeLiteralKind
+    audit_default_severity: PluginSourceRuntimeLiteralAuditSeverity
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +457,8 @@ def _native_scan_to_internal_spans(scan: NativeJavaScriptStringScan) -> list[_St
             content_start_index=span.content_start_index,
             content_end_index=span.content_end_index,
             ast_context=_native_ast_context_to_internal(span.ast_context),
+            literal_kind=span.literal_kind,
+            audit_default_severity=span.audit_default_severity,
         )
         for span in scan.spans
     ]

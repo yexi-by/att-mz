@@ -298,6 +298,8 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
                     start_index=1,
                     end_index=10,
                     context="property:title",
+                    literal_kind="user_visible_candidate",
+                    audit_default_severity="blocking",
                 )
             ],
             created_at="2026-05-24T00:00:01",

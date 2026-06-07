@@ -426,6 +426,8 @@ def _file_scan_from_cache_record(
             end_index=literal.end_index,
             active=active,
             context=literal.context,
+            literal_kind=literal.literal_kind,
+            audit_default_severity=literal.audit_default_severity,
         )
         for literal in record.literals
     )
@@ -463,6 +465,8 @@ def _cache_records_from_batch_scan(
                         start_index=literal.start_index,
                         end_index=literal.end_index,
                         context=literal.context,
+                        literal_kind=literal.literal_kind,
+                        audit_default_severity=literal.audit_default_severity,
                     )
                     for literal in (file_scan.literals if file_scan is not None else ())
                 ],
@@ -597,7 +601,26 @@ def _classify_literal_issue(
             source_review_required=False,
         )
 
-    source_review_required = text_rules.should_translate_source_text(literal.text)
+    if literal.audit_default_severity == "blocking":
+        return _LiteralIssueClassification(
+            blocking=True,
+            mapping_status="runtime_mapping_missing",
+            actionability="review_plugin_source_rules",
+            source_review_required=True,
+        )
+
+    if literal.audit_default_severity == "ignore":
+        return _LiteralIssueClassification(
+            blocking=False,
+            mapping_status="runtime_mapping_missing",
+            actionability="review_plugin_source_code",
+            source_review_required=False,
+        )
+
+    source_review_required = (
+        literal.literal_kind == "unknown"
+        and text_rules.should_translate_source_text(literal.text)
+    )
     return _LiteralIssueClassification(
         blocking=source_review_required,
         mapping_status="runtime_mapping_missing",

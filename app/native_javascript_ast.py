@@ -9,7 +9,19 @@ from importlib import import_module
 from typing import Protocol, cast
 
 from app.native_contract import ensure_native_contract_version
+from app.rmmz.schema import PluginSourceRuntimeLiteralAuditSeverity, PluginSourceRuntimeLiteralKind
 from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
+
+_LITERAL_KINDS = frozenset(
+    {
+        "regex_pattern",
+        "packer_code",
+        "eval_code",
+        "user_visible_candidate",
+        "unknown",
+    }
+)
+_AUDIT_DEFAULT_SEVERITIES = frozenset({"blocking", "warning", "ignore"})
 
 
 class NativeJavaScriptAstModule(Protocol):
@@ -52,6 +64,8 @@ class NativeJavaScriptStringSpan:
     content_start_index: int
     content_end_index: int
     ast_context: NativeJavaScriptAstContext
+    literal_kind: PluginSourceRuntimeLiteralKind
+    audit_default_severity: PluginSourceRuntimeLiteralAuditSeverity
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +162,10 @@ def _load_native_javascript_ast_module() -> NativeJavaScriptAstModule:
 def _parse_native_span(value: JsonValue, index: int) -> NativeJavaScriptStringSpan:
     """把单个 AST 范围从 JSON 收窄成 Python 结构。"""
     span = ensure_json_object(value, f"native_javascript_ast_result.spans[{index}]")
+    ast_context = _parse_native_ast_context(
+        span.get("ast_context"),
+        f"native_javascript_ast_result.spans[{index}].ast_context",
+    )
     return NativeJavaScriptStringSpan(
         kind=_ensure_string(span["kind"], f"native_javascript_ast_result.spans[{index}].kind"),
         quote=_ensure_string(span["quote"], f"native_javascript_ast_result.spans[{index}].quote"),
@@ -161,9 +179,14 @@ def _parse_native_span(value: JsonValue, index: int) -> NativeJavaScriptStringSp
             span["content_end_index"],
             f"native_javascript_ast_result.spans[{index}].content_end_index",
         ),
-        ast_context=_parse_native_ast_context(
-            span.get("ast_context"),
-            f"native_javascript_ast_result.spans[{index}].ast_context",
+        ast_context=ast_context,
+        literal_kind=_ensure_literal_kind(
+            span["literal_kind"],
+            f"native_javascript_ast_result.spans[{index}].literal_kind",
+        ),
+        audit_default_severity=_ensure_audit_default_severity(
+            span["audit_default_severity"],
+            f"native_javascript_ast_result.spans[{index}].audit_default_severity",
         ),
     )
 
@@ -195,6 +218,31 @@ def _ensure_string(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{label} 必须是字符串")
     return value
+
+
+def _ensure_literal_kind(value: object, label: str) -> PluginSourceRuntimeLiteralKind:
+    """校验 literal_kind 是当前 native contract 支持的枚举。"""
+    return cast(PluginSourceRuntimeLiteralKind, _ensure_string_choice(value, label, _LITERAL_KINDS))
+
+
+def _ensure_audit_default_severity(
+    value: object,
+    label: str,
+) -> PluginSourceRuntimeLiteralAuditSeverity:
+    """校验 audit_default_severity 是当前 native contract 支持的枚举。"""
+    return cast(
+        PluginSourceRuntimeLiteralAuditSeverity,
+        _ensure_string_choice(value, label, _AUDIT_DEFAULT_SEVERITIES),
+    )
+
+
+def _ensure_string_choice(value: object, label: str, choices: frozenset[str]) -> str:
+    """校验 JSON 字段是指定枚举字符串。"""
+    text = _ensure_string(value, label)
+    if text not in choices:
+        expected = "、".join(sorted(choices))
+        raise TypeError(f"{label} 必须是以下字符串之一: {expected}")
+    return text
 
 
 def _ensure_int(value: object, label: str) -> int:

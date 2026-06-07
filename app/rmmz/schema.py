@@ -29,6 +29,14 @@ type TranslationRunStatus = Literal["running", "completed", "blocked", "cancelle
 type SourceResidualRuleType = Literal["position", "structural"]
 type MvVirtualNameboxSpeakerPolicy = Literal["translate", "preserve", "actor_name"]
 type PluginSourceRuntimeMappingKind = Literal["translated", "excluded"]
+type PluginSourceRuntimeLiteralKind = Literal[
+    "regex_pattern",
+    "packer_code",
+    "eval_code",
+    "user_visible_candidate",
+    "unknown",
+]
+type PluginSourceRuntimeLiteralAuditSeverity = Literal["blocking", "warning", "ignore"]
 type LlmFailureCategory = Literal[
     "rate_limit",
     "timeout",
@@ -398,6 +406,8 @@ class PluginSourceRuntimeStringLiteralCacheRecord(BaseModel):
     start_index: int = Field(ge=0)
     end_index: int = Field(ge=0)
     context: str
+    literal_kind: PluginSourceRuntimeLiteralKind
+    audit_default_severity: PluginSourceRuntimeLiteralAuditSeverity
 
 
 class PluginSourceRuntimeScanCacheRecord(BaseModel):

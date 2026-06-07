@@ -203,11 +203,7 @@ pub(super) fn scan_mv_virtual_namebox_rule_candidates(
                 .matched_candidate_location_paths
                 .insert(candidate.location_path.clone());
             matching_rules.push(rule.rule_name.clone());
-            append_speaker_requirement(
-                &mut speaker_requirements,
-                candidate,
-                &virtual_speaker,
-            );
+            append_speaker_requirement(&mut speaker_requirements, candidate, &virtual_speaker);
             if virtual_speaker.speaker_policy == "translate"
                 && is_actor_name_control_text(&virtual_speaker.source_speaker)
             {
@@ -614,13 +610,19 @@ fn append_speaker_requirement(
             .iter()
             .any(|location_path| location_path == &candidate.location_path)
         {
-            existing.location_paths.push(candidate.location_path.clone());
+            existing
+                .location_paths
+                .push(candidate.location_path.clone());
         }
         for line in sample_body_lines {
             if existing.sample_body_lines.len() >= 3 {
                 break;
             }
-            if !existing.sample_body_lines.iter().any(|existing| existing == &line) {
+            if !existing
+                .sample_body_lines
+                .iter()
+                .any(|existing| existing == &line)
+            {
                 existing.sample_body_lines.push(line);
             }
         }

@@ -1,6 +1,6 @@
 //! JavaScript AST 字符串节点扫描。
 //!
-//! 本模块只解析源码并返回稳定范围，不判断游戏私有语义。
+//! 本模块解析源码，返回稳定范围，并输出运行审计需要的字符串分类事实。
 
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
@@ -36,6 +36,8 @@ pub(crate) struct JavaScriptStringSpan {
     #[serde(skip_serializing)]
     pub(crate) content_end_byte_index: usize,
     pub(crate) ast_context: JavaScriptStringAstContext,
+    pub(crate) literal_kind: String,
+    pub(crate) audit_default_severity: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -165,6 +167,10 @@ fn build_string_span(
     }
     let content_start_byte = start_byte + quote.len_utf8();
     let content_end_byte = end_byte.checked_sub(quote.len_utf8())?;
+    let raw_text = source.get(content_start_byte..content_end_byte)?;
+    let ast_context = build_ast_context(node, source);
+    let (literal_kind, audit_default_severity) =
+        classify_javascript_literal(raw_text, &ast_context);
     Some(JavaScriptStringSpan {
         kind: node.kind().to_string(),
         quote: quote.to_string(),
@@ -174,7 +180,9 @@ fn build_string_span(
         content_end_index: end_index - 1,
         content_start_byte_index: content_start_byte,
         content_end_byte_index: content_end_byte,
-        ast_context: build_ast_context(node, source),
+        ast_context,
+        literal_kind,
+        audit_default_severity,
     })
 }
 
@@ -190,6 +198,10 @@ fn build_template_fragment_span(
     if end_index <= start_index {
         return None;
     }
+    let raw_text = source.get(start_byte..end_byte)?;
+    let ast_context = build_ast_context(node, source);
+    let (literal_kind, audit_default_severity) =
+        classify_javascript_literal(raw_text, &ast_context);
     Some(JavaScriptStringSpan {
         kind: "template_fragment".to_string(),
         quote: "`".to_string(),
@@ -199,8 +211,108 @@ fn build_template_fragment_span(
         content_end_index: end_index,
         content_start_byte_index: start_byte,
         content_end_byte_index: end_byte,
-        ast_context: build_ast_context(node, source),
+        ast_context,
+        literal_kind,
+        audit_default_severity,
     })
+}
+
+fn classify_javascript_literal(
+    raw_text: &str,
+    context: &JavaScriptStringAstContext,
+) -> (String, String) {
+    if is_eval_call_context(&context.call_name) {
+        return ("eval_code".to_string(), "warning".to_string());
+    }
+    if looks_like_packer_code(raw_text) {
+        return ("packer_code".to_string(), "warning".to_string());
+    }
+    if looks_like_regex_pattern(raw_text) {
+        return ("regex_pattern".to_string(), "warning".to_string());
+    }
+    if looks_like_user_visible_context(context) {
+        return ("user_visible_candidate".to_string(), "blocking".to_string());
+    }
+    ("unknown".to_string(), "warning".to_string())
+}
+
+fn is_eval_call_context(call_name: &str) -> bool {
+    call_name == "eval" || call_name.ends_with(".eval")
+}
+
+fn looks_like_packer_code(raw_text: &str) -> bool {
+    let compact_text: String = raw_text
+        .chars()
+        .filter(|char| !char.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    compact_text.contains("function(p,a,c,k,e")
+        || compact_text.contains("function(p,h,e")
+        || (compact_text.contains("eval(function(") && compact_text.contains(".split('|')"))
+}
+
+fn looks_like_regex_pattern(raw_text: &str) -> bool {
+    let compact_text = raw_text.trim();
+    if compact_text.is_empty() {
+        return false;
+    }
+    let escaped_regex_tokens = [
+        "\\\\w", "\\\\W", "\\\\d", "\\\\D", "\\\\s", "\\\\S", "\\\\b", "\\\\B", "\\\\p{", "\\\\P{",
+    ];
+    if escaped_regex_tokens
+        .iter()
+        .any(|token| compact_text.contains(token))
+    {
+        return true;
+    }
+    let regex_groups = ["(?:", "(?=", "(?!", "(?<=", "(?<!", "(?<"];
+    if regex_groups
+        .iter()
+        .any(|token| compact_text.contains(token))
+    {
+        return true;
+    }
+    let has_character_class = compact_text.contains('[') && compact_text.contains(']');
+    let has_regex_quantifier = compact_text.contains('*')
+        || compact_text.contains('+')
+        || compact_text.contains('?')
+        || compact_text.contains('{');
+    has_character_class && has_regex_quantifier
+}
+
+fn looks_like_user_visible_context(context: &JavaScriptStringAstContext) -> bool {
+    const STRONG_TEXT_KEYS: &[&str] = &[
+        "body",
+        "caption",
+        "description",
+        "help",
+        "helpLines",
+        "label",
+        "longDescription",
+        "message",
+        "name",
+        "nickName",
+        "param1",
+        "param2",
+        "shortDescription",
+        "stanceDescription",
+        "text",
+        "title",
+    ];
+    const STRONG_CALL_SUFFIXES: &[&str] = &[
+        "addCommand",
+        "addText",
+        "drawText",
+        "drawTextEx",
+        "setText",
+        "$gameMessage.add",
+    ];
+    if STRONG_TEXT_KEYS.contains(&context.property_key.as_str()) {
+        return true;
+    }
+    STRONG_CALL_SUFFIXES
+        .iter()
+        .any(|suffix| context.call_name == *suffix || context.call_name.ends_with(suffix))
 }
 
 fn build_ast_context(node: Node<'_>, source: &str) -> JavaScriptStringAstContext {
@@ -444,6 +556,31 @@ mod tests {
         assert_eq!(value["has_error"], json!(false));
         assert_eq!(value["spans"].as_array().map(Vec::len), Some(2));
         assert_eq!(value["spans"][0]["quote"], json!("`"));
+    }
+
+    #[test]
+    fn classifies_runtime_literal_audit_facts() {
+        let payload = json!({
+            "source": concat!(
+                "function matcher() { return '\\\\w+'; }\n",
+                "eval('packed source');\n",
+                "const config = { title: '未審査テキスト' };\n",
+                "const misc = '未分類';\n"
+            )
+        });
+        let output =
+            parse_javascript_string_spans_impl(&payload.to_string()).expect("JS AST 扫描应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let spans = value["spans"].as_array().expect("spans 应为数组");
+
+        assert_eq!(spans[0]["literal_kind"], json!("regex_pattern"));
+        assert_eq!(spans[0]["audit_default_severity"], json!("warning"));
+        assert_eq!(spans[1]["literal_kind"], json!("eval_code"));
+        assert_eq!(spans[1]["audit_default_severity"], json!("warning"));
+        assert_eq!(spans[2]["literal_kind"], json!("user_visible_candidate"));
+        assert_eq!(spans[2]["audit_default_severity"], json!("blocking"));
+        assert_eq!(spans[3]["literal_kind"], json!("unknown"));
+        assert_eq!(spans[3]["audit_default_severity"], json!("warning"));
     }
 
     #[test]

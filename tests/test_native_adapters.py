@@ -557,6 +557,49 @@ def test_native_javascript_ast_requires_ast_context(monkeypatch: pytest.MonkeyPa
         _ = native_javascript_ast.parse_native_javascript_string_spans("'文本'")
 
 
+def test_native_javascript_ast_preserves_runtime_literal_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python 适配层必须保留 Rust AST 返回的运行审计分类事实。"""
+    fake_module = _FakeJavaScriptAstModule(
+        {
+            "has_error": False,
+            "spans": [
+                {
+                    "kind": "string",
+                    "quote": "'",
+                    "start_index": 0,
+                    "end_index": 5,
+                    "content_start_index": 1,
+                    "content_end_index": 4,
+                    "ast_context": {
+                        "node_kind": "string",
+                        "property_key": "",
+                        "property_path": [],
+                        "call_name": "",
+                        "call_argument_index": None,
+                        "return_function_name": "",
+                        "assignment_name": "",
+                    },
+                    "literal_kind": "regex_pattern",
+                    "audit_default_severity": "warning",
+                }
+            ],
+        }
+    )
+
+    def load_fake_module() -> native_javascript_ast.NativeJavaScriptAstModule:
+        """返回测试用 AST 模块。"""
+        return cast(native_javascript_ast.NativeJavaScriptAstModule, fake_module)
+
+    monkeypatch.setattr(native_javascript_ast, "_load_native_javascript_ast_module", load_fake_module)
+
+    scan = native_javascript_ast.parse_native_javascript_string_spans("'\\\\w+'")
+
+    assert scan.spans[0].literal_kind == "regex_pattern"
+    assert scan.spans[0].audit_default_severity == "warning"
+
+
 def test_native_quality_counts_parse_count_only_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Python 适配层应支持 Rust 只返回计数的轻量质检协议。"""
     fake_module = _FakeQualityModule(

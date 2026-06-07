@@ -281,10 +281,7 @@ mod tests {
         assert!(scan.candidates[0].covered);
         assert_eq!(scan.candidates[0].covered_by, "structured_placeholder");
         assert_eq!(scan.candidates[0].candidate_kind, "structured_shell");
-        assert_eq!(
-            scan.candidates[0].location_paths,
-            vec!["Map001.json/1/0"]
-        );
+        assert_eq!(scan.candidates[0].location_paths, vec!["Map001.json/1/0"]);
         assert_eq!(scan.candidates[0].matching_rules, vec!["angle-label"]);
         assert_eq!(scan.candidates[1].candidate, "<Face:Bob>");
         assert!(scan.candidates[1].covered);
