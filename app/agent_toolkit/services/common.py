@@ -105,12 +105,8 @@ from app.rmmz.loader import load_active_runtime_game_data, load_game_data_for_vi
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_rule_records_to_import_json,
     parse_mv_virtual_namebox_rule_import_text,
-    validate_mv_virtual_namebox_rules_against_candidates,
 )
-from app.rmmz.mv_namebox_native import (
-    native_mv_virtual_namebox_candidates_from_details,
-    scan_native_mv_virtual_namebox,
-)
+from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.runtime_paths import resolve_app_path
 from app.rmmz.text_layout import (
     normalize_translated_wrapping_punctuation,
@@ -2114,7 +2110,6 @@ def _validate_mv_virtual_namebox_rules_with_context(
             game_data=game_data,
             records=records,
         )
-        candidates = native_scan.candidate_details
         candidate_count = native_scan.candidate_count
         rule_errors = native_scan.rule_errors
         match_details = native_scan.match_details
@@ -2123,12 +2118,11 @@ def _validate_mv_virtual_namebox_rules_with_context(
             for error_detail in rule_errors
         )
         matched_candidate_count = native_scan.matched_candidate_count
-        _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_candidates(
+        existing_scan = scan_native_mv_virtual_namebox(
             game_data=game_data,
             records=existing_records,
-            candidates=native_mv_virtual_namebox_candidates_from_details(candidates),
         )
-        existing_match_keys = _mv_namebox_match_keys(existing_match_details)
+        existing_match_keys = _mv_namebox_match_keys(existing_scan.match_details)
         newly_matched_candidates: JsonArray = [
             detail
             for detail in match_details

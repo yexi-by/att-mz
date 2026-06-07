@@ -7,6 +7,7 @@ from tests.agent_toolkit_contract_fixtures import *
 from app.application.flow_gate import count_note_tag_rule_candidates
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
 from app.note_tag_text.exporter import collect_note_tag_candidates
+from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
 
@@ -566,9 +567,12 @@ async def test_mv_virtual_namebox_rule_commands_validate_import_and_reject_mz(
 
     assert export_report.status in {"ok", "warning"}
     assert candidates_path.exists()
+    candidates_payload = load_json_object(candidates_path)
     candidate_count = export_report.summary["candidate_count"]
     assert isinstance(candidate_count, int)
     assert candidate_count >= 1
+    assert isinstance(candidates_payload["scope_hash"], str)
+    assert isinstance(candidates_payload["speaker_requirements"], list)
     assert validate_report.status == "ok"
     assert validate_report.summary["rule_count"] == 1
     assert validate_report.summary["matched_candidate_count"] == 1
@@ -825,6 +829,74 @@ async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_fi
     assert third_report.summary["active_runtime_scan_cache_stale_file_count"] == 1
     assert third_report.summary["active_runtime_scan_cache_rescan_file_count"] == 1
     assert scan_calls == [("CacheSource.js",)]
+
+
+@pytest.mark.asyncio
+async def test_audit_active_runtime_rebuilds_legacy_literal_cache(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧版运行源码 literal cache 缺少 native 分类字段时应重扫，而不是报缓存损坏。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "LegacyRuntimeCache", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    source_text = "const Messages = { title: 'カテゴリ' };\n"
+    _ = (plugin_source_dir / "LegacyRuntimeCache.js").write_text(source_text, encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    legacy_literals = [
+        {
+            "selector": "ast:string:0:0:legacy",
+            "text": "カテゴリ",
+            "raw_text": "'カテゴリ'",
+            "line": 1,
+            "start_index": 28,
+            "end_index": 34,
+            "context": "assignment",
+        }
+    ]
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            """
+            INSERT INTO plugin_source_runtime_scan_cache
+            (file_name, file_hash, syntax_error, literals_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "LegacyRuntimeCache.js",
+                build_plugin_source_file_hash(source_text),
+                "",
+                json.dumps(legacy_literals, ensure_ascii=False, separators=(",", ":")),
+                "2026-06-07T00:00:00",
+            ),
+        )
+        await session.commit()
+
+    report = await service.audit_active_runtime(game_title="テストゲーム")
+
+    assert report.status == "ok"
+    assert report.summary["active_runtime_scan_cache_input_record_count"] == 0
+    rescan_file_count = report.summary["active_runtime_scan_cache_rescan_file_count"]
+    assert isinstance(rescan_file_count, int)
+    assert rescan_file_count >= 1
+    async with await registry.open_game("テストゲーム") as session:
+        refreshed_records = await session.read_plugin_source_runtime_scan_cache()
+    legacy_record = next(record for record in refreshed_records if record.file_name == "LegacyRuntimeCache.js")
+    assert legacy_record.literals[0].literal_kind == "user_visible_candidate"
+
+
 @pytest.mark.asyncio
 async def test_import_placeholder_rules_runs_validation_before_save(
     minimal_game_dir: Path,

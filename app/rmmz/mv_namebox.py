@@ -11,7 +11,7 @@ from typing import ClassVar, cast
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from app.regex_contract import validate_mv_virtual_namebox_regex_contract
-from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value
+from app.rmmz.json_types import JsonObject, coerce_json_value
 from app.rmmz.schema import (
     GameData,
     MvVirtualNameboxRuleRecord,
@@ -23,15 +23,6 @@ ACTOR_NAME_CONTROL_PATTERN: re.Pattern[str] = re.compile(r"^\\[Nn]\[(?P<actor_id
 TEMPLATE_FIELD_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_]\w*$")
 MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME = "mv-virtual-namebox-rules.json"
 MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME = "mv-virtual-namebox-candidates.json"
-
-
-@dataclass(frozen=True, slots=True)
-class MvVirtualNameboxCandidate:
-    """MV `101` 后首条非空 `401` 候选。"""
-
-    location_path: str
-    text: str
-    following_lines: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,94 +272,6 @@ def parse_mv_virtual_speaker_line(
     return matches[0]
 
 
-def validate_mv_virtual_namebox_rules_against_candidates(
-    *,
-    game_data: GameData,
-    records: list[MvVirtualNameboxRuleRecord],
-    candidates: list[MvVirtualNameboxCandidate],
-) -> tuple[JsonArray, JsonArray]:
-    """用已收集候选校验 MV 虚拟名字框规则，不再触发候选扫描。"""
-    rules = runtime_mv_virtual_namebox_rules(records)
-    errors: JsonArray = []
-    details: JsonArray = []
-    for candidate in candidates:
-        matching_rules: list[str] = []
-        virtual_speakers: list[MvVirtualSpeaker] = []
-        for rule in rules:
-            match = rule.pattern.fullmatch(candidate.text.strip())
-            if match is None:
-                continue
-            matching_rules.append(rule.rule_name)
-            try:
-                virtual_speaker = _build_virtual_speaker(
-                    game_data=game_data,
-                    rule=rule,
-                    match=match,
-                )
-                virtual_speakers.append(virtual_speaker)
-            except Exception as error:
-                errors.append(
-                    {
-                        "location_path": candidate.location_path,
-                        "rule_name": rule.rule_name,
-                        "text": candidate.text,
-                        "message": f"{type(error).__name__}: {error}",
-                    }
-                )
-                continue
-            if (
-                virtual_speaker.speaker_policy == "translate"
-                and is_actor_name_control_text(virtual_speaker.source_speaker_text)
-            ):
-                errors.append(
-                    {
-                        "location_path": candidate.location_path,
-                        "rule_name": rule.rule_name,
-                        "text": candidate.text,
-                        "source_speaker": virtual_speaker.source_speaker_text,
-                        "message": "标准角色名控制符被 translate 规则命中，请改用 preserve 或 actor_name 规则，并收紧普通规则",
-                    }
-                )
-            if virtual_speaker.render_source() != candidate.text.strip():
-                errors.append(
-                    {
-                        "location_path": candidate.location_path,
-                        "rule_name": virtual_speaker.rule_name,
-                        "message": "规则模板无法重建源文本",
-                        "source": candidate.text.strip(),
-                        "rendered": virtual_speaker.render_source(),
-                    }
-                )
-        if len(matching_rules) > 1:
-            errors.append(
-                {
-                    "location_path": candidate.location_path,
-                    "message": f"同一候选命中多条规则: {', '.join(matching_rules)}",
-                }
-            )
-        if matching_rules:
-            matching_rule_values: JsonArray = [rule_name for rule_name in matching_rules]
-            following_lines: JsonArray = [line for line in candidate.following_lines[:3]]
-            match_values: JsonArray = [
-                {
-                    "rule_name": virtual_speaker.rule_name,
-                    "speaker": virtual_speaker.speaker,
-                    "source_speaker": virtual_speaker.source_speaker_text,
-                    "speaker_policy": virtual_speaker.speaker_policy,
-                }
-                for virtual_speaker in virtual_speakers
-            ]
-            detail: JsonObject = {
-                "location_path": candidate.location_path,
-                "text": candidate.text,
-                "following_lines": following_lines,
-                "matching_rules": matching_rule_values,
-                "matches": match_values,
-            }
-            details.append(detail)
-    return errors, details
-
-
 def mv_virtual_namebox_rule_records_to_import_json(
     records: list[MvVirtualNameboxRuleRecord] | tuple[MvVirtualNameboxRuleRecord, ...],
 ) -> JsonObject:
@@ -442,7 +345,6 @@ def is_actor_name_control_text(text: str) -> bool:
 
 __all__: list[str] = [
     "is_actor_name_control_text",
-    "MvVirtualNameboxCandidate",
     "MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME",
     "MvVirtualNameboxRule",
     "MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME",
@@ -452,5 +354,4 @@ __all__: list[str] = [
     "parse_mv_virtual_namebox_rule_import_text",
     "parse_mv_virtual_speaker_line",
     "runtime_mv_virtual_namebox_rules",
-    "validate_mv_virtual_namebox_rules_against_candidates",
 ]

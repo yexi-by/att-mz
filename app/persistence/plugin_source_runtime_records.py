@@ -125,11 +125,22 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     coerce_json_value(cast(object, json.loads(literals_json))),
                     "plugin_source_runtime_scan_cache.literals_json",
                 )
+                literal_objects = [
+                    ensure_json_object(raw_literal, "plugin_source_runtime_scan_cache.literal")
+                    for raw_literal in raw_literals
+                ]
+                if any(
+                    "literal_kind" not in raw_literal
+                    or "audit_default_severity" not in raw_literal
+                    for raw_literal in literal_objects
+                ):
+                    await self.clear_plugin_source_runtime_scan_cache()
+                    return []
                 literals = [
                     PluginSourceRuntimeStringLiteralCacheRecord.model_validate(
-                        ensure_json_object(raw_literal, "plugin_source_runtime_scan_cache.literal")
+                        raw_literal
                     )
-                    for raw_literal in raw_literals
+                    for raw_literal in literal_objects
                 ]
             except Exception as error:
                 raise RuntimeError(f"当前运行插件源码扫描缓存损坏，请重新执行当前运行审计: {self.db_path}") from error

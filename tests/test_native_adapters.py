@@ -154,9 +154,13 @@ class _FakeScopeIndexModule:
     _rule_candidates_payload: dict[str, object]
     calls: int
 
-    def __init__(self, rule_candidates_payload: dict[str, object]) -> None:
+    def __init__(self, rule_candidates_payload: dict[str, object], *, include_contract: bool = True) -> None:
         """保存待返回的规则候选 JSON 对象。"""
-        self._rule_candidates_payload = rule_candidates_payload
+        self._rule_candidates_payload = dict(rule_candidates_payload)
+        if include_contract:
+            _ = self._rule_candidates_payload.setdefault("schema_version", 1)
+            _ = self._rule_candidates_payload.setdefault("timings_ms", {})
+            _ = self._rule_candidates_payload.setdefault("counters", {"candidate_count": 0})
         self.calls = 0
 
     def native_contract_version(self) -> int:
@@ -702,6 +706,56 @@ def test_native_rule_candidates_requires_scan_summary(monkeypatch: pytest.Monkey
         _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
 
 
+def test_native_rule_candidates_rejects_unsupported_schema_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """规则候选 adapter 必须拒绝不支持的 native schema_version。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "schema_version": 999,
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {},
+            "timings_ms": {},
+            "counters": {"candidate_count": 0},
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="schema_version"):
+        _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
+
+
+def test_native_rule_candidates_requires_contract_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """规则候选 adapter 必须保留 native contract 计时和计数字段。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "schema_version": 1,
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {},
+            "counters": {"candidate_count": 0},
+        },
+        include_contract=False,
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(KeyError):
+        _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
+
+
 def test_native_structured_placeholder_adapter_preserves_contract_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -756,6 +810,62 @@ def test_native_structured_placeholder_adapter_preserves_contract_fields(
             "candidate_kind": "structured_shell",
         }
     ]
+
+
+def test_native_structured_placeholder_adapter_requires_requested_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """请求结构化候选时缺少 structured_placeholders 摘要必须显式失败。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {},
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="structured_placeholders"):
+        _ = native_structured_placeholder_scan.collect_native_structured_placeholder_candidate_details_from_entries(
+            entries=[("Map001.json/1/0", ["<Face:Bob>"])],
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+        )
+
+
+def test_native_structured_placeholder_adapter_skips_empty_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空文本范围没有 native 扫描工作项，应直接返回空结构化候选。"""
+
+    def forbidden_scan_native_rule_candidates(_payload: JsonObject) -> None:
+        raise AssertionError("empty structured placeholder input should not call native scan")
+
+    monkeypatch.setattr(
+        native_structured_placeholder_scan,
+        "scan_native_rule_candidates",
+        forbidden_scan_native_rule_candidates,
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+
+    assert (
+        native_structured_placeholder_scan.collect_native_structured_placeholder_candidate_details(
+            translation_data_map={},
+            text_rules=text_rules,
+        )
+        == []
+    )
+    assert (
+        native_structured_placeholder_scan.collect_native_structured_placeholder_candidate_details_from_entries(
+            entries=[],
+            text_rules=text_rules,
+        )
+        == []
+    )
 
 
 def test_collect_native_note_tag_source_details_returns_source_summary(

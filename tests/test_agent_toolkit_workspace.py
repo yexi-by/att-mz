@@ -593,6 +593,9 @@ async def test_prepare_agent_workspace_uses_mv_event_command_default(
     assert "mv-virtual-namebox-rules.json" in manifest_files
     assert (workspace / "mv-virtual-namebox-candidates.json").exists()
     assert (workspace / "mv-virtual-namebox-rules.json").exists()
+    mv_candidates = load_json_object(workspace / "mv-virtual-namebox-candidates.json")
+    assert isinstance(mv_candidates["scope_hash"], str)
+    assert isinstance(mv_candidates["speaker_requirements"], list)
     assert len(commands) == 1
 
 
@@ -642,6 +645,60 @@ async def test_prepare_agent_workspace_includes_mv_namebox_when_current_hash_unr
     assert "mv-virtual-namebox-rules.json" in manifest_files
     assert (workspace / "mv-virtual-namebox-candidates.json").exists()
     assert (workspace / "mv-virtual-namebox-rules.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_rejects_stale_mv_namebox_candidates(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """MV 工作区候选 scope 不匹配当前 native facts 时必须要求重新准备工作区。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "mv-workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="MVテストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    candidates_path = workspace / "mv-virtual-namebox-candidates.json"
+    candidates_payload = load_json_object(candidates_path)
+    candidates_payload["scope_hash"] = "stale-scope"
+    _ = candidates_path.write_text(json.dumps(candidates_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = await service.validate_agent_workspace(game_title="MVテストゲーム", workspace=workspace)
+
+    assert report.status == "error"
+    assert "mv_virtual_namebox_candidates_stale" in {error.code for error in report.errors}
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_rejects_invalid_mv_namebox_candidates_contract(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """MV 候选文件缺少 native speaker requirements 时必须显式要求重新准备工作区。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "mv-workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="MVテストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    candidates_path = workspace / "mv-virtual-namebox-candidates.json"
+    candidates_payload = load_json_object(candidates_path)
+    _ = candidates_payload.pop("speaker_requirements", None)
+    _ = candidates_path.write_text(json.dumps(candidates_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = await service.validate_agent_workspace(game_title="MVテストゲーム", workspace=workspace)
+
+    assert report.status == "error"
+    assert "mv_virtual_namebox_candidates_invalid" in {error.code for error in report.errors}
+
+
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_prefills_imported_database_rules(
     minimal_game_dir: Path,

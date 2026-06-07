@@ -88,6 +88,7 @@ async def test_event_command_json_export_uses_native_samples(
     def fake_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
         captured_payloads.append(payload)
         return NativeRuleCandidatesResult(
+            schema_version=1,
             candidates=cast(JsonArray, []),
             candidate_summary=[],
             scan_summary=cast(
@@ -101,6 +102,8 @@ async def test_event_command_json_export_uses_native_samples(
                     }
                 },
             ),
+            timings_ms={},
+            counters={"candidate_count": 0},
         )
 
     def forbidden_iter_all_commands(_game_data: GameData) -> None:

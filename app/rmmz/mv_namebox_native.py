@@ -11,7 +11,6 @@ from app.native_scope_index import (
     scan_native_rule_candidates,
 )
 from app.rmmz.json_types import JsonArray, JsonObject, ensure_json_array, ensure_json_object
-from app.rmmz.mv_namebox import MvVirtualNameboxCandidate
 from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord
 
 
@@ -70,28 +69,23 @@ def native_mv_virtual_namebox_candidates_payload(game_data: GameData) -> JsonObj
     scan = scan_native_mv_virtual_namebox(game_data=game_data)
     return {
         "engine_kind": game_data.layout.engine_kind,
+        "scope_hash": scan.scope_hash,
         "candidate_count": scan.candidate_count,
         "candidates": scan.candidate_details,
+        "speaker_requirements": [
+            {
+                "source_text": requirement.source_text,
+                "policy": requirement.policy,
+                "requires_speaker_name": requirement.requires_speaker_name,
+                "rule_name": requirement.rule_name,
+                "location_paths": list(requirement.location_paths),
+                "sample_body_lines": list(requirement.sample_body_lines),
+                "render_template": requirement.render_template,
+                "confidence": requirement.confidence,
+            }
+            for requirement in scan.speaker_requirements
+        ],
     }
-
-
-def native_mv_virtual_namebox_candidates_from_details(candidate_details: JsonArray) -> list[MvVirtualNameboxCandidate]:
-    """把 native 候选明细转换为旧规则匹配 helper 可消费的候选对象。"""
-    candidates: list[MvVirtualNameboxCandidate] = []
-    for index, raw_detail in enumerate(candidate_details):
-        detail = ensure_json_object(raw_detail, f"mv_virtual_namebox.candidate_details[{index}]")
-        candidates.append(
-            MvVirtualNameboxCandidate(
-                location_path=_read_string(detail, "location_path", f"mv_virtual_namebox.candidate_details[{index}]"),
-                text=_read_string(detail, "text", f"mv_virtual_namebox.candidate_details[{index}]"),
-                following_lines=_read_string_array(
-                    detail,
-                    "following_lines",
-                    f"mv_virtual_namebox.candidate_details[{index}]",
-                ),
-            )
-        )
-    return candidates
 
 
 def _scan_from_native_result(native_result: NativeRuleCandidatesResult) -> NativeMvVirtualNameboxScan:
@@ -172,7 +166,6 @@ def _read_bool(payload: JsonObject, field_name: str, context: str) -> bool:
 __all__ = [
     "NativeMvVirtualNameboxScan",
     "NativeMvVirtualNameboxSpeakerRequirement",
-    "native_mv_virtual_namebox_candidates_from_details",
     "native_mv_virtual_namebox_candidates_payload",
     "scan_native_mv_virtual_namebox",
 ]

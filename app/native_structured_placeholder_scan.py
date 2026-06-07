@@ -26,11 +26,13 @@ def collect_native_structured_placeholder_candidate_details(
     text_rules: TextRules,
 ) -> JsonArray:
     """调用 native 结构化占位符候选入口并返回旧报告同形明细。"""
+    if not translation_data_map:
+        return []
     payload = build_native_structured_placeholder_candidates_payload(translation_data_map, text_rules)
     result = scan_native_rule_candidates(payload)
     summary_value = result.scan_summary.get("structured_placeholders")
     if summary_value is None:
-        return []
+        raise RuntimeError("native structured_placeholders 扫描结果缺少 structured_placeholders 摘要，请重新执行 uv run maturin develop")
     summary = ensure_json_object(
         summary_value,
         "native_structured_placeholder_candidates.structured_placeholders",
@@ -63,6 +65,8 @@ def collect_native_structured_placeholder_candidate_details_from_entries(
         for location_path, original_lines in entries
         for line_index, text in enumerate(original_lines)
     ]
+    if not structured_placeholder_texts:
+        return []
     result = scan_native_rule_candidates(
         {
             "structured_placeholder_texts": structured_placeholder_texts,
@@ -71,7 +75,7 @@ def collect_native_structured_placeholder_candidate_details_from_entries(
     )
     summary_value = result.scan_summary.get("structured_placeholders")
     if summary_value is None:
-        return []
+        raise RuntimeError("native structured_placeholders 扫描结果缺少 structured_placeholders 摘要，请重新执行 uv run maturin develop")
     summary = ensure_json_object(
         summary_value,
         "native_structured_placeholder_candidates.structured_placeholders",

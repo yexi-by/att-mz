@@ -28,6 +28,7 @@ from app.rmmz.text_rules import (
 )
 
 _PLUGIN_SOURCE_RUST_PREFILTER_PATTERN = r"[\s\S]"
+_RULE_CANDIDATES_SCHEMA_VERSION = 1
 
 
 class NativeScopeIndexModule(Protocol):
@@ -94,9 +95,12 @@ class NativeScopeIndexResult:
 class NativeRuleCandidatesResult:
     """Rust 规则候选扫描结果。"""
 
+    schema_version: int
     candidates: JsonArray
     candidate_summary: list[JsonObject]
     scan_summary: JsonObject
+    timings_ms: dict[str, int]
+    counters: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,13 +141,23 @@ def scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResu
     native_module = _load_native_scope_index_module()
     result_text = native_module.scan_rule_candidates(json.dumps(payload, ensure_ascii=False))
     result = _load_result_object(result_text, "native_rule_candidates_result")
+    schema_version = _read_int(
+        result,
+        "schema_version",
+        "native_rule_candidates_result",
+    )
+    if schema_version != _RULE_CANDIDATES_SCHEMA_VERSION:
+        raise RuntimeError(f"不支持的规则候选 native schema_version: {schema_version}")
     return NativeRuleCandidatesResult(
+        schema_version=schema_version,
         candidates=ensure_json_array(result["candidates"], "native_rule_candidates_result.candidates"),
         candidate_summary=_read_object_array(result, "candidate_summary", "native_rule_candidates_result"),
         scan_summary=ensure_json_object(
             result["scan_summary"],
             "native_rule_candidates_result.scan_summary",
         ),
+        timings_ms=_read_int_map(result, "timings_ms", "native_rule_candidates_result"),
+        counters=_read_int_map(result, "counters", "native_rule_candidates_result"),
     )
 
 
@@ -539,6 +553,17 @@ def _read_int(result: JsonObject, field_name: str, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"{label}.{field_name} 必须是整数")
     return value
+
+
+def _read_int_map(result: JsonObject, field_name: str, label: str) -> dict[str, int]:
+    """读取字符串到非负整数的 JSON 对象字段。"""
+    raw_map = ensure_json_object(result[field_name], f"{label}.{field_name}")
+    values: dict[str, int] = {}
+    for key, value in raw_map.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise TypeError(f"{label}.{field_name}.{key} 必须是非负整数")
+        values[key] = value
+    return values
 
 
 __all__ = [

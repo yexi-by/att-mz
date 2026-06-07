@@ -100,11 +100,10 @@ from app.rmmz.mv_namebox import (
     MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME,
     mv_virtual_namebox_rule_records_to_import_json,
     parse_mv_virtual_namebox_rule_import_text,
-    validate_mv_virtual_namebox_rules_against_candidates,
 )
 from app.rmmz.mv_namebox_native import (
-    native_mv_virtual_namebox_candidates_from_details,
     native_mv_virtual_namebox_candidates_payload,
+    scan_native_mv_virtual_namebox,
 )
 from app.rmmz.game_file_view import GameFileView, parse_game_file_view
 from app.rmmz.loader import load_plugin_source_files_for_view
@@ -1081,10 +1080,6 @@ class WorkspaceAgentMixin:
                         game_data=game_data,
                         existing_records=mv_virtual_namebox_rule_records,
                         candidate_path=mv_virtual_namebox_candidates_path,
-                        candidate_count_hint=_manifest_int(
-                            manifest_generated,
-                            "mv_virtual_namebox_candidate_count",
-                        ),
                     )
                 errors.extend(mv_namebox_report.errors)
                 warnings.extend(mv_namebox_report.warnings)
@@ -1277,7 +1272,6 @@ def _validate_workspace_mv_virtual_namebox_rules(
     game_data: GameData,
     existing_records: list[MvVirtualNameboxRuleRecord],
     candidate_path: Path,
-    candidate_count_hint: int,
 ) -> AgentReport:
     """复用工作区候选文件校验 MV 虚拟名字框规则。"""
     errors: list[AgentIssue] = []
@@ -1298,24 +1292,6 @@ def _validate_workspace_mv_virtual_namebox_rules(
                 },
                 details=details,
             )
-        if not records:
-            warnings.append(issue("mv_virtual_namebox_rules_empty", "MV 虚拟名字框规则为空"))
-            return AgentReport.from_parts(
-                errors=[],
-                warnings=warnings,
-                summary={
-                    "rule_count": 0,
-                    "candidate_count": candidate_count_hint,
-                    "matched_candidate_count": 0,
-                    "newly_matched_candidate_count": 0,
-                },
-                details={
-                    "rules": [],
-                    "matched_candidates": [],
-                    "newly_matched_candidates": [],
-                    "candidate_count": candidate_count_hint,
-                },
-            )
         if not candidate_path.exists():
             errors.append(issue("mv_virtual_namebox_candidates_missing", f"工作区缺少 {MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}"))
             return AgentReport.from_parts(
@@ -1333,30 +1309,125 @@ def _validate_workspace_mv_virtual_namebox_rules(
             coerce_json_value(cast(object, json.loads(candidate_path.read_text(encoding="utf-8")))),
             MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
         )
-        candidate_details = ensure_json_array(payload["candidates"], f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}.candidates")
-        candidates = native_mv_virtual_namebox_candidates_from_details(candidate_details)
-        rule_errors, match_details = validate_mv_virtual_namebox_rules_against_candidates(
+        exported_scope_hash = payload.get("scope_hash")
+        if not isinstance(exported_scope_hash, str) or not exported_scope_hash:
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_invalid",
+                    f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME} 缺少当前候选 scope_hash，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        exported_candidates = payload.get("candidates")
+        exported_speaker_requirements = payload.get("speaker_requirements")
+        if not isinstance(exported_candidates, list) or not isinstance(exported_speaker_requirements, list):
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_invalid",
+                    f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME} 缺少当前候选明细或说话人需求，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        candidate_scan = scan_native_mv_virtual_namebox(game_data=game_data)
+        if exported_scope_hash != candidate_scan.scope_hash:
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_stale",
+                    "MV 虚拟名字框候选文件已不是当前游戏内容，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": candidate_scan.candidate_count,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        if (
+            len(exported_candidates) != candidate_scan.candidate_count
+            or len(exported_speaker_requirements) != len(candidate_scan.speaker_requirements)
+        ):
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_invalid",
+                    f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME} 内容与当前 native facts 不一致，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": candidate_scan.candidate_count,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        if not records:
+            warnings.append(issue("mv_virtual_namebox_rules_empty", "MV 虚拟名字框规则为空"))
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=warnings,
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": candidate_scan.candidate_count,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details={
+                    "rules": [],
+                    "matched_candidates": [],
+                    "newly_matched_candidates": [],
+                    "candidate_count": candidate_scan.candidate_count,
+                },
+            )
+        native_scan = scan_native_mv_virtual_namebox(
             game_data=game_data,
             records=records,
-            candidates=candidates,
         )
+        rule_errors = native_scan.rule_errors
+        match_details = native_scan.match_details
         errors.extend(
             issue("mv_virtual_namebox_rules_invalid", _format_mv_namebox_rule_error(error_detail))
             for error_detail in rule_errors
         )
-        _existing_errors, existing_match_details = validate_mv_virtual_namebox_rules_against_candidates(
+        existing_scan = scan_native_mv_virtual_namebox(
             game_data=game_data,
             records=existing_records,
-            candidates=candidates,
         )
-        existing_match_keys = _mv_namebox_match_keys(existing_match_details)
+        existing_match_keys = _mv_namebox_match_keys(existing_scan.match_details)
         newly_matched_candidates: JsonArray = [
             detail
             for detail in match_details
             if _mv_namebox_match_key(detail) not in existing_match_keys
         ]
-        candidate_count = len(candidate_details)
-        matched_candidate_count = len(match_details)
+        candidate_count = native_scan.candidate_count
+        matched_candidate_count = native_scan.matched_candidate_count
         if matched_candidate_count == 0 and candidate_count > 0:
             warnings.append(issue("mv_virtual_namebox_rules_no_hits", "MV 虚拟名字框规则没有命中任何候选"))
         details = {
@@ -1650,11 +1721,3 @@ def _manifest_bool(generated: JsonObject, key: str) -> bool:
     """读取 manifest.generated 中的布尔开关，非法值按未启用处理。"""
     value = generated.get(key)
     return value is True
-
-
-def _manifest_int(generated: JsonObject, key: str) -> int:
-    """读取 manifest.generated 中的非负整数计数，非法值按 0 处理。"""
-    value = generated.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return 0
-    return max(0, value)
