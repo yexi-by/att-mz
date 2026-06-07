@@ -16,7 +16,6 @@ from .session_base import SessionMixinBase
 from .sql import (
     COUNT_TEXT_FACTS_V2,
     COUNT_TEXT_FACTS_V2_OUTSIDE_SCOPE,
-    CURRENT_SCHEMA_VERSION,
     DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS_V2,
     DELETE_ALL_TEXT_FACT_RENDER_PARTS_V2,
     DELETE_ALL_TEXT_FACT_SCOPES_V2,
@@ -28,10 +27,12 @@ from .sql import (
     SELECT_TEXT_FACT_SCOPE_V2,
     TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME,
     TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME,
+    TEXT_FACT_SCHEMA_VERSION,
     TEXT_FACTS_V2_TABLE_NAME,
 )
 
 type SqlParameter = str | int
+PATH_QUERY_BATCH_SIZE = 500
 
 TEXT_FACT_SELECT_COLUMNS = """
         fact_id,
@@ -122,10 +123,10 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             raise _text_fact_v2_scope_error(
                 f"没有找到 text fact v2 scope: {scope_key}"
             )
-        if scope.schema_version != CURRENT_SCHEMA_VERSION:
+        if scope.schema_version != TEXT_FACT_SCHEMA_VERSION:
             raise _text_fact_v2_scope_error(
                 "text fact v2 scope 的 schema version 不受支持: "
-                + f"数据库是 {scope.schema_version}，当前工具支持 {CURRENT_SCHEMA_VERSION}"
+                + f"数据库是 {scope.schema_version}，当前工具支持 {TEXT_FACT_SCHEMA_VERSION}"
             )
         try:
             async with self.connection.execute(COUNT_TEXT_FACTS_V2_OUTSIDE_SCOPE, (scope_key,)) as cursor:
@@ -146,7 +147,22 @@ class TextFactRecordSessionMixin(SessionMixinBase):
         filter: TextFactV2ReadFilter | None = None,
     ) -> list[TextFactV2Record]:
         """按稳定顺序读取 v2 文本事实。"""
-        where_clause, parameters = _build_text_fact_filter_sql(filter)
+        if filter is not None and filter.location_paths:
+            records: list[TextFactV2Record] = []
+            location_paths = sorted(set(filter.location_paths))
+            for batch in _chunks(location_paths, PATH_QUERY_BATCH_SIZE):
+                records.extend(await self._read_text_facts_v2_batch(filter=filter, location_paths=batch))
+            return _sort_text_facts(records)
+        return await self._read_text_facts_v2_batch(filter=filter)
+
+    async def _read_text_facts_v2_batch(
+        self,
+        *,
+        filter: TextFactV2ReadFilter | None,
+        location_paths: Sequence[str] = (),
+    ) -> list[TextFactV2Record]:
+        """读取单批 v2 文本事实。"""
+        where_clause, parameters = _build_text_fact_filter_sql(filter, location_paths=location_paths)
         query = f"""
 --sql
             SELECT
@@ -168,7 +184,17 @@ class TextFactRecordSessionMixin(SessionMixinBase):
         unique_fact_ids = sorted(set(fact_ids))
         if not unique_fact_ids:
             return []
-        placeholders = ", ".join("?" for _fact_id in unique_fact_ids)
+        records: list[TextFactRenderPartV2Record] = []
+        for batch in _chunks(unique_fact_ids, PATH_QUERY_BATCH_SIZE):
+            records.extend(await self._read_text_fact_render_parts_v2_batch(batch))
+        return _sort_text_fact_render_parts(records)
+
+    async def _read_text_fact_render_parts_v2_batch(
+        self,
+        fact_ids: Sequence[str],
+    ) -> list[TextFactRenderPartV2Record]:
+        """读取单批 v2 渲染片段。"""
+        placeholders = ", ".join("?" for _fact_id in fact_ids)
         query = f"""
 --sql
             SELECT fact_id, part_order, part_kind, raw_text, semantic_text, template_key
@@ -177,7 +203,7 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             ORDER BY fact_id, part_order
         ;
         """
-        async with self.connection.execute(query, tuple(unique_fact_ids)) as cursor:
+        async with self.connection.execute(query, tuple(fact_ids)) as cursor:
             rows = await cursor.fetchall()
         return [self._text_fact_render_part_v2_from_row(row) for row in rows]
 
@@ -189,7 +215,17 @@ class TextFactRecordSessionMixin(SessionMixinBase):
         unique_fact_ids = sorted(set(fact_ids))
         if not unique_fact_ids:
             return []
-        placeholders = ", ".join("?" for _fact_id in unique_fact_ids)
+        records: list[TextFactDomainPayloadV2Record] = []
+        for batch in _chunks(unique_fact_ids, PATH_QUERY_BATCH_SIZE):
+            records.extend(await self._read_text_fact_domain_payloads_v2_batch(batch))
+        return _sort_text_fact_domain_payloads(records)
+
+    async def _read_text_fact_domain_payloads_v2_batch(
+        self,
+        fact_ids: Sequence[str],
+    ) -> list[TextFactDomainPayloadV2Record]:
+        """读取单批 v2 领域 payload。"""
+        placeholders = ", ".join("?" for _fact_id in fact_ids)
         query = f"""
 --sql
             SELECT fact_id, payload_json
@@ -198,7 +234,7 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             ORDER BY fact_id
         ;
         """
-        async with self.connection.execute(query, tuple(unique_fact_ids)) as cursor:
+        async with self.connection.execute(query, tuple(fact_ids)) as cursor:
             rows = await cursor.fetchall()
         return [self._text_fact_domain_payload_v2_from_row(row) for row in rows]
 
@@ -219,18 +255,30 @@ class TextFactRecordSessionMixin(SessionMixinBase):
         domain_payloads: Sequence[TextFactDomainPayloadV2Record],
     ) -> None:
         """在写库前显式拒绝不一致的 v2 替换数据。"""
-        fact_ids = {fact.fact_id for fact in facts}
+        fact_ids: set[str] = set()
         for fact in facts:
+            if fact.fact_id in fact_ids:
+                raise ValueError(f"v2 文本事实 fact_id 重复: {fact.fact_id}")
+            fact_ids.add(fact.fact_id)
             if fact.schema_version != scope.schema_version:
                 raise ValueError("v2 文本事实 schema_version 必须等于 scope schema_version")
             if fact.scope_key != scope.scope_key:
                 raise ValueError("v2 文本事实 scope_key 必须等于当前 scope_key")
+        render_part_keys: set[tuple[str, int]] = set()
         for part in render_parts:
             if part.fact_id not in fact_ids:
                 raise ValueError("v2 渲染片段必须引用本次替换中的文本事实")
+            render_part_key = (part.fact_id, part.part_order)
+            if render_part_key in render_part_keys:
+                raise ValueError(f"v2 渲染片段重复: fact_id={part.fact_id}, part_order={part.part_order}")
+            render_part_keys.add(render_part_key)
+        payload_fact_ids: set[str] = set()
         for payload in domain_payloads:
             if payload.fact_id not in fact_ids:
                 raise ValueError("v2 领域 payload 必须引用本次替换中的文本事实")
+            if payload.fact_id in payload_fact_ids:
+                raise ValueError(f"v2 领域 payload 重复: fact_id={payload.fact_id}")
+            payload_fact_ids.add(payload.fact_id)
 
     def _serialize_text_fact_scope_v2(self, scope: TextFactScopeV2Record) -> tuple[SqlParameter, ...]:
         """把 v2 scope 转换为 SQLite 参数。"""
@@ -346,6 +394,8 @@ class TextFactRecordSessionMixin(SessionMixinBase):
 
 def _build_text_fact_filter_sql(
     filter: TextFactV2ReadFilter | None,
+    *,
+    location_paths: Sequence[str] = (),
 ) -> tuple[str, list[SqlParameter]]:
     """把 v2 fact 过滤条件转换成参数化 SQL 片段。"""
     if filter is None:
@@ -361,14 +411,20 @@ def _build_text_fact_filter_sql(
     if filter.scope_key is not None:
         clauses.append("scope_key = ?")
         parameters.append(filter.scope_key)
-    if filter.location_paths:
-        location_paths = sorted(set(filter.location_paths))
-        placeholders = ", ".join("?" for _path in location_paths)
+    selected_location_paths = location_paths if location_paths else filter.location_paths
+    if selected_location_paths:
+        unique_location_paths = sorted(set(selected_location_paths))
+        placeholders = ", ".join("?" for _path in unique_location_paths)
         clauses.append(f"location_path IN ({placeholders})")
-        parameters.extend(location_paths)
+        parameters.extend(unique_location_paths)
     if not clauses:
         return "", parameters
     return "WHERE " + " AND ".join(clauses), parameters
+
+
+def _chunks(values: Sequence[str], size: int) -> list[Sequence[str]]:
+    """把字符串列表分块，避免单条 SQLite 查询参数过多。"""
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 def _text_fact_v2_scope_error(detail: str) -> RuntimeError:

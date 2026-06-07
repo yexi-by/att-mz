@@ -10,6 +10,11 @@ import pytest
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
 from app.persistence.records import (
+    TextFactDomainPayloadV2Record,
+    TextFactRenderPartV2Record,
+    TextFactScopeV2Record,
+    TextFactV2ReadFilter,
+    TextFactV2Record,
     TextIndexDomainSummaryRecord,
     TextIndexInvalidationRecord,
     TextIndexItemRecord,
@@ -20,6 +25,7 @@ from app.persistence.records import (
 from app.persistence.sql import (
     CURRENT_SCHEMA_VERSION,
     EXPECTED_STATIC_TABLE_NAMES,
+    TEXT_FACT_SCHEMA_VERSION,
     current_schema_fingerprint,
     current_schema_sql,
 )
@@ -50,6 +56,75 @@ def read_sqlite_table_names(db_path: Path) -> set[str]:
             connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
         )
     return {row[0] for row in table_rows}
+
+
+def make_text_fact_v2_scope(
+    *,
+    scope_key: str = "scope-v2",
+) -> TextFactScopeV2Record:
+    """构造测试用 v2 文本事实 scope。"""
+    return TextFactScopeV2Record(
+        scope_key=scope_key,
+        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        scope_hash="scope-hash",
+        source_snapshot_hash="source-snapshot-hash",
+        rule_hash="rule-hash",
+        text_rules_hash="text-rules-hash",
+        created_at="2026-06-07T00:00:00",
+    )
+
+
+def make_text_fact_v2_record(
+    index: int,
+    *,
+    scope_key: str = "scope-v2",
+    domain: str = "event_command",
+) -> TextFactV2Record:
+    """构造测试用 v2 文本事实。"""
+    suffix = f"{index:04d}"
+    raw_text = f"  Text {suffix}  "
+    return TextFactV2Record(
+        fact_id=f"fact-{suffix}",
+        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        domain=domain,
+        location_path=f"Map001.json/events/1/pages/0/list/{suffix}",
+        source_file="Map001.json",
+        source_type="event_command",
+        item_type="long_text",
+        role="",
+        selector=f"event:1:0:{suffix}",
+        raw_text=raw_text,
+        visible_text=raw_text,
+        translatable_text=f"Text {suffix}",
+        raw_hash=f"raw-{suffix}",
+        visible_hash=f"visible-{suffix}",
+        translatable_hash=f"translatable-{suffix}",
+        scope_key=scope_key,
+    )
+
+
+def make_text_fact_v2_render_part(
+    fact_id: str,
+    *,
+    part_order: int = 0,
+) -> TextFactRenderPartV2Record:
+    """构造测试用 v2 渲染片段。"""
+    return TextFactRenderPartV2Record(
+        fact_id=fact_id,
+        part_order=part_order,
+        part_kind="translated_body",
+        raw_text="raw",
+        semantic_text="semantic",
+        template_key="body",
+    )
+
+
+def make_text_fact_v2_domain_payload(fact_id: str) -> TextFactDomainPayloadV2Record:
+    """构造测试用 v2 领域 payload。"""
+    return TextFactDomainPayloadV2Record(
+        fact_id=fact_id,
+        payload_json='{"command_code":401}',
+    )
 
 
 def read_sqlite_table_columns(
@@ -637,28 +712,14 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
     tmp_path: Path,
 ) -> None:
     """v2 文本事实支持整批替换、稳定读取和当前 scope 显式校验。"""
-    from app.persistence.records import (
-        TextFactDomainPayloadV2Record,
-        TextFactRenderPartV2Record,
-        TextFactScopeV2Record,
-        TextFactV2ReadFilter,
-        TextFactV2Record,
-    )
-
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
-    scope = TextFactScopeV2Record(
-        scope_key="scope-v2",
-        schema_version=CURRENT_SCHEMA_VERSION,
-        scope_hash="scope-hash",
-        source_snapshot_hash="source-snapshot-hash",
-        rule_hash="rule-hash",
-        text_rules_hash="text-rules-hash",
-        created_at="2026-06-07T00:00:00",
-    )
+    assert TEXT_FACT_SCHEMA_VERSION == 2
+    assert CURRENT_SCHEMA_VERSION == 16
+    scope = make_text_fact_v2_scope()
     namebox_fact = TextFactV2Record(
         fact_id="fact-namebox",
-        schema_version=CURRENT_SCHEMA_VERSION,
+        schema_version=TEXT_FACT_SCHEMA_VERSION,
         domain="mv_virtual_namebox",
         location_path="Map001.json/events/1/pages/0/list/0",
         source_file="Map001.json",
@@ -676,7 +737,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
     )
     event_fact = TextFactV2Record(
         fact_id="fact-event",
-        schema_version=CURRENT_SCHEMA_VERSION,
+        schema_version=TEXT_FACT_SCHEMA_VERSION,
         domain="event_command",
         location_path="Map001.json/events/1/pages/0/list/1",
         source_file="Map001.json",
@@ -778,7 +839,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
 
         _ = await session.connection.execute(
             "UPDATE text_fact_scope_v2 SET schema_version = ? WHERE scope_key = ?",
-            (CURRENT_SCHEMA_VERSION + 1, scope.scope_key),
+            (TEXT_FACT_SCHEMA_VERSION + 1, scope.scope_key),
         )
         await session.connection.commit()
         with pytest.raises(RuntimeError, match="rebuild-text-index") as unsupported_version_error:
@@ -789,7 +850,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
 
         _ = await session.connection.execute(
             "UPDATE text_fact_scope_v2 SET schema_version = ? WHERE scope_key = ?",
-            (CURRENT_SCHEMA_VERSION, scope.scope_key),
+            (TEXT_FACT_SCHEMA_VERSION, scope.scope_key),
         )
         _ = await session.connection.execute(
             "UPDATE text_facts_v2 SET scope_key = ? WHERE fact_id = ?",
@@ -809,6 +870,107 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
         assert "text_fact_scope_v2" in str(missing_table_error.value)
         assert "当前命令" in str(missing_table_error.value)
         assert "下一步" in str(missing_table_error.value)
+
+
+@pytest.mark.asyncio
+async def test_text_fact_v2_large_filter_reads_are_batched(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2 大批量 fact/path 读取按 500 分块，并保持稳定排序。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="en")
+    scope = make_text_fact_v2_scope()
+    facts = [make_text_fact_v2_record(index, scope_key=scope.scope_key) for index in range(620)]
+    render_parts = [
+        make_text_fact_v2_render_part(fact.fact_id, part_order=1)
+        for fact in facts
+    ] + [
+        make_text_fact_v2_render_part(fact.fact_id, part_order=0)
+        for fact in facts
+    ]
+    payloads = [make_text_fact_v2_domain_payload(fact.fact_id) for fact in facts]
+
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_text_facts_v2(
+            scope=scope,
+            facts=list(reversed(facts)),
+            render_parts=list(reversed(render_parts)),
+            domain_payloads=list(reversed(payloads)),
+        )
+        original_execute = session.connection.execute
+        parameter_counts: list[int] = []
+
+        def recording_execute(sql: str, parameters: object = None) -> object:
+            """记录读取 SQL 的参数数量，证明 IN 查询被分块。"""
+            if isinstance(parameters, tuple) and (
+                "text_facts_v2" in sql
+                or "text_fact_render_parts_v2" in sql
+                or "text_fact_domain_payloads_v2" in sql
+            ):
+                tuple_parameters = cast(tuple[object, ...], parameters)
+                parameter_counts.append(len(tuple_parameters))
+            if parameters is None:
+                return original_execute(sql)
+            return original_execute(sql, parameters)
+
+        monkeypatch.setattr(session.connection, "execute", recording_execute)
+
+        filtered_facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(
+                location_paths=[fact.location_path for fact in reversed(facts)],
+            )
+        )
+        read_render_parts = await session.read_text_fact_render_parts_v2(
+            [fact.fact_id for fact in reversed(facts)]
+        )
+        read_payloads = await session.read_text_fact_domain_payloads_v2(
+            [fact.fact_id for fact in reversed(facts)]
+        )
+
+    assert filtered_facts == facts
+    assert read_render_parts == sorted(render_parts, key=lambda part: (part.fact_id, part.part_order))
+    assert read_payloads == payloads
+    assert parameter_counts
+    assert max(parameter_counts) <= 500
+    assert parameter_counts.count(500) >= 3
+
+
+@pytest.mark.asyncio
+async def test_text_fact_v2_replace_rejects_duplicate_payloads(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """v2 整批替换在写库前拒绝会被 OR REPLACE 静默覆盖的重复输入。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="en")
+    scope = make_text_fact_v2_scope()
+    fact = make_text_fact_v2_record(0, scope_key=scope.scope_key)
+    duplicate_fact = make_text_fact_v2_record(0, scope_key=scope.scope_key)
+    render_part = make_text_fact_v2_render_part(fact.fact_id)
+    duplicate_render_part = make_text_fact_v2_render_part(fact.fact_id)
+    payload = make_text_fact_v2_domain_payload(fact.fact_id)
+    duplicate_payload = make_text_fact_v2_domain_payload(fact.fact_id)
+
+    async with await registry.open_game(record.game_title) as session:
+        with pytest.raises(ValueError, match="fact_id 重复"):
+            await session.replace_text_facts_v2(
+                scope=scope,
+                facts=[fact, duplicate_fact],
+            )
+        with pytest.raises(ValueError, match="渲染片段重复"):
+            await session.replace_text_facts_v2(
+                scope=scope,
+                facts=[fact],
+                render_parts=[render_part, duplicate_render_part],
+            )
+        with pytest.raises(ValueError, match="领域 payload 重复"):
+            await session.replace_text_facts_v2(
+                scope=scope,
+                facts=[fact],
+                domain_payloads=[payload, duplicate_payload],
+            )
 
 
 @pytest.mark.asyncio
