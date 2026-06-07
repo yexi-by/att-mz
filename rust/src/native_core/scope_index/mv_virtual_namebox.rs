@@ -188,7 +188,7 @@ pub(super) fn build_mv_virtual_namebox_fact_parts(
             input.rule_name
         ));
     }
-    let render_parts = render_parts_from_template(
+    let mut render_parts = render_parts_from_template(
         input.render_template,
         input.source_speaker,
         input.role,
@@ -197,16 +197,7 @@ pub(super) fn build_mv_virtual_namebox_fact_parts(
         input.body_group,
         input.template_values,
     )?;
-    let rebuilt_raw = render_parts
-        .iter()
-        .map(|part| part.raw_text.as_str())
-        .collect::<String>();
-    if rebuilt_raw != input.raw_text {
-        return Err(format!(
-            "MV 虚拟名字框规则 {} 的 render_template 无法重建源文本",
-            input.rule_name
-        ));
-    }
+    reconcile_render_parts_with_raw_text(&mut render_parts, input.raw_text, input.rule_name)?;
     Ok(MvVirtualNameboxFactParts {
         raw_text: input.raw_text.to_string(),
         visible_text: input.raw_text.to_string(),
@@ -214,6 +205,90 @@ pub(super) fn build_mv_virtual_namebox_fact_parts(
         role: input.role.to_string(),
         render_parts,
     })
+}
+
+fn reconcile_render_parts_with_raw_text(
+    parts: &mut Vec<MvVirtualNameboxFactRenderPart>,
+    raw_text: &str,
+    rule_name: &str,
+) -> Result<(), String> {
+    let rebuilt_raw = rebuild_raw_from_parts(parts);
+    if rebuilt_raw == raw_text {
+        return Ok(());
+    }
+    if rebuilt_raw.is_empty() {
+        return Err(render_template_rebuild_error(rule_name));
+    }
+    let Some(start_index) = raw_text.find(&rebuilt_raw) else {
+        return Err(render_template_rebuild_error(rule_name));
+    };
+    let end_index = start_index + rebuilt_raw.len();
+    let prefix = &raw_text[..start_index];
+    let suffix = &raw_text[end_index..];
+    if !is_format_shell(prefix) || !is_format_shell(suffix) {
+        return Err(render_template_rebuild_error(rule_name));
+    }
+    if !prefix.is_empty() {
+        prepend_literal_shell(parts, prefix);
+    }
+    if !suffix.is_empty() {
+        append_literal_shell(parts, suffix);
+    }
+    if rebuild_raw_from_parts(parts) != raw_text {
+        return Err(render_template_rebuild_error(rule_name));
+    }
+    Ok(())
+}
+
+fn rebuild_raw_from_parts(parts: &[MvVirtualNameboxFactRenderPart]) -> String {
+    parts
+        .iter()
+        .map(|part| part.raw_text.as_str())
+        .collect::<String>()
+}
+
+fn render_template_rebuild_error(rule_name: &str) -> String {
+    format!("MV 虚拟名字框规则 {rule_name} 的 render_template 无法重建源文本")
+}
+
+fn is_format_shell(text: &str) -> bool {
+    text.chars()
+        .all(|character| character.is_whitespace() || is_invisible_character(character))
+}
+
+fn prepend_literal_shell(parts: &mut Vec<MvVirtualNameboxFactRenderPart>, raw_text: &str) {
+    if let Some(first) = parts.first_mut()
+        && first.part_kind == "literal"
+    {
+        first.raw_text = format!("{raw_text}{}", first.raw_text);
+        first.semantic_text = format!("{raw_text}{}", first.semantic_text);
+        return;
+    }
+    parts.insert(
+        0,
+        MvVirtualNameboxFactRenderPart {
+            part_kind: "literal".to_string(),
+            raw_text: raw_text.to_string(),
+            semantic_text: raw_text.to_string(),
+            template_key: "literal".to_string(),
+        },
+    );
+}
+
+fn append_literal_shell(parts: &mut Vec<MvVirtualNameboxFactRenderPart>, raw_text: &str) {
+    if let Some(last) = parts.last_mut()
+        && last.part_kind == "literal"
+    {
+        last.raw_text.push_str(raw_text);
+        last.semantic_text.push_str(raw_text);
+        return;
+    }
+    parts.push(MvVirtualNameboxFactRenderPart {
+        part_kind: "literal".to_string(),
+        raw_text: raw_text.to_string(),
+        semantic_text: raw_text.to_string(),
+        template_key: "literal".to_string(),
+    });
 }
 
 fn render_parts_from_template(
@@ -1079,6 +1154,61 @@ mod tests {
             })
             .collect::<String>();
         assert_eq!(translated, r"\n<Dan:> 你好");
+    }
+
+    #[test]
+    fn mv_virtual_namebox_fact_parts_preserve_raw_shell_whitespace() {
+        let template_values = BTreeMap::new();
+        let parts = build_mv_virtual_namebox_fact_parts(MvVirtualNameboxFactPartsInput {
+            raw_text: r"  \n<Dan:> Hello  ",
+            source_speaker: "Dan",
+            role: "Dan",
+            body_text: "Hello",
+            render_template: r"\n<{speaker}:> {body}",
+            speaker_group: "speaker",
+            body_group: "body",
+            rule_name: "yep-namebox-with-colon",
+            template_values: &template_values,
+        })
+        .expect("MV 虚拟名字框 fact 分片必须保留 raw 外壳空白");
+
+        assert_eq!(parts.raw_text, r"  \n<Dan:> Hello  ");
+        assert_eq!(parts.visible_text, r"  \n<Dan:> Hello  ");
+        assert_eq!(parts.translatable_text, "Hello");
+        assert_eq!(
+            parts
+                .render_parts
+                .iter()
+                .map(|part| part.part_kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "literal",
+                "speaker",
+                "literal",
+                "translated_body",
+                "literal"
+            ]
+        );
+        assert_eq!(
+            parts
+                .render_parts
+                .iter()
+                .map(|part| part.raw_text.as_str())
+                .collect::<String>(),
+            r"  \n<Dan:> Hello  "
+        );
+        let translated = parts
+            .render_parts
+            .iter()
+            .map(|part| {
+                if part.part_kind == "translated_body" {
+                    "你好"
+                } else {
+                    part.raw_text.as_str()
+                }
+            })
+            .collect::<String>();
+        assert_eq!(translated, r"  \n<Dan:> 你好  ");
     }
 
     #[test]

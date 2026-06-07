@@ -224,7 +224,7 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
             "id": 91,
             "list": [
                 {"code": 101, "parameters": [0, 0, 0, 2]},
-                {"code": 401, "parameters": [r"\n<Dan:> Hello"]},
+                {"code": 401, "parameters": [r"  \n<Dan:> Hello  "]},
                 {"code": 0, "parameters": []},
             ],
         }
@@ -262,8 +262,8 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
         )
         assert len(facts) == 1
         fact = facts[0]
-        assert fact.raw_text == r"\n<Dan:> Hello"
-        assert fact.visible_text == r"\n<Dan:> Hello"
+        assert fact.raw_text == r"  \n<Dan:> Hello  "
+        assert fact.visible_text == r"  \n<Dan:> Hello  "
         assert fact.translatable_text == "Hello"
         assert fact.role == "Dan"
         parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
@@ -273,8 +273,9 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
         "speaker",
         "literal",
         "translated_body",
+        "literal",
     ]
-    assert "".join(part.raw_text for part in parts) == r"\n<Dan:> Hello"
+    assert "".join(part.raw_text for part in parts) == r"  \n<Dan:> Hello  "
 
 
 @pytest.mark.asyncio

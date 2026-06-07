@@ -111,6 +111,8 @@ pub(crate) struct TextIndexRowInput {
     pub(crate) role: Option<String>,
     pub(crate) original_lines: Vec<String>,
     #[serde(default)]
+    pub(crate) text_fact_raw_text: Option<String>,
+    #[serde(default)]
     pub(crate) source_line_paths: Vec<String>,
     pub(crate) source_type: String,
     pub(crate) source_file: String,
@@ -661,7 +663,9 @@ fn text_index_identity_counts(rows: &[TextIndexRowInput]) -> BTreeMap<TextFactId
             row.source_type.clone(),
             row.item_type.clone(),
             row.role.clone().unwrap_or_default(),
-            row.original_lines.join("\n"),
+            row.text_fact_raw_text
+                .clone()
+                .unwrap_or_else(|| row.original_lines.join("\n")),
         );
         *counts.entry(identity).or_insert(0) += 1;
     }
@@ -677,7 +681,7 @@ fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, u
             fact.source_type.clone(),
             fact.item_type.clone(),
             fact.role.clone(),
-            fact.translatable_text.clone(),
+            fact.raw_text.clone(),
         );
         *counts.entry(identity).or_insert(0) += 1;
     }
@@ -1494,6 +1498,119 @@ mod tests {
     }
 
     #[test]
+    fn write_scope_index_storage_rejects_text_fact_raw_identity_mismatch_without_override() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_raw_identity_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = TextFact::from_input(
+            TextFactInput {
+                domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
+                location_path: "Map001.json/events/1/pages/0/list/0".to_string(),
+                source_file: "Map001.json".to_string(),
+                source_type: "event_command".to_string(),
+                item_type: "long_text".to_string(),
+                role: "Dan".to_string(),
+                selector: "event:1/page:0/list:0".to_string(),
+                raw_text: "\\n<Dan:> Hello".to_string(),
+                visible_text: "\\n<Dan:> Hello".to_string(),
+                translatable_text: "Hello".to_string(),
+            },
+            scope.scope_key.clone(),
+        )
+        .expect("MV 虚拟名字框 fact 应可创建");
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact],
+            Vec::new(),
+            Vec::new(),
+        );
+        payload.text_index_rows[0].original_lines = vec!["Hello".to_string()];
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("未显式声明 raw 身份时，warm index 与 fact raw_text 不一致必须拒绝");
+        assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_accepts_explicit_text_fact_raw_identity_for_mv_split() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_raw_identity_override_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = TextFact::from_input(
+            TextFactInput {
+                domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
+                location_path: "Map001.json/events/1/pages/0/list/0".to_string(),
+                source_file: "Map001.json".to_string(),
+                source_type: "event_command".to_string(),
+                item_type: "long_text".to_string(),
+                role: "Dan".to_string(),
+                selector: "event:1/page:0/list:0".to_string(),
+                raw_text: "\\n<Dan:> Hello".to_string(),
+                visible_text: "\\n<Dan:> Hello".to_string(),
+                translatable_text: "Hello".to_string(),
+            },
+            scope.scope_key.clone(),
+        )
+        .expect("MV 虚拟名字框 fact 应可创建");
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact],
+            Vec::new(),
+            Vec::new(),
+        );
+        payload.text_index_rows[0].original_lines = vec!["Hello".to_string()];
+        payload.text_index_rows[0].text_fact_raw_text = Some("\\n<Dan:> Hello".to_string());
+
+        let output = write_scope_index_storage_direct(&payload)
+            .expect("显式 raw 身份与 fact raw_text 一致时应可写入");
+        assert_eq!(output.text_fact_count, 1);
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
     fn write_scope_index_storage_rejects_non_contiguous_render_parts() {
         let fixture = std::env::temp_dir().join(format!(
             "att_mz_text_fact_part_gap_{}",
@@ -1610,6 +1727,7 @@ mod tests {
                     Some(fact.role.clone())
                 },
                 original_lines: vec![fact.raw_text.clone()],
+                text_fact_raw_text: None,
                 source_line_paths: Vec::new(),
                 source_type: fact.source_type.clone(),
                 source_file: fact.source_file.clone(),
@@ -1653,6 +1771,7 @@ mod tests {
             item_type: "short_text".to_string(),
             role: None,
             original_lines: vec!["Fixture".to_string()],
+            text_fact_raw_text: None,
             source_line_paths: Vec::new(),
             source_type: "standard_data".to_string(),
             source_file: "System.json".to_string(),

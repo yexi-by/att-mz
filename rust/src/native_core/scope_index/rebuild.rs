@@ -174,6 +174,7 @@ struct DirectTextFactStoragePayload {
     text_facts: Vec<TextFact>,
     render_parts: Vec<TextFactRenderPart>,
     domain_payloads: Vec<TextFactDomainPayload>,
+    text_fact_raw_text_by_location_path: BTreeMap<String, String>,
     domain_fact_counts: BTreeMap<String, usize>,
 }
 
@@ -460,6 +461,9 @@ fn rebuild_with_context(
         &data_files,
         Some(&context),
     )?;
+    let text_fact_raw_text_by_location_path = text_fact_payload
+        .text_fact_raw_text_by_location_path
+        .clone();
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
         metadata: storage::TextIndexMetadataInput {
@@ -472,18 +476,24 @@ fn rebuild_with_context(
         },
         text_index_rows: rows
             .into_iter()
-            .map(|row| storage::TextIndexRowInput {
-                location_path: row.location_path,
-                item_type: row.item_type,
-                role: row.role,
-                original_lines: row.original_lines,
-                source_line_paths: row.source_line_paths,
-                source_type: row.source_type,
-                source_file: row.source_file,
-                writable: row.writable,
-                source_snapshot_fingerprint: row.source_snapshot_fingerprint,
-                rules_fingerprint: row.rules_fingerprint,
-                locator_json: row.locator_json,
+            .map(|row| {
+                let text_fact_raw_text = text_fact_raw_text_by_location_path
+                    .get(&row.location_path)
+                    .cloned();
+                storage::TextIndexRowInput {
+                    location_path: row.location_path,
+                    item_type: row.item_type,
+                    role: row.role,
+                    original_lines: row.original_lines,
+                    text_fact_raw_text,
+                    source_line_paths: row.source_line_paths,
+                    source_type: row.source_type,
+                    source_file: row.source_file,
+                    writable: row.writable,
+                    source_snapshot_fingerprint: row.source_snapshot_fingerprint,
+                    rules_fingerprint: row.rules_fingerprint,
+                    locator_json: row.locator_json,
+                }
             })
             .collect(),
         scope_summary: storage::ScopeSummaryInput {
@@ -3030,14 +3040,14 @@ fn parse_mv_virtual_speaker_line(
     if context.mv_virtual_namebox_rules.is_empty() {
         return Ok(None);
     }
-    let normalized_text = text.trim();
-    if normalized_text.is_empty() {
+    let match_text = text.trim();
+    if match_text.is_empty() {
         return Ok(None);
     }
     let mut matches: Vec<ParsedMvVirtualSpeaker> = Vec::new();
     let mut matched_rule_names: Vec<String> = Vec::new();
     for rule in &context.mv_virtual_namebox_rules {
-        let captures = rule.pattern.captures(normalized_text).map_err(|error| {
+        let captures = rule.pattern.captures(match_text).map_err(|error| {
             structured_error(
                 "scope_index_rebuild_mv_virtual_namebox_failed",
                 format!("MV 虚拟名字框规则匹配失败 {}: {error}", rule.rule_name),
@@ -3049,14 +3059,14 @@ fn parse_mv_virtual_speaker_line(
         let Some(full_match) = captures.get(0) else {
             continue;
         };
-        if full_match.start() != 0 || full_match.end() != normalized_text.len() {
+        if full_match.start() != 0 || full_match.end() != match_text.len() {
             continue;
         }
         matches.push(build_mv_virtual_speaker(
             context,
             rule,
             &captures,
-            normalized_text,
+            text,
             location_path,
         )?);
         matched_rule_names.push(rule.rule_name.clone());
@@ -3065,7 +3075,7 @@ fn parse_mv_virtual_speaker_line(
         return Err(structured_error(
             "scope_index_rebuild_mv_virtual_namebox_failed",
             format!(
-                "MV 虚拟名字框规则命中冲突; 文本路径={location_path}: 规则={}; 文本={normalized_text}",
+                "MV 虚拟名字框规则命中冲突; 文本路径={location_path}: 规则={}; 文本={text}",
                 matched_rule_names.join(", ")
             ),
         ));
@@ -3088,9 +3098,9 @@ fn build_mv_virtual_speaker(
     }
     let source_speaker = capture_group(captures, &rule.speaker_group)
         .unwrap_or_default()
-        .trim()
         .to_string();
-    if source_speaker.is_empty() {
+    let semantic_speaker = source_speaker.trim().to_string();
+    if semantic_speaker.is_empty() {
         return Err(structured_error(
             "scope_index_rebuild_mv_virtual_namebox_failed",
             format!(
@@ -3107,9 +3117,9 @@ fn build_mv_virtual_speaker(
             .to_string()
     };
     let speaker = if rule.speaker_policy == "actor_name" {
-        actor_name_from_control(context, &source_speaker, location_path)?
+        actor_name_from_control(context, &semantic_speaker, location_path)?
     } else {
-        source_speaker.clone()
+        semantic_speaker
     };
     let fact_parts = build_mv_virtual_namebox_fact_parts(MvVirtualNameboxFactPartsInput {
         raw_text,
@@ -3281,6 +3291,7 @@ fn build_text_fact_storage_payload_with_context(
     let mut text_facts = Vec::with_capacity(rows.len());
     let mut render_parts = Vec::new();
     let mut domain_payloads = Vec::new();
+    let mut text_fact_raw_text_by_location_path = BTreeMap::new();
     let mut domain_fact_counts = BTreeMap::new();
     for row in rows {
         let fact_content = match context {
@@ -3288,6 +3299,11 @@ fn build_text_fact_storage_payload_with_context(
             None => None,
         }
         .unwrap_or_else(|| default_text_fact_content(row));
+        let row_raw_identity = row.original_lines.join("\n");
+        if fact_content.raw_text != row_raw_identity {
+            text_fact_raw_text_by_location_path
+                .insert(row.location_path.clone(), fact_content.raw_text.clone());
+        }
         let fact = build_text_fact_from_content(row, scope, &fact_content)?;
         for (part_order, part) in fact_content.render_parts.iter().enumerate() {
             render_parts.push(TextFactRenderPart {
@@ -3314,6 +3330,7 @@ fn build_text_fact_storage_payload_with_context(
         text_facts,
         render_parts,
         domain_payloads,
+        text_fact_raw_text_by_location_path,
         domain_fact_counts,
     })
 }
@@ -3758,6 +3775,7 @@ mod tests {
         assert_eq!(fact_payload.render_parts.len(), 2);
         assert_eq!(fact_payload.domain_fact_counts[domains::STANDARD_DATA], 1);
         assert_eq!(fact_payload.domain_fact_counts[domains::EVENT_COMMAND], 1);
+        assert!(fact_payload.text_fact_raw_text_by_location_path.is_empty());
         assert!(fact_payload.domain_payloads.is_empty());
         assert!(fact_payload.text_facts.iter().all(|fact| {
             fact.raw_text == fact.visible_text && fact.visible_text == fact.translatable_text
