@@ -267,6 +267,33 @@ async def test_text_scope_uses_warm_text_index_without_full_scope_load(
     )
     assert all(entry["rule_source"] == "text_index" for entry in entry_objects)
     assert all(entry["enters_translation"] is True for entry in entry_objects)
+
+
+@pytest.mark.asyncio
+async def test_text_scope_can_return_full_v2_entries_for_output_reports(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """写入文件用的 text-scope 报告必须能取得完整 v2 entries。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+
+    sampled_report = await service.text_scope(game_title="テストゲーム", detail_limit=1)
+    full_report = await service.text_scope(game_title="テストゲーム", detail_limit=None)
+
+    sampled_entries = ensure_json_array(sampled_report.details["entries"], "sampled.entries")
+    full_entries = ensure_json_array(full_report.details["entries"], "full.entries")
+    indexed_count = rebuild_report.summary["indexed_count"]
+    assert isinstance(indexed_count, int)
+    assert sampled_report.details["detail_mode"] == "sampled"
+    assert sampled_report.details["entry_omitted_count"] == indexed_count - 1
+    assert len(sampled_entries) == 1
+    assert full_report.details["detail_mode"] == "full"
+    assert full_report.details["entry_omitted_count"] == 0
+    assert len(full_entries) == full_report.summary["text_fact_count"]
+    assert full_report.summary["text_fact_count"] == indexed_count
 @pytest.mark.asyncio
 async def test_text_scope_reports_global_write_probe_failure(
     minimal_game_dir: Path,

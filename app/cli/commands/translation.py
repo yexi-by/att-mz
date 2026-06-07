@@ -63,10 +63,18 @@ async def run_text_scope_command(args: argparse.Namespace) -> int:
     """执行 `text-scope` 命令。"""
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
-    report = await service.text_scope(
-        game_title=game_title,
-        include_write_probe=read_bool_arg(args, "include_write_probe"),
-    )
+    output_path = read_optional_str_arg(args, "output")
+    if output_path:
+        report = await service.text_scope(
+            game_title=game_title,
+            include_write_probe=read_bool_arg(args, "include_write_probe"),
+            detail_limit=None,
+        )
+    else:
+        report = await service.text_scope(
+            game_title=game_title,
+            include_write_probe=read_bool_arg(args, "include_write_probe"),
+        )
     write_report_outputs(
         report=report,
         args=args,

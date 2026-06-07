@@ -27,7 +27,7 @@ from app.cli.commands.rules import (
     run_scan_placeholder_candidates_command,
     run_scan_nonstandard_data_command,
 )
-from app.cli.commands.translation import run_import_manual_translations_command
+from app.cli.commands.translation import run_import_manual_translations_command, run_text_scope_command
 from app.cli.commands.registry import run_list_command
 from app.cli.commands.write_back import run_all_command
 from app.cli.runtime import build_setting_overrides
@@ -1819,6 +1819,71 @@ async def test_scan_nonstandard_data_command_samples_stdout_and_writes_full_outp
     assert len(ensure_json_array(stdout_candidates["samples"], "stdout candidates.samples")) == 20
     assert stdout_candidates["omitted_count"] == 5
     assert len(output_candidates) == 25
+
+
+@pytest.mark.asyncio
+async def test_text_scope_command_output_requests_full_service_details(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """text-scope --output 写完整报告时必须向服务层请求 full entries。"""
+
+    detail_limits: list[int | None] = []
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def text_scope(
+            self,
+            *,
+            game_title: str,
+            include_write_probe: bool,
+            detail_limit: int | None = 1000,
+        ) -> AgentReport:
+            assert game_title == "demo"
+            assert include_write_probe is False
+            detail_limits.append(detail_limit)
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={"text_fact_count": 25},
+                details={
+                    "detail_mode": "full",
+                    "entries": [{"index": index} for index in range(25)],
+                    "entry_omitted_count": 0,
+                },
+            )
+
+    output_path = tmp_path / "text-scope-report.json"
+    monkeypatch.setattr(
+        "app.cli.commands.translation.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(
+        game="demo",
+        game_path=None,
+        output=str(output_path),
+        include_write_probe=False,
+    )
+
+    exit_code = await run_text_scope_command(args)
+
+    captured = capsys.readouterr()
+    stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    output_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(output_path.read_text(encoding="utf-8")))),
+        "output JSON",
+    )
+    output_summary = ensure_json_object(output_payload["summary"], "output summary")
+    output_details = ensure_json_object(output_payload["details"], "output details")
+
+    assert exit_code == 0
+    assert detail_limits == [None]
+    assert ensure_json_object(stdout_payload["summary"], "stdout summary")["report_detail_mode"] == "sampled"
+    assert output_summary["report_detail_mode"] == "full"
+    assert output_details["detail_mode"] == "full"
+    assert len(ensure_json_array(output_details["entries"], "output entries")) == 25
 
 
 @pytest.mark.asyncio

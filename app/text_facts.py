@@ -516,9 +516,12 @@ async def read_text_fact_quality_items_for_translations(
             quality_items.append(item)
             continue
         cloned_item = item.model_copy(deep=True)
-        raw_lines = _text_fact_lines(fact.raw_text, item_type=cloned_item.item_type)
-        visible_lines = _text_fact_lines(fact.visible_text, item_type=cloned_item.item_type)
-        translatable_lines = _text_fact_lines(fact.translatable_text, item_type=cloned_item.item_type)
+        item_type = _item_type_from_text_fact(fact)
+        cloned_item.item_type = item_type
+        cloned_item.role = fact.role or None
+        raw_lines = _text_fact_lines(fact.raw_text, item_type=item_type)
+        visible_lines = _text_fact_lines(fact.visible_text, item_type=item_type)
+        translatable_lines = _text_fact_lines(fact.translatable_text, item_type=item_type)
         if source_text == "raw":
             cloned_item.original_lines = raw_lines
         elif source_text == "visible":

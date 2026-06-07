@@ -54,6 +54,7 @@ class CoverageAgentMixin:
         *,
         game_title: str,
         include_write_probe: bool = False,
+        detail_limit: int | None = TEXT_SCOPE_ENTRY_SAMPLE_LIMIT,
     ) -> AgentReport:
         """输出当前游戏统一文本清单。"""
         async with await self.game_registry.open_game(game_title) as session:
@@ -92,6 +93,7 @@ class CoverageAgentMixin:
                 report = await _build_text_fact_text_scope_report(
                     session=session,
                     include_write_probe=include_write_probe,
+                    detail_limit=detail_limit,
                 )
             except TextFactContractError as error:
                 return _empty_text_scope_report(
@@ -377,15 +379,18 @@ async def _build_text_fact_text_scope_report(
     *,
     session: TargetGameSession,
     include_write_probe: bool,
+    detail_limit: int | None,
 ) -> AgentReport:
-    """用当前 v2 facts 生成文本清单报告，明细按固定上限取样。"""
+    """用当前 v2 facts 生成文本清单报告，明细可完整输出或按上限取样。"""
+    if detail_limit is not None and detail_limit <= 0:
+        raise ValueError("detail_limit 必须是正整数或 None")
     text_fact_count = await count_current_text_facts_v2(session)
     translated_count = await count_translated_text_facts_v2(session)
     writable_count = await count_writable_text_facts_v2(session)
     unwritable_count = max(0, text_fact_count - writable_count)
     facts = await read_current_text_fact_records_v2(
         session,
-        limit=TEXT_SCOPE_ENTRY_SAMPLE_LIMIT,
+        limit=detail_limit,
     )
     index_records = await session.read_text_index_items_by_paths([fact.location_path for fact in facts])
     index_by_path = {record.location_path: record for record in index_records}
@@ -428,9 +433,9 @@ async def _build_text_fact_text_scope_report(
             "text_index_status": "used",
         },
         details={
-            "detail_mode": "sampled",
+            "detail_mode": "full" if detail_limit is None else "sampled",
             "entries": entries,
-            "entry_omitted_count": max(0, text_fact_count - len(entries)),
+            "entry_omitted_count": 0 if detail_limit is None else max(0, text_fact_count - len(entries)),
             "unwritable_items": unwritable_items,
             "stale_plugin_rules": [],
             "write_back_probe_error": "",

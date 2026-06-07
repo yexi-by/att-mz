@@ -1075,6 +1075,69 @@ async def test_quality_report_replaces_stale_saved_source_with_v2_fact_source(
         )
 
     assert quality_items[0].original_lines == ["Hello"]
+
+
+@pytest.mark.asyncio
+async def test_quality_report_rehydrates_stale_saved_metadata_from_v2_fact(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """已保存译文的旧 item_type/role 不匹配当前 fact 时，质检使用当前 v2 元数据。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+                SELECT fact_id, location_path
+                FROM text_facts_v2
+                WHERE item_type = 'short_text'
+                ORDER BY domain, location_path, fact_id
+                LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        fact_id = cast(str, row["fact_id"])
+        location_path = cast(str, row["location_path"])
+        _ = await session.connection.execute(
+            """
+--sql
+                UPDATE text_facts_v2
+                SET item_type = ?,
+                    role = ?,
+                    raw_text = ?,
+                    visible_text = ?,
+                    translatable_text = ?
+                WHERE fact_id = ?
+            ;
+            """,
+            ("short_text", "current_role", "Hello\nWorld", "Hello\nWorld", "Hello\nWorld", fact_id),
+        )
+        stale_saved_item = TranslationItem(
+            location_path=location_path,
+            item_type="array",
+            role="stale_role",
+            original_lines=["古い", "源文"],
+            source_line_paths=[location_path],
+            translation_lines=["你好"],
+        )
+        await session.write_translation_items([stale_saved_item])
+        await session.connection.commit()
+        quality_items = await read_text_fact_quality_items_for_translations(
+            session,
+            [stale_saved_item],
+            source_text="translatable",
+        )
+
+    assert quality_items[0].item_type == "short_text"
+    assert quality_items[0].role == "current_role"
+    assert quality_items[0].original_lines == ["Hello\nWorld"]
+    assert quality_items[0].translation_lines == ["你好"]
 @pytest.mark.asyncio
 async def test_quality_report_flags_internal_placeholder_leak(
     minimal_game_dir: Path,
