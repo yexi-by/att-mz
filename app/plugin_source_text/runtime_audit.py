@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
+from typing import Literal
 
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import (
@@ -12,6 +13,7 @@ from app.rmmz.schema import (
     PluginSourceRuntimeScanCacheRecord,
     PluginSourceRuntimeStringLiteralCacheRecord,
     PluginSourceRuntimeWriteMapRecord,
+    PluginSourceTextRuleRecord,
 )
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
 
@@ -32,6 +34,20 @@ VISIBLE_LINE_START_CONTROL_PATTERN: re.Pattern[str] = re.compile(
     r"(?:(?<=\n)|(?<=\r))(?P<fragment>[A-Za-z]+\d*\[[^\]\r\n]{0,64}\])"
 )
 
+type ActiveRuntimeMappingStatus = Literal[
+    "mapped_translate",
+    "mapped_excluded",
+    "runtime_mapping_missing",
+    "runtime_mapping_stale",
+    "not_applicable",
+]
+type ActiveRuntimeActionability = Literal[
+    "fix_translation",
+    "review_plugin_source_rules",
+    "review_plugin_source_code",
+    "fix_runtime_file",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class ActiveRuntimePluginSourceIssue:
@@ -46,6 +62,9 @@ class ActiveRuntimePluginSourceIssue:
     literal: PluginSourceStringLiteral | None = None
     read_error: str = ""
     syntax_error: str = ""
+    mapping_status: ActiveRuntimeMappingStatus = "not_applicable"
+    actionability: ActiveRuntimeActionability = "fix_runtime_file"
+    source_review_required: bool = False
 
     def to_json_object(self) -> JsonObject:
         """转换成报告 JSON 对象。"""
@@ -60,6 +79,9 @@ class ActiveRuntimePluginSourceIssue:
         payload["message"] = self.message
         payload["blocking"] = self.blocking
         payload["fragment"] = self.fragment
+        payload["mapping_status"] = self.mapping_status
+        payload["actionability"] = self.actionability
+        payload["source_review_required"] = self.source_review_required
         if self.read_error:
             payload["read_error"] = self.read_error
         if self.syntax_error:
@@ -94,6 +116,16 @@ class ActiveRuntimePluginSourceScanCacheStats:
             "active_runtime_scan_cache_rescan_file_count": self.rescan_file_count,
             "active_runtime_scan_cache_refreshed_record_count": self.refreshed_record_count,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _LiteralIssueClassification:
+    """运行字符串文本问题的阻断等级和可行动分类。"""
+
+    blocking: bool
+    mapping_status: ActiveRuntimeMappingStatus
+    actionability: ActiveRuntimeActionability
+    source_review_required: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +182,7 @@ def audit_active_runtime_plugin_source(
     plugin_source_read_errors: dict[str, str] | None = None,
     plugin_source_batch_scan: PluginSourceBatchTextScan | None = None,
     runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord] | None = None,
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None = None,
     scan_cache_stats: ActiveRuntimePluginSourceScanCacheStats | None = None,
     audit_text_issues: bool = True,
     text_issue_scope_keys: frozenset[tuple[str, str]] | None = None,
@@ -171,6 +204,10 @@ def audit_active_runtime_plugin_source(
         record.runtime_file_name
         for record in (runtime_write_map_records or [])
     }
+    excluded_source_review_keys = _reviewed_excluded_source_keys(
+        source_files=source_files,
+        plugin_source_rule_records=plugin_source_rule_records or [],
+    )
     literal_count = 0
     active_literal_count = 0
     active_read_error_file_names = {
@@ -246,6 +283,7 @@ def audit_active_runtime_plugin_source(
                     literal=literal,
                     text_rules=text_rules,
                     runtime_write_map_by_key=runtime_write_map_by_key,
+                    excluded_source_review_keys=excluded_source_review_keys,
                 )
             )
     return ActiveRuntimePluginSourceAudit(
@@ -267,6 +305,7 @@ def audit_active_runtime_plugin_source_with_scan_cache(
     cache_records: list[PluginSourceRuntimeScanCacheRecord],
     created_at: str,
     runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord] | None = None,
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None = None,
     audit_text_issues: bool = True,
     text_issue_scope_keys: frozenset[tuple[str, str]] | None = None,
 ) -> tuple[ActiveRuntimePluginSourceAudit, list[PluginSourceRuntimeScanCacheRecord]]:
@@ -283,6 +322,7 @@ def audit_active_runtime_plugin_source_with_scan_cache(
         text_rules=text_rules,
         plugin_source_batch_scan=batch_scan,
         runtime_write_map_records=runtime_write_map_records,
+        plugin_source_rule_records=plugin_source_rule_records,
         scan_cache_stats=scan_cache_stats,
         audit_text_issues=audit_text_issues,
         text_issue_scope_keys=text_issue_scope_keys,
@@ -459,12 +499,16 @@ def _audit_literal(
     literal: PluginSourceStringLiteral,
     text_rules: TextRules,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
+    excluded_source_review_keys: frozenset[tuple[str, str]],
 ) -> list[ActiveRuntimePluginSourceIssue]:
     """审计单个当前运行字符串字面量。"""
-    if _is_excluded_runtime_literal(
+    classification = _classify_literal_issue(
         literal=literal,
+        text_rules=text_rules,
         runtime_write_map_by_key=runtime_write_map_by_key,
-    ):
+        excluded_source_review_keys=excluded_source_review_keys,
+    )
+    if classification.mapping_status == "mapped_excluded":
         return []
     issues: list[ActiveRuntimePluginSourceIssue] = []
     for fragment in _collect_bad_control_fragments(literal):
@@ -475,6 +519,10 @@ def _audit_literal(
                 file_name=literal.file_name,
                 fragment=fragment,
                 literal=literal,
+                blocking=classification.blocking,
+                mapping_status=classification.mapping_status,
+                actionability=classification.actionability,
+                source_review_required=classification.source_review_required,
             )
         )
     for candidate in text_rules.iter_unprotected_control_sequence_candidates(literal.text):
@@ -485,6 +533,10 @@ def _audit_literal(
                 file_name=literal.file_name,
                 fragment=candidate.original,
                 literal=literal,
+                blocking=classification.blocking,
+                mapping_status=classification.mapping_status,
+                actionability=classification.actionability,
+                source_review_required=classification.source_review_required,
             )
         )
     try:
@@ -497,21 +549,79 @@ def _audit_literal(
                 file_name=literal.file_name,
                 fragment="",
                 literal=literal,
+                blocking=classification.blocking,
+                mapping_status=classification.mapping_status,
+                actionability=classification.actionability,
+                source_review_required=classification.source_review_required,
             )
         )
     return _deduplicate_issues(issues)
 
 
-def _is_excluded_runtime_literal(
+def _classify_literal_issue(
     *,
     literal: PluginSourceStringLiteral,
+    text_rules: TextRules,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
-) -> bool:
-    """判断当前运行字面量是否由已审查排除 selector 精确覆盖。"""
+    excluded_source_review_keys: frozenset[tuple[str, str]],
+) -> _LiteralIssueClassification:
+    """按映射和源规则审查状态计算文本问题是否阻断。"""
     record = runtime_write_map_by_key.get((literal.file_name, literal.selector))
-    if record is None or record.mapping_kind != "excluded":
-        return False
-    return record.runtime_text_hash == plugin_source_runtime_hash_text(literal.text)
+    if record is not None:
+        if record.runtime_text_hash == plugin_source_runtime_hash_text(literal.text):
+            if record.mapping_kind == "excluded":
+                return _LiteralIssueClassification(
+                    blocking=False,
+                    mapping_status="mapped_excluded",
+                    actionability="review_plugin_source_code",
+                    source_review_required=False,
+                )
+            return _LiteralIssueClassification(
+                blocking=True,
+                mapping_status="mapped_translate",
+                actionability="fix_translation",
+                source_review_required=False,
+            )
+        return _LiteralIssueClassification(
+            blocking=True,
+            mapping_status="runtime_mapping_stale",
+            actionability="fix_runtime_file",
+            source_review_required=False,
+        )
+
+    if (literal.file_name, literal.selector) in excluded_source_review_keys:
+        return _LiteralIssueClassification(
+            blocking=False,
+            mapping_status="runtime_mapping_missing",
+            actionability="review_plugin_source_code",
+            source_review_required=False,
+        )
+
+    source_review_required = text_rules.should_translate_source_text(literal.text)
+    return _LiteralIssueClassification(
+        blocking=source_review_required,
+        mapping_status="runtime_mapping_missing",
+        actionability="review_plugin_source_rules" if source_review_required else "review_plugin_source_code",
+        source_review_required=source_review_required,
+    )
+
+
+def _reviewed_excluded_source_keys(
+    *,
+    source_files: dict[str, str],
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord],
+) -> frozenset[tuple[str, str]]:
+    """返回当前源码 hash 下已人工排除的 selector。"""
+    keys: set[tuple[str, str]] = set()
+    for record in plugin_source_rule_records:
+        source = source_files.get(record.file_name)
+        if source is None:
+            continue
+        if build_plugin_source_file_hash(source) != record.file_hash:
+            continue
+        for selector in record.excluded_selectors:
+            keys.add((record.file_name, selector))
+    return frozenset(keys)
 
 
 def _collect_bad_control_fragments(literal: PluginSourceStringLiteral) -> list[str]:

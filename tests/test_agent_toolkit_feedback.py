@@ -937,11 +937,19 @@ async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム")
 
-    assert report.status == "error"
+    assert report.status == "warning"
     assert report.summary["active_runtime_source_residual_count"] == 1
+    assert report.summary["active_runtime_blocking_issue_count"] == 0
     assert report.summary["runtime_mapping_missing_count"] == 1
+    assert "active_runtime_source_residual_warning" in {warning.code for warning in report.warnings}
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
     assert len(diagnosis_items) == 1
+    diagnosis_item = ensure_json_object(diagnosis_items[0], "diagnosis item")
+    issue_item = ensure_json_object(diagnosis_item["issue"], "diagnosis item.issue")
+    assert issue_item["blocking"] is False
+    assert issue_item["mapping_status"] == "runtime_mapping_missing"
+    assert issue_item["actionability"] == "review_plugin_source_code"
+    assert issue_item["source_review_required"] is False
 @pytest.mark.asyncio
 async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime_map(
     minimal_game_dir: Path,
@@ -1108,6 +1116,7 @@ async def test_active_runtime_audit_reports_unmapped_residual_when_other_runtime
 
     assert report.status == "error"
     assert report.summary["active_runtime_source_residual_count"] == 1
+    assert report.summary["active_runtime_blocking_issue_count"] == 1
     assert diagnosis.status == "error"
     assert diagnosis.summary["runtime_mapping_missing_count"] == 1
     assert len(diagnosis_items) == 1

@@ -36,9 +36,12 @@ from app.plugin_source_text import (
 )
 from app.plugin_source_text.scanner import (
     PluginSourceBatchTextScan,
+    build_plugin_source_file_hash,
+    iter_plugin_source_string_literals,
     clear_plugin_source_native_scan_cache,
     scan_plugin_source_runtime_files_text_strict,
 )
+from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_lines, plugin_source_runtime_hash_text
 from app.rmmz import load_active_game_data, load_game_data
 from app.rmmz.schema import GameData, PluginSourceRuntimeWriteMapRecord, PluginSourceTextRuleRecord, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
@@ -1008,6 +1011,90 @@ async def test_active_runtime_audit_errors_for_unreviewed_source_candidate(
 
     assert audit.issue_counts["active_runtime_source_residual"] == 1
     assert audit.issues[0].code == "active_runtime_source_residual"
+    assert audit.issues[0].blocking is True
+    payload = audit.issues[0].to_json_object()
+    assert payload["mapping_status"] == "runtime_mapping_missing"
+    assert payload["actionability"] == "review_plugin_source_rules"
+    assert payload["source_review_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_warns_for_unmapped_regex_control_fragment(
+    minimal_game_dir: Path,
+) -> None:
+    """未映射的源码内部正则片段只作为巡检告警，不阻断完成。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "RegexSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "RegexSource.js").write_text(
+        "function unpackerMatcher() { return '\\\\w+'; }\n",
+        encoding="utf-8",
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+    )
+
+    issue = next(issue for issue in audit.issues if issue.code == "active_runtime_placeholder_risk")
+    assert issue.fragment == "\\w"
+    assert issue.blocking is False
+    payload = issue.to_json_object()
+    assert payload["mapping_status"] == "runtime_mapping_missing"
+    assert payload["actionability"] == "review_plugin_source_code"
+    assert payload["source_review_required"] is False
+    assert audit.summary_json()["active_runtime_blocking_issue_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_warns_for_unmapped_packer_source_residual(
+    minimal_game_dir: Path,
+) -> None:
+    """未映射的 packer/eval 内部字符串命中源文残留时不阻断完成。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "PackerSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    packer_payload = (
+        "3 e=['z','y','x','A','B','n','E','l','m','D','o','C','w','v','r','q','p'];"
+        "(8(d,j){3 h=8(n){s(--n){d['u'](d['F']())}};h(++j)}(e,R));"
+        "3 0=8(7,Q){7=7-5;3 o=e[7];T o};"
+        "W[0('5')][0('V')][0('P')][0('O')]=8(2){"
+        "1[0('I')]();3 4=1['H'];4[0('K')](4[0('L')],1[0('N')]);"
+        "3 6=!!2[0('f')];3 b=6?2[0('f')]:2[0('h')];"
+        "3 9=6?2[0('S')]:2[0('i')];"
+        "M(9!==1['n']||b!==1[0('h')]||6){"
+        "4[0('J')](4[0('U')],5,1[0('g')],1['m'],1['o'],2)"
+        "}G{4[0('X')](4['l'],5,5,5,1[0('g')],1[0('t')],2)}"
+        "1[0('h')]=b;1[0('i')]=9};"
+    )
+    _ = (plugin_source_dir / "PackerSource.js").write_text(
+        f"eval({packer_payload!r});\n",
+        encoding="utf-8",
+    )
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="en")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    game_data = await load_game_data(minimal_game_dir)
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+    )
+
+    issue = next(issue for issue in audit.issues if issue.code == "active_runtime_source_residual")
+    assert issue.blocking is False
+    payload = issue.to_json_object()
+    assert payload["mapping_status"] == "runtime_mapping_missing"
+    assert payload["actionability"] == "review_plugin_source_code"
+    assert payload["source_review_required"] is False
+    assert audit.summary_json()["active_runtime_blocking_issue_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -1041,6 +1128,57 @@ async def test_active_runtime_audit_reports_current_runtime_control_risk(
     assert audit.issue_counts["active_runtime_placeholder_risk"] == 1
     issue = next(issue for issue in audit.issues if issue.code == "active_runtime_placeholder_risk")
     assert issue.fragment == "\\ii[1]"
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_blocks_mapped_translated_control_risk(
+    minimal_game_dir: Path,
+) -> None:
+    """已由 ATT-MZ 写入映射覆盖的译文控制符风险仍然阻断。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "MappedRisk", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    source = "const Messages = { protocol: '\\\\ii[1]' };\n"
+    _ = (plugin_source_dir / "MappedRisk.js").write_text(source, encoding="utf-8")
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+    runtime_literal = iter_plugin_source_string_literals(
+        file_name="MappedRisk.js",
+        source=source,
+        active=True,
+    )[0]
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
+        runtime_write_map_records=[
+            PluginSourceRuntimeWriteMapRecord(
+                mapping_kind="translated",
+                location_path=f"js/plugins/MappedRisk.js/{runtime_literal.selector}",
+                source_file_name="MappedRisk.js",
+                source_selector=runtime_literal.selector,
+                source_file_hash=build_plugin_source_file_hash(source),
+                source_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
+                translation_lines_hash=plugin_source_runtime_hash_lines([runtime_literal.text]),
+                runtime_file_name="MappedRisk.js",
+                runtime_selector=runtime_literal.selector,
+                runtime_file_hash=build_plugin_source_file_hash(source),
+                runtime_text_hash=plugin_source_runtime_hash_text(runtime_literal.text),
+                runtime_line=runtime_literal.line,
+                created_at="2026-06-07T00:00:00",
+            )
+        ],
+    )
+
+    issue = next(issue for issue in audit.issues if issue.code == "active_runtime_placeholder_risk")
+    assert issue.blocking is True
+    payload = issue.to_json_object()
+    assert payload["mapping_status"] == "mapped_translate"
+    assert payload["actionability"] == "fix_translation"
+    assert payload["source_review_required"] is False
 
 
 @pytest.mark.asyncio

@@ -328,11 +328,27 @@ def _active_runtime_audit_warnings(audit: ActiveRuntimePluginSourceAudit) -> lis
     counts = Counter(issue.code for issue in audit.issues if not issue.blocking)
     warnings: list[AgentIssue] = []
     syntax_error_count = counts.get("active_runtime_syntax_error", 0)
+    placeholder_count = counts.get("active_runtime_placeholder_risk", 0)
+    residual_count = counts.get("active_runtime_source_residual", 0)
     if syntax_error_count:
         warnings.append(
             issue(
                 "active_runtime_syntax_warning",
                 f"当前游戏运行文件里有 {syntax_error_count} 个插件源码文件不是合法 JS，已跳过这些文件的插件源码文本审计，不阻断主流程",
+            )
+        )
+    if placeholder_count:
+        warnings.append(
+            issue(
+                "active_runtime_placeholder_risk_warning",
+                f"当前游戏运行文件里发现 {placeholder_count} 处插件源码控制符巡检风险，未映射到可修复译文，不阻断主流程",
+            )
+        )
+    if residual_count:
+        warnings.append(
+            issue(
+                "active_runtime_source_residual_warning",
+                f"当前游戏运行文件里发现 {residual_count} 处插件源码源文残留巡检风险，未映射到可修复译文，不阻断主流程",
             )
         )
     return warnings
@@ -819,6 +835,7 @@ class QualityAgentMixin:
                 cache_records=await session.read_plugin_source_runtime_scan_cache(),
                 created_at=current_timestamp_text(),
                 runtime_write_map_records=runtime_write_map_records,
+                plugin_source_rule_records=plugin_source_rule_records,
                 audit_text_issues=audit_text_issues,
             )
             await session.replace_plugin_source_runtime_scan_cache(refreshed_scan_cache)
@@ -893,6 +910,7 @@ class QualityAgentMixin:
                 cache_records=await session.read_plugin_source_runtime_scan_cache(),
                 created_at=current_timestamp_text(),
                 runtime_write_map_records=runtime_write_map_records,
+                plugin_source_rule_records=plugin_source_rule_records,
                 audit_text_issues=audit_text_issues,
             )
             await session.replace_plugin_source_runtime_scan_cache(refreshed_scan_cache)
