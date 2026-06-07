@@ -479,6 +479,7 @@ def expand_cached_error_items(
             original_lines=error_item.original_lines,
             item_type=error_item.item_type,
             role=error_item.role,
+            translation_dedupe_key=error_item.translation_dedupe_key,
         )
         for duplicate_item in duplicate_items:
             expanded_error_items.append(
@@ -487,6 +488,7 @@ def expand_cached_error_items(
                     item_type=duplicate_item.item_type,
                     role=duplicate_item.role,
                     original_lines=list(duplicate_item.original_lines),
+                    translation_dedupe_key=duplicate_item.translation_dedupe_key,
                     translation_lines=list(error_item.translation_lines),
                     error_type=error_item.error_type,
                     error_detail=list(error_item.error_detail),

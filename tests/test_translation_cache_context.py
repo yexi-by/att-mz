@@ -1,9 +1,50 @@
 """翻译去重记录与提示词组装测试。"""
 
+import hashlib
+
+from app.application.use_cases.translation_run import count_translation_items, deduplicate_translation_data
+from app.persistence.records import TextFactV2Record
+from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
 from app.rmmz.control_codes import REAL_LINE_BREAK_PLACEHOLDER
 from app.rmmz.schema import TranslationData, TranslationItem
 from app.rmmz.text_rules import get_default_text_rules
+from app.text_facts import text_fact_records_to_translation_data_map
 from app.translation import TranslationCache, iter_translation_context_batches
+
+
+def _sha256_text(text: str) -> str:
+    """计算测试用 v2 fact 文本 hash。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _make_text_fact_record(
+    *,
+    fact_id: str,
+    location_path: str,
+    raw_text: str,
+    visible_text: str,
+    translatable_text: str,
+    role: str = "Dan",
+) -> TextFactV2Record:
+    """构造最小 Text Fact Contract v2 记录。"""
+    return TextFactV2Record(
+        fact_id=fact_id,
+        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        domain="mv_virtual_namebox",
+        location_path=location_path,
+        source_file="Map001.json",
+        source_type="event_command",
+        item_type="long_text",
+        role=role,
+        selector=f"selector:{location_path}",
+        raw_text=raw_text,
+        visible_text=visible_text,
+        translatable_text=translatable_text,
+        raw_hash=_sha256_text(raw_text),
+        visible_hash=_sha256_text(visible_text),
+        translatable_hash=_sha256_text(translatable_text),
+        scope_key="scope-v2",
+    )
 
 
 def test_translation_cache_deduplicates_and_expands_items() -> None:
@@ -15,6 +56,53 @@ def test_translation_cache_deduplicates_and_expands_items() -> None:
     assert cache.remember_or_defer(first)
     assert not cache.remember_or_defer(duplicate)
     assert cache.pop_duplicate_items(first) == [duplicate]
+
+
+def test_text_fact_v2_adapter_uses_translatable_text_and_hash_dedupes_prompt() -> None:
+    """v2 fact 送模只使用 translatable_text，并按相同可译正文合并请求。"""
+    first = _make_text_fact_record(
+        fact_id="fact-1",
+        location_path="Map001.json/1/0",
+        raw_text=r"\n<Dan:> Hello",
+        visible_text=r"\n<Dan:> Hello",
+        translatable_text="Hello",
+    )
+    duplicate = _make_text_fact_record(
+        fact_id="fact-2",
+        location_path="Map001.json/1/1",
+        raw_text=r"\n<Dan:> Hello  ",
+        visible_text=r"\n<Dan:> Hello  ",
+        translatable_text="Hello",
+    )
+
+    translation_data_map = text_fact_records_to_translation_data_map([first, duplicate])
+    deduplicated_map = deduplicate_translation_data(
+        translation_data_map=translation_data_map,
+        translation_cache=TranslationCache(),
+    )
+    batches = list(
+        iter_translation_context_batches(
+            translation_data=next(iter(deduplicated_map.values())),
+            token_size=100,
+            factor=1.0,
+            max_command_items=3,
+            system_prompt="系统提示",
+            text_rules=get_default_text_rules(),
+        )
+    )
+    user_prompt = batches[0].messages[1].text
+
+    assert count_translation_items(translation_data_map) == 2
+    assert count_translation_items(deduplicated_map) == 1
+    assert batches[0].items[0].original_lines == ["Hello"]
+    assert "role: Dan" in user_prompt
+    assert "Hello" in user_prompt
+    assert r"\n<Dan:>" not in user_prompt
+    assert "selector:" not in user_prompt
+    assert "Map001.json" not in user_prompt
+    assert "location_path" not in user_prompt
+    assert "translated_text" not in user_prompt
+    assert "位置:" not in user_prompt
 
 
 def test_translation_context_prompt_contains_map_and_body_without_terms() -> None:

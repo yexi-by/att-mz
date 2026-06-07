@@ -80,6 +80,15 @@ from app.text_index import collect_text_index_scope_gate_errors
 from app.text_index import collect_text_index_placeholder_gate_decisions
 from app.text_index import text_index_item_to_translation_item
 from app.text_index import text_index_source_branch_gates_prechecked
+from app.text_facts import (
+    count_pending_text_fact_quality_errors_by_type_v2,
+    count_pending_text_fact_quality_errors_v2,
+    count_pending_text_facts_v2,
+    count_translated_text_facts_v2,
+    read_pending_text_fact_quality_error_paths_v2,
+    read_text_fact_quality_error_paths_v2,
+    read_text_fact_quality_items_for_translations,
+)
 from app.observability import current_diagnostics
 
 QUALITY_REPORT_FULL_RECHECK_LIMIT = 1000
@@ -1293,17 +1302,23 @@ class QualityAgentMixin:
             scope_summary = await session.read_text_index_scope_summary()
             if scope_summary is None:
                 raise RuntimeError("持久文本范围索引摘要不可读取，请重新运行 rebuild-text-index")
-            translated_count = await session.count_text_index_translated_items()
-            pending_count = await session.count_pending_text_index_items()
+            translated_count = await count_translated_text_facts_v2(session)
+            pending_count = await count_pending_text_facts_v2(session)
             stale_translation_count = await session.count_translations_outside_writable_text_index()
-            active_quality_error_paths = await session.read_text_index_quality_error_paths(latest_run.run_id)
-            pending_quality_error_paths = await session.read_pending_text_index_quality_error_paths(latest_run.run_id)
+            active_quality_error_paths = await read_text_fact_quality_error_paths_v2(session, latest_run.run_id)
+            pending_quality_error_paths = await read_pending_text_fact_quality_error_paths_v2(
+                session,
+                latest_run.run_id,
+            )
             quality_error_items = [
                 item
                 for item in run_quality_error_items
                 if item.location_path in pending_quality_error_paths
             ]
-            native_quality_items = await session.read_translated_items_by_paths(sorted(active_quality_error_paths))
+            native_quality_items = await read_text_fact_quality_items_for_translations(
+                session,
+                await session.read_translated_items_by_paths(sorted(active_quality_error_paths)),
+            )
             active_count = scope_summary.active_count
             writable_count = scope_summary.writable_count
             unwritable_count = scope_summary.unwritable_count
@@ -1346,29 +1361,32 @@ class QualityAgentMixin:
                 translated_items=translated_items,
                 include_write_probe=include_write_probe,
             )
-            pending_paths = writable_paths - translated_paths
             stale_paths = translated_paths - writable_paths
             stale_source_residual_rule_paths = {
                 rule.location_path
                 for rule in source_residual_rules
                 if rule.rule_type == "position" and rule.location_path not in active_paths
             }
-            active_quality_error_paths = {
-                item.location_path
-                for item in run_quality_error_items
-                if item.location_path in active_paths
-            }
+            if latest_run is None:
+                active_quality_error_paths: set[str] = set()
+                pending_quality_error_paths: set[str] = set()
+            else:
+                active_quality_error_paths = await read_text_fact_quality_error_paths_v2(session, latest_run.run_id)
+                pending_quality_error_paths = await read_pending_text_fact_quality_error_paths_v2(
+                    session,
+                    latest_run.run_id,
+                )
             quality_error_items = [
                 item
                 for item in run_quality_error_items
-                if item.location_path in pending_paths
+                if item.location_path in pending_quality_error_paths
             ]
             active_count = len(active_paths)
             writable_count = len(writable_paths)
             unwritable_count = len(active_paths - writable_paths)
-            translated_count = len(translated_paths & active_paths)
-            writable_translation_count = len(translated_paths & writable_paths)
-            pending_paths_count = len(pending_paths)
+            translated_count = await count_translated_text_facts_v2(session)
+            pending_paths_count = await count_pending_text_facts_v2(session)
+            writable_translation_count = max(0, writable_count - pending_paths_count)
             stale_paths_count = len(stale_paths)
             if latest_run is None or len(active_translated_items) <= QUALITY_REPORT_FULL_RECHECK_LIMIT:
                 native_quality_items = [
@@ -1381,6 +1399,10 @@ class QualityAgentMixin:
                     for item in active_translated_items
                     if item.location_path in active_quality_error_paths
                 ]
+            native_quality_items = await read_text_fact_quality_items_for_translations(
+                session,
+                native_quality_items,
+            )
         record_stage("build_index_scope", _elapsed_ms(stage_started))
         stage_started = time.perf_counter()
         placeholder_review_decisions, placeholder_metadata_errors = await collect_text_index_placeholder_gate_decisions(
@@ -1826,10 +1848,13 @@ class QualityAgentMixin:
                     set_status("读取持久文本范围索引")
                     metadata = await session.read_text_index_metadata()
                     extractable_count = metadata.item_count if metadata is not None else latest_run.total_extracted
-                    pending_count = await session.count_pending_text_index_items()
-                    translated_count = await session.count_text_index_translated_items()
-                    quality_error_count = await session.count_pending_text_index_quality_errors(latest_run.run_id)
-                    quality_error_counts = await session.count_pending_text_index_quality_errors_by_type(latest_run.run_id)
+                    pending_count = await count_pending_text_facts_v2(session)
+                    translated_count = await count_translated_text_facts_v2(session)
+                    quality_error_count = await count_pending_text_fact_quality_errors_v2(session, latest_run.run_id)
+                    quality_error_counts = await count_pending_text_fact_quality_errors_by_type_v2(
+                        session,
+                        latest_run.run_id,
+                    )
                     advance_progress(1)
                     set_progress(total_progress, total_progress)
                     set_status("正文翻译状态已完成")
@@ -1914,10 +1939,13 @@ class QualityAgentMixin:
                 set_status("读取持久文本范围索引")
                 metadata = await session.read_text_index_metadata()
                 extractable_count = metadata.item_count if metadata is not None else latest_run.total_extracted
-                pending_count = await session.count_pending_text_index_items()
-                translated_count = await session.count_text_index_translated_items()
-                quality_error_count = await session.count_pending_text_index_quality_errors(latest_run.run_id)
-                quality_error_counts = await session.count_pending_text_index_quality_errors_by_type(latest_run.run_id)
+                pending_count = await count_pending_text_facts_v2(session)
+                translated_count = await count_translated_text_facts_v2(session)
+                quality_error_count = await count_pending_text_fact_quality_errors_v2(session, latest_run.run_id)
+                quality_error_counts = await count_pending_text_fact_quality_errors_by_type_v2(
+                    session,
+                    latest_run.run_id,
+                )
                 advance_progress(1)
                 set_progress(total_progress, total_progress)
                 set_status("正文翻译状态已完成")

@@ -74,6 +74,7 @@ class TranslationItem(BaseModel):
     placeholder_map: dict[str, str] = Field(default_factory=dict)
     placeholder_counts: dict[str, int] = Field(default_factory=dict)
     terminology_owner_terms: list[str] = Field(default_factory=list, exclude=True)
+    translation_dedupe_key: str | None = Field(default=None, exclude=True)
 
     def build_placeholders(self, text_rules: TextRules | None = None) -> None:
         """为原文中的 RM 控制符构建语义化占位符。"""
@@ -255,6 +256,7 @@ class TranslationErrorItem(BaseModel):
     item_type: ItemType
     role: str | None
     original_lines: list[str] = Field(default_factory=list)
+    translation_dedupe_key: str | None = Field(default=None, exclude=True)
     translation_lines: list[str] = Field(default_factory=list)
     error_type: ErrorType
     error_detail: list[str] = Field(default_factory=list)

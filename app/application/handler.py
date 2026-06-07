@@ -156,7 +156,11 @@ from app.text_index import (
     collect_text_index_scope_gate_errors,
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
-    text_index_items_to_translation_data_map,
+)
+from app.text_facts import (
+    count_current_text_facts_v2,
+    count_pending_text_facts_v2,
+    read_pending_text_fact_translation_data_map,
 )
 from app.text_scope import TextScopeResult, collect_translation_data_paths
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
@@ -1018,7 +1022,7 @@ class TranslationHandler:
                 text_index_rebuild_summary=text_index_rebuild_summary,
             )
 
-        total_extracted_items = metadata.item_count
+        total_extracted_items = await count_current_text_facts_v2(session)
         if total_extracted_items == 0:
             blocked_reason = "没有提取到任何可翻译正文"
             logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
@@ -1034,7 +1038,7 @@ class TranslationHandler:
                 text_index_status=text_index_status,
                 text_index_rebuild_summary=text_index_rebuild_summary,
             )
-        total_pending_count = await session.count_pending_text_index_items()
+        total_pending_count = await count_pending_text_facts_v2(session)
         if total_pending_count == 0:
             logger.info(f"[tag.skip]正文译文已全部存在，跳过翻译[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
             set_progress(total_extracted_items, total_extracted_items)
@@ -1050,8 +1054,10 @@ class TranslationHandler:
                 text_index_rebuild_summary=text_index_rebuild_summary,
             )
 
-        pending_index_items = await session.read_pending_text_index_items(limit=run_limits.max_items)
-        pending_translation_data_map = text_index_items_to_translation_data_map(pending_index_items)
+        pending_translation_data_map = await read_pending_text_fact_translation_data_map(
+            session,
+            limit=run_limits.max_items,
+        )
         pending_count = count_translation_items(pending_translation_data_map)
         set_progress(0, pending_count)
 

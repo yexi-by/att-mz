@@ -809,6 +809,53 @@ async def test_export_pending_translations_warm_index_uses_sql_limit_without_ful
 
 
 @pytest.mark.asyncio
+async def test_export_pending_translations_uses_v2_fact_translatable_text(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """pending 导出必须使用 v2 fact 的可译正文，不再读取旧索引 original_lines。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            "SELECT location_path, translatable_text FROM text_facts_v2 ORDER BY domain, location_path, fact_id LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_path = cast(str, row["location_path"])
+        expected_text = cast(str, row["translatable_text"])
+        polluted_lines = json.dumps(
+            ["RAW_SHELL_SHOULD_NOT_BE_EXPORTED location_path translated_text 位置:"],
+            ensure_ascii=False,
+        )
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET original_lines = ? WHERE location_path = ?",
+            (polluted_lines, target_path),
+        )
+        await session.connection.commit()
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+
+    payload = load_json_object(pending_path)
+    entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
+    assert export_report.status == "ok"
+    assert entry["original_lines"] == [expected_text]
+    assert entry["text_for_model_lines"] == [expected_text]
+    exported_text = json.dumps(payload, ensure_ascii=False)
+    assert "RAW_SHELL_SHOULD_NOT_BE_EXPORTED" not in exported_text
+    assert "translated_text" not in exported_text
+    assert "位置:" not in exported_text
+
+
+@pytest.mark.asyncio
 async def test_export_pending_translations_cold_rebuilds_missing_text_index_then_uses_limit(
     minimal_game_dir: Path,
     tmp_path: Path,

@@ -447,6 +447,53 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
 
 
 @pytest.mark.asyncio
+async def test_translation_status_refresh_counts_pending_from_v2_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """translation-status --refresh-scope 的 pending 计数必须来自当前 v2 facts。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        run_record = await session.start_translation_run(
+            total_extracted=999,
+            pending_count=999,
+            deduplicated_count=999,
+            batch_count=1,
+        )
+        async with session.connection.execute(
+            "SELECT fact_id FROM text_facts_v2 ORDER BY domain, location_path, fact_id LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        kept_fact_id = cast(str, row["fact_id"])
+        _ = await session.connection.execute(
+            "DELETE FROM text_fact_domain_payloads_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_fact_render_parts_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        await session.connection.commit()
+
+    report = await service.translation_status(game_title="テストゲーム", refresh_scope=True)
+
+    assert report.status == "ok"
+    assert report.summary["run_id"] == run_record.run_id
+    assert report.summary["pending_count"] == 1
+    assert report.summary["run_pending_count"] == 999
+    assert report.summary["text_index_status"] == "used"
+
+
+@pytest.mark.asyncio
 async def test_quality_report_large_warm_index_uses_count_fast_path(
     minimal_game_dir: Path,
     tmp_path: Path,

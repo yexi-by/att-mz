@@ -32,7 +32,11 @@ from .common import (
 from app.text_index import (
     collect_text_index_scope_gate_errors,
     detect_text_index_invalidations,
-    text_index_item_to_translation_item,
+)
+from app.text_facts import (
+    count_pending_text_facts_v2,
+    read_pending_text_fact_translation_items,
+    read_writable_text_fact_translation_items_by_paths,
 )
 
 
@@ -160,15 +164,11 @@ class ManualTranslationAgentMixin:
                 )
 
             set_status("读取还没成功保存译文的索引条目")
-            pending_total_count = await session.count_pending_text_index_items()
+            pending_total_count = await count_pending_text_facts_v2(session)
             if limit is not None and limit <= 0:
                 pending_items: list[TranslationItem] = []
             else:
-                pending_index_items = await session.read_pending_text_index_items(limit=limit)
-                pending_items = [
-                    text_index_item_to_translation_item(record)
-                    for record in pending_index_items
-                ]
+                pending_items = await read_pending_text_fact_translation_items(session, limit=limit)
             advance_progress(1)
 
         set_status("写出手动填写译文表")
@@ -302,11 +302,12 @@ class ManualTranslationAgentMixin:
                 rebuild_warnings.extend(rebuild_report.warnings)
             else:
                 text_index_status = "used"
-            index_records = await session.read_text_index_items_by_paths(sorted(payload_paths))
             active_items = {
-                record.location_path: text_index_item_to_translation_item(record)
-                for record in index_records
-                if record.writable
+                item.location_path: item
+                for item in await read_writable_text_fact_translation_items_by_paths(
+                    session,
+                    sorted(payload_paths),
+                )
             }
             source_residual_rules = await session.read_source_residual_rules()
 
@@ -410,7 +411,7 @@ class ManualTranslationAgentMixin:
             if latest_run is not None:
                 remaining_quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
-                has_pending_items = await session.count_pending_text_index_items() > 0
+                has_pending_items = await count_pending_text_facts_v2(session) > 0
                 if not has_pending_items and remaining_quality_error_count == 0 and not llm_failures:
                     await session.write_translation_run(
                         latest_run.model_copy(
