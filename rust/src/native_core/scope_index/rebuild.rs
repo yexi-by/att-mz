@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
-use super::mv_virtual_namebox::{MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput};
+use super::mv_virtual_namebox::{
+    MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput, MvVirtualNameboxFactParts,
+    MvVirtualNameboxFactPartsInput, build_mv_virtual_namebox_fact_parts,
+};
 use super::nonstandard_data::{
     NonstandardDataFileInput, NonstandardDataManagedTextError, NonstandardDataTextRuleInput,
     collect_nonstandard_data_managed_texts,
@@ -34,6 +37,10 @@ use super::structured_placeholders::{
     StructuredPlaceholderTextInput, scan_structured_placeholder_rule_candidates,
 };
 use super::{RuleCandidateOutput, RuleCandidateTextRules};
+use crate::native_core::text_facts::{
+    TEXT_FACT_SCHEMA_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart, TextFactScope,
+    build_fact_id, domains,
+};
 use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
 
 const TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY: &str = "prompt_context_version";
@@ -69,14 +76,20 @@ struct RebuildStoragePayload {
 #[derive(Debug, Serialize)]
 struct RebuildStorageOutput {
     status: &'static str,
+    index_status: &'static str,
     source_snapshot_fingerprint: String,
     rules_fingerprint: String,
+    source_snapshot_hash: String,
+    rule_hash: String,
+    text_rules_hash: String,
     indexed_count: usize,
     text_fact_count: usize,
     render_part_count: usize,
     scope_key: String,
     scope_hash: String,
     text_fact_schema_version: i64,
+    domain_fact_counts: BTreeMap<String, usize>,
+    scan_file_count: usize,
     standard_data_file_count: usize,
     native_thread_count: usize,
     written_item_count: usize,
@@ -157,6 +170,13 @@ struct DirectDomainSummary {
     inactive_rule_hit_count: usize,
 }
 
+struct DirectTextFactStoragePayload {
+    text_facts: Vec<TextFact>,
+    render_parts: Vec<TextFactRenderPart>,
+    domain_payloads: Vec<TextFactDomainPayload>,
+    domain_fact_counts: BTreeMap<String, usize>,
+}
+
 #[derive(Debug)]
 struct PendingLongText {
     location_path: String,
@@ -172,6 +192,7 @@ struct RawMvVirtualNameboxRule {
     speaker_group: String,
     body_group: String,
     speaker_policy: String,
+    render_template: String,
 }
 
 #[derive(Debug)]
@@ -181,6 +202,7 @@ struct CompiledMvVirtualNameboxRule {
     speaker_group: String,
     body_group: String,
     speaker_policy: String,
+    render_template: String,
 }
 
 #[derive(Debug)]
@@ -192,7 +214,11 @@ struct NoteTagTextRuleInput {
 #[derive(Debug)]
 struct ParsedMvVirtualSpeaker {
     speaker: String,
+    source_speaker: String,
     body_text: String,
+    rule_name: String,
+    speaker_policy: String,
+    fact_parts: MvVirtualNameboxFactParts,
 }
 
 pub(crate) fn rebuild_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
@@ -422,6 +448,18 @@ fn rebuild_with_context(
     );
     let text_rules_hash = rebuild_text_rules_hash(&payload)?;
     let stage_started = Instant::now();
+    let text_fact_scope = TextFactScope::from_hashes(
+        source_snapshot_fingerprint.clone(),
+        rules_fingerprint.clone(),
+        text_rules_hash.clone(),
+        payload.created_at.clone(),
+    );
+    let text_fact_payload = build_text_fact_storage_payload_with_context(
+        &rows,
+        &text_fact_scope,
+        &data_files,
+        Some(&context),
+    )?;
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
         metadata: storage::TextIndexMetadataInput {
@@ -468,10 +506,10 @@ fn rebuild_with_context(
             })
             .collect(),
         rule_hit_summary: Vec::new(),
-        text_fact_scope: None,
-        text_facts: Vec::new(),
-        text_fact_render_parts: Vec::new(),
-        text_fact_domain_payloads: Vec::new(),
+        text_fact_scope: Some(text_fact_scope.clone()),
+        text_facts: text_fact_payload.text_facts,
+        text_fact_render_parts: text_fact_payload.render_parts,
+        text_fact_domain_payloads: text_fact_payload.domain_payloads,
     };
     record_stage(
         &mut internal_stage_timings,
@@ -484,14 +522,20 @@ fn rebuild_with_context(
     let written_item_count = write_output.written_item_count;
     serialize_output(&RebuildStorageOutput {
         status: "ok",
+        index_status: "rebuilt",
         source_snapshot_fingerprint,
         rules_fingerprint,
+        source_snapshot_hash: text_fact_scope.source_snapshot_hash,
+        rule_hash: text_fact_scope.rule_hash,
+        text_rules_hash: text_fact_scope.text_rules_hash,
         indexed_count: written_item_count,
         text_fact_count: write_output.text_fact_count,
         render_part_count: write_output.render_part_count,
         scope_key: write_output.scope_key,
         scope_hash: write_output.scope_hash,
         text_fact_schema_version: write_output.text_fact_schema_version,
+        domain_fact_counts: text_fact_payload.domain_fact_counts,
+        scan_file_count: data_files.len(),
         standard_data_file_count: data_files.len(),
         native_thread_count,
         written_item_count,
@@ -1609,7 +1653,7 @@ fn read_mv_virtual_namebox_rule_inputs(
 ) -> Result<Vec<RawMvVirtualNameboxRule>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT rule_name, pattern_text, speaker_group, body_group, speaker_policy \
+            "SELECT rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template \
              FROM mv_virtual_namebox_rules \
              ORDER BY rule_order",
         )
@@ -1627,6 +1671,7 @@ fn read_mv_virtual_namebox_rule_inputs(
                 speaker_group: row.get(2)?,
                 body_group: row.get(3)?,
                 speaker_policy: row.get(4)?,
+                render_template: row.get(5)?,
             })
         })
         .map_err(|error| {
@@ -1674,6 +1719,7 @@ fn compile_mv_virtual_namebox_rules(
                 speaker_group: rule.speaker_group,
                 body_group: rule.body_group,
                 speaker_policy: rule.speaker_policy,
+                render_template: rule.render_template,
             })
         })
         .collect()
@@ -3010,6 +3056,7 @@ fn parse_mv_virtual_speaker_line(
             context,
             rule,
             &captures,
+            normalized_text,
             location_path,
         )?);
         matched_rule_names.push(rule.rule_name.clone());
@@ -3030,8 +3077,15 @@ fn build_mv_virtual_speaker(
     context: &RebuildContext,
     rule: &CompiledMvVirtualNameboxRule,
     captures: &Captures<'_>,
+    raw_text: &str,
     location_path: &str,
 ) -> Result<ParsedMvVirtualSpeaker, String> {
+    let mut group_values = BTreeMap::new();
+    for capture_name in rule.pattern.capture_names().flatten() {
+        if let Some(value) = capture_group(captures, capture_name) {
+            group_values.insert(capture_name.to_string(), value.to_string());
+        }
+    }
     let source_speaker = capture_group(captures, &rule.speaker_group)
         .unwrap_or_default()
         .trim()
@@ -3055,9 +3109,33 @@ fn build_mv_virtual_speaker(
     let speaker = if rule.speaker_policy == "actor_name" {
         actor_name_from_control(context, &source_speaker, location_path)?
     } else {
-        source_speaker
+        source_speaker.clone()
     };
-    Ok(ParsedMvVirtualSpeaker { speaker, body_text })
+    let fact_parts = build_mv_virtual_namebox_fact_parts(MvVirtualNameboxFactPartsInput {
+        raw_text,
+        source_speaker: &source_speaker,
+        role: &speaker,
+        body_text: &body_text,
+        render_template: &rule.render_template,
+        speaker_group: &rule.speaker_group,
+        body_group: &rule.body_group,
+        rule_name: &rule.rule_name,
+        template_values: &group_values,
+    })
+    .map_err(|message| {
+        structured_error(
+            "scope_index_rebuild_mv_virtual_namebox_failed",
+            format!("{message}; 文本路径={location_path}"),
+        )
+    })?;
+    Ok(ParsedMvVirtualSpeaker {
+        speaker,
+        source_speaker,
+        body_text,
+        rule_name: rule.rule_name.clone(),
+        speaker_policy: rule.speaker_policy.clone(),
+        fact_parts,
+    })
 }
 
 fn capture_group<'a>(captures: &'a Captures<'_>, group_name: &str) -> Option<&'a str> {
@@ -3186,6 +3264,310 @@ fn domain_summary_from_rows(rows: &[DirectTextIndexRow]) -> Vec<DirectDomainSumm
         .collect()
 }
 
+#[cfg(test)]
+fn build_text_fact_storage_payload(
+    rows: &[DirectTextIndexRow],
+    scope: &TextFactScope,
+) -> Result<DirectTextFactStoragePayload, String> {
+    build_text_fact_storage_payload_with_context(rows, scope, &[], None)
+}
+
+fn build_text_fact_storage_payload_with_context(
+    rows: &[DirectTextIndexRow],
+    scope: &TextFactScope,
+    data_files: &[ParsedDataFile],
+    context: Option<&RebuildContext>,
+) -> Result<DirectTextFactStoragePayload, String> {
+    let mut text_facts = Vec::with_capacity(rows.len());
+    let mut render_parts = Vec::new();
+    let mut domain_payloads = Vec::new();
+    let mut domain_fact_counts = BTreeMap::new();
+    for row in rows {
+        let fact_content = match context {
+            Some(context) => mv_virtual_namebox_fact_content(row, data_files, context)?,
+            None => None,
+        }
+        .unwrap_or_else(|| default_text_fact_content(row));
+        let fact = build_text_fact_from_content(row, scope, &fact_content)?;
+        for (part_order, part) in fact_content.render_parts.iter().enumerate() {
+            render_parts.push(TextFactRenderPart {
+                fact_id: fact.fact_id.clone(),
+                part_order: part_order as i64,
+                part_kind: part.part_kind.clone(),
+                raw_text: part.raw_text.clone(),
+                semantic_text: part.semantic_text.clone(),
+                template_key: part.template_key.clone(),
+            });
+        }
+        if let Some(payload_json) = fact_content.domain_payload_json {
+            domain_payloads.push(TextFactDomainPayload {
+                fact_id: fact.fact_id.clone(),
+                payload_json,
+            });
+        }
+        *domain_fact_counts
+            .entry(fact_content.domain.clone())
+            .or_insert(0) += 1;
+        text_facts.push(fact);
+    }
+    Ok(DirectTextFactStoragePayload {
+        text_facts,
+        render_parts,
+        domain_payloads,
+        domain_fact_counts,
+    })
+}
+
+struct DirectTextFactContent {
+    domain: String,
+    role: String,
+    raw_text: String,
+    visible_text: String,
+    translatable_text: String,
+    render_parts: Vec<DirectTextFactRenderPart>,
+    domain_payload_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DirectTextFactRenderPart {
+    part_kind: String,
+    raw_text: String,
+    semantic_text: String,
+    template_key: String,
+}
+
+fn default_text_fact_content(row: &DirectTextIndexRow) -> DirectTextFactContent {
+    let text = row.original_lines.join("\n");
+    DirectTextFactContent {
+        domain: text_fact_domain_for_row(row).to_string(),
+        role: row.role.clone().unwrap_or_default(),
+        raw_text: text.clone(),
+        visible_text: text.clone(),
+        translatable_text: text.clone(),
+        render_parts: vec![DirectTextFactRenderPart {
+            part_kind: "translated_body".to_string(),
+            raw_text: text.clone(),
+            semantic_text: text,
+            template_key: "body".to_string(),
+        }],
+        domain_payload_json: None,
+    }
+}
+
+fn mv_virtual_namebox_fact_content(
+    row: &DirectTextIndexRow,
+    data_files: &[ParsedDataFile],
+    context: &RebuildContext,
+) -> Result<Option<DirectTextFactContent>, String> {
+    if context.mv_virtual_namebox_rules.is_empty() || row.source_type != "event_command" {
+        return Ok(None);
+    }
+    let translatable_text = row.original_lines.join("\n");
+    for source_line_path in &row.source_line_paths {
+        let Some(raw_text) = command_text_by_location_path(data_files, source_line_path) else {
+            continue;
+        };
+        let Some(parsed) = parse_mv_virtual_speaker_line(context, &raw_text, source_line_path)?
+        else {
+            continue;
+        };
+        if parsed.body_text != translatable_text {
+            continue;
+        }
+        let payload_json = serde_json::to_string(&json!({
+            "rule_name": parsed.rule_name,
+            "speaker_policy": parsed.speaker_policy,
+            "source_speaker": parsed.source_speaker,
+        }))
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_text_fact_invalid",
+                format!("MV 虚拟名字框 domain payload 序列化失败: {error}"),
+            )
+        })?;
+        return Ok(Some(DirectTextFactContent {
+            domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
+            role: parsed.fact_parts.role,
+            raw_text: parsed.fact_parts.raw_text,
+            visible_text: parsed.fact_parts.visible_text,
+            translatable_text: parsed.fact_parts.translatable_text,
+            render_parts: parsed
+                .fact_parts
+                .render_parts
+                .into_iter()
+                .map(|part| DirectTextFactRenderPart {
+                    part_kind: part.part_kind,
+                    raw_text: part.raw_text,
+                    semantic_text: part.semantic_text,
+                    template_key: part.template_key,
+                })
+                .collect(),
+            domain_payload_json: Some(payload_json),
+        }));
+    }
+    Ok(None)
+}
+
+fn build_text_fact_from_content(
+    row: &DirectTextIndexRow,
+    scope: &TextFactScope,
+    content: &DirectTextFactContent,
+) -> Result<TextFact, String> {
+    let raw_hash = sha256_text(&content.raw_text);
+    let visible_hash = sha256_text(&content.visible_text);
+    let translatable_hash = sha256_text(&content.translatable_text);
+    let selector = row.location_path.clone();
+    let fact_id = build_fact_id(
+        TEXT_FACT_SCHEMA_VERSION,
+        &content.domain,
+        &row.location_path,
+        &selector,
+        &raw_hash,
+    );
+    let fact = TextFact {
+        fact_id,
+        schema_version: TEXT_FACT_SCHEMA_VERSION,
+        domain: content.domain.clone(),
+        location_path: row.location_path.clone(),
+        source_file: row.source_file.clone(),
+        source_type: row.source_type.clone(),
+        item_type: row.item_type.clone(),
+        role: content.role.clone(),
+        selector,
+        raw_text: content.raw_text.clone(),
+        visible_text: content.visible_text.clone(),
+        translatable_text: content.translatable_text.clone(),
+        raw_hash,
+        visible_hash,
+        translatable_hash,
+        scope_key: scope.scope_key.clone(),
+    };
+    fact.validate().map_err(|message| {
+        structured_error(
+            "scope_index_rebuild_text_fact_invalid",
+            format!("v2 文本事实构造失败 {}: {message}", row.location_path),
+        )
+    })?;
+    Ok(fact)
+}
+
+fn text_fact_domain_for_row(row: &DirectTextIndexRow) -> &str {
+    match row.source_type.as_str() {
+        "plugin_parameter" => domains::PLUGIN_CONFIG,
+        value => value,
+    }
+}
+
+fn command_text_by_location_path(
+    data_files: &[ParsedDataFile],
+    location_path: &str,
+) -> Option<String> {
+    let parts = location_path.split('/').collect::<Vec<_>>();
+    let file_name = *parts.first()?;
+    let data = &data_files
+        .iter()
+        .find(|file| file.file_name == file_name)?
+        .data;
+    let command = if file_name == "CommonEvents.json" {
+        command_from_common_event_path(data, &parts)?
+    } else if is_map_data_file(file_name) {
+        command_from_map_path(data, &parts)?
+    } else if file_name == "Troops.json" {
+        command_from_troop_path(data, &parts)?
+    } else {
+        return None;
+    };
+    command
+        .get("parameters")?
+        .as_array()?
+        .first()?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn command_from_common_event_path<'a>(
+    data: &'a Value,
+    parts: &[&str],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    if parts.len() < 3 {
+        return None;
+    }
+    let event_id = parse_i64_path_part(parts[1])?;
+    let command_index = parse_usize_path_part(parts[2])?;
+    let event = data.as_array()?.iter().find(|item| {
+        item.as_object()
+            .and_then(|object| object.get("id"))
+            .and_then(Value::as_i64)
+            == Some(event_id)
+    })?;
+    event
+        .as_object()?
+        .get("list")?
+        .as_array()?
+        .get(command_index)?
+        .as_object()
+}
+
+fn command_from_map_path<'a>(
+    data: &'a Value,
+    parts: &[&str],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    if parts.len() < 4 {
+        return None;
+    }
+    let event_id = parse_i64_path_part(parts[1])?;
+    let page_index = parse_usize_path_part(parts[2])?;
+    let command_index = parse_usize_path_part(parts[3])?;
+    let event = data.get("events")?.as_array()?.iter().find(|item| {
+        item.as_object()
+            .and_then(|object| object.get("id"))
+            .and_then(Value::as_i64)
+            == Some(event_id)
+    })?;
+    event
+        .get("pages")?
+        .as_array()?
+        .get(page_index)?
+        .get("list")?
+        .as_array()?
+        .get(command_index)?
+        .as_object()
+}
+
+fn command_from_troop_path<'a>(
+    data: &'a Value,
+    parts: &[&str],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    if parts.len() < 4 {
+        return None;
+    }
+    let troop_id = parse_i64_path_part(parts[1])?;
+    let page_index = parse_usize_path_part(parts[2])?;
+    let command_index = parse_usize_path_part(parts[3])?;
+    let troop = data.as_array()?.iter().find(|item| {
+        item.as_object()
+            .and_then(|object| object.get("id"))
+            .and_then(Value::as_i64)
+            == Some(troop_id)
+    })?;
+    troop
+        .get("pages")?
+        .as_array()?
+        .get(page_index)?
+        .get("list")?
+        .as_array()?
+        .get(command_index)?
+        .as_object()
+}
+
+fn parse_i64_path_part(value: &str) -> Option<i64> {
+    value.parse::<i64>().ok()
+}
+
+fn parse_usize_path_part(value: &str) -> Option<usize> {
+    value.parse::<usize>().ok()
+}
+
 fn stable_json_fingerprint(value: &Value) -> Result<String, String> {
     let mut hasher = Sha256::new();
     update_canonical_json_hash(value, &mut hasher)?;
@@ -3268,10 +3650,14 @@ fn structured_error(code: &str, message: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RebuildStoragePayload, RuleCandidateTextRules, rebuild_text_rules_hash};
+    use super::{
+        DirectTextIndexRow, RebuildStoragePayload, RuleCandidateTextRules,
+        build_text_fact_storage_payload, rebuild_text_rules_hash,
+    };
     use crate::native_core::models::{
         NativeCustomPlaceholderRule, NativeStructuredPlaceholderRule,
     };
+    use crate::native_core::text_facts::{TextFactScope, domains};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -3326,6 +3712,56 @@ mod tests {
             rebuild_text_rules_hash(&first).expect("第一种 JSON key 顺序应可计算 hash"),
             rebuild_text_rules_hash(&second).expect("第二种 JSON key 顺序应可计算 hash")
         );
+    }
+
+    #[test]
+    fn rebuild_text_fact_storage_payload_builds_default_facts_for_batch1_rows() {
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let rows = vec![
+            DirectTextIndexRow {
+                location_path: "System.json/gameTitle".to_string(),
+                item_type: "short_text".to_string(),
+                role: None,
+                original_lines: vec!["Fixture Game".to_string()],
+                source_line_paths: Vec::new(),
+                source_type: "standard_data".to_string(),
+                source_file: "System.json".to_string(),
+                writable: true,
+                source_snapshot_fingerprint: "snapshot-v1".to_string(),
+                rules_fingerprint: "rules-v1".to_string(),
+                locator_json: "{}".to_string(),
+            },
+            DirectTextIndexRow {
+                location_path: "CommonEvents.json/1/0".to_string(),
+                item_type: "long_text".to_string(),
+                role: Some("Alice".to_string()),
+                original_lines: vec!["Hello".to_string()],
+                source_line_paths: vec!["CommonEvents.json/1/1".to_string()],
+                source_type: "event_command".to_string(),
+                source_file: "CommonEvents.json".to_string(),
+                writable: true,
+                source_snapshot_fingerprint: "snapshot-v1".to_string(),
+                rules_fingerprint: "rules-v1".to_string(),
+                locator_json: "{}".to_string(),
+            },
+        ];
+
+        let fact_payload = build_text_fact_storage_payload(&rows, &scope)
+            .expect("batch1 默认文本事实应可由 rows 构建");
+
+        assert_eq!(fact_payload.text_facts.len(), 2);
+        assert_eq!(fact_payload.render_parts.len(), 2);
+        assert_eq!(fact_payload.domain_fact_counts[domains::STANDARD_DATA], 1);
+        assert_eq!(fact_payload.domain_fact_counts[domains::EVENT_COMMAND], 1);
+        assert!(fact_payload.domain_payloads.is_empty());
+        assert!(fact_payload.text_facts.iter().all(|fact| {
+            fact.raw_text == fact.visible_text && fact.visible_text == fact.translatable_text
+        }));
     }
 
     fn minimal_rebuild_payload() -> RebuildStoragePayload {

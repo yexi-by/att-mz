@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
 
+from app.agent_toolkit import AgentToolkitService
+from app.persistence.records import TextFactV2ReadFilter
+
 @pytest.mark.asyncio
 async def test_mv_outer_layout_loads_www_data_and_system_title(minimal_mv_game_dir: Path) -> None:
     """MV 外层目录布局会定位到 www 内容目录，并用 System 标题兜底注册。"""
@@ -206,6 +209,74 @@ async def test_mv_data_extraction_without_virtual_namebox_rules_keeps_401_as_bod
 
     assert item.role == "旁白"
     assert item.original_lines == ["案内人：", "次の本文です"]
+
+
+@pytest.mark.asyncio
+async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 冷重建保存 MV 虚拟名字框 raw/render/translatable 三层事实。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 91,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": [r"\n<Dan:> Hello"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="en")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_mv_virtual_namebox_rules(
+            [
+                MvVirtualNameboxRuleRecord(
+                    rule_order=0,
+                    rule_name="yep-namebox-with-colon",
+                    pattern_text=r"^\\n<(?P<speaker>[^:>\r\n]+):> (?P<body>.*)$",
+                    speaker_group="speaker",
+                    body_group="body",
+                    speaker_policy="translate",
+                    render_template=r"\n<{speaker}:> {body}",
+                )
+            ]
+        )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+    assert report.status == "ok"
+    scope_key = str(report.summary["scope_key"])
+
+    async with await registry.open_game(record.game_title) as session:
+        _ = await session.require_current_text_fact_scope_v2(scope_key)
+        facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        )
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact.raw_text == r"\n<Dan:> Hello"
+        assert fact.visible_text == r"\n<Dan:> Hello"
+        assert fact.translatable_text == "Hello"
+        assert fact.role == "Dan"
+        parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+
+    assert [part.part_kind for part in parts] == [
+        "literal",
+        "speaker",
+        "literal",
+        "translated_body",
+    ]
+    assert "".join(part.raw_text for part in parts) == r"\n<Dan:> Hello"
+
+
 @pytest.mark.asyncio
 async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_game_dir: Path) -> None:
     """MV 写回用术语表译名重建虚拟名字框，正文只写剥离后的对白。"""

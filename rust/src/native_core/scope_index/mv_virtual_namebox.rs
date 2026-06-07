@@ -138,10 +138,209 @@ struct VirtualSpeaker {
     rendered_source: String,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct MvVirtualNameboxFactParts {
+    pub(super) raw_text: String,
+    pub(super) visible_text: String,
+    pub(super) translatable_text: String,
+    pub(super) role: String,
+    pub(super) render_parts: Vec<MvVirtualNameboxFactRenderPart>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MvVirtualNameboxFactRenderPart {
+    pub(super) part_kind: String,
+    pub(super) raw_text: String,
+    pub(super) semantic_text: String,
+    pub(super) template_key: String,
+}
+
+pub(super) struct MvVirtualNameboxFactPartsInput<'a> {
+    pub(super) raw_text: &'a str,
+    pub(super) source_speaker: &'a str,
+    pub(super) role: &'a str,
+    pub(super) body_text: &'a str,
+    pub(super) render_template: &'a str,
+    pub(super) speaker_group: &'a str,
+    pub(super) body_group: &'a str,
+    pub(super) rule_name: &'a str,
+    pub(super) template_values: &'a BTreeMap<String, String>,
+}
+
 struct RuleStats {
     rule_index: usize,
     rule_name: String,
     matched_candidate_location_paths: BTreeSet<String>,
+}
+
+pub(super) fn build_mv_virtual_namebox_fact_parts(
+    input: MvVirtualNameboxFactPartsInput<'_>,
+) -> Result<MvVirtualNameboxFactParts, String> {
+    if !has_visible_text(input.source_speaker) {
+        return Err(format!(
+            "MV 虚拟名字框规则 {} 命中了空白或不可见 speaker",
+            input.rule_name
+        ));
+    }
+    if !has_visible_text(input.role) {
+        return Err(format!(
+            "MV 虚拟名字框规则 {} 解析后的 speaker 为空白或不可见",
+            input.rule_name
+        ));
+    }
+    let render_parts = render_parts_from_template(
+        input.render_template,
+        input.source_speaker,
+        input.role,
+        input.body_text,
+        input.speaker_group,
+        input.body_group,
+        input.template_values,
+    )?;
+    let rebuilt_raw = render_parts
+        .iter()
+        .map(|part| part.raw_text.as_str())
+        .collect::<String>();
+    if rebuilt_raw != input.raw_text {
+        return Err(format!(
+            "MV 虚拟名字框规则 {} 的 render_template 无法重建源文本",
+            input.rule_name
+        ));
+    }
+    Ok(MvVirtualNameboxFactParts {
+        raw_text: input.raw_text.to_string(),
+        visible_text: input.raw_text.to_string(),
+        translatable_text: input.body_text.to_string(),
+        role: input.role.to_string(),
+        render_parts,
+    })
+}
+
+fn render_parts_from_template(
+    render_template: &str,
+    source_speaker: &str,
+    role: &str,
+    body_text: &str,
+    speaker_group: &str,
+    body_group: &str,
+    template_values: &BTreeMap<String, String>,
+) -> Result<Vec<MvVirtualNameboxFactRenderPart>, String> {
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let chars = render_template.chars().collect::<Vec<_>>();
+    let mut index = 0usize;
+    while index < chars.len() {
+        match chars[index] {
+            '{' => {
+                if chars.get(index + 1) == Some(&'{') {
+                    literal.push('{');
+                    index += 2;
+                    continue;
+                }
+                flush_literal_part(&mut parts, &mut literal);
+                let start_index = index + 1;
+                let mut end_index = start_index;
+                while end_index < chars.len() && chars[end_index] != '}' {
+                    end_index += 1;
+                }
+                if end_index >= chars.len() {
+                    return Err(format!(
+                        "MV 虚拟名字框模板缺少闭合大括号: {render_template}"
+                    ));
+                }
+                let field_expression = chars[start_index..end_index].iter().collect::<String>();
+                let field_name = normalize_template_field_name(&field_expression);
+                parts.push(render_part_for_template_field(
+                    field_name,
+                    source_speaker,
+                    role,
+                    body_text,
+                    speaker_group,
+                    body_group,
+                    template_values,
+                )?);
+                index = end_index + 1;
+            }
+            '}' => {
+                if chars.get(index + 1) == Some(&'}') {
+                    literal.push('}');
+                    index += 2;
+                    continue;
+                }
+                return Err(format!(
+                    "MV 虚拟名字框模板存在孤立闭合大括号: {render_template}"
+                ));
+            }
+            character => {
+                literal.push(character);
+                index += 1;
+            }
+        }
+    }
+    flush_literal_part(&mut parts, &mut literal);
+    Ok(parts)
+}
+
+fn flush_literal_part(parts: &mut Vec<MvVirtualNameboxFactRenderPart>, literal: &mut String) {
+    if literal.is_empty() {
+        return;
+    }
+    let raw_text = std::mem::take(literal);
+    parts.push(MvVirtualNameboxFactRenderPart {
+        part_kind: "literal".to_string(),
+        semantic_text: raw_text.clone(),
+        raw_text,
+        template_key: "literal".to_string(),
+    });
+}
+
+fn render_part_for_template_field(
+    field_name: &str,
+    source_speaker: &str,
+    role: &str,
+    body_text: &str,
+    speaker_group: &str,
+    body_group: &str,
+    template_values: &BTreeMap<String, String>,
+) -> Result<MvVirtualNameboxFactRenderPart, String> {
+    if field_name == "speaker" || field_name == speaker_group {
+        return Ok(MvVirtualNameboxFactRenderPart {
+            part_kind: "speaker".to_string(),
+            raw_text: source_speaker.to_string(),
+            semantic_text: role.to_string(),
+            template_key: "speaker".to_string(),
+        });
+    }
+    if field_name == "body" || (!body_group.is_empty() && field_name == body_group) {
+        return Ok(MvVirtualNameboxFactRenderPart {
+            part_kind: "translated_body".to_string(),
+            raw_text: body_text.to_string(),
+            semantic_text: body_text.to_string(),
+            template_key: "body".to_string(),
+        });
+    }
+    if let Some(value) = template_values.get(field_name) {
+        return Ok(MvVirtualNameboxFactRenderPart {
+            part_kind: "literal".to_string(),
+            raw_text: value.clone(),
+            semantic_text: value.clone(),
+            template_key: field_name.to_string(),
+        });
+    }
+    Err(format!("MV 虚拟名字框模板字段未捕获: {field_name}"))
+}
+
+fn has_visible_text(text: &str) -> bool {
+    text.chars()
+        .any(|character| !character.is_whitespace() && !is_invisible_character(character))
+}
+
+fn is_invisible_character(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}' | '\u{feff}'
+        )
 }
 
 pub(super) fn scan_mv_virtual_namebox_rule_candidates(
@@ -817,4 +1016,88 @@ fn is_map_file(file_name: &str) -> bool {
 
 fn integer_field(object: &serde_json::Map<String, Value>, field_name: &str) -> Option<i64> {
     object.get(field_name)?.as_i64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MvVirtualNameboxFactPartsInput, build_mv_virtual_namebox_fact_parts};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn mv_virtual_namebox_fact_parts_preserve_raw_visible_translatable_split_and_spacing() {
+        let template_values = BTreeMap::new();
+        let parts = build_mv_virtual_namebox_fact_parts(MvVirtualNameboxFactPartsInput {
+            raw_text: r"\n<Dan:> Hello",
+            source_speaker: "Dan",
+            role: "Dan",
+            body_text: "Hello",
+            render_template: r"\n<{speaker}:> {body}",
+            speaker_group: "speaker",
+            body_group: "body",
+            rule_name: "yep-namebox-with-colon",
+            template_values: &template_values,
+        })
+        .expect("有效 MV 虚拟名字框应可生成 fact 分片");
+
+        assert_eq!(parts.raw_text, r"\n<Dan:> Hello");
+        assert_eq!(parts.visible_text, r"\n<Dan:> Hello");
+        assert_eq!(parts.translatable_text, "Hello");
+        assert_eq!(parts.role, "Dan");
+        assert_eq!(
+            parts
+                .render_parts
+                .iter()
+                .map(|part| part.part_kind.as_str())
+                .collect::<Vec<_>>(),
+            ["literal", "speaker", "literal", "translated_body"]
+        );
+        assert_eq!(
+            parts
+                .render_parts
+                .iter()
+                .map(|part| part.raw_text.as_str())
+                .collect::<Vec<_>>(),
+            [r"\n<", "Dan", ":> ", "Hello"]
+        );
+        assert_eq!(
+            parts
+                .render_parts
+                .iter()
+                .map(|part| part.raw_text.as_str())
+                .collect::<String>(),
+            r"\n<Dan:> Hello"
+        );
+        let translated = parts
+            .render_parts
+            .iter()
+            .map(|part| {
+                if part.part_kind == "translated_body" {
+                    "你好"
+                } else {
+                    part.raw_text.as_str()
+                }
+            })
+            .collect::<String>();
+        assert_eq!(translated, r"\n<Dan:> 你好");
+    }
+
+    #[test]
+    fn mv_virtual_namebox_fact_parts_reject_invisible_or_whitespace_speaker() {
+        let template_values = BTreeMap::new();
+        for speaker in ["", " \t ", "\u{200b}"] {
+            let error = build_mv_virtual_namebox_fact_parts(MvVirtualNameboxFactPartsInput {
+                raw_text: r"\n<:> Hello",
+                source_speaker: speaker,
+                role: speaker,
+                body_text: "Hello",
+                render_template: r"\n<{speaker}:> {body}",
+                speaker_group: "speaker",
+                body_group: "body",
+                rule_name: "yep-namebox-with-colon",
+                template_values: &template_values,
+            })
+            .expect_err("空白或不可见 speaker 必须被拒绝");
+            assert!(error.contains("speaker"));
+        }
+    }
 }

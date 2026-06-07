@@ -677,7 +677,7 @@ fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, u
             fact.source_type.clone(),
             fact.item_type.clone(),
             fact.role.clone(),
-            fact.raw_text.clone(),
+            fact.translatable_text.clone(),
         );
         *counts.entry(identity).or_insert(0) += 1;
     }

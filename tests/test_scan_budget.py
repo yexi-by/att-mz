@@ -325,6 +325,7 @@ def test_batch7_production_paths_do_not_keep_python_text_scope_fallbacks() -> No
         Path("app/application/write_back_gate.py"),
         Path("app/agent_toolkit/services/coverage.py"),
         Path("app/agent_toolkit/services/quality.py"),
+        Path("app/agent_toolkit/services/text_index.py"),
         Path("app/text_index.py"),
     )
     for path in production_paths:
@@ -332,9 +333,15 @@ def test_batch7_production_paths_do_not_keep_python_text_scope_fallbacks() -> No
         assert "TextScopeService" not in source, path.as_posix()
 
     text_index_source = Path("app/text_index.py").read_text(encoding="utf-8")
+    text_index_service_source = Path("app/agent_toolkit/services/text_index.py").read_text(encoding="utf-8")
     text_index_exports = _exported_names(Path("app/text_index.py"))
     assert "async def rebuild_text_index(" not in text_index_source
     assert "rebuild_text_index" not in text_index_exports
+    assert "TextScopeService" not in _source_for_function(text_index_service_source, "rebuild_text_index")
+    assert "text_index_items_to_scope" not in _source_for_function(
+        text_index_service_source,
+        "rebuild_text_index",
+    )
     assert "build_text_index_workflow_gate_scope_hashes" not in text_index_source
     assert "build_text_index_workflow_gate_scope_hashes" not in text_index_exports
     for old_bridge_marker in (

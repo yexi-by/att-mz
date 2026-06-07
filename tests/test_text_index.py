@@ -245,6 +245,28 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
     assert isinstance(indexed_count, int)
     assert indexed_count > 0
     assert report.summary["index_item_count"] == indexed_count
+    assert report.summary["index_status"] == "rebuilt"
+    assert report.summary["text_fact_count"] == indexed_count
+    assert isinstance(report.summary["render_part_count"], int)
+    assert report.summary["render_part_count"] >= indexed_count
+    assert isinstance(report.summary["scope_key"], str)
+    assert str(report.summary["scope_key"]).startswith("tfv2-scope:")
+    assert isinstance(report.summary["scope_hash"], str)
+    assert len(str(report.summary["scope_hash"])) == 64
+    assert isinstance(report.summary["source_snapshot_hash"], str)
+    assert len(str(report.summary["source_snapshot_hash"])) == 64
+    assert isinstance(report.summary["rule_hash"], str)
+    assert len(str(report.summary["rule_hash"])) == 64
+    assert isinstance(report.summary["text_rules_hash"], str)
+    assert len(str(report.summary["text_rules_hash"])) == 64
+    assert isinstance(report.summary["domain_fact_counts"], dict)
+    domain_fact_counts = cast(dict[str, object], report.summary["domain_fact_counts"])
+    standard_data_fact_count = domain_fact_counts.get("standard_data")
+    assert isinstance(standard_data_fact_count, int)
+    assert not isinstance(standard_data_fact_count, bool)
+    assert standard_data_fact_count >= 1
+    assert isinstance(report.summary["scan_file_count"], int)
+    assert report.summary["scan_file_count"] >= 1
     assert "elapsed_ms" not in report.summary
     assert "native_thread_count" not in report.summary
     assert "stage_timings" not in report.summary

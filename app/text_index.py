@@ -71,6 +71,40 @@ class TextIndexNativeRebuildResult:
     native_summary: JsonObject
 
 
+def text_fact_rebuild_report_fields(native_summary: JsonObject) -> JsonObject:
+    """从 Rust 原生重建摘要中筛出用户可见的 v2 fact 报告字段。"""
+    report_fields: JsonObject = {}
+    for field_name in (
+        "text_fact_count",
+        "render_part_count",
+        "scan_file_count",
+    ):
+        value = native_summary.get(field_name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            report_fields[field_name] = value
+    for field_name in (
+        "scope_key",
+        "scope_hash",
+        "source_snapshot_hash",
+        "rule_hash",
+        "text_rules_hash",
+    ):
+        value = native_summary.get(field_name)
+        if isinstance(value, str) and value:
+            report_fields[field_name] = value
+    domain_fact_counts = native_summary.get("domain_fact_counts")
+    if isinstance(domain_fact_counts, dict):
+        report_fields["domain_fact_counts"] = {
+            str(key): value
+            for key, value in domain_fact_counts.items()
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+    index_status = native_summary.get("index_status")
+    if isinstance(index_status, str) and index_status:
+        report_fields["index_status"] = index_status
+    return report_fields
+
+
 async def rebuild_text_index_native_storage(
     *,
     session: TargetGameSession,
@@ -889,4 +923,5 @@ __all__ = [
     "text_index_items_to_scope",
     "text_index_items_to_translation_data_map",
     "text_index_source_branch_gates_prechecked",
+    "text_fact_rebuild_report_fields",
 ]

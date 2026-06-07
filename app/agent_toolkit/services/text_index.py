@@ -16,6 +16,7 @@ from app.text_index import (
     collect_text_index_placeholder_gate_errors,
     collect_text_index_scope_gate_errors,
     rebuild_text_index_native_storage_with_summary,
+    text_fact_rebuild_report_fields,
 )
 
 from .common import (
@@ -209,6 +210,7 @@ class TextIndexAgentMixin:
                 "source_branch_gate_status": source_branch_gate_status,
             }
         )
+        summary.update(text_fact_rebuild_report_fields(native_rebuild.native_summary))
         if source_branch_gate_summary is not None:
             summary["source_branch_gate_summary"] = source_branch_gate_summary
         return AgentReport.from_parts(

@@ -30,12 +30,28 @@ from app.rmmz.schema import (
     FIXED_FILE_NAMES,
     GameData,
     GameLayout,
+    MvVirtualNameboxRuleRecord,
     PluginTextRuleRecord,
     TranslationData,
     TranslationItem,
 )
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, ensure_json_array, ensure_json_object
 from app.rmmz.text_rules import TextRules
+
+
+def _json_int(value: JsonValue, label: str) -> int:
+    """测试中把 JSON 值显式收窄为非 bool 整数。"""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise AssertionError(f"{label} 必须是整数")
+    return value
+
+
+def _sqlite_row_str(row: sqlite3.Row, column_name: str) -> str:
+    """测试中把 sqlite Row 字段显式收窄为字符串。"""
+    value = cast(object, row[column_name])
+    if not isinstance(value, str):
+        raise AssertionError(f"{column_name} 必须是字符串")
+    return value
 
 
 def _rebuild_rule_candidate_text_rules(setting: TextRulesSetting) -> JsonObject:
@@ -521,8 +537,14 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     )
 
     assert result["status"] == "ok"
-    assert result["text_fact_count"] == 0
-    assert result["render_part_count"] == 0
+    assert _json_int(result["text_fact_count"], "text_fact_count") == _json_int(
+        result["indexed_count"],
+        "indexed_count",
+    )
+    assert _json_int(result["render_part_count"], "render_part_count") >= _json_int(
+        result["text_fact_count"],
+        "text_fact_count",
+    )
     assert isinstance(result["scope_key"], str) and result["scope_key"]
     assert isinstance(result["scope_hash"], str) and len(result["scope_hash"]) == 64
     assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
@@ -540,6 +562,129 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
         assert scope_summary.stale_rule_count == 1
         items = await session.read_text_index_items()
         assert all(not item.location_path.startswith("plugins.js/") for item in items)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1_domains(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 冷重建同时写出 standard/event_command/MV 虚拟名字框 v2 facts。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = cast(list[object], json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events.append(
+        cast(
+            object,
+            {
+                "id": 91,
+                "list": [
+                    {"code": 101, "parameters": [0, 0, 0, 2]},
+                    {"code": 401, "parameters": [r"\n<Dan:> Hello"]},
+                    {"code": 0, "parameters": []},
+                ],
+            },
+        )
+    )
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="en")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_mv_virtual_namebox_rules(
+            [
+                MvVirtualNameboxRuleRecord(
+                    rule_order=0,
+                    rule_name="yep-namebox-with-colon",
+                    pattern_text=r"^\\n<(?P<speaker>[^:>\r\n]+):> (?P<body>.*)$",
+                    speaker_group="speaker",
+                    body_group="body",
+                    speaker_policy="translate",
+                    render_template=r"\n<{speaker}:> {body}",
+                )
+            ]
+        )
+
+    setting = TextRulesSetting(source_text_required_pattern=r".+")
+    result = rebuild_native_scope_index_storage(
+        {
+            "db_path": str(record.db_path),
+            "game_path": str(minimal_mv_game_dir),
+            "source_snapshot_fingerprint": "snapshot-v1",
+            "rules_fingerprint": "rules-v1",
+            "source_language": "en",
+            "target_language": "zh-Hans",
+            "engine_kind": "mv",
+            "text_rules_setting": setting.model_dump(mode="json"),
+            "rule_candidate_text_rules": _rebuild_rule_candidate_text_rules(setting),
+            "event_command_scope_codes": [101, 401],
+            "source_text_required_pattern": setting.source_text_required_pattern,
+            "created_at": "2026-06-05T00:00:00",
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert result["index_status"] == "rebuilt"
+    assert _json_int(result["text_fact_count"], "text_fact_count") == _json_int(
+        result["indexed_count"],
+        "indexed_count",
+    )
+    assert _json_int(result["render_part_count"], "render_part_count") >= _json_int(
+        result["text_fact_count"],
+        "text_fact_count",
+    )
+    assert result["source_snapshot_hash"] == "snapshot-v1"
+    assert result["rule_hash"] == "rules-v1"
+    assert isinstance(result["text_rules_hash"], str) and len(str(result["text_rules_hash"])) == 64
+    assert isinstance(result["scope_key"], str) and str(result["scope_key"]).startswith("tfv2-scope:")
+    assert isinstance(result["scope_hash"], str) and len(str(result["scope_hash"])) == 64
+    assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert _json_int(result["scan_file_count"], "scan_file_count") >= 1
+    domain_fact_counts = ensure_json_object(
+        result["domain_fact_counts"],
+        "native_scope_index_storage_rebuild.domain_fact_counts",
+    )
+    assert _json_int(domain_fact_counts["standard_data"], "domain_fact_counts.standard_data") >= 1
+    assert _json_int(domain_fact_counts["event_command"], "domain_fact_counts.event_command") >= 1
+    assert _json_int(domain_fact_counts["mv_virtual_namebox"], "domain_fact_counts.mv_virtual_namebox") == 1
+
+    with sqlite3.connect(record.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        mv_fact = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT domain, raw_text, visible_text, translatable_text, role
+                FROM text_facts_v2
+                WHERE domain = 'mv_virtual_namebox'
+                """
+            ).fetchone(),
+        )
+        assert mv_fact is not None
+        assert _sqlite_row_str(mv_fact, "raw_text") == r"\n<Dan:> Hello"
+        assert _sqlite_row_str(mv_fact, "visible_text") == r"\n<Dan:> Hello"
+        assert _sqlite_row_str(mv_fact, "translatable_text") == "Hello"
+        assert _sqlite_row_str(mv_fact, "role") == "Dan"
+        parts = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT part_kind, raw_text, semantic_text, template_key
+                FROM text_fact_render_parts_v2
+                WHERE fact_id = (
+                    SELECT fact_id FROM text_facts_v2 WHERE domain = 'mv_virtual_namebox'
+                )
+                ORDER BY part_order
+                """
+            ).fetchall(),
+        )
+        assert [_sqlite_row_str(part, "part_kind") for part in parts] == [
+            "literal",
+            "speaker",
+            "literal",
+            "translated_body",
+        ]
+        assert "".join(_sqlite_row_str(part, "raw_text") for part in parts) == r"\n<Dan:> Hello"
+        assert [_sqlite_row_str(part, "raw_text") for part in parts] == [r"\n<", "Dan", ":> ", "Hello"]
 
 
 def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path) -> None:
