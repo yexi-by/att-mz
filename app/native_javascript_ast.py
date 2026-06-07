@@ -11,7 +11,15 @@ from typing import Protocol, cast
 from app.native_contract import ensure_native_contract_version
 from app.native_quality import build_native_text_rules_payload
 from app.rmmz.schema import PluginSourceRuntimeLiteralAuditSeverity, PluginSourceRuntimeLiteralKind
-from app.rmmz.text_rules import JsonArray, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
+from app.rmmz.text_rules import (
+    JsonArray,
+    JsonObject,
+    JsonValue,
+    TextRules,
+    coerce_json_value,
+    ensure_json_array,
+    ensure_json_object,
+)
 
 _LITERAL_KINDS = frozenset(
     {
@@ -23,6 +31,9 @@ _LITERAL_KINDS = frozenset(
     }
 )
 _AUDIT_DEFAULT_SEVERITIES = frozenset({"blocking", "warning", "ignore"})
+type NativeRuntimeLiteralIssueInput = (
+    tuple[str, str, PluginSourceRuntimeLiteralKind, PluginSourceRuntimeLiteralAuditSeverity]
+)
 
 
 class NativeJavaScriptAstModule(Protocol):
@@ -85,6 +96,8 @@ class NativeJavaScriptStringScan:
 class NativeRuntimeLiteralIssueFact:
     """Rust 返回的当前运行源码字符串审计风险事实。"""
 
+    literal_kind: PluginSourceRuntimeLiteralKind
+    audit_default_severity: PluginSourceRuntimeLiteralAuditSeverity
     issue_codes: tuple[str, ...]
     placeholder_fragments: tuple[str, ...]
     control_code_hints: JsonArray
@@ -166,7 +179,7 @@ def parse_native_javascript_string_spans_batch(
 
 def collect_native_runtime_literal_issue_facts(
     *,
-    literals: Mapping[str, tuple[str, str]],
+    literals: Mapping[str, NativeRuntimeLiteralIssueInput],
     text_rules: TextRules,
 ) -> dict[str, NativeRuntimeLiteralIssueFact]:
     """调用 Rust 批量收集当前运行源码字符串审计风险事实。"""
@@ -175,12 +188,8 @@ def collect_native_runtime_literal_issue_facts(
         json.dumps(
             {
                 "literals": [
-                    {
-                        "id": literal_id,
-                        "raw_text": raw_text,
-                        "text": text,
-                    }
-                    for literal_id, (raw_text, text) in sorted(literals.items())
+                    _runtime_literal_issue_fact_payload(literal_id, literal)
+                    for literal_id, literal in sorted(literals.items())
                 ],
                 "text_rules": build_native_text_rules_payload(text_rules),
             },
@@ -195,12 +204,25 @@ def collect_native_runtime_literal_issue_facts(
     raw_facts = ensure_json_array(result["facts"], "native_runtime_literal_issue_facts_result.facts")
     for index, raw_fact in enumerate(raw_facts):
         fact = ensure_json_object(raw_fact, f"native_runtime_literal_issue_facts_result.facts[{index}]")
-        literal_id = _ensure_string(fact["id"], f"native_runtime_literal_issue_facts_result.facts[{index}].id")
+        literal_id = _ensure_string(
+            _required_runtime_literal_fact_field(fact, "id", index),
+            f"native_runtime_literal_issue_facts_result.facts[{index}].id",
+        )
+        literal_kind = _ensure_literal_kind(
+            _required_runtime_literal_fact_field(fact, "literal_kind", index, literal_id),
+            f"native_runtime_literal_issue_facts_result.facts[{index}].literal_kind",
+        )
+        audit_default_severity = _ensure_audit_default_severity(
+            _required_runtime_literal_fact_field(fact, "audit_default_severity", index, literal_id),
+            f"native_runtime_literal_issue_facts_result.facts[{index}].audit_default_severity",
+        )
         facts[literal_id] = NativeRuntimeLiteralIssueFact(
+            literal_kind=literal_kind,
+            audit_default_severity=audit_default_severity,
             issue_codes=tuple(
                 _ensure_string(code, f"native_runtime_literal_issue_facts_result.facts[{index}].issue_codes[]")
                 for code in ensure_json_array(
-                    fact["issue_codes"],
+                    _required_runtime_literal_fact_field(fact, "issue_codes", index, literal_id),
                     f"native_runtime_literal_issue_facts_result.facts[{index}].issue_codes",
                 )
             ),
@@ -210,12 +232,12 @@ def collect_native_runtime_literal_issue_facts(
                     f"native_runtime_literal_issue_facts_result.facts[{index}].placeholder_fragments[]",
                 )
                 for fragment in ensure_json_array(
-                    fact["placeholder_fragments"],
+                    _required_runtime_literal_fact_field(fact, "placeholder_fragments", index, literal_id),
                     f"native_runtime_literal_issue_facts_result.facts[{index}].placeholder_fragments",
                 )
             ),
             control_code_hints=ensure_json_array(
-                fact["control_code_hints"],
+                _required_runtime_literal_fact_field(fact, "control_code_hints", index, literal_id),
                 f"native_runtime_literal_issue_facts_result.facts[{index}].control_code_hints",
             ),
         )
@@ -224,6 +246,40 @@ def collect_native_runtime_literal_issue_facts(
         samples = "、".join(sorted(missing_ids)[:5])
         raise RuntimeError(f"运行源码字符串风险事实缺少条目: {samples}")
     return facts
+
+
+def _runtime_literal_issue_fact_payload(
+    literal_id: str,
+    literal: NativeRuntimeLiteralIssueInput,
+) -> JsonObject:
+    """构造 Rust runtime literal fact 输入，分类只透传 Rust AST 已产出的字段。"""
+    raw_text, text, literal_kind, audit_default_severity = literal
+    return {
+        "id": literal_id,
+        "raw_text": raw_text,
+        "text": text,
+        "literal_kind": literal_kind,
+        "audit_default_severity": audit_default_severity,
+    }
+
+
+def _required_runtime_literal_fact_field(
+    fact: JsonObject,
+    field_name: str,
+    index: int,
+    literal_id: str | None = None,
+) -> JsonValue:
+    """读取 Rust runtime literal fact 必填字段，缺失时给出可定位错误。"""
+    if field_name not in fact:
+        location = f"native_runtime_literal_issue_facts_result.facts[{index}]"
+        if literal_id is not None:
+            location = f"{location}, id={literal_id}"
+        message = (
+            f"Rust runtime literal fact 缺少必填字段 {field_name}: "
+            f"{location}"
+        )
+        raise RuntimeError(message)
+    return fact[field_name]
 
 
 def _load_native_javascript_ast_module() -> NativeJavaScriptAstModule:
@@ -340,6 +396,7 @@ def _ensure_optional_int(value: object, label: str) -> int | None:
 __all__ = [
     "NativeJavaScriptAstContext",
     "NativeRuntimeLiteralIssueFact",
+    "NativeRuntimeLiteralIssueInput",
     "NativeJavaScriptStringScan",
     "NativeJavaScriptStringSpan",
     "collect_native_runtime_literal_issue_facts",

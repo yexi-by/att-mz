@@ -32,6 +32,8 @@ pub(super) struct NoteTagHitOutput {
     pub(super) tag_name: String,
     pub(super) location_path: String,
     pub(super) original_text: String,
+    #[serde(skip_serializing)]
+    pub(super) raw_text: String,
     pub(super) translatable: bool,
 }
 
@@ -140,6 +142,7 @@ pub(super) fn scan_note_tag_rule_candidates_from_refs(
                 tag_name: tag_name.to_string(),
                 location_path: location.clone(),
                 original_text: normalized_value.clone(),
+                raw_text: value_match.as_str().to_string(),
                 translatable,
             });
             push_sample(&mut accumulator.sample_values, &normalized_value);

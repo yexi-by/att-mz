@@ -39,6 +39,8 @@ pub(super) struct EventCommandHitDetailOutput {
     pub(super) location_path: String,
     pub(super) original_text: String,
     pub(super) path_template: String,
+    #[serde(skip_serializing)]
+    pub(super) raw_text: String,
     pub(super) rule_index: usize,
 }
 
@@ -177,6 +179,7 @@ pub(super) fn scan_event_command_rule_candidates(
                             location_path: location_path.clone(),
                             original_text,
                             path_template: path_template.clone(),
+                            raw_text: leaf.text.clone(),
                             rule_index,
                         });
                         append_event_command_candidate(
@@ -256,6 +259,7 @@ pub(super) fn scan_event_command_rule_hit_details(
                         location_path,
                         original_text,
                         path_template: path_template.clone(),
+                        raw_text: leaf.text.clone(),
                         rule_index,
                     });
                 }
@@ -836,4 +840,55 @@ fn generic_command_location_path(file_name: &str, path_parts: &[String]) -> Stri
 fn quote_jsonpath_key(key: &str) -> String {
     let escaped_key = key.replace('\\', "\\\\").replace('\'', "\\'");
     format!("'{escaped_key}'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EventCommandDataFileInput, EventCommandRuleInput, scan_event_command_rule_hit_details,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn event_commands_hit_details_include_command_code_parameter_path_and_raw_text() {
+        let data_files = vec![EventCommandDataFileInput {
+            file_name: "CommonEvents.json".to_string(),
+            data: json!([
+                null,
+                {
+                    "id": 1,
+                    "list": [
+                        {
+                            "code": 357,
+                            "parameters": [
+                                "PluginCommand",
+                                "TestPlugin",
+                                "show",
+                                {"message": "生\n本文"}
+                            ]
+                        }
+                    ]
+                }
+            ]),
+        }];
+        let rules = vec![EventCommandRuleInput {
+            command_code: 357,
+            parameter_filters: Vec::new(),
+            path_templates: vec!["$['parameters'][3]['message']".to_string()],
+        }];
+
+        let hit_details =
+            scan_event_command_rule_hit_details(&data_files, &rules).expect("事件指令命中应可扫描");
+
+        assert_eq!(hit_details.len(), 1);
+        let hit = &hit_details[0];
+        assert_eq!(hit.command_code, 357);
+        assert_eq!(hit.json_path, "$['parameters'][3]['message']");
+        assert_eq!(
+            hit.location_path,
+            "CommonEvents.json/1/0/parameters/3/message"
+        );
+        assert_eq!(hit.raw_text, "生\n本文");
+        assert_eq!(hit.original_text, "生\n本文");
+    }
 }

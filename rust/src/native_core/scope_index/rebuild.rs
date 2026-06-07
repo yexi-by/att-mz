@@ -141,6 +141,10 @@ struct DirectTextIndexRow {
     source_snapshot_fingerprint: String,
     rules_fingerprint: String,
     locator_json: String,
+    fact_raw_text: Option<String>,
+    fact_visible_text: Option<String>,
+    fact_selector: Option<String>,
+    fact_domain_payload_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2037,22 +2041,36 @@ fn scan_nonstandard_data_rows(
     .map_err(nonstandard_data_managed_text_error)?
     .into_iter()
     .filter_map(|managed_text| {
-        let normalized = normalized_extractable_text(&managed_text.raw_text, context)?;
-        Some(row(
-            RowInput {
-                location_path: format!(
-                    "nonstandard-data/{}/{}",
-                    managed_text.file_name, managed_text.json_path
-                ),
-                item_type: "short_text",
-                role: None,
-                original_lines: vec![normalized],
-                source_line_paths: vec![managed_text.json_path],
-                source_type: "nonstandard_data",
-                source_file: &managed_text.file_name,
-            },
-            context,
-        ))
+        normalized_extractable_text(&managed_text.raw_text, context).map(|normalized| {
+            let location_path = format!(
+                "nonstandard-data/{}/{}",
+                managed_text.file_name, managed_text.json_path
+            );
+            let payload_json = domain_payload_json(
+                "非标准 data",
+                &json!({
+                    "json_path": managed_text.json_path,
+                }),
+            )?;
+            row_with_fact_options(
+                RowInput {
+                    location_path,
+                    item_type: "short_text",
+                    role: None,
+                    original_lines: vec![normalized],
+                    source_line_paths: vec![managed_text.json_path],
+                    source_type: "nonstandard_data",
+                    source_file: &managed_text.file_name,
+                },
+                context,
+                FactOptions {
+                    raw_text: Some(managed_text.raw_text),
+                    visible_text: None,
+                    selector: None,
+                    domain_payload_json: Some(payload_json),
+                },
+            )
+        })
     })
     .collect()
 }
@@ -2115,7 +2133,18 @@ fn scan_plugin_source_rows(
             "js/plugins/{}/{}",
             managed_text.file_name, managed_text.selector
         );
-        row(
+        let payload_json = domain_payload_json(
+            "插件源码",
+            &json!({
+                "line": managed_text.line,
+                "start_index": managed_text.start_index,
+                "end_index": managed_text.end_index,
+                "content_start_index": managed_text.content_start_index,
+                "content_end_index": managed_text.content_end_index,
+                "quote": managed_text.quote,
+            }),
+        )?;
+        row_with_fact_options(
             RowInput {
                 location_path: location_path.clone(),
                 item_type: "short_text",
@@ -2126,6 +2155,12 @@ fn scan_plugin_source_rows(
                 source_file: &managed_text.file_name,
             },
             context,
+            FactOptions {
+                raw_text: Some(managed_text.raw_text.clone()),
+                visible_text: Some(managed_text.text.clone()),
+                selector: Some(managed_text.selector.clone()),
+                domain_payload_json: Some(payload_json),
+            },
         )
     })
     .collect()
@@ -2142,6 +2177,9 @@ fn plugin_source_managed_text_error(error: PluginSourceManagedTextError) -> Stri
                 "插件源码规则还有 {unreviewed_count} 个候选未归入翻译或排除，请补全插件源码规则后重新重建文本范围索引"
             ),
         ),
+        PluginSourceManagedTextError::InvalidCandidate(message) => {
+            structured_error("plugin_source_candidate_contract_invalid", message)
+        }
     }
 }
 
@@ -2331,6 +2369,12 @@ fn plugin_parameter_row(
             ),
         )
     })?;
+    let payload_json = domain_payload_json(
+        "插件参数",
+        &json!({
+            "json_path": candidate.json_path,
+        }),
+    )?;
     Ok(DirectTextIndexRow {
         location_path: candidate.location_path.clone(),
         item_type: "short_text".to_string(),
@@ -2343,6 +2387,10 @@ fn plugin_parameter_row(
         source_snapshot_fingerprint: context.source_snapshot_fingerprint.clone(),
         rules_fingerprint: context.rules_fingerprint.clone(),
         locator_json,
+        fact_raw_text: candidate.raw_text.clone(),
+        fact_visible_text: Some(candidate.original_text.clone()),
+        fact_selector: candidate.json_path.clone(),
+        fact_domain_payload_json: Some(payload_json),
     })
 }
 
@@ -2378,7 +2426,13 @@ fn scan_note_tag_rows(
             })
         })
         .map(|hit| {
-            row(
+            let payload_json = domain_payload_json(
+                "Note 标签",
+                &json!({
+                    "tag_name": hit.tag_name,
+                }),
+            )?;
+            row_with_fact_options(
                 RowInput {
                     location_path: hit.location_path.clone(),
                     item_type: "short_text",
@@ -2389,6 +2443,12 @@ fn scan_note_tag_rows(
                     source_file: &hit.file_name,
                 },
                 context,
+                FactOptions {
+                    raw_text: Some(hit.raw_text.clone()),
+                    visible_text: Some(hit.original_text.clone()),
+                    selector: Some(hit.tag_name.clone()),
+                    domain_payload_json: Some(payload_json),
+                },
             )
         })
         .collect()
@@ -2423,7 +2483,14 @@ fn scan_event_command_rule_rows(
         .iter()
         .filter(|hit| context.source_text_required_re.is_match(&hit.original_text))
         .map(|hit| {
-            row(
+            let payload_json = domain_payload_json(
+                "事件指令",
+                &json!({
+                    "command_code": hit.command_code,
+                    "parameter_json_path": hit.json_path,
+                }),
+            )?;
+            row_with_fact_options(
                 RowInput {
                     location_path: hit.location_path.clone(),
                     item_type: "short_text",
@@ -2434,6 +2501,12 @@ fn scan_event_command_rule_rows(
                     source_file: &hit.file_name,
                 },
                 context,
+                FactOptions {
+                    raw_text: Some(hit.raw_text.clone()),
+                    visible_text: Some(hit.original_text.clone()),
+                    selector: Some(hit.json_path.clone()),
+                    domain_payload_json: Some(payload_json),
+                },
             )
         })
         .collect()
@@ -3213,7 +3286,23 @@ struct RowInput<'a> {
     source_file: &'a str,
 }
 
+#[derive(Default)]
+struct FactOptions {
+    raw_text: Option<String>,
+    visible_text: Option<String>,
+    selector: Option<String>,
+    domain_payload_json: Option<String>,
+}
+
 fn row(input: RowInput<'_>, context: &RebuildContext) -> Result<DirectTextIndexRow, String> {
+    row_with_fact_options(input, context, FactOptions::default())
+}
+
+fn row_with_fact_options(
+    input: RowInput<'_>,
+    context: &RebuildContext,
+    fact_options: FactOptions,
+) -> Result<DirectTextIndexRow, String> {
     let terminology_owner_terms = terminology_owner_terms(&input.location_path, context);
     let display_name = context
         .map_display_names_by_file
@@ -3248,6 +3337,19 @@ fn row(input: RowInput<'_>, context: &RebuildContext) -> Result<DirectTextIndexR
         source_snapshot_fingerprint: context.source_snapshot_fingerprint.clone(),
         rules_fingerprint: context.rules_fingerprint.clone(),
         locator_json,
+        fact_raw_text: fact_options.raw_text,
+        fact_visible_text: fact_options.visible_text,
+        fact_selector: fact_options.selector,
+        fact_domain_payload_json: fact_options.domain_payload_json,
+    })
+}
+
+fn domain_payload_json(label: &str, value: &Value) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_text_fact_invalid",
+            format!("{label} domain payload 序列化失败: {error}"),
+        )
     })
 }
 
@@ -3340,6 +3442,7 @@ fn build_text_fact_storage_payload_with_context(
 struct DirectTextFactContent {
     domain: String,
     role: String,
+    selector: String,
     raw_text: String,
     visible_text: String,
     translatable_text: String,
@@ -3357,19 +3460,28 @@ struct DirectTextFactRenderPart {
 
 fn default_text_fact_content(row: &DirectTextIndexRow) -> DirectTextFactContent {
     let text = row.original_lines.join("\n");
+    let raw_text = row.fact_raw_text.clone().unwrap_or_else(|| text.clone());
+    let visible_text = row
+        .fact_visible_text
+        .clone()
+        .unwrap_or_else(|| text.clone());
     DirectTextFactContent {
         domain: text_fact_domain_for_row(row).to_string(),
         role: row.role.clone().unwrap_or_default(),
-        raw_text: text.clone(),
-        visible_text: text.clone(),
+        selector: row
+            .fact_selector
+            .clone()
+            .unwrap_or_else(|| row.location_path.clone()),
+        raw_text: raw_text.clone(),
+        visible_text,
         translatable_text: text.clone(),
         render_parts: vec![DirectTextFactRenderPart {
             part_kind: "translated_body".to_string(),
-            raw_text: text.clone(),
+            raw_text,
             semantic_text: text,
             template_key: "body".to_string(),
         }],
-        domain_payload_json: None,
+        domain_payload_json: row.fact_domain_payload_json.clone(),
     }
 }
 
@@ -3393,7 +3505,7 @@ fn mv_virtual_namebox_fact_content(
         if parsed.body_text != translatable_text {
             continue;
         }
-        return mv_virtual_namebox_content_from_parsed(parsed).map(Some);
+        return mv_virtual_namebox_content_from_parsed(parsed, row.location_path.clone()).map(Some);
     }
     if translatable_text.is_empty() {
         return Ok(None);
@@ -3406,11 +3518,12 @@ fn mv_virtual_namebox_fact_content(
     }
     append_standalone_body_to_mv_fact_parts(&mut parsed.fact_parts, &translatable_text);
     parsed.body_text = translatable_text;
-    mv_virtual_namebox_content_from_parsed(parsed).map(Some)
+    mv_virtual_namebox_content_from_parsed(parsed, row.location_path.clone()).map(Some)
 }
 
 fn mv_virtual_namebox_content_from_parsed(
     parsed: ParsedMvVirtualSpeaker,
+    selector: String,
 ) -> Result<DirectTextFactContent, String> {
     let payload_json = serde_json::to_string(&json!({
         "rule_name": parsed.rule_name,
@@ -3426,6 +3539,7 @@ fn mv_virtual_namebox_content_from_parsed(
     Ok(DirectTextFactContent {
         domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
         role: parsed.fact_parts.role,
+        selector,
         raw_text: parsed.fact_parts.raw_text,
         visible_text: parsed.fact_parts.visible_text,
         translatable_text: parsed.fact_parts.translatable_text,
@@ -3533,12 +3647,11 @@ fn build_text_fact_from_content(
     let raw_hash = sha256_text(&content.raw_text);
     let visible_hash = sha256_text(&content.visible_text);
     let translatable_hash = sha256_text(&content.translatable_text);
-    let selector = row.location_path.clone();
     let fact_id = build_fact_id(
         TEXT_FACT_SCHEMA_VERSION,
         &content.domain,
         &row.location_path,
-        &selector,
+        &content.selector,
         &raw_hash,
     );
     let fact = TextFact {
@@ -3550,7 +3663,7 @@ fn build_text_fact_from_content(
         source_type: row.source_type.clone(),
         item_type: row.item_type.clone(),
         role: content.role.clone(),
-        selector,
+        selector: content.selector.clone(),
         raw_text: content.raw_text.clone(),
         visible_text: content.visible_text.clone(),
         translatable_text: content.translatable_text.clone(),
@@ -3569,7 +3682,11 @@ fn build_text_fact_from_content(
 }
 
 fn text_fact_domain_for_row(row: &DirectTextIndexRow) -> &str {
-    match row.source_type.as_str() {
+    text_fact_domain_for_row_source_type(&row.source_type)
+}
+
+fn text_fact_domain_for_row_source_type(source_type: &str) -> &str {
+    match source_type {
         "plugin_parameter" => domains::PLUGIN_CONFIG,
         value => value,
     }
@@ -3930,6 +4047,10 @@ mod tests {
                 source_snapshot_fingerprint: "snapshot-v1".to_string(),
                 rules_fingerprint: "rules-v1".to_string(),
                 locator_json: "{}".to_string(),
+                fact_raw_text: None,
+                fact_visible_text: None,
+                fact_selector: None,
+                fact_domain_payload_json: None,
             },
             DirectTextIndexRow {
                 location_path: "CommonEvents.json/1/0".to_string(),
@@ -3943,6 +4064,10 @@ mod tests {
                 source_snapshot_fingerprint: "snapshot-v1".to_string(),
                 rules_fingerprint: "rules-v1".to_string(),
                 locator_json: "{}".to_string(),
+                fact_raw_text: None,
+                fact_visible_text: None,
+                fact_selector: None,
+                fact_domain_payload_json: None,
             },
         ];
 
@@ -3958,6 +4083,157 @@ mod tests {
         assert!(fact_payload.text_facts.iter().all(|fact| {
             fact.raw_text == fact.visible_text && fact.visible_text == fact.translatable_text
         }));
+    }
+
+    #[test]
+    fn rebuild_text_fact_storage_payload_builds_extended_domain_payloads() {
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let rows = vec![
+            test_row(
+                "plugins.js/0/Message",
+                "plugin_parameter",
+                "plugins.js",
+                vec!["表示本文".to_string()],
+                json!({"json_path": "$['parameters']['Message']"}),
+            ),
+            test_row(
+                "CommonEvents.json/1/0/parameters/3/message",
+                "event_command",
+                "CommonEvents.json",
+                vec!["イベント本文".to_string()],
+                json!({
+                    "command_code": 357,
+                    "parameter_json_path": "$['parameters'][3]['message']"
+                }),
+            ),
+            test_row(
+                "Items.json/1/note/Flavor",
+                "note_tag",
+                "Items.json",
+                vec!["薬草".to_string()],
+                json!({"tag_name": "Flavor", "raw_text": "薬草"}),
+            ),
+            test_row(
+                "nonstandard-data/Unknown.json/$['title']",
+                "nonstandard_data",
+                "Unknown.json",
+                vec!["外部本文".to_string()],
+                json!({"json_path": "$['title']", "raw_text": "外部本文"}),
+            ),
+            test_row(
+                "js/plugins/TestPlugin.js/ast:string:19:28:abcdef123456",
+                "plugin_source",
+                "TestPlugin.js",
+                vec![r"源码\n本文".to_string()],
+                json!({
+                    "selector": "ast:string:19:28:abcdef123456",
+                    "raw_text": r"源码\\n本文",
+                    "line": 1,
+                    "start_index": 19,
+                    "end_index": 28
+                }),
+            ),
+        ];
+
+        let fact_payload =
+            build_text_fact_storage_payload(&rows, &scope).expect("扩展 domain 文本事实应可构建");
+
+        assert_eq!(fact_payload.text_facts.len(), 5);
+        assert_eq!(fact_payload.domain_payloads.len(), 5);
+        let payloads = fact_payload
+            .domain_payloads
+            .iter()
+            .map(|payload| {
+                let fact = fact_payload
+                    .text_facts
+                    .iter()
+                    .find(|fact| fact.fact_id == payload.fact_id)
+                    .expect("payload fact_id 应存在");
+                let value: serde_json::Value =
+                    serde_json::from_str(&payload.payload_json).expect("payload_json 应是对象");
+                (fact.domain.as_str(), value)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            payloads[domains::PLUGIN_CONFIG],
+            json!({"json_path": "$['parameters']['Message']"})
+        );
+        assert_eq!(
+            payloads[domains::EVENT_COMMAND],
+            json!({"command_code": 357, "parameter_json_path": "$['parameters'][3]['message']"})
+        );
+        assert_eq!(payloads[domains::NOTE_TAG], json!({"tag_name": "Flavor"}));
+        assert_eq!(
+            payloads[domains::NONSTANDARD_DATA],
+            json!({"json_path": "$['title']"})
+        );
+        assert_eq!(
+            fact_payload
+                .text_facts
+                .iter()
+                .find(|fact| fact.domain == domains::PLUGIN_SOURCE)
+                .expect("插件源码 fact 应存在")
+                .raw_text,
+            r"源码\\n本文"
+        );
+    }
+
+    fn test_row(
+        location_path: &str,
+        source_type: &str,
+        source_file: &str,
+        original_lines: Vec<String>,
+        locator: serde_json::Value,
+    ) -> DirectTextIndexRow {
+        let source_type_value = source_type.to_string();
+        let domain = super::text_fact_domain_for_row_source_type(&source_type_value);
+        let payload_json = match domain {
+            domains::PLUGIN_CONFIG => {
+                json!({"json_path": locator["json_path"].clone()})
+            }
+            domains::EVENT_COMMAND => json!({
+                "command_code": locator["command_code"].clone(),
+                "parameter_json_path": locator["parameter_json_path"].clone(),
+            }),
+            domains::NOTE_TAG => json!({"tag_name": locator["tag_name"].clone()}),
+            domains::NONSTANDARD_DATA => json!({"json_path": locator["json_path"].clone()}),
+            domains::PLUGIN_SOURCE => json!({
+                "line": locator["line"].clone(),
+                "start_index": locator["start_index"].clone(),
+                "end_index": locator["end_index"].clone(),
+            }),
+            _ => json!({}),
+        }
+        .to_string();
+        DirectTextIndexRow {
+            location_path: location_path.to_string(),
+            item_type: "short_text".to_string(),
+            role: None,
+            original_lines,
+            source_line_paths: Vec::new(),
+            source_type: source_type_value,
+            source_file: source_file.to_string(),
+            writable: true,
+            source_snapshot_fingerprint: "snapshot-v1".to_string(),
+            rules_fingerprint: "rules-v1".to_string(),
+            locator_json: locator.to_string(),
+            fact_raw_text: locator
+                .get("raw_text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            fact_visible_text: None,
+            fact_selector: locator
+                .get("selector")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            fact_domain_payload_json: Some(payload_json),
+        }
     }
 
     fn minimal_rebuild_payload() -> RebuildStoragePayload {

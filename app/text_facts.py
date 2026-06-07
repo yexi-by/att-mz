@@ -304,7 +304,7 @@ async def read_pending_text_fact_records_v2(
             WHERE facts.scope_key = ?
                 AND indexed.writable = 1
                 AND translations.location_path IS NULL
-            ORDER BY facts.domain, facts.location_path, facts.fact_id
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
             LIMIT ?
         ;
         """,
@@ -394,7 +394,7 @@ async def read_pending_text_fact_path_samples_v2(
             WHERE facts.scope_key = ?
                 AND indexed.writable = 1
                 AND translations.location_path IS NULL
-            ORDER BY facts.domain, facts.location_path, facts.fact_id
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
             LIMIT ?
         ;
         """,

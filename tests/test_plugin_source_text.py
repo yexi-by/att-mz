@@ -9,6 +9,7 @@ from typing import NoReturn, cast
 import pytest
 
 import app.plugin_source_text as plugin_source_text_package
+import app.plugin_source_text.runtime_audit as plugin_source_runtime_audit
 import app.plugin_source_text.scanner as plugin_source_text_scanner
 from app.application.flow_gate import (
     collect_workflow_gate_errors,
@@ -19,6 +20,7 @@ from app.application.flow_gate import (
 )
 from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import Setting, TextRulesSetting
+from app.native_javascript_ast import NativeRuntimeLiteralIssueFact, NativeRuntimeLiteralIssueInput
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
     scan_native_rule_candidates as real_scan_native_rule_candidates,
@@ -1222,6 +1224,46 @@ async def test_active_runtime_control_risk_uses_native_literal_facts(
     assert audit.issue_counts["active_runtime_placeholder_risk"] == 1
     issue = next(issue for issue in audit.issues if issue.code == "active_runtime_placeholder_risk")
     assert issue.fragment == "\\ii[1]"
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_audit_requires_native_literal_facts_for_classification(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行源码审计缺少 Rust literal fact 时必须显式失败，不能用 Python 侧分类继续跑。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "MissingNativeFact", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "MissingNativeFact.js").write_text(
+        "const Messages = { title: '未審査テキスト' };\n",
+        encoding="utf-8",
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+
+    def missing_native_facts(
+        *,
+        literals: Mapping[str, NativeRuntimeLiteralIssueInput],
+        text_rules: TextRules,
+    ) -> dict[str, NativeRuntimeLiteralIssueFact]:
+        _ = (literals, text_rules)
+        return {}
+
+    monkeypatch.setattr(
+        plugin_source_runtime_audit,
+        "collect_native_runtime_literal_issue_facts",
+        missing_native_facts,
+    )
+
+    with pytest.raises(RuntimeError, match="Rust runtime literal fact 缺失"):
+        _ = audit_active_runtime_plugin_source(
+            game_data=game_data,
+            text_rules=text_rules,
+        )
 
 
 @pytest.mark.asyncio

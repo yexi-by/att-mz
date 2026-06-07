@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use crate::native_core::text_facts::{
     TEXT_FACT_SCHEMA_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart, TextFactScope,
-    domains,
 };
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
@@ -680,9 +679,6 @@ fn validate_text_fact_raw_identity_overrides(
             return Err(text_fact_identity_mismatch_error());
         }
         let fact = facts[0];
-        if fact.domain != domains::MV_VIRTUAL_NAMEBOX {
-            return Err(text_fact_identity_mismatch_error());
-        }
         if fact.translatable_text != row_translatable_text {
             return Err(text_fact_identity_mismatch_error());
         }
@@ -1677,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn write_scope_index_storage_rejects_text_fact_raw_identity_override_for_non_mv_fact() {
+    fn write_scope_index_storage_rejects_raw_identity_override_when_translatable_mismatches() {
         let fixture = std::env::temp_dir().join(format!(
             "att_mz_text_fact_non_mv_override_{}",
             SystemTime::now()
@@ -1719,7 +1715,7 @@ mod tests {
         payload.text_index_rows[0].text_fact_raw_text = Some("Fixture".to_string());
 
         let error = write_scope_index_storage_direct(&payload)
-            .expect_err("非 MV fact 不能通过 raw override 绕过身份不一致");
+            .expect_err("raw override 不能绕过 translatable_text 身份不一致");
         assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
 
         fs::remove_dir_all(fixture).expect("测试目录应可清理");

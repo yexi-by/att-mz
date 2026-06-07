@@ -62,11 +62,19 @@ pub(super) struct PluginSourceManagedText {
     pub(super) file_name: String,
     pub(super) selector: String,
     pub(super) text: String,
+    pub(super) raw_text: String,
+    pub(super) quote: String,
+    pub(super) line: usize,
+    pub(super) start_index: usize,
+    pub(super) end_index: usize,
+    pub(super) content_start_index: usize,
+    pub(super) content_end_index: usize,
 }
 
 pub(super) enum PluginSourceManagedTextError {
     Stale(String),
     ReviewIncomplete { unreviewed_count: usize },
+    InvalidCandidate(String),
 }
 
 pub(super) static NUMBER_LIKE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -259,11 +267,11 @@ pub(super) fn collect_plugin_source_managed_texts(
             else {
                 continue;
             };
-            managed_texts.push(PluginSourceManagedText {
-                file_name: rule.file_name.clone(),
-                selector: selector.clone(),
-                text: candidate.original_text.clone(),
-            });
+            managed_texts.push(plugin_source_managed_text_from_candidate(
+                &rule.file_name,
+                selector,
+                candidate,
+            )?);
         }
     }
     let unreviewed_count = candidates_by_file_selector
@@ -284,6 +292,85 @@ pub(super) fn collect_plugin_source_managed_texts(
             .then_with(|| left.selector.cmp(&right.selector))
     });
     Ok(managed_texts)
+}
+
+fn plugin_source_managed_text_from_candidate(
+    file_name: &str,
+    selector: &str,
+    candidate: &RuleCandidateOutput,
+) -> Result<PluginSourceManagedText, PluginSourceManagedTextError> {
+    Ok(PluginSourceManagedText {
+        file_name: file_name.to_string(),
+        selector: selector.to_string(),
+        text: candidate.original_text.clone(),
+        raw_text: required_plugin_source_candidate_string(
+            candidate.raw_text.as_deref(),
+            file_name,
+            selector,
+            "raw_text",
+        )?,
+        quote: required_plugin_source_candidate_string(
+            candidate.quote.as_deref(),
+            file_name,
+            selector,
+            "quote",
+        )?,
+        line: required_plugin_source_candidate_usize(candidate.line, file_name, selector, "line")?,
+        start_index: required_plugin_source_candidate_usize(
+            candidate.start_index,
+            file_name,
+            selector,
+            "start_index",
+        )?,
+        end_index: required_plugin_source_candidate_usize(
+            candidate.end_index,
+            file_name,
+            selector,
+            "end_index",
+        )?,
+        content_start_index: required_plugin_source_candidate_usize(
+            candidate.content_start_index,
+            file_name,
+            selector,
+            "content_start_index",
+        )?,
+        content_end_index: required_plugin_source_candidate_usize(
+            candidate.content_end_index,
+            file_name,
+            selector,
+            "content_end_index",
+        )?,
+    })
+}
+
+fn required_plugin_source_candidate_string(
+    value: Option<&str>,
+    file_name: &str,
+    selector: &str,
+    field_name: &str,
+) -> Result<String, PluginSourceManagedTextError> {
+    value
+        .map(str::to_string)
+        .ok_or_else(|| plugin_source_candidate_contract_error(file_name, selector, field_name))
+}
+
+fn required_plugin_source_candidate_usize(
+    value: Option<usize>,
+    file_name: &str,
+    selector: &str,
+    field_name: &str,
+) -> Result<usize, PluginSourceManagedTextError> {
+    value.ok_or_else(|| plugin_source_candidate_contract_error(file_name, selector, field_name))
+}
+
+fn plugin_source_candidate_contract_error(
+    file_name: &str,
+    selector: &str,
+    field_name: &str,
+) -> PluginSourceManagedTextError {
+    PluginSourceManagedTextError::InvalidCandidate(format!(
+        "插件源码候选缺少必需字段 {field_name}: {file_name}/{selector}"
+    ))
 }
 
 pub(super) fn compile_rule_candidate_text_rules(
@@ -626,8 +713,10 @@ pub(super) fn sha256_text(text: &str) -> String {
 mod tests {
     use super::{
         PluginSourceFileInput, PluginSourceManagedTextError, PluginSourceTextRuleInput,
-        collect_plugin_source_managed_texts, scan_plugin_source_rule_candidates,
+        collect_plugin_source_managed_texts, plugin_source_managed_text_from_candidate,
+        scan_plugin_source_rule_candidates,
     };
+    use crate::native_core::scope_index::RuleCandidateOutput;
     use crate::native_core::scope_index::RuleCandidateTextRules;
 
     fn text_rules() -> RuleCandidateTextRules {
@@ -833,6 +922,64 @@ Window_Base.prototype.drawText('短い', 0, 0, 320);
         );
         assert!(
             matches!(stale_selector, Err(PluginSourceManagedTextError::Stale(message)) if message.contains("selector 已无法命中"))
+        );
+    }
+
+    #[test]
+    fn plugin_source_managed_text_rejects_candidate_missing_raw_span_fields() {
+        let mut candidate = RuleCandidateOutput {
+            domain: "plugin_source".to_string(),
+            location_path: "js/plugins/Test.js/ast:string:1:7:abcdef".to_string(),
+            rule_key: "ast:string:1:7:abcdef".to_string(),
+            original_text: "本文".to_string(),
+            source_file: "Test.js".to_string(),
+            file: Some("Test.js".to_string()),
+            json_path: None,
+            source_text: None,
+            field_name: None,
+            sibling_field_names: None,
+            parent_object_keys: None,
+            selector: Some("ast:string:1:7:abcdef".to_string()),
+            text: Some("本文".to_string()),
+            raw_text: None,
+            quote: Some("'".to_string()),
+            line: Some(1),
+            start_index: Some(1),
+            end_index: Some(7),
+            content_start_index: Some(2),
+            content_end_index: Some(6),
+            context: None,
+            api: None,
+            key: None,
+            ast_context: None,
+            active: Some(true),
+            confidence: None,
+            structural_flags: None,
+            file_hash: Some("hash".to_string()),
+        };
+
+        let error = plugin_source_managed_text_from_candidate(
+            "Test.js",
+            "ast:string:1:7:abcdef",
+            &candidate,
+        )
+        .expect_err("插件源码候选缺少 raw_text 时必须显式失败");
+
+        assert!(
+            matches!(error, PluginSourceManagedTextError::InvalidCandidate(message) if message.contains("raw_text"))
+        );
+
+        candidate.raw_text = Some("本文".to_string());
+        candidate.start_index = None;
+        let error = plugin_source_managed_text_from_candidate(
+            "Test.js",
+            "ast:string:1:7:abcdef",
+            &candidate,
+        )
+        .expect_err("插件源码候选缺少 span 时必须显式失败");
+
+        assert!(
+            matches!(error, PluginSourceManagedTextError::InvalidCandidate(message) if message.contains("start_index"))
         );
     }
 }

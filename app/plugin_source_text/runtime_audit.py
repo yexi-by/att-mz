@@ -6,7 +6,11 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
-from app.native_javascript_ast import NativeRuntimeLiteralIssueFact, collect_native_runtime_literal_issue_facts
+from app.native_javascript_ast import (
+    NativeRuntimeLiteralIssueFact,
+    NativeRuntimeLiteralIssueInput,
+    collect_native_runtime_literal_issue_facts,
+)
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import (
     GameData,
@@ -283,7 +287,7 @@ def audit_active_runtime_plugin_source(
                 _audit_literal(
                     literal=literal,
                     text_rules=text_rules,
-                    native_issue_fact=native_issue_facts.get(_literal_fact_key(literal)),
+                    native_issue_fact=native_issue_facts[_literal_fact_key(literal)],
                     runtime_write_map_by_key=runtime_write_map_by_key,
                     excluded_source_review_keys=excluded_source_review_keys,
                 )
@@ -506,13 +510,18 @@ def _collect_native_literal_issue_facts_by_key(
     text_rules: TextRules,
 ) -> dict[tuple[str, str], NativeRuntimeLiteralIssueFact]:
     """按当前文本规则从 Rust 收集运行源码字符串风险事实。"""
-    native_input: dict[str, tuple[str, str]] = {}
+    native_input: dict[str, NativeRuntimeLiteralIssueInput] = {}
     key_by_id: dict[str, tuple[str, str]] = {}
     for file_scan in batch_scan.file_scans.values():
         for literal in file_scan.literals:
             key = _literal_fact_key(literal)
             literal_id = _literal_fact_id(key)
-            native_input[literal_id] = (literal.raw_text, literal.text)
+            native_input[literal_id] = (
+                literal.raw_text,
+                literal.text,
+                literal.literal_kind,
+                literal.audit_default_severity,
+            )
             key_by_id[literal_id] = key
     if not native_input:
         return {}
@@ -520,6 +529,13 @@ def _collect_native_literal_issue_facts_by_key(
         literals=native_input,
         text_rules=text_rules,
     )
+    missing_ids = sorted(set(native_input) - set(native_facts))
+    if missing_ids:
+        missing_keys = [key_by_id[literal_id] for literal_id in missing_ids[:5]]
+        raise RuntimeError(
+            "Rust runtime literal fact 缺失: "
+            + ", ".join(f"{file_name}/{selector}" for file_name, selector in missing_keys)
+        )
     return {
         key_by_id[literal_id]: fact
         for literal_id, fact in native_facts.items()
@@ -557,7 +573,7 @@ def _audit_literal(
     *,
     literal: PluginSourceStringLiteral,
     text_rules: TextRules,
-    native_issue_fact: NativeRuntimeLiteralIssueFact | None,
+    native_issue_fact: NativeRuntimeLiteralIssueFact,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
     excluded_source_review_keys: frozenset[tuple[str, str]],
 ) -> list[ActiveRuntimePluginSourceIssue]:
@@ -565,14 +581,14 @@ def _audit_literal(
     classification = _classify_literal_issue(
         literal=literal,
         text_rules=text_rules,
+        native_issue_fact=native_issue_fact,
         runtime_write_map_by_key=runtime_write_map_by_key,
         excluded_source_review_keys=excluded_source_review_keys,
     )
     if classification.mapping_status == "mapped_excluded":
         return []
     issues: list[ActiveRuntimePluginSourceIssue] = []
-    placeholder_fragments = () if native_issue_fact is None else native_issue_fact.placeholder_fragments
-    for fragment in placeholder_fragments:
+    for fragment in native_issue_fact.placeholder_fragments:
         issues.append(
             ActiveRuntimePluginSourceIssue(
                 code="active_runtime_placeholder_risk",
@@ -610,6 +626,7 @@ def _classify_literal_issue(
     *,
     literal: PluginSourceStringLiteral,
     text_rules: TextRules,
+    native_issue_fact: NativeRuntimeLiteralIssueFact,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
     excluded_source_review_keys: frozenset[tuple[str, str]],
 ) -> _LiteralIssueClassification:
@@ -645,7 +662,9 @@ def _classify_literal_issue(
             source_review_required=False,
         )
 
-    if literal.audit_default_severity == "blocking":
+    literal_kind = native_issue_fact.literal_kind
+    audit_default_severity = native_issue_fact.audit_default_severity
+    if audit_default_severity == "blocking":
         return _LiteralIssueClassification(
             blocking=True,
             mapping_status="runtime_mapping_missing",
@@ -653,7 +672,7 @@ def _classify_literal_issue(
             source_review_required=True,
         )
 
-    if literal.audit_default_severity == "ignore":
+    if audit_default_severity == "ignore":
         return _LiteralIssueClassification(
             blocking=False,
             mapping_status="runtime_mapping_missing",
@@ -662,7 +681,7 @@ def _classify_literal_issue(
         )
 
     source_review_required = (
-        literal.literal_kind == "unknown"
+        literal_kind == "unknown"
         and text_rules.should_translate_source_text(literal.text)
     )
     return _LiteralIssueClassification(

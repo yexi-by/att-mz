@@ -821,7 +821,20 @@ async def test_export_pending_translations_uses_v2_fact_translatable_text(
     assert rebuild_report.status == "ok"
     async with await registry.open_game("テストゲーム") as session:
         async with session.connection.execute(
-            "SELECT location_path, translatable_text FROM text_facts_v2 ORDER BY domain, location_path, fact_id LIMIT 1"
+            """
+--sql
+            SELECT facts.location_path, facts.translatable_text
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            LEFT JOIN translation_items AS translations
+                ON translations.location_path = facts.location_path
+            WHERE indexed.writable = 1
+                AND translations.location_path IS NULL
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            LIMIT 1
+            ;
+            """
         ) as cursor:
             row = await cursor.fetchone()
         assert row is not None

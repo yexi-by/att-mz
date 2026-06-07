@@ -618,6 +618,8 @@ def test_native_javascript_ast_preserves_runtime_literal_issue_facts(
             "facts": [
                 {
                     "id": "Plugin.js\nast:string:1:7:abcdef",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning",
                     "issue_codes": ["active_runtime_placeholder_risk"],
                     "placeholder_fragments": [r"\ii[1]"],
                     "control_code_hints": [
@@ -641,14 +643,99 @@ def test_native_javascript_ast_preserves_runtime_literal_issue_facts(
     monkeypatch.setattr(native_javascript_ast, "_load_native_javascript_ast_module", load_fake_module)
 
     facts = native_javascript_ast.collect_native_runtime_literal_issue_facts(
-        literals={"Plugin.js\nast:string:1:7:abcdef": ("\\\\ii[1]", r"\ii[1]")},
+        literals={
+            "Plugin.js\nast:string:1:7:abcdef": (
+                "\\\\ii[1]",
+                r"\ii[1]",
+                "unknown",
+                "warning",
+            )
+        },
         text_rules=TextRules.from_setting(TextRulesSetting()),
     )
 
     fact = facts["Plugin.js\nast:string:1:7:abcdef"]
+    assert fact.literal_kind == "unknown"
+    assert fact.audit_default_severity == "warning"
     assert fact.issue_codes == ("active_runtime_placeholder_risk",)
     assert fact.placeholder_fragments == (r"\ii[1]",)
     assert ensure_json_object(fact.control_code_hints[0], "hint")["hint_kind"] == "possible_control_split"
+
+
+def test_native_javascript_ast_requires_runtime_literal_issue_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rust 运行字符串风险事实缺少分类字段时，Python 适配层必须显式失败。"""
+    fake_module = _FakeJavaScriptAstModule(
+        {
+            "facts": [
+                {
+                    "id": "Plugin.js\nast:string:1:7:abcdef",
+                    "issue_codes": [],
+                    "placeholder_fragments": [],
+                    "control_code_hints": [],
+                }
+            ]
+        }
+    )
+
+    def load_fake_module() -> native_javascript_ast.NativeJavaScriptAstModule:
+        """返回测试用 AST 模块。"""
+        return cast(native_javascript_ast.NativeJavaScriptAstModule, fake_module)
+
+    monkeypatch.setattr(native_javascript_ast, "_load_native_javascript_ast_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="literal_kind"):
+        _ = native_javascript_ast.collect_native_runtime_literal_issue_facts(
+            literals={
+                "Plugin.js\nast:string:1:7:abcdef": (
+                    "\\\\ii[1]",
+                    r"\ii[1]",
+                    "unknown",
+                    "warning",
+                )
+            },
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+        )
+
+
+def test_native_javascript_ast_reports_missing_runtime_literal_issue_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rust 运行字符串风险事实缺少必填字段时，Python 适配层必须给出可定位错误。"""
+    literal_id = "Plugin.js\nast:string:1:7:abcdef"
+    fake_module = _FakeJavaScriptAstModule(
+        {
+            "facts": [
+                {
+                    "id": literal_id,
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning",
+                    "placeholder_fragments": [],
+                    "control_code_hints": [],
+                }
+            ]
+        }
+    )
+
+    def load_fake_module() -> native_javascript_ast.NativeJavaScriptAstModule:
+        """返回测试用 AST 模块。"""
+        return cast(native_javascript_ast.NativeJavaScriptAstModule, fake_module)
+
+    monkeypatch.setattr(native_javascript_ast, "_load_native_javascript_ast_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="issue_codes"):
+        _ = native_javascript_ast.collect_native_runtime_literal_issue_facts(
+            literals={
+                literal_id: (
+                    "\\\\ii[1]",
+                    r"\ii[1]",
+                    "unknown",
+                    "warning",
+                )
+            },
+            text_rules=TextRules.from_setting(TextRulesSetting()),
+        )
 
 
 def test_native_quality_counts_parse_count_only_payload(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -41,6 +41,8 @@ struct RuntimeLiteralIssueFactsInput {
     id: String,
     raw_text: String,
     text: String,
+    literal_kind: String,
+    audit_default_severity: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +53,8 @@ struct RuntimeLiteralIssueFactsResult {
 #[derive(Debug, Serialize)]
 struct RuntimeLiteralIssueFactOutput {
     id: String,
+    literal_kind: String,
+    audit_default_severity: String,
     issue_codes: Vec<String>,
     placeholder_fragments: Vec<String>,
     control_code_hints: Vec<ControlCodeHint>,
@@ -161,6 +165,8 @@ fn collect_runtime_literal_issue_fact(
     };
     Ok(RuntimeLiteralIssueFactOutput {
         id: literal.id,
+        literal_kind: literal.literal_kind,
+        audit_default_severity: literal.audit_default_severity,
         issue_codes,
         placeholder_fragments,
         control_code_hints,
@@ -731,17 +737,23 @@ mod tests {
                 {
                     "id": "plain",
                     "raw_text": "\\\\ii[1]",
-                    "text": "\\ii[1]"
+                    "text": "\\ii[1]",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning"
                 },
                 {
                     "id": "linebreak",
                     "raw_text": "prefix\\nN[1]",
-                    "text": "prefix\nN[1]"
+                    "text": "prefix\nN[1]",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning"
                 },
                 {
                     "id": "hint",
                     "raw_text": "\\\\fb21st",
-                    "text": "\\fb21st"
+                    "text": "\\fb21st",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning"
                 }
             ],
             "text_rules": minimal_text_rules(),
@@ -767,6 +779,59 @@ mod tests {
             facts[2]["control_code_hints"][0]["hint_kind"],
             json!("possible_control_split")
         );
+    }
+
+    #[test]
+    fn runtime_literal_issue_facts_preserve_ast_literal_classification() {
+        let payload = json!({
+            "literals": [
+                {
+                    "id": "regex",
+                    "raw_text": "\\\\w+",
+                    "text": "\\w+",
+                    "literal_kind": "regex_pattern",
+                    "audit_default_severity": "warning"
+                },
+                {
+                    "id": "visible",
+                    "raw_text": "未審査テキスト",
+                    "text": "未審査テキスト",
+                    "literal_kind": "user_visible_candidate",
+                    "audit_default_severity": "blocking"
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+        });
+        let output = collect_runtime_literal_issue_facts_impl(&payload.to_string())
+            .expect("运行字符串风险事实应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let facts = value["facts"].as_array().expect("facts 应为数组");
+
+        assert_eq!(facts[0]["id"], json!("regex"));
+        assert_eq!(facts[0]["literal_kind"], json!("regex_pattern"));
+        assert_eq!(facts[0]["audit_default_severity"], json!("warning"));
+        assert_eq!(facts[1]["id"], json!("visible"));
+        assert_eq!(facts[1]["literal_kind"], json!("user_visible_candidate"));
+        assert_eq!(facts[1]["audit_default_severity"], json!("blocking"));
+    }
+
+    #[test]
+    fn runtime_literal_issue_facts_reject_missing_literal_classification() {
+        let payload = json!({
+            "literals": [
+                {
+                    "id": "missing",
+                    "raw_text": "\\\\w+",
+                    "text": "\\w+"
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+        });
+
+        let error = collect_runtime_literal_issue_facts_impl(&payload.to_string())
+            .expect_err("运行字符串风险事实输入缺少分类字段时必须显式失败");
+
+        assert!(error.contains("literal_kind"));
     }
 
     #[test]

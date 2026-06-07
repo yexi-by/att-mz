@@ -24,18 +24,35 @@ from app.native_scope_index import (
 from app.persistence import GameRegistry
 from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION, current_schema_fingerprint
 from app.config.schemas import TextRulesSetting
+from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
+from app.plugin_source_text.scanner import (
+    build_plugin_source_file_hash,
+    iter_plugin_source_string_literals,
+)
+from app.plugin_text import build_plugin_hash
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.rmmz.game_data import System, Terms
 from app.rmmz.schema import (
+    EventCommandTextRuleRecord,
     FIXED_FILE_NAMES,
     GameData,
     GameLayout,
     MvVirtualNameboxRuleRecord,
+    NonstandardDataTextRuleRecord,
+    NoteTagTextRuleRecord,
     PluginTextRuleRecord,
+    PluginSourceTextRuleRecord,
     TranslationData,
     TranslationItem,
 )
-from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, ensure_json_array, ensure_json_object
+from app.rmmz.text_rules import (
+    JsonArray,
+    JsonObject,
+    JsonValue,
+    coerce_json_value,
+    ensure_json_array,
+    ensure_json_object,
+)
 from app.rmmz.text_rules import TextRules
 
 
@@ -52,6 +69,60 @@ def _sqlite_row_str(row: sqlite3.Row, column_name: str) -> str:
     if not isinstance(value, str):
         raise AssertionError(f"{column_name} 必须是字符串")
     return value
+
+
+def _read_test_json_from_plugins_js(plugins_path: Path) -> JsonValue:
+    """测试中读取 `plugins.js` 的 `$plugins` 数组。"""
+    text = plugins_path.read_text(encoding="utf-8")
+    prefix = "var $plugins = "
+    if not text.startswith(prefix):
+        raise AssertionError("plugins.js fixture 必须以 var $plugins = 开头")
+    return coerce_json_value(cast(object, json.loads(text[len(prefix) :].rstrip(";\n"))))
+
+
+def _payload_without_core_fields(row: sqlite3.Row) -> JsonObject:
+    """读取 domain payload，并断言它没有重复 v2 fact 核心字段。"""
+    payload_text = _sqlite_row_str(row, "payload_json")
+    payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(payload_text))),
+        "payload_json",
+    )
+    forbidden_fields = {
+        "raw_text",
+        "visible_text",
+        "translatable_text",
+        "raw_hash",
+        "visible_hash",
+        "translatable_hash",
+        "selector",
+        "source_file",
+        "role",
+    }
+    duplicated = forbidden_fields.intersection(payload)
+    if duplicated:
+        raise AssertionError(f"domain payload 不得重复核心字段: {sorted(duplicated)}")
+    return payload
+
+
+def _single_row_by_domain(rows: list[sqlite3.Row], domain: str) -> sqlite3.Row:
+    """测试中按 domain 取唯一行。"""
+    matched = [row for row in rows if _sqlite_row_str(row, "domain") == domain]
+    if len(matched) != 1:
+        raise AssertionError(f"{domain} 应只有一条目标测试行，实际 {len(matched)} 条")
+    return matched[0]
+
+
+def _single_row_by_text(rows: list[sqlite3.Row], domain: str, text: str) -> sqlite3.Row:
+    """测试中按 domain 和 translatable_text 取唯一行。"""
+    matched = [
+        row
+        for row in rows
+        if _sqlite_row_str(row, "domain") == domain
+        and _sqlite_row_str(row, "translatable_text") == text
+    ]
+    if len(matched) != 1:
+        raise AssertionError(f"{domain}/{text} 应只有一条目标测试行，实际 {len(matched)} 条")
+    return matched[0]
 
 
 def _rebuild_rule_candidate_text_rules(setting: TextRulesSetting) -> JsonObject:
@@ -685,6 +756,188 @@ async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1
         ]
         assert "".join(_sqlite_row_str(part, "raw_text") for part in parts) == r"\n<Dan:> Hello"
         assert [_sqlite_row_str(part, "raw_text") for part in parts] == [r"\n<", "Dan", ":> ", "Hello"]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_payloads(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 冷重建为扩展 domain 写出核心正文、selector 和最小 payload。"""
+    data_dir = minimal_game_dir / "data"
+    items_path = data_dir / "Items.json"
+    items = cast(list[object], json.loads(items_path.read_text(encoding="utf-8")))
+    item = ensure_json_object(coerce_json_value(items[1]), "Items.json[1]")
+    item["note"] = "<Flavor:生の薬草>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+
+    raw_nonstandard = json.dumps(
+        {"title": "外部タイトル", "ignored": "除外本文"},
+        ensure_ascii=False,
+    )
+    _ = (data_dir / "UnknownPluginData.json").write_text(raw_nonstandard, encoding="utf-8")
+    raw_skipped = json.dumps({"title": "跳过本文"}, ensure_ascii=False)
+    _ = (data_dir / "SkippedPluginData.json").write_text(raw_skipped, encoding="utf-8")
+
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    plugin_source = "const Messages = { title: '源码\\\\n本文' };\n"
+    _ = (plugin_source_dir / "TestPlugin.js").write_text(plugin_source, encoding="utf-8")
+    plugin_literal = next(
+        literal
+        for literal in iter_plugin_source_string_literals(
+            file_name="TestPlugin.js",
+            source=plugin_source,
+            active=True,
+        )
+        if literal.text == "源码\\n本文"
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(
+                        ensure_json_object(
+                            ensure_json_array(
+                                _read_test_json_from_plugins_js(minimal_game_dir / "js" / "plugins.js"),
+                                "plugins.js",
+                            )[0],
+                            "plugins.js[0]",
+                        )
+                    ),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["Flavor"])]
+        )
+        await session.replace_nonstandard_data_text_rules(
+            [
+                NonstandardDataTextRuleRecord(
+                    file_name="UnknownPluginData.json",
+                    file_hash=build_nonstandard_data_file_hash(raw_nonstandard),
+                    path_templates=["$['title']"],
+                    excluded_path_templates=["$['ignored']"],
+                    skipped=False,
+                ),
+                NonstandardDataTextRuleRecord(
+                    file_name="SkippedPluginData.json",
+                    file_hash=build_nonstandard_data_file_hash(raw_skipped),
+                    path_templates=[],
+                    excluded_path_templates=[],
+                    skipped=True,
+                ),
+            ]
+        )
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="TestPlugin.js",
+                    file_hash=build_plugin_source_file_hash(plugin_source),
+                    selectors=[plugin_literal.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+
+    setting = TextRulesSetting()
+    result = rebuild_native_scope_index_storage(
+        {
+            "db_path": str(record.db_path),
+            "game_path": str(minimal_game_dir),
+            "source_snapshot_fingerprint": "snapshot-v1",
+            "rules_fingerprint": "rules-v1",
+            "source_language": "ja",
+            "target_language": "zh-Hans",
+            "engine_kind": "mz",
+            "text_rules_setting": setting.model_dump(mode="json"),
+            "rule_candidate_text_rules": _rebuild_rule_candidate_text_rules(setting),
+            "event_command_scope_codes": [357],
+            "source_text_required_pattern": setting.source_text_required_pattern,
+            "created_at": "2026-06-05T00:00:00",
+        }
+    )
+
+    assert result["status"] == "ok"
+    with sqlite3.connect(record.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT facts.domain, facts.location_path, facts.source_file, facts.selector,
+                       facts.raw_text, facts.visible_text, facts.translatable_text,
+                       payloads.payload_json
+                FROM text_facts_v2 AS facts
+                LEFT JOIN text_fact_domain_payloads_v2 AS payloads
+                    ON payloads.fact_id = facts.fact_id
+                WHERE facts.domain IN (
+                    'plugin_config',
+                    'event_command',
+                    'note_tag',
+                    'nonstandard_data',
+                    'plugin_source'
+                )
+                ORDER BY facts.domain, facts.location_path
+                """
+            ).fetchall(),
+        )
+
+    domains = {_sqlite_row_str(row, "domain") for row in rows}
+    assert domains == {
+        "plugin_config",
+        "event_command",
+        "note_tag",
+        "nonstandard_data",
+        "plugin_source",
+    }
+
+    plugin_config = _single_row_by_domain(rows, "plugin_config")
+    assert _sqlite_row_str(plugin_config, "raw_text") == "プラグイン本文"
+    assert _sqlite_row_str(plugin_config, "visible_text") == "プラグイン本文"
+    plugin_config_payload = _payload_without_core_fields(plugin_config)
+    assert plugin_config_payload == {"json_path": "$['parameters']['Message']"}
+
+    event_command = _single_row_by_text(rows, "event_command", "プラグイン台詞")
+    event_payload = _payload_without_core_fields(event_command)
+    assert event_payload["command_code"] == 357
+    assert event_payload["parameter_json_path"] == "$['parameters'][3]['message']"
+
+    note_tag = _single_row_by_domain(rows, "note_tag")
+    assert _sqlite_row_str(note_tag, "raw_text") == "生の薬草"
+    note_payload = _payload_without_core_fields(note_tag)
+    assert note_payload == {"tag_name": "Flavor"}
+
+    nonstandard = _single_row_by_domain(rows, "nonstandard_data")
+    nonstandard_payload = _payload_without_core_fields(nonstandard)
+    assert nonstandard_payload == {"json_path": "$['title']"}
+    assert _sqlite_row_str(nonstandard, "translatable_text") == "外部タイトル"
+    assert "除外本文" not in {_sqlite_row_str(row, "raw_text") for row in rows}
+    assert "跳过本文" not in {_sqlite_row_str(row, "raw_text") for row in rows}
+
+    plugin_source_row = _single_row_by_domain(rows, "plugin_source")
+    assert _sqlite_row_str(plugin_source_row, "selector") == plugin_literal.selector
+    assert _sqlite_row_str(plugin_source_row, "raw_text") == r"源码\\n本文"
+    assert _sqlite_row_str(plugin_source_row, "visible_text") == "源码\\n本文"
+    plugin_source_payload = _payload_without_core_fields(plugin_source_row)
+    assert plugin_source_payload["line"] == plugin_literal.line
+    assert plugin_source_payload["start_index"] == plugin_literal.start_index
+    assert plugin_source_payload["end_index"] == plugin_literal.end_index
 
 
 def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path) -> None:
