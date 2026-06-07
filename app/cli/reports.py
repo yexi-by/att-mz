@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from typing import Literal
 
 from app.agent_toolkit import AgentIssue, AgentReport
 from app.agent_toolkit.reports import issue
@@ -21,6 +23,39 @@ from app.rmmz.json_types import JsonArray, JsonObject, JsonValue
 
 
 REPORT_STDOUT_SAMPLE_LIMIT = 20
+
+type ReportStdoutMode = Literal["full", "sampled"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReportDetailPolicy:
+    """CLI 报告明细输出策略。"""
+
+    stdout: ReportStdoutMode = "full"
+    sample_limit: int = REPORT_STDOUT_SAMPLE_LIMIT
+
+    @classmethod
+    def full(cls) -> "ReportDetailPolicy":
+        """stdout 和输出文件都保留完整报告。"""
+        return cls(stdout="full")
+
+    @classmethod
+    def sampled_stdout(cls, *, sample_limit: int = REPORT_STDOUT_SAMPLE_LIMIT) -> "ReportDetailPolicy":
+        """stdout 采样，输出文件保留完整报告。"""
+        return cls(stdout="sampled", sample_limit=sample_limit)
+
+    def stdout_report(self, report: AgentReport) -> AgentReport:
+        """按策略生成 stdout 报告。"""
+        if self.stdout == "sampled":
+            return build_sampled_stdout_report(report, sample_limit=self.sample_limit)
+        return report
+
+    def output_report(self, report: AgentReport) -> AgentReport:
+        """按策略生成输出文件报告。"""
+        return build_full_output_report(report)
+
+
+SAMPLED_STDOUT_REPORT_POLICY = ReportDetailPolicy.sampled_stdout()
 
 
 def build_translate_summary_report(summary: TextTranslationSummary) -> AgentReport:
@@ -205,14 +240,16 @@ def write_report_outputs(
     title: str,
     write_output_file: bool = True,
     stdout_report: AgentReport | None = None,
+    detail_policy: ReportDetailPolicy | None = None,
 ) -> None:
     """输出 Agent 工具包报告。"""
     _ = title
+    policy = detail_policy or ReportDetailPolicy.full()
     output_path = read_optional_path_arg(args, "output") if write_output_file else None
-    output_report = build_full_output_report(report) if output_path is not None else report
+    output_report = policy.output_report(report) if output_path is not None else report
     output_report = inject_diagnostics_summary(output_report)
     json_text = output_report.to_json_text()
-    display_report = stdout_report or report
+    display_report = stdout_report or policy.stdout_report(report)
     display_report = inject_diagnostics_summary(display_report)
     display_json_text = display_report.to_json_text()
     if output_path is not None:
@@ -328,6 +365,8 @@ __all__ = [
     "build_write_back_summary_report",
     "inject_diagnostics_summary",
     "print_report",
+    "ReportDetailPolicy",
     "REPORT_STDOUT_SAMPLE_LIMIT",
+    "SAMPLED_STDOUT_REPORT_POLICY",
     "write_report_outputs",
 ]

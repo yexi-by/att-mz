@@ -2,6 +2,8 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
+from dataclasses import dataclass
+
 from .common import (
     AgentIssue,
     AgentReport,
@@ -32,6 +34,15 @@ from app.text_index import (
     detect_text_index_invalidations,
     text_index_item_to_translation_item,
 )
+
+
+@dataclass(slots=True)
+class ManualTranslationImportPlan:
+    """手动译文导入计划，构建阶段不写数据库。"""
+
+    valid_items: list[TranslationItem]
+    invalid_items: JsonArray
+    errors: list[AgentIssue]
 
 
 class ManualTranslationAgentMixin:
@@ -189,7 +200,14 @@ class ManualTranslationAgentMixin:
             details={"text_index_invalidations": text_index_invalidation_details},
         )
 
-    async def import_manual_translations(self: AgentServiceContext, *, game_title: str, input_path: Path) -> AgentReport:
+    async def import_manual_translations(
+        self: AgentServiceContext,
+        *,
+        game_title: str,
+        input_path: Path,
+        import_valid: bool = False,
+        report_invalid_path: Path | None = None,
+    ) -> AgentReport:
         """导入 Agent 手动填写的译文，并按项目规则校验后保存。"""
         try:
             async with aiofiles.open(input_path, "r", encoding="utf-8-sig") as file:
@@ -211,14 +229,25 @@ class ManualTranslationAgentMixin:
         text_index_rebuild_summary: JsonObject = {}
         rebuild_warnings: list[AgentIssue] = []
 
-        def import_summary(*, imported_count: int, error_count: int | None = None) -> JsonObject:
+        def import_summary(
+            *,
+            imported_count: int,
+            error_count: int | None = None,
+            invalid_count: int | None = None,
+            invalid_report_path: Path | None = None,
+        ) -> JsonObject:
             summary: JsonObject = {
                 "input": str(input_path),
                 "imported_count": imported_count,
                 "scope_mode": scope_mode,
+                "import_valid": import_valid,
             }
             if error_count is not None:
                 summary["error_count"] = error_count
+            if invalid_count is not None:
+                summary["invalid_count"] = invalid_count
+            if invalid_report_path is not None:
+                summary["invalid_report"] = str(invalid_report_path)
             if scope_mode == "text_index":
                 summary["text_index_status"] = text_index_status
                 if text_index_rebuild_summary:
@@ -238,8 +267,6 @@ class ManualTranslationAgentMixin:
                 structured_placeholder_rules=structured_rules,
             )
             payload_paths = {str(location_path) for location_path in payload}
-            translated_items = await session.read_translated_items_by_paths(sorted(payload_paths))
-            _ = translated_items
             latest_run = await session.read_latest_translation_run()
             index_invalidations = await detect_text_index_invalidations(
                 session=session,
@@ -334,16 +361,51 @@ class ManualTranslationAgentMixin:
                         )
                     )
 
-            if errors:
+            plan = ManualTranslationImportPlan(
+                valid_items=valid_items,
+                invalid_items=invalid_items,
+                errors=errors,
+            )
+            if plan.errors and not import_valid:
                 return AgentReport.from_parts(
-                    errors=errors,
+                    errors=plan.errors,
                     warnings=rebuild_warnings,
-                    summary=import_summary(imported_count=0, error_count=len(errors)),
-                    details={"invalid_items": invalid_items},
+                    summary=import_summary(
+                        imported_count=0,
+                        error_count=len(plan.errors),
+                        invalid_count=len(plan.invalid_items),
+                    ),
+                    details={"invalid_items": plan.invalid_items},
                 )
 
-            await session.write_translation_items(valid_items)
-            imported_paths = {item.location_path for item in valid_items}
+            if plan.errors and report_invalid_path is None:
+                return AgentReport.from_parts(
+                    errors=[
+                        issue(
+                            "manual_translation_invalid_report_required",
+                            "手动填写译文表包含无效条目；若要保存有效条目，必须同时提供 --report-invalid 写出无效项报告",
+                        )
+                    ],
+                    warnings=rebuild_warnings,
+                    summary=import_summary(
+                        imported_count=0,
+                        error_count=len(plan.errors),
+                        invalid_count=len(plan.invalid_items),
+                    ),
+                    details={"invalid_items": plan.invalid_items},
+                )
+
+            if plan.errors and report_invalid_path is not None:
+                await _write_manual_translation_invalid_report(
+                    input_path=input_path,
+                    output_path=report_invalid_path,
+                    imported_count=len(plan.valid_items),
+                    invalid_items=plan.invalid_items,
+                    errors=plan.errors,
+                )
+
+            await session.write_translation_items(plan.valid_items)
+            imported_paths = {item.location_path for item in plan.valid_items}
             _ = await session.delete_translation_quality_errors_by_paths(imported_paths)
             if latest_run is not None:
                 remaining_quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
@@ -363,6 +425,26 @@ class ManualTranslationAgentMixin:
                         )
                     )
 
+        if errors:
+            warnings = [
+                *rebuild_warnings,
+                issue(
+                    "manual_translation_partial_import",
+                    f"已保存 {len(valid_items)} 条有效译文，另有 {len(invalid_items)} 条无效条目未保存；无效项报告已写出",
+                ),
+            ]
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=warnings,
+                summary=import_summary(
+                    imported_count=len(valid_items),
+                    error_count=len(errors),
+                    invalid_count=len(invalid_items),
+                    invalid_report_path=report_invalid_path,
+                ),
+                details={"invalid_items": invalid_items},
+            )
+
         return AgentReport.from_parts(
             errors=[],
             warnings=(
@@ -373,3 +455,27 @@ class ManualTranslationAgentMixin:
             summary=import_summary(imported_count=len(valid_items)),
             details={},
         )
+
+
+async def _write_manual_translation_invalid_report(
+    *,
+    input_path: Path,
+    output_path: Path,
+    imported_count: int,
+    invalid_items: JsonArray,
+    errors: list[AgentIssue],
+) -> None:
+    """写出手动导入无效项报告。"""
+    report = AgentReport.from_parts(
+        errors=errors,
+        warnings=[],
+        summary={
+            "input": str(input_path),
+            "imported_count": imported_count,
+            "invalid_count": len(invalid_items),
+        },
+        details={"invalid_items": invalid_items},
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    async with aiofiles.open(output_path, "w", encoding="utf-8") as file:
+        _ = await file.write(f"{report.to_json_text()}\n")

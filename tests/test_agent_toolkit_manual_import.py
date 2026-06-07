@@ -1548,6 +1548,130 @@ async def test_manual_translation_import_reports_all_invalid_items_without_parti
         ensure_json_object(coerce_json_value(item), "invalid_item")["actual_real_line_break_count"] == 1
         for item in invalid_items
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_valid_saves_good_items_and_reports_invalid(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """显式部分导入会保存有效译文，并把无效条目写入独立报告。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    invalid_report_path = tmp_path / "invalid-manual-translations.json"
+
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    selected: JsonObject = {}
+    valid_path = ""
+    invalid_path = ""
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        original_lines = [
+            line
+            for line in ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
+            if isinstance(line, str)
+        ]
+        if entry["item_type"] != "short_text" or any("\n" in line or r"\n" in line for line in original_lines):
+            continue
+        if not valid_path:
+            valid_path = location_path
+            entry["translation_lines"] = ["手动译文"]
+        else:
+            invalid_path = location_path
+            entry["translation_lines"] = ["第一行\n第二行"]
+        selected[location_path] = entry
+        if len(selected) == 2:
+            break
+    assert valid_path
+    assert invalid_path
+    _ = pending_path.write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _ = await _rebuild_text_index_for_test(service)
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+        import_valid=True,
+        report_invalid_path=invalid_report_path,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    translated_by_path = {item.location_path: item for item in translated_items}
+    invalid_report = load_json_object(invalid_report_path)
+    invalid_details = ensure_json_object(coerce_json_value(invalid_report["details"]), "invalid_report.details")
+    invalid_items = ensure_json_array(invalid_details["invalid_items"], "invalid_report.invalid_items")
+
+    assert report.status == "warning"
+    assert report.summary["imported_count"] == 1
+    assert report.summary["invalid_count"] == 1
+    assert report.summary["invalid_report"] == str(invalid_report_path)
+    assert translated_by_path[valid_path].translation_lines == ["手动译文"]
+    assert invalid_path not in translated_by_path
+    assert ensure_json_object(coerce_json_value(invalid_items[0]), "invalid_items[0]")["location_path"] == invalid_path
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_valid_requires_invalid_report_before_write(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """显式部分导入缺少无效项报告路径时不能先保存有效项。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    selected: JsonObject = {}
+    valid_path = ""
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        original_lines = [
+            line
+            for line in ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
+            if isinstance(line, str)
+        ]
+        if entry["item_type"] != "short_text" or any("\n" in line or r"\n" in line for line in original_lines):
+            continue
+        if not valid_path:
+            valid_path = location_path
+            entry["translation_lines"] = ["手动译文"]
+        else:
+            entry["translation_lines"] = ["第一行\n第二行"]
+        selected[location_path] = entry
+        if len(selected) == 2:
+            break
+    assert valid_path
+    assert len(selected) == 2
+    _ = pending_path.write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _ = await _rebuild_text_index_for_test(service)
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+        import_valid=True,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+
+    assert report.status == "error"
+    assert "manual_translation_invalid_report_required" in {error.code for error in report.errors}
+    assert translated_items == []
+
+
 @pytest.mark.asyncio
 async def test_export_quality_fix_template_collects_repairable_items(
     minimal_game_dir: Path,

@@ -20,12 +20,14 @@ from app.cli import parser_command_names
 from app.cli import registered_command_names
 from app.cli import write_report_outputs
 from app.cli.errors import CliArgumentError
-from app.cli.reports import build_sampled_stdout_report, build_write_back_summary_report
+from app.cli.reports import SAMPLED_STDOUT_REPORT_POLICY, build_write_back_summary_report
 from app.cli.commands.rules import (
     build_deleted_translation_backup_details,
     build_deleted_translation_warnings,
+    run_scan_placeholder_candidates_command,
     run_scan_nonstandard_data_command,
 )
+from app.cli.commands.translation import run_import_manual_translations_command
 from app.cli.commands.registry import run_list_command
 from app.cli.commands.write_back import run_all_command
 from app.cli.runtime import build_setting_overrides
@@ -33,6 +35,8 @@ from app.application.errors import WorkflowGateError
 from app.application.summaries import TerminologyWriteSummary, TextTranslationSummary, WriteBackSummary
 from app.runtime_paths import APP_HOME_ENV_NAME
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -1478,6 +1482,79 @@ def test_manual_translation_export_commands_are_black_box_friendly() -> None:
     assert getattr(limited_args, "limit") == 20
 
 
+def test_manual_translation_import_command_accepts_partial_import_flags() -> None:
+    """人工补译导入命令显式支持保存有效项和无效项报告。"""
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "import-manual-translations",
+            "--game",
+            "demo",
+            "--input",
+            "manual-translations.json",
+            "--import-valid",
+            "--report-invalid",
+            "invalid-manual-translations.json",
+        ]
+    )
+
+    assert namespace_optional_str(args, "input") == "manual-translations.json"
+    assert getattr(args, "import_valid") is True
+    assert namespace_optional_str(args, "report_invalid") == "invalid-manual-translations.json"
+
+
+@pytest.mark.asyncio
+async def test_import_manual_translations_command_passes_partial_import_flags(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """CLI 命令必须把部分导入参数全链路传给服务。"""
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def import_manual_translations(
+            self,
+            *,
+            game_title: str,
+            input_path: Path,
+            import_valid: bool,
+            report_invalid_path: Path | None,
+        ) -> AgentReport:
+            assert game_title == "demo"
+            assert input_path == (tmp_path / "manual-translations.json").resolve()
+            assert import_valid is True
+            assert report_invalid_path == (tmp_path / "invalid-manual-translations.json").resolve()
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={"imported_count": 1},
+                details={},
+            )
+
+    monkeypatch.setattr(
+        "app.cli.commands.translation.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(
+        game="demo",
+        game_path=None,
+        input=str(tmp_path / "manual-translations.json"),
+        import_valid=True,
+        report_invalid=str(tmp_path / "invalid-manual-translations.json"),
+        output=None,
+    )
+
+    exit_code = await run_import_manual_translations_command(args)
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    assert exit_code == 0
+    assert ensure_json_object(payload["summary"], "summary")["imported_count"] == 1
+
+
 def test_quality_fix_and_reset_commands_are_black_box_friendly() -> None:
     """质量修复模板和显式重置命令提供稳定文件型接口。"""
     parser = build_parser()
@@ -1629,9 +1706,9 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
 
     write_report_outputs(
         report=report,
-        stdout_report=build_sampled_stdout_report(report),
         args=Namespace(output=str(output_path)),
         title="校验报告",
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
     )
 
     captured = capsys.readouterr()
@@ -1655,6 +1732,33 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
     assert stdout_matches["omitted_count"] == 5
     assert first_sample_matches["count"] == 3
     assert len(output_matches) == 25
+
+
+def test_large_report_commands_use_detail_policy() -> None:
+    """大输出命令必须通过统一报告策略声明 stdout 采样。"""
+    sampled_handlers: list[tuple[Path, str]] = [
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_scan_nonstandard_data_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_export_nonstandard_data_json_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_validate_nonstandard_data_rules_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_import_nonstandard_data_rules_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_scan_placeholder_candidates_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_scan_structured_placeholder_candidates_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_validate_mv_virtual_namebox_rules_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_quality_report_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_text_scope_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_audit_coverage_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_audit_active_runtime_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_verify_feedback_text_command"),
+        (ROOT / "app" / "cli" / "commands" / "workspace.py", "run_validate_agent_workspace_command"),
+    ]
+
+    for path, function_name in sampled_handlers:
+        source = path.read_text(encoding="utf-8")
+        start = source.index(f"async def {function_name}")
+        next_function = source.find("\n\nasync def ", start + 1)
+        function_source = source[start:] if next_function == -1 else source[start:next_function]
+        assert "stdout_report=build_sampled_stdout_report" not in source
+        assert "detail_policy=SAMPLED_STDOUT_REPORT_POLICY" in function_source
 
 
 @pytest.mark.asyncio
@@ -1694,6 +1798,69 @@ async def test_scan_nonstandard_data_command_samples_stdout_and_writes_full_outp
     args = Namespace(game="demo", game_path=None, output=str(output_path))
 
     exit_code = await run_scan_nonstandard_data_command(args)
+
+    captured = capsys.readouterr()
+    stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    output_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(output_path.read_text(encoding="utf-8")))),
+        "output JSON",
+    )
+    stdout_summary = ensure_json_object(stdout_payload["summary"], "stdout summary")
+    output_summary = ensure_json_object(output_payload["summary"], "output summary")
+    stdout_details = ensure_json_object(stdout_payload["details"], "stdout details")
+    output_details = ensure_json_object(output_payload["details"], "output details")
+    stdout_candidates = ensure_json_object(stdout_details["candidates"], "stdout candidates")
+    output_candidates = ensure_json_array(output_details["candidates"], "output candidates")
+
+    assert exit_code == 0
+    assert stdout_summary["report_detail_mode"] == "sampled"
+    assert output_summary["report_detail_mode"] == "full"
+    assert stdout_candidates["count"] == 25
+    assert len(ensure_json_array(stdout_candidates["samples"], "stdout candidates.samples")) == 20
+    assert stdout_candidates["omitted_count"] == 5
+    assert len(output_candidates) == 25
+
+
+@pytest.mark.asyncio
+async def test_scan_placeholder_candidates_command_samples_stdout_and_writes_full_output(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """普通占位符候选扫描 stdout 采样，--output 写完整报告。"""
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def scan_placeholder_candidates(
+            self,
+            *,
+            game_title: str,
+            custom_placeholder_rules_text: str | None,
+        ) -> AgentReport:
+            assert game_title == "demo"
+            assert custom_placeholder_rules_text is None
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={"candidate_count": 25},
+                details={"candidates": [{"index": index} for index in range(25)]},
+            )
+
+    output_path = tmp_path / "placeholder-candidates-report.json"
+    monkeypatch.setattr(
+        "app.cli.commands.rules.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(
+        game="demo",
+        game_path=None,
+        placeholder_rules=None,
+        input=None,
+        output=str(output_path),
+    )
+
+    exit_code = await run_scan_placeholder_candidates_command(args)
 
     captured = capsys.readouterr()
     stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")

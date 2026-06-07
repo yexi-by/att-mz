@@ -382,6 +382,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_manual_parser)
     _ = import_manual_parser.add_argument("--input", required=True, help="已填写的译文表文件")
+    _ = import_manual_parser.add_argument(
+        "--import-valid",
+        action="store_true",
+        help="手动译文表有无效条目时，仍保存通过校验的有效条目",
+    )
+    _ = import_manual_parser.add_argument(
+        "--report-invalid",
+        help="显式部分导入时写出未保存的无效条目报告 JSON",
+    )
 
     reset_translations_parser = subparsers.add_parser(
         "reset-translations",

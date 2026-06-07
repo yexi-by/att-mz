@@ -16,7 +16,7 @@ from app.cli.arguments import (
     read_required_path_arg,
 )
 from app.cli.progress import build_progress_reporter
-from app.cli.reports import build_sampled_stdout_report, build_translate_summary_report, print_report, write_report_outputs
+from app.cli.reports import SAMPLED_STDOUT_REPORT_POLICY, build_translate_summary_report, print_report, write_report_outputs
 from app.cli.runtime import (
     HandlerSession,
     build_setting_overrides,
@@ -37,7 +37,12 @@ async def run_quality_report_command(args: argparse.Namespace) -> int:
             callbacks=progress.status_callbacks(),
             include_write_probe=read_bool_arg(args, "include_write_probe"),
         )
-    write_report_outputs(report=report, args=args, title="翻译质量报告")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="翻译质量报告",
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -66,7 +71,7 @@ async def run_text_scope_command(args: argparse.Namespace) -> int:
         report=report,
         args=args,
         title="统一文本清单",
-        stdout_report=build_sampled_stdout_report(report),
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
     )
     return 1 if report.status == "error" else 0
 
@@ -79,7 +84,12 @@ async def run_audit_coverage_command(args: argparse.Namespace) -> int:
         game_title=game_title,
         include_write_probe=read_bool_arg(args, "include_write_probe"),
     )
-    write_report_outputs(report=report, args=args, title="覆盖审计报告")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="覆盖审计报告",
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -88,7 +98,12 @@ async def run_audit_active_runtime_command(args: argparse.Namespace) -> int:
     game_title = await resolve_target_game_title(args)
     service = AgentToolkitService()
     report = await service.audit_active_runtime(game_title=game_title)
-    write_report_outputs(report=report, args=args, title="当前运行文件审计报告")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="当前运行文件审计报告",
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -108,7 +123,12 @@ async def run_verify_feedback_text_command(args: argparse.Namespace) -> int:
     input_path = read_required_path_arg(args, "input")
     service = AgentToolkitService()
     report = await service.verify_feedback_text(game_title=game_title, input_path=input_path)
-    write_report_outputs(report=report, args=args, title="反馈原文反查报告")
+    write_report_outputs(
+        report=report,
+        args=args,
+        title="反馈原文反查报告",
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
+    )
     return 1 if report.status == "error" else 0
 
 
@@ -180,8 +200,14 @@ async def run_import_manual_translations_command(args: argparse.Namespace) -> in
     """执行 `import-manual-translations` 命令。"""
     game_title = await resolve_target_game_title(args)
     input_path = read_required_path_arg(args, "input")
+    report_invalid_path = read_optional_path_arg(args, "report_invalid")
     service = AgentToolkitService()
-    report = await service.import_manual_translations(game_title=game_title, input_path=input_path)
+    report = await service.import_manual_translations(
+        game_title=game_title,
+        input_path=input_path,
+        import_valid=read_bool_arg(args, "import_valid"),
+        report_invalid_path=report_invalid_path,
+    )
     write_report_outputs(report=report, args=args, title="手动填写译文表导入报告")
     return 1 if report.status == "error" else 0
 
