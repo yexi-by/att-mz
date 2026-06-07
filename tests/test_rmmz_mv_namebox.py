@@ -349,6 +349,97 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_for_standalone
 
 
 @pytest.mark.asyncio
+async def test_native_rebuild_weak_mv_namebox_rule_splits_colon_inside_angle_speaker(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """既有 YEP 弱规则应自动拆分 <Name:> Body，不要求 Agent 另写 separator 规则。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 93,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": [r"\n<Dan:> Hello"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="en")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+    assert report.status == "ok"
+    scope_key = str(report.summary["scope_key"])
+
+    async with await registry.open_game(record.game_title) as session:
+        facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        )
+        fact = next(item for item in facts if item.location_path == "CommonEvents.json/93/0")
+        parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+
+    assert fact.raw_text == r"\n<Dan:> Hello"
+    assert fact.role == "Dan"
+    assert fact.translatable_text == "Hello"
+    assert "".join(part.raw_text for part in parts) == r"\n<Dan:> Hello"
+
+
+@pytest.mark.asyncio
+async def test_validate_mv_namebox_rules_rejects_empty_speaker_after_weak_split(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """弱拆分后 speaker 为空的异常候选必须报错，不能导入成空说话人。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 94,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": [r"\n<:> Body"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_mv_virtual_namebox_rules(
+        game_title=record.game_title,
+        rules_text=json.dumps(
+            {
+                "rules": [
+                    {
+                        "name": "weak-yep",
+                        "pattern": r"^(?P<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?P<speaker>[^>\r\n]{0,80})>(?P<body>.*)$",
+                        "speaker_group": "speaker",
+                        "body_group": "body",
+                        "speaker_policy": "translate",
+                        "render_template": r"{command}<{speaker}>{body}",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert "mv_virtual_namebox_rules_invalid" in {error.code for error in report.errors}
+    assert "空说话人" in " ".join(error.message for error in report.errors)
+
+
+@pytest.mark.asyncio
 async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_game_dir: Path) -> None:
     """MV 写回用术语表译名重建虚拟名字框，正文只写剥离后的对白。"""
     common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"

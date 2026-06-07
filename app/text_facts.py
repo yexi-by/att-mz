@@ -465,6 +465,32 @@ async def read_pending_text_fact_translation_data_map(
     return text_fact_records_to_translation_data_map(facts, index_records=index_records)
 
 
+async def read_current_text_fact_translation_data_map_v2(
+    session: TargetGameSession,
+) -> dict[str, TranslationData]:
+    """读取当前 v2 facts，并转换成规则候选扫描可消费的正文映射。"""
+    facts = await read_current_text_fact_records_v2(session, limit=None)
+    index_records = await _read_index_records_for_facts(session=session, facts=facts)
+    return text_fact_records_to_translation_data_map(facts, index_records=index_records)
+
+
+async def read_current_text_fact_placeholder_entries_v2(
+    session: TargetGameSession,
+) -> list[tuple[str, list[str]]]:
+    """读取当前 v2 facts 的占位符扫描轻量正文。"""
+    facts = await read_current_text_fact_records_v2(session, limit=None)
+    return [
+        (
+            fact.location_path,
+            _text_fact_lines(
+                fact.translatable_text,
+                item_type=_item_type_from_text_fact(fact),
+            ),
+        )
+        for fact in facts
+    ]
+
+
 async def read_writable_text_fact_translation_items_by_paths(
     session: TargetGameSession,
     location_paths: Sequence[str],
@@ -856,6 +882,8 @@ __all__ = [
     "count_writable_text_facts_v2",
     "read_current_text_fact_scope_v2",
     "read_current_text_fact_records_v2",
+    "read_current_text_fact_placeholder_entries_v2",
+    "read_current_text_fact_translation_data_map_v2",
     "read_pending_text_fact_quality_error_paths_v2",
     "read_pending_text_fact_records_v2",
     "read_pending_text_fact_path_samples_v2",

@@ -138,6 +138,19 @@ struct VirtualSpeaker {
     rendered_source: String,
 }
 
+struct WeakSplitSpeaker {
+    speaker: String,
+    body_text: String,
+}
+
+pub(super) fn weak_split_colon_speaker_parts(
+    source_speaker: &str,
+    body_text: &str,
+) -> Option<(String, String)> {
+    weak_split_colon_speaker(source_speaker, body_text)
+        .map(|parts| (parts.speaker, parts.body_text))
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct MvVirtualNameboxFactParts {
     pub(super) raw_text: String,
@@ -188,6 +201,8 @@ pub(super) fn build_mv_virtual_namebox_fact_parts(
             input.rule_name
         ));
     }
+    let semantic_parts = weak_split_colon_speaker(input.role, input.body_text)
+        .ok_or_else(|| format!("MV 虚拟名字框规则 {} 命中了空说话人", input.rule_name))?;
     let mut render_parts = render_parts_from_template(
         input.render_template,
         input.source_speaker,
@@ -201,8 +216,8 @@ pub(super) fn build_mv_virtual_namebox_fact_parts(
     Ok(MvVirtualNameboxFactParts {
         raw_text: input.raw_text.to_string(),
         visible_text: input.raw_text.to_string(),
-        translatable_text: input.body_text.to_string(),
-        role: input.role.to_string(),
+        translatable_text: semantic_parts.body_text,
+        role: semantic_parts.speaker,
         render_parts,
     })
 }
@@ -820,17 +835,11 @@ fn build_virtual_speaker(
     rule: &CompiledMvVirtualNameboxRule,
     actor_names_by_id: &BTreeMap<i64, String>,
 ) -> Result<VirtualSpeaker, String> {
-    let source_speaker = capture_group(captures, &rule.speaker_group)
+    let raw_source_speaker = capture_group(captures, &rule.speaker_group)
         .unwrap_or_default()
         .trim()
         .to_string();
-    if source_speaker.is_empty() {
-        return Err(format!(
-            "MV 虚拟名字框规则 {} 命中了空说话人",
-            rule.rule_name
-        ));
-    }
-    let body_text = if rule.body_group.is_empty() {
+    let raw_body_text = if rule.body_group.is_empty() {
         String::new()
     } else {
         capture_group(captures, &rule.body_group)
@@ -838,27 +847,55 @@ fn build_virtual_speaker(
             .trim()
             .to_string()
     };
+    let Some(semantic_parts) = weak_split_colon_speaker(&raw_source_speaker, &raw_body_text) else {
+        return Err(format!(
+            "MV 虚拟名字框规则 {} 命中了空说话人",
+            rule.rule_name
+        ));
+    };
     let speaker = if rule.speaker_policy == "actor_name" {
-        actor_name_from_control(actor_names_by_id, &source_speaker)?
+        actor_name_from_control(actor_names_by_id, &semantic_parts.speaker)?
     } else {
-        source_speaker.clone()
+        semantic_parts.speaker.clone()
     };
     let rendered_source = render_source_template(
         &rule.render_template,
         captures,
         rule,
-        &source_speaker,
-        &body_text,
+        &raw_source_speaker,
+        &raw_body_text,
     )
     .unwrap_or_else(|_error| text.to_string());
     Ok(VirtualSpeaker {
         rule_name: rule.rule_name.clone(),
         speaker,
-        source_speaker,
-        body_text,
+        source_speaker: semantic_parts.speaker,
+        body_text: semantic_parts.body_text,
         speaker_policy: rule.speaker_policy.clone(),
         render_template: rule.render_template.clone(),
         rendered_source,
+    })
+}
+
+fn weak_split_colon_speaker(source_speaker: &str, body_text: &str) -> Option<WeakSplitSpeaker> {
+    let semantic_speaker = source_speaker.trim();
+    let semantic_body = body_text.trim();
+    if semantic_speaker.is_empty() {
+        return None;
+    }
+    let stripped_speaker = semantic_speaker.trim_end_matches([':', '：']).trim_end();
+    if stripped_speaker.len() != semantic_speaker.len() && !semantic_body.is_empty() {
+        if stripped_speaker.is_empty() {
+            return None;
+        }
+        return Some(WeakSplitSpeaker {
+            speaker: stripped_speaker.to_string(),
+            body_text: semantic_body.to_string(),
+        });
+    }
+    Some(WeakSplitSpeaker {
+        speaker: semantic_speaker.to_string(),
+        body_text: semantic_body.to_string(),
     })
 }
 

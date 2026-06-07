@@ -368,7 +368,8 @@ def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> N
     assert "detect_text_index_invalidations" in workspace_index_calls
     assert "rebuild_text_index_native_storage" in workspace_index_calls
     assert "rebuild_persistent_text_index" not in workspace_source
-    assert "read_text_index_placeholder_texts" in workspace_index_calls
+    assert "read_text_index_placeholder_texts" not in workspace_source
+    assert "read_current_text_fact_placeholder_entries_v2" in workspace_index_calls
     assert "text_index_items_to_translation_data_map" not in workspace_source
 
     assert "scan_native_rule_candidates" in _call_names_for_function(mv_native_source, "scan_native_mv_virtual_namebox")

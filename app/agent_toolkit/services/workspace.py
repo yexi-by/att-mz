@@ -123,6 +123,12 @@ from app.text_index import (
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
 )
+from app.text_facts import (
+    read_current_text_fact_placeholder_entries_v2,
+    read_current_text_fact_scope_v2,
+)
+from app.persistence.records import TextFactScopeV2Record
+from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
 
 SOURCE_SNAPSHOT_MISSING_MESSAGE = (
     "尚未创建翻译源快照，请使用干净原始游戏目录重新执行 add-game；"
@@ -207,7 +213,16 @@ async def _read_workspace_placeholder_entries_from_text_index(
         )
     else:
         text_index_status = "used"
-    return await session.read_text_index_placeholder_texts(), text_index_status
+    return await read_current_text_fact_placeholder_entries_v2(session), text_index_status
+
+
+def _text_fact_scope_metadata(scope: TextFactScopeV2Record) -> JsonObject:
+    """生成工作区 JSON 里固定当前 v2 事实范围的最小元数据。"""
+    return {
+        "scope_key": scope.scope_key,
+        "scope_hash": scope.scope_hash,
+        "text_fact_schema_version": scope.schema_version,
+    }
 
 
 def _normal_placeholder_coverage_result_from_entries(
@@ -477,6 +492,7 @@ class WorkspaceAgentMixin:
                 setting=setting,
                 text_rules=text_rules,
             )
+            text_fact_scope = await read_current_text_fact_scope_v2(session)
             text_index_metadata = await session.read_text_index_metadata()
             mv_virtual_namebox_review_required = game_data.layout.engine_kind == "mv"
             if text_index_metadata is not None:
@@ -592,11 +608,13 @@ class WorkspaceAgentMixin:
         placeholder_report = AgentReport.from_parts(
             errors=[],
             warnings=[],
-            summary={},
+            summary=_text_fact_scope_metadata(text_fact_scope),
             details={"candidates": placeholder_candidate_details},
         )
         placeholder_path = target_dir / "placeholder-candidates.json"
-        await _write_compact_json_value(placeholder_path, placeholder_report.model_dump(mode="json"))
+        placeholder_payload = placeholder_report.model_dump(mode="json")
+        placeholder_payload.update(_text_fact_scope_metadata(text_fact_scope))
+        await _write_compact_json_value(placeholder_path, placeholder_payload)
         placeholder_rule_drafts = _build_custom_placeholder_rule_draft_from_details(placeholder_candidate_details)
         placeholder_rules_path = target_dir / "placeholder-rules.json"
         placeholder_rule_payload: JsonObject = (
@@ -620,6 +638,7 @@ class WorkspaceAgentMixin:
         if mv_virtual_namebox_workspace_active:
             mv_virtual_namebox_candidates_path = target_dir / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
             mv_candidates_payload = native_mv_virtual_namebox_candidates_payload(game_data)
+            mv_candidates_payload["text_fact_scope"] = _text_fact_scope_metadata(text_fact_scope)
             mv_virtual_namebox_candidate_count = _summary_int(mv_candidates_payload, "candidate_count")
             await _write_compact_json_value(mv_virtual_namebox_candidates_path, mv_candidates_payload)
             mv_virtual_namebox_rules_path = target_dir / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
@@ -675,6 +694,7 @@ class WorkspaceAgentMixin:
             "mv_virtual_namebox_candidate_count": mv_virtual_namebox_candidate_count,
             "mv_virtual_namebox_rule_count": len(mv_virtual_namebox_rules),
             "mv_virtual_namebox_workspace_active": mv_virtual_namebox_workspace_active,
+            **_text_fact_scope_metadata(text_fact_scope),
         }
         if plugin_source_extension_active:
             generated_summary.update(
@@ -845,6 +865,16 @@ class WorkspaceAgentMixin:
                 session=session,
                 setting=setting,
                 text_rules=text_rules,
+            )
+            current_text_fact_scope = await read_current_text_fact_scope_v2(session)
+            errors.extend(
+                _validate_workspace_scope_metadata(
+                    payload=manifest_generated,
+                    current_scope=current_text_fact_scope,
+                    missing_code="workspace_scope_missing",
+                    stale_code="workspace_scope_stale",
+                    label="manifest.generated",
+                )
             )
             advance_progress(1)
             nonstandard_data_scan = None
@@ -1080,6 +1110,7 @@ class WorkspaceAgentMixin:
                         game_data=game_data,
                         existing_records=mv_virtual_namebox_rule_records,
                         candidate_path=mv_virtual_namebox_candidates_path,
+                        current_scope=current_text_fact_scope,
                     )
                 errors.extend(mv_namebox_report.errors)
                 warnings.extend(mv_namebox_report.warnings)
@@ -1092,6 +1123,15 @@ class WorkspaceAgentMixin:
                 errors.append(issue("mv_virtual_namebox_rules_missing", f"MV 工作区缺少 {MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME}"))
         workspace_custom_rules = text_rules.custom_placeholder_rules
         if placeholder_rules_path.exists():
+            errors.extend(
+                _validate_workspace_json_file_scope_metadata(
+                    path=workspace / "placeholder-candidates.json",
+                    current_scope=current_text_fact_scope,
+                    missing_code="placeholder_candidates_scope_missing",
+                    stale_code="placeholder_candidates_scope_stale",
+                    label="placeholder-candidates.json",
+                )
+            )
             async with aiofiles.open(placeholder_rules_path, "r", encoding="utf-8") as file:
                 placeholder_rules_text = await file.read()
                 placeholder_report = _validate_workspace_placeholder_rules(
@@ -1272,6 +1312,7 @@ def _validate_workspace_mv_virtual_namebox_rules(
     game_data: GameData,
     existing_records: list[MvVirtualNameboxRuleRecord],
     candidate_path: Path,
+    current_scope: TextFactScopeV2Record,
 ) -> AgentReport:
     """复用工作区候选文件校验 MV 虚拟名字框规则。"""
     errors: list[AgentIssue] = []
@@ -1309,6 +1350,30 @@ def _validate_workspace_mv_virtual_namebox_rules(
             coerce_json_value(cast(object, json.loads(candidate_path.read_text(encoding="utf-8")))),
             MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
         )
+        text_fact_scope_payload = payload.get("text_fact_scope")
+        scope_issues = _validate_workspace_scope_metadata(
+            payload=(
+                ensure_json_object(text_fact_scope_payload, f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}.text_fact_scope")
+                if isinstance(text_fact_scope_payload, dict)
+                else {}
+            ),
+            current_scope=current_scope,
+            missing_code="mv_virtual_namebox_candidates_scope_missing",
+            stale_code="mv_virtual_namebox_candidates_scope_stale",
+            label=f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}.text_fact_scope",
+        )
+        if scope_issues:
+            return AgentReport.from_parts(
+                errors=scope_issues,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
         exported_scope_hash = payload.get("scope_hash")
         if not isinstance(exported_scope_hash, str) or not exported_scope_hash:
             errors.append(
@@ -1659,6 +1724,86 @@ def _workspace_manifest_generated(manifest: JsonObject | None) -> JsonObject:
     except Exception:
         return {}
     return generated
+
+
+def _validate_workspace_json_file_scope_metadata(
+    *,
+    path: Path,
+    current_scope: TextFactScopeV2Record,
+    missing_code: str,
+    stale_code: str,
+    label: str,
+) -> list[AgentIssue]:
+    """读取工作区 JSON 文件并校验其中的 v2 scope 元数据。"""
+    if not path.exists():
+        return [
+            issue(
+                missing_code,
+                f"{label} 缺少当前 Text Fact Contract v2 范围信息，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    try:
+        payload = ensure_json_object(
+            coerce_json_value(cast(object, json.loads(path.read_text(encoding="utf-8")))),
+            label,
+        )
+    except Exception as error:
+        return [
+            issue(
+                missing_code,
+                f"{label} 无法读取 v2 范围信息: {type(error).__name__}: {error}；请重新运行 prepare-agent-workspace",
+            )
+        ]
+    return _validate_workspace_scope_metadata(
+        payload=payload,
+        current_scope=current_scope,
+        missing_code=missing_code,
+        stale_code=stale_code,
+        label=label,
+    )
+
+
+def _validate_workspace_scope_metadata(
+    *,
+    payload: JsonObject,
+    current_scope: TextFactScopeV2Record,
+    missing_code: str,
+    stale_code: str,
+    label: str,
+) -> list[AgentIssue]:
+    """校验工作区记录的 v2 scope 是否等于当前数据库 scope。"""
+    scope_key = payload.get("scope_key")
+    scope_hash = payload.get("scope_hash")
+    schema_version = payload.get("text_fact_schema_version")
+    if (
+        not isinstance(scope_key, str)
+        or not scope_key
+        or not isinstance(scope_hash, str)
+        or not scope_hash
+        or isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+    ):
+        return [
+            issue(
+                missing_code,
+                f"{label} 缺少当前 Text Fact Contract v2 范围信息，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    if schema_version != TEXT_FACT_SCHEMA_VERSION:
+        return [
+            issue(
+                stale_code,
+                f"{label} 的 text_fact_schema_version 不是当前版本，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    if scope_key != current_scope.scope_key or scope_hash != current_scope.scope_hash:
+        return [
+            issue(
+                stale_code,
+                f"{label} 的 v2 文本范围已不是当前数据库内容，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    return []
 
 
 def _collect_workspace_unlisted_paths(

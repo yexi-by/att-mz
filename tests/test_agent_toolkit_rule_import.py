@@ -11,6 +11,13 @@ from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
 
+
+def _json_int_for_assert(value: object, label: str) -> int:
+    """把报告 JSON 动态值收窄成整数，供类型检查稳定断言。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AssertionError(f"{label} 必须是整数")
+    return value
+
 @pytest.mark.asyncio
 async def test_agent_translation_source_load_skips_writable_copies_by_default(
     minimal_game_dir: Path,
@@ -918,34 +925,32 @@ async def test_import_placeholder_rules_runs_validation_before_save(
         records = await session.read_placeholder_rules()
     assert records == []
 @pytest.mark.asyncio
-async def test_import_placeholder_rules_loads_translation_source_once(
+async def test_import_placeholder_rules_uses_text_fact_v2_without_full_source_load(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """普通占位符规则导入在同一加载上下文内完成验证和覆盖检查。"""
-    load_count = 0
-    extract_count = 0
+    """普通占位符规则导入使用 v2 facts，不再加载完整翻译源或构建旧范围。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands.insert(1, {"code": 401, "parameters": [r"\ShakeStop this!!!"]})
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
 
-    async def counting_load_game_data_for_view(
+    async def forbidden_load_game_data_for_view(
         game_path: str | Path,
         *,
         source_view: GameFileView,
         include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
         run_dialogue_probe_check: bool = False,
-    ) -> GameData:
-        nonlocal load_count
-        load_count += 1
-        return await real_load_game_data_for_view(
-            game_path,
-            source_view=source_view,
-            include_plugin_source_files=include_plugin_source_files,
-            include_writable_copies=include_writable_copies,
-            run_dialogue_probe_check=run_dialogue_probe_check,
-        )
+    ) -> NoReturn:
+        _ = (game_path, source_view, include_plugin_source_files, include_writable_copies, run_dialogue_probe_check)
+        raise AssertionError("import-placeholder-rules 不应加载完整翻译源")
 
-    class CountingExtractService(AgentToolkitService):
+    class V2OnlyPlaceholderService(AgentToolkitService):
         @override
         async def _extract_active_translation_data_map(
             self,
@@ -954,20 +959,14 @@ async def test_import_placeholder_rules_loads_translation_source_once(
             game_data: GameData,
             text_rules: TextRules,
             plugin_source_scan: PluginSourceScan | None = None,
-        ) -> dict[str, TranslationData]:
-            nonlocal extract_count
-            extract_count += 1
-            return await super()._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-                plugin_source_scan=plugin_source_scan,
-            )
+        ) -> NoReturn:
+            _ = (session, game_data, text_rules, plugin_source_scan)
+            raise AssertionError("import-placeholder-rules 不应构建旧 Python 正文范围")
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", counting_load_game_data_for_view)
-    service = CountingExtractService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", forbidden_load_game_data_for_view)
+    service = V2OnlyPlaceholderService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
     report = await service.import_placeholder_rules(
         game_title="テストゲーム",
@@ -976,8 +975,12 @@ async def test_import_placeholder_rules_loads_translation_source_once(
     )
 
     assert report.status in {"ok", "warning"}
-    assert load_count == 1
-    assert extract_count == 1
+    uncovered_count = _json_int_for_assert(report.summary["uncovered_count"], "summary.uncovered_count")
+    assert uncovered_count >= 1
+    coverage = ensure_json_object(report.details["coverage"], "placeholder coverage")
+    coverage_summary = ensure_json_object(coverage["summary"], "placeholder coverage.summary")
+    assert _json_int_for_assert(coverage_summary["candidate_count"], "coverage.summary.candidate_count") >= 1
+    assert _json_int_for_assert(coverage_summary["uncovered_count"], "coverage.summary.uncovered_count") == uncovered_count
 @pytest.mark.asyncio
 async def test_validate_placeholder_rules_uses_warm_text_index_without_full_scope_build(
     minimal_game_dir: Path,
@@ -1156,52 +1159,46 @@ async def test_import_structured_placeholder_rules_saves_separate_records(
         )
     ]
 @pytest.mark.asyncio
-async def test_import_structured_placeholder_rules_reads_text_index_once(
+async def test_import_structured_placeholder_rules_uses_text_fact_v2_without_old_index_wrapper(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """结构化占位符规则导入复用 Rust 文本索引完成验证和覆盖检查。"""
-    load_count = 0
-    read_index_count = 0
+    """结构化占位符规则导入使用 v2 facts，不走旧 text-index wrapper。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands.insert(1, {"code": 401, "parameters": ["<Mini Label: 薬草>"]})
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
 
-    async def counting_load_game_data_for_view(
+    async def forbidden_load_game_data_for_view(
         game_path: str | Path,
         *,
         source_view: GameFileView,
         include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
         run_dialogue_probe_check: bool = False,
-    ) -> GameData:
-        nonlocal load_count
-        load_count += 1
-        return await real_load_game_data_for_view(
-            game_path,
-            source_view=source_view,
-            include_plugin_source_files=include_plugin_source_files,
-            include_writable_copies=include_writable_copies,
-            run_dialogue_probe_check=run_dialogue_probe_check,
-        )
+    ) -> NoReturn:
+        _ = (game_path, source_view, include_plugin_source_files, include_writable_copies, run_dialogue_probe_check)
+        raise AssertionError("import-structured-placeholder-rules 不应加载完整翻译源")
 
-    class CountingExtractService(AgentToolkitService):
+    class V2OnlyStructuredPlaceholderService(AgentToolkitService):
         @override
         async def _read_active_translation_data_map_from_text_index(
             self,
             *,
             session: TargetGameSession,
             text_rules: TextRules,
-        ) -> dict[str, TranslationData]:
-            nonlocal read_index_count
-            read_index_count += 1
-            return await super()._read_active_translation_data_map_from_text_index(
-                session=session,
-                text_rules=text_rules,
-            )
+        ) -> NoReturn:
+            _ = (session, text_rules)
+            raise AssertionError("import-structured-placeholder-rules 不应走旧 text-index wrapper")
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", counting_load_game_data_for_view)
-    service = CountingExtractService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    monkeypatch.setattr("app.agent_toolkit.services.core.load_game_data_for_view", forbidden_load_game_data_for_view)
+    service = V2OnlyStructuredPlaceholderService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
     report = await service.import_structured_placeholder_rules(
         game_title="テストゲーム",
@@ -1210,8 +1207,12 @@ async def test_import_structured_placeholder_rules_reads_text_index_once(
     )
 
     assert report.status in {"ok", "warning"}
-    assert load_count == 0
-    assert read_index_count == 1
+    uncovered_count = _json_int_for_assert(report.summary["uncovered_count"], "summary.uncovered_count")
+    assert uncovered_count >= 1
+    coverage = ensure_json_object(report.details["coverage"], "structured placeholder coverage")
+    coverage_summary = ensure_json_object(coverage["summary"], "structured placeholder coverage.summary")
+    assert _json_int_for_assert(coverage_summary["candidate_count"], "coverage.summary.candidate_count") >= 1
+    assert _json_int_for_assert(coverage_summary["uncovered_count"], "coverage.summary.uncovered_count") == uncovered_count
 @pytest.mark.asyncio
 async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
     minimal_game_dir: Path,
@@ -2839,6 +2840,114 @@ async def test_validate_placeholder_rules_warns_unicode_control_boundary() -> No
     warning_codes = {warning.code for warning in report.warnings}
     assert "unprotected_control_unicode_boundary" in warning_codes
     assert "U+300D" in report.warnings[0].message
+
+
+@pytest.mark.asyncio
+async def test_scan_placeholder_candidates_reads_text_fact_v2_in_warm_index(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通占位符候选扫描命中 warm index 时也必须读取 v2 facts。"""
+    common_events_path = minimal_english_game_dir / "data" / "CommonEvents.json"
+    raw_value = coerce_json_value(cast(object, json.loads(common_events_path.read_text(encoding="utf-8"))))
+    common_events = ensure_json_array(raw_value, "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands.insert(1, {"code": 401, "parameters": [r"\ShakeStop this!!!"]})
+    _ = common_events_path.write_text(json.dumps(raw_value, ensure_ascii=False), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.rebuild_text_index(game_title="English Fixture Game")
+
+    def forbidden_legacy_text_index_adapter(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("scan-placeholder-candidates 不应把旧 text_index_items 转回正文范围")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.placeholder_rules.text_index_items_to_translation_data_map",
+        forbidden_legacy_text_index_adapter,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.text_index_items_to_translation_data_map",
+        forbidden_legacy_text_index_adapter,
+        raising=False,
+    )
+
+    report = await service.scan_placeholder_candidates(
+        game_title="English Fixture Game",
+        custom_placeholder_rules_text="{}",
+    )
+
+    assert report.status == "warning"
+    assert _json_int_for_assert(report.summary["candidate_count"], "summary.candidate_count") >= 1
+    assert _json_int_for_assert(report.summary["uncovered_count"], "summary.uncovered_count") >= 1
+
+
+@pytest.mark.asyncio
+async def test_scan_structured_placeholder_candidates_reads_text_fact_v2_and_preserves_coverage(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结构化占位符覆盖扫描使用 v2 facts，并保留 standard/custom/structured 覆盖分类。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    event = ensure_json_object(common_events[1], "CommonEvents.json[1]")
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands.insert(1, {"code": 401, "parameters": [r"D_TEXT \c[17]決定ボタン 48"]})
+    commands.insert(2, {"code": 401, "parameters": ["<Mini Label: 薬草>"]})
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.rebuild_text_index(game_title="テストゲーム")
+
+    def forbidden_legacy_text_index_adapter(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("scan-structured-placeholder-candidates 不应把旧 text_index_items 转回正文范围")
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.placeholder_rules.text_index_items_to_translation_data_map",
+        forbidden_legacy_text_index_adapter,
+        raising=False,
+    )
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "D_TEXT_LABEL",
+                    "pattern": r"(?P<open>^D_TEXT\s+)(?P<text>.*?)(?P<close>\s+48$)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_D_TEXT_OPEN_{index}]",
+                        "close": "[CUSTOM_D_TEXT_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.scan_structured_placeholder_candidates(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+
+    candidate_bucket = ensure_json_object(report.details["candidates"], "structured coverage candidates")
+    candidates = ensure_json_array(candidate_bucket["items"], "structured coverage candidate items")
+    covered_by_values: set[str] = set()
+    for candidate in candidates:
+        covered_by = ensure_json_object(candidate, "structured coverage candidate")["covered_by"]
+        if not isinstance(covered_by, str):
+            raise AssertionError("structured coverage candidate.covered_by 必须是字符串")
+        covered_by_values.add(covered_by)
+    assert report.status in {"ok", "warning"}
+    assert covered_by_values
+    assert covered_by_values <= {"standard_placeholder", "custom_placeholder", "structured_placeholder", "none"}
 @pytest.mark.asyncio
 async def test_validate_event_command_rules_previews_direct_parameter_write_back(
     minimal_game_dir: Path,

@@ -8,6 +8,8 @@ from app.native_scope_index import (
     NativeRuleCandidatesResult,
     scan_native_rule_candidates as real_scan_native_rule_candidates,
 )
+from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+from app.text_facts import read_current_text_fact_scope_v2
 
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
@@ -113,6 +115,97 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
     assert "plugin-json-string-leaf-candidates.json" in json.dumps(report.details, ensure_ascii=False)
     assert "note-tag-rules.json" in json.dumps(report.details, ensure_ascii=False)
     assert "structured-placeholder-rules.json" in json.dumps(report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_prepare_agent_workspace_records_text_fact_v2_scope_metadata(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区 manifest 和候选文件必须固定当前 v2 文本事实范围。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+
+    report = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+    manifest = load_json_object(workspace / "manifest.json")
+    generated = ensure_json_object(coerce_json_value(manifest["generated"]), "manifest.generated")
+    placeholder_candidates = load_json_object(workspace / "placeholder-candidates.json")
+
+    assert report.status == "ok"
+    assert generated["scope_key"] == scope.scope_key
+    assert generated["scope_hash"] == scope.scope_hash
+    assert generated["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert placeholder_candidates["scope_key"] == scope.scope_key
+    assert placeholder_candidates["scope_hash"] == scope.scope_hash
+    assert placeholder_candidates["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_rejects_legacy_manifest_without_text_fact_v2_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧 manifest 没有 v2 scope 时必须显式要求重新准备工作区。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    manifest = load_json_object(workspace / "manifest.json")
+    generated = ensure_json_object(coerce_json_value(manifest["generated"]), "manifest.generated")
+    for key in ("scope_key", "scope_hash", "text_fact_schema_version"):
+        _ = generated.pop(key, None)
+    _ = (workspace / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert "workspace_scope_missing" in {error.code for error in report.errors}
+    assert "prepare-agent-workspace" in " ".join(error.message for error in report.errors)
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_rejects_legacy_placeholder_candidates_without_text_fact_v2_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧占位符候选文件没有 v2 scope 时不能继续按当前正文验收。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    placeholder_candidates = load_json_object(workspace / "placeholder-candidates.json")
+    for key in ("scope_key", "scope_hash", "text_fact_schema_version"):
+        _ = placeholder_candidates.pop(key, None)
+    _ = (workspace / "placeholder-candidates.json").write_text(
+        json.dumps(placeholder_candidates, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert "placeholder_candidates_scope_missing" in {error.code for error in report.errors}
+    assert "prepare-agent-workspace" in " ".join(error.message for error in report.errors)
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
 use super::mv_virtual_namebox::{
     MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput, MvVirtualNameboxFactParts,
     MvVirtualNameboxFactPartsInput, MvVirtualNameboxFactRenderPart,
-    build_mv_virtual_namebox_fact_parts,
+    build_mv_virtual_namebox_fact_parts, weak_split_colon_speaker_parts,
 };
 use super::nonstandard_data::{
     NonstandardDataFileInput, NonstandardDataManagedTextError, NonstandardDataTextRuleInput,
@@ -3100,8 +3100,16 @@ fn build_mv_virtual_speaker(
     let source_speaker = capture_group(captures, &rule.speaker_group)
         .unwrap_or_default()
         .to_string();
-    let semantic_speaker = source_speaker.trim().to_string();
-    if semantic_speaker.is_empty() {
+    let raw_body_text = if rule.body_group.is_empty() {
+        String::new()
+    } else {
+        capture_group(captures, &rule.body_group)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let Some((semantic_speaker, body_text)) =
+        weak_split_colon_speaker_parts(&source_speaker, &raw_body_text)
+    else {
         return Err(structured_error(
             "scope_index_rebuild_mv_virtual_namebox_failed",
             format!(
@@ -3109,13 +3117,6 @@ fn build_mv_virtual_speaker(
                 rule.rule_name
             ),
         ));
-    }
-    let body_text = if rule.body_group.is_empty() {
-        String::new()
-    } else {
-        capture_group(captures, &rule.body_group)
-            .unwrap_or_default()
-            .to_string()
     };
     let speaker = if rule.speaker_policy == "actor_name" {
         actor_name_from_control(context, &semantic_speaker, location_path)?
@@ -3126,7 +3127,7 @@ fn build_mv_virtual_speaker(
         raw_text,
         source_speaker: &source_speaker,
         role: &speaker,
-        body_text: &body_text,
+        body_text: &raw_body_text,
         render_template: &rule.render_template,
         speaker_group: &rule.speaker_group,
         body_group: &rule.body_group,

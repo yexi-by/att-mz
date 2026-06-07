@@ -35,7 +35,8 @@ from app.application.flow_gate import (
     build_structured_placeholder_coverage_result,
     ensure_empty_rule_import_allowed,
 )
-from app.persistence import RuleImportUnitOfWork
+from app.config.schemas import Setting
+from app.persistence import RuleImportUnitOfWork, TargetGameSession
 from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
@@ -45,8 +46,31 @@ from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
-    text_index_items_to_translation_data_map,
 )
+from app.text_facts import (
+    read_current_text_fact_placeholder_entries_v2,
+    read_current_text_fact_translation_data_map_v2,
+)
+
+
+async def _ensure_text_fact_v2_current_for_placeholder_rules(
+    *,
+    session: TargetGameSession,
+    setting: Setting,
+    text_rules: TextRules,
+) -> None:
+    """确保当前 DB 已有与规则上下文一致的 v2 facts。"""
+    invalidations = await detect_text_index_invalidations(
+        session=session,
+        text_rules=text_rules,
+    )
+    if invalidations:
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+            include_write_probe=False,
+        )
 
 
 class PlaceholderRuleAgentMixin:
@@ -76,14 +100,13 @@ class PlaceholderRuleAgentMixin:
                 text_rules=text_rules,
             )
             if text_index_invalidations:
-                translation_data_map = await self._read_active_translation_data_map_from_text_index(
+                _ = await rebuild_text_index_native_storage(
                     session=session,
+                    setting=setting,
                     text_rules=text_rules,
+                    include_write_probe=False,
                 )
-            else:
-                translation_data_map = text_index_items_to_translation_data_map(
-                    await session.read_text_index_items()
-                )
+            translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
 
         return _build_placeholder_coverage_report_with_context(
             setting_text_rules=setting.text_rules,
@@ -125,16 +148,13 @@ class PlaceholderRuleAgentMixin:
                             text_rules=extraction_rules,
                         )
                         if text_index_invalidations:
-                            game_data = await self._load_translation_source_game_data(session)
-                            translation_data_map = await self._extract_active_translation_data_map(
+                            _ = await rebuild_text_index_native_storage(
                                 session=session,
-                                game_data=game_data,
                                 text_rules=extraction_rules,
+                                setting=setting,
+                                include_write_probe=False,
                             )
-                        else:
-                            translation_data_map = text_index_items_to_translation_data_map(
-                                await session.read_text_index_items()
-                            )
+                        translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
                     else:
                         translation_data_map = None
             elif custom_placeholder_rules_text is None:
@@ -203,16 +223,13 @@ class PlaceholderRuleAgentMixin:
                     text_rules=validation_extraction_rules,
                 )
                 if text_index_invalidations:
-                    game_data = await self._load_translation_source_game_data(session)
-                    validation_translation_data_map = await self._extract_active_translation_data_map(
+                    _ = await rebuild_text_index_native_storage(
                         session=session,
-                        game_data=game_data,
                         text_rules=validation_extraction_rules,
+                        setting=setting,
+                        include_write_probe=False,
                     )
-                else:
-                    validation_translation_data_map = text_index_items_to_translation_data_map(
-                        await session.read_text_index_items()
-                    )
+                validation_translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
                 validation_report = _validate_placeholder_rules_with_context(
                     source_label="--placeholder-rules",
                     setting_text_rules=setting.text_rules,
@@ -370,10 +387,12 @@ class PlaceholderRuleAgentMixin:
                     structured_placeholder_rules=structured_rules,
                 )
                 if not sample_texts:
-                    translation_data_map = await self._read_active_translation_data_map_from_text_index(
+                    _ = await _ensure_text_fact_v2_current_for_placeholder_rules(
                         session=session,
+                        setting=setting,
                         text_rules=text_rules,
                     )
+                    translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
                 else:
                     translation_data_map = None
         except Exception as error:
@@ -421,10 +440,12 @@ class PlaceholderRuleAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                translation_data_map = await self._read_active_translation_data_map_from_text_index(
+                _ = await _ensure_text_fact_v2_current_for_placeholder_rules(
                     session=session,
+                    setting=setting,
                     text_rules=text_rules,
                 )
+                translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[
@@ -475,10 +496,12 @@ class PlaceholderRuleAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                translation_data_map = await self._read_active_translation_data_map_from_text_index(
+                _ = await _ensure_text_fact_v2_current_for_placeholder_rules(
                     session=session,
+                    setting=setting,
                     text_rules=text_rules,
                 )
+                translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
                 validation_report = _validate_structured_placeholder_rules_with_context(
                     game_title=game_title,
                     rules_text=rules_text,
@@ -670,7 +693,7 @@ class PlaceholderRuleAgentMixin:
                     },
                     details={},
                 )
-            placeholder_entries = await session.read_text_index_placeholder_texts()
+            placeholder_entries = await read_current_text_fact_placeholder_entries_v2(session)
         candidate_details = collect_native_placeholder_candidate_details_from_entries(
             entries=placeholder_entries,
             text_rules=empty_rules,
