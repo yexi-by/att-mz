@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::native_core::text_facts::{
     TEXT_FACT_SCHEMA_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart, TextFactScope,
+    domains,
 };
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
@@ -579,10 +580,6 @@ fn validate_text_fact_write_payload(
         }
         facts_by_id.insert(fact.fact_id.clone(), fact);
     }
-    if has_explicit_text_fact_payload {
-        validate_text_index_fact_identities(payload)?;
-    }
-
     let mut render_part_keys = BTreeSet::new();
     let mut render_parts_by_fact_id: BTreeMap<String, Vec<&TextFactRenderPart>> = BTreeMap::new();
     for part in &payload.text_fact_render_parts {
@@ -614,6 +611,11 @@ fn validate_text_fact_write_payload(
             .push(part);
     }
     validate_render_parts_rebuild_raw_text(&facts_by_id, &mut render_parts_by_fact_id)?;
+
+    if has_explicit_text_fact_payload {
+        validate_text_fact_raw_identity_overrides(payload, &render_parts_by_fact_id)?;
+        validate_text_index_fact_identities(payload)?;
+    }
 
     let mut payload_fact_ids = BTreeSet::new();
     for domain_payload in &payload.text_fact_domain_payloads {
@@ -654,15 +656,58 @@ fn validate_text_index_fact_identities(payload: &WriteStoragePayload) -> Result<
     Ok(())
 }
 
+fn validate_text_fact_raw_identity_overrides(
+    payload: &WriteStoragePayload,
+    render_parts_by_fact_id: &BTreeMap<String, Vec<&TextFactRenderPart>>,
+) -> Result<(), String> {
+    let mut facts_by_identity: BTreeMap<TextFactIdentity, Vec<&TextFact>> = BTreeMap::new();
+    for fact in &payload.text_facts {
+        facts_by_identity
+            .entry(text_fact_identity(fact))
+            .or_default()
+            .push(fact);
+    }
+    for row in &payload.text_index_rows {
+        let Some(raw_text) = &row.text_fact_raw_text else {
+            continue;
+        };
+        let row_translatable_text = row.original_lines.join("\n");
+        let identity = text_index_identity(row, raw_text.clone());
+        let Some(facts) = facts_by_identity.get(&identity) else {
+            return Err(text_fact_identity_mismatch_error());
+        };
+        if facts.len() != 1 {
+            return Err(text_fact_identity_mismatch_error());
+        }
+        let fact = facts[0];
+        if fact.domain != domains::MV_VIRTUAL_NAMEBOX {
+            return Err(text_fact_identity_mismatch_error());
+        }
+        if fact.translatable_text != row_translatable_text {
+            return Err(text_fact_identity_mismatch_error());
+        }
+        if render_parts_by_fact_id
+            .get(&fact.fact_id)
+            .is_none_or(Vec::is_empty)
+        {
+            return Err(text_fact_identity_mismatch_error());
+        }
+    }
+    Ok(())
+}
+
+fn text_fact_identity_mismatch_error() -> String {
+    structured_error(
+        "scope_index_storage_text_fact_identity_mismatch",
+        "warm index rows 与 v2 facts 的文本身份不一致，拒绝写入混合来源数据".to_string(),
+    )
+}
+
 fn text_index_identity_counts(rows: &[TextIndexRowInput]) -> BTreeMap<TextFactIdentity, usize> {
     let mut counts = BTreeMap::new();
     for row in rows {
-        let identity = (
-            row.location_path.clone(),
-            row.source_file.clone(),
-            row.source_type.clone(),
-            row.item_type.clone(),
-            row.role.clone().unwrap_or_default(),
+        let identity = text_index_identity(
+            row,
             row.text_fact_raw_text
                 .clone()
                 .unwrap_or_else(|| row.original_lines.join("\n")),
@@ -672,20 +717,35 @@ fn text_index_identity_counts(rows: &[TextIndexRowInput]) -> BTreeMap<TextFactId
     counts
 }
 
+fn text_index_identity(row: &TextIndexRowInput, raw_text: String) -> TextFactIdentity {
+    (
+        row.location_path.clone(),
+        row.source_file.clone(),
+        row.source_type.clone(),
+        row.item_type.clone(),
+        row.role.clone().unwrap_or_default(),
+        raw_text,
+    )
+}
+
 fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, usize> {
     let mut counts = BTreeMap::new();
     for fact in facts {
-        let identity = (
-            fact.location_path.clone(),
-            fact.source_file.clone(),
-            fact.source_type.clone(),
-            fact.item_type.clone(),
-            fact.role.clone(),
-            fact.raw_text.clone(),
-        );
+        let identity = text_fact_identity(fact);
         *counts.entry(identity).or_insert(0) += 1;
     }
     counts
+}
+
+fn text_fact_identity(fact: &TextFact) -> TextFactIdentity {
+    (
+        fact.location_path.clone(),
+        fact.source_file.clone(),
+        fact.source_type.clone(),
+        fact.item_type.clone(),
+        fact.role.clone(),
+        fact.raw_text.clone(),
+    )
 }
 
 fn validate_render_parts_rebuild_raw_text(
@@ -1593,6 +1653,118 @@ mod tests {
             scope.scope_key.clone(),
         )
         .expect("MV 虚拟名字框 fact 应可创建");
+        let fact_id = fact.fact_id.clone();
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact],
+            vec![
+                TextFactRenderPart::new(fact_id.clone(), 0, "literal", "\\n<", "\\n<", "prefix"),
+                TextFactRenderPart::new(fact_id.clone(), 1, "speaker", "Dan", "Dan", "speaker"),
+                TextFactRenderPart::new(fact_id.clone(), 2, "literal", ":> ", ":> ", "separator"),
+                TextFactRenderPart::new(fact_id, 3, "translated_body", "Hello", "Hello", "body"),
+            ],
+            Vec::new(),
+        );
+        payload.text_index_rows[0].original_lines = vec!["Hello".to_string()];
+        payload.text_index_rows[0].text_fact_raw_text = Some("\\n<Dan:> Hello".to_string());
+
+        let output = write_scope_index_storage_direct(&payload)
+            .expect("显式 raw 身份与 fact raw_text 一致时应可写入");
+        assert_eq!(output.text_fact_count, 1);
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_rejects_text_fact_raw_identity_override_for_non_mv_fact() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_non_mv_override_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture");
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact.clone()],
+            vec![TextFactRenderPart::new(
+                fact.fact_id.clone(),
+                0,
+                "translated_body",
+                "Fixture",
+                "Fixture",
+                "body",
+            )],
+            Vec::new(),
+        );
+        payload.text_index_rows[0].original_lines = vec!["Other".to_string()];
+        payload.text_index_rows[0].text_fact_raw_text = Some("Fixture".to_string());
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("非 MV fact 不能通过 raw override 绕过身份不一致");
+        assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_rejects_mv_raw_identity_override_without_render_parts() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_mv_override_without_parts_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = TextFact::from_input(
+            TextFactInput {
+                domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
+                location_path: "Map001.json/events/1/pages/0/list/0".to_string(),
+                source_file: "Map001.json".to_string(),
+                source_type: "event_command".to_string(),
+                item_type: "long_text".to_string(),
+                role: "Dan".to_string(),
+                selector: "event:1/page:0/list:0".to_string(),
+                raw_text: "\\n<Dan:> Hello".to_string(),
+                visible_text: "\\n<Dan:> Hello".to_string(),
+                translatable_text: "Hello".to_string(),
+            },
+            scope.scope_key.clone(),
+        )
+        .expect("MV 虚拟名字框 fact 应可创建");
         let mut payload = text_fact_payload(
             db_path.to_string_lossy().to_string(),
             scope,
@@ -1603,9 +1775,9 @@ mod tests {
         payload.text_index_rows[0].original_lines = vec!["Hello".to_string()];
         payload.text_index_rows[0].text_fact_raw_text = Some("\\n<Dan:> Hello".to_string());
 
-        let output = write_scope_index_storage_direct(&payload)
-            .expect("显式 raw 身份与 fact raw_text 一致时应可写入");
-        assert_eq!(output.text_fact_count, 1);
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("MV raw override 必须有 render parts 重建 raw_text");
+        assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
 
         fs::remove_dir_all(fixture).expect("测试目录应可清理");
     }

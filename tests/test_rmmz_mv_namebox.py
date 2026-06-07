@@ -279,6 +279,76 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
 
 
 @pytest.mark.asyncio
+async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_for_standalone_speaker(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Rust 冷重建把独立 speaker 行和下一行正文保存为 MV 虚拟名字框 fact。"""
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 92,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": ["  <受付>  "]},
+                {"code": 401, "parameters": ["独立行の本文です"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_mv_virtual_namebox_rules(
+            [
+                MvVirtualNameboxRuleRecord(
+                    rule_order=0,
+                    rule_name="angle-standalone",
+                    pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+                    speaker_group="speaker",
+                    body_group="",
+                    speaker_policy="translate",
+                    render_template="<{speaker}>",
+                )
+            ]
+        )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title=record.game_title)
+    assert report.status == "ok"
+    scope_key = str(report.summary["scope_key"])
+
+    async with await registry.open_game(record.game_title) as session:
+        facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        )
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact.raw_text == "  <受付>  \n独立行の本文です"
+        assert fact.visible_text == "  <受付>  \n独立行の本文です"
+        assert fact.translatable_text == "独立行の本文です"
+        assert fact.role == "受付"
+        parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+
+        rows = await session.read_text_index_items()
+        row = next(item for item in rows if item.location_path == fact.location_path)
+
+    assert row.source_line_paths == ["CommonEvents.json/92/2"]
+    assert [part.part_kind for part in parts] == [
+        "literal",
+        "speaker",
+        "literal",
+        "translated_body",
+    ]
+    assert "".join(part.raw_text for part in parts) == "  <受付>  \n独立行の本文です"
+
+
+@pytest.mark.asyncio
 async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_game_dir: Path) -> None:
     """MV 写回用术语表译名重建虚拟名字框，正文只写剥离后的对白。"""
     common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"

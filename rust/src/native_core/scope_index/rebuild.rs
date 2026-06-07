@@ -19,7 +19,8 @@ use std::time::Instant;
 use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
 use super::mv_virtual_namebox::{
     MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput, MvVirtualNameboxFactParts,
-    MvVirtualNameboxFactPartsInput, build_mv_virtual_namebox_fact_parts,
+    MvVirtualNameboxFactPartsInput, MvVirtualNameboxFactRenderPart,
+    build_mv_virtual_namebox_fact_parts,
 };
 use super::nonstandard_data::{
     NonstandardDataFileInput, NonstandardDataManagedTextError, NonstandardDataTextRuleInput,
@@ -3391,36 +3392,134 @@ fn mv_virtual_namebox_fact_content(
         if parsed.body_text != translatable_text {
             continue;
         }
-        let payload_json = serde_json::to_string(&json!({
-            "rule_name": parsed.rule_name,
-            "speaker_policy": parsed.speaker_policy,
-            "source_speaker": parsed.source_speaker,
-        }))
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_text_fact_invalid",
-                format!("MV 虚拟名字框 domain payload 序列化失败: {error}"),
-            )
-        })?;
-        return Ok(Some(DirectTextFactContent {
-            domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
-            role: parsed.fact_parts.role,
-            raw_text: parsed.fact_parts.raw_text,
-            visible_text: parsed.fact_parts.visible_text,
-            translatable_text: parsed.fact_parts.translatable_text,
-            render_parts: parsed
-                .fact_parts
-                .render_parts
-                .into_iter()
-                .map(|part| DirectTextFactRenderPart {
-                    part_kind: part.part_kind,
-                    raw_text: part.raw_text,
-                    semantic_text: part.semantic_text,
-                    template_key: part.template_key,
-                })
-                .collect(),
-            domain_payload_json: Some(payload_json),
-        }));
+        return mv_virtual_namebox_content_from_parsed(parsed).map(Some);
+    }
+    if translatable_text.is_empty() {
+        return Ok(None);
+    }
+    let Some(mut parsed) = standalone_mv_virtual_speaker_for_row(row, data_files, context)? else {
+        return Ok(None);
+    };
+    if !parsed.body_text.is_empty() {
+        return Ok(None);
+    }
+    append_standalone_body_to_mv_fact_parts(&mut parsed.fact_parts, &translatable_text);
+    parsed.body_text = translatable_text;
+    mv_virtual_namebox_content_from_parsed(parsed).map(Some)
+}
+
+fn mv_virtual_namebox_content_from_parsed(
+    parsed: ParsedMvVirtualSpeaker,
+) -> Result<DirectTextFactContent, String> {
+    let payload_json = serde_json::to_string(&json!({
+        "rule_name": parsed.rule_name,
+        "speaker_policy": parsed.speaker_policy,
+        "source_speaker": parsed.source_speaker,
+    }))
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_text_fact_invalid",
+            format!("MV 虚拟名字框 domain payload 序列化失败: {error}"),
+        )
+    })?;
+    Ok(DirectTextFactContent {
+        domain: domains::MV_VIRTUAL_NAMEBOX.to_string(),
+        role: parsed.fact_parts.role,
+        raw_text: parsed.fact_parts.raw_text,
+        visible_text: parsed.fact_parts.visible_text,
+        translatable_text: parsed.fact_parts.translatable_text,
+        render_parts: parsed
+            .fact_parts
+            .render_parts
+            .into_iter()
+            .map(|part| DirectTextFactRenderPart {
+                part_kind: part.part_kind,
+                raw_text: part.raw_text,
+                semantic_text: part.semantic_text,
+                template_key: part.template_key,
+            })
+            .collect(),
+        domain_payload_json: Some(payload_json),
+    })
+}
+
+fn append_standalone_body_to_mv_fact_parts(
+    fact_parts: &mut MvVirtualNameboxFactParts,
+    body_text: &str,
+) {
+    if fact_parts
+        .render_parts
+        .last()
+        .is_some_and(|part| part.part_kind == "translated_body" && part.raw_text.is_empty())
+    {
+        fact_parts.render_parts.pop();
+    }
+    append_literal_to_mv_fact_parts(fact_parts, "\n");
+    fact_parts
+        .render_parts
+        .push(MvVirtualNameboxFactRenderPart {
+            part_kind: "translated_body".to_string(),
+            raw_text: body_text.to_string(),
+            semantic_text: body_text.to_string(),
+            template_key: "body".to_string(),
+        });
+    fact_parts.raw_text.push('\n');
+    fact_parts.raw_text.push_str(body_text);
+    fact_parts.visible_text.push('\n');
+    fact_parts.visible_text.push_str(body_text);
+    fact_parts.translatable_text = body_text.to_string();
+}
+
+fn append_literal_to_mv_fact_parts(fact_parts: &mut MvVirtualNameboxFactParts, literal: &str) {
+    if let Some(last) = fact_parts.render_parts.last_mut()
+        && last.part_kind == "literal"
+    {
+        last.raw_text.push_str(literal);
+        last.semantic_text.push_str(literal);
+        return;
+    }
+    fact_parts
+        .render_parts
+        .push(MvVirtualNameboxFactRenderPart {
+            part_kind: "literal".to_string(),
+            raw_text: literal.to_string(),
+            semantic_text: literal.to_string(),
+            template_key: "literal".to_string(),
+        });
+}
+
+fn standalone_mv_virtual_speaker_for_row(
+    row: &DirectTextIndexRow,
+    data_files: &[ParsedDataFile],
+    context: &RebuildContext,
+) -> Result<Option<ParsedMvVirtualSpeaker>, String> {
+    let Some((commands, command_index, path_prefix)) =
+        command_list_by_location_path(data_files, &row.location_path)
+    else {
+        return Ok(None);
+    };
+    for next_index in (command_index + 1)..commands.len() {
+        let command_path = format!("{path_prefix}/{next_index}");
+        let Some(command) = commands.get(next_index).and_then(Value::as_object) else {
+            return Ok(None);
+        };
+        let code = command
+            .get("code")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        if code != 401 {
+            return Ok(None);
+        }
+        let Some(text) = command_first_parameter_text(command) else {
+            return Ok(None);
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let Some(parsed) = parse_mv_virtual_speaker_line(context, &text, &command_path)? else {
+            return Ok(None);
+        };
+        return Ok(Some(parsed));
     }
     Ok(None)
 }
@@ -3500,6 +3599,84 @@ fn command_text_by_location_path(
         .first()?
         .as_str()
         .map(str::to_string)
+}
+
+fn command_first_parameter_text(command: &serde_json::Map<String, Value>) -> Option<String> {
+    command
+        .get("parameters")?
+        .as_array()?
+        .first()?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn command_list_by_location_path<'a>(
+    data_files: &'a [ParsedDataFile],
+    location_path: &str,
+) -> Option<(&'a [Value], usize, String)> {
+    let parts = location_path.split('/').collect::<Vec<_>>();
+    let file_name = *parts.first()?;
+    let data = &data_files
+        .iter()
+        .find(|file| file.file_name == file_name)?
+        .data;
+    if file_name == "CommonEvents.json" {
+        let event_id = parse_i64_path_part(parts.get(1)?)?;
+        let command_index = parse_usize_path_part(parts.get(2)?)?;
+        let event = data.as_array()?.iter().find(|item| {
+            item.as_object()
+                .and_then(|object| object.get("id"))
+                .and_then(Value::as_i64)
+                == Some(event_id)
+        })?;
+        let commands = event.as_object()?.get("list")?.as_array()?;
+        return Some((commands, command_index, format!("{file_name}/{event_id}")));
+    }
+    if is_map_data_file(file_name) {
+        let event_id = parse_i64_path_part(parts.get(1)?)?;
+        let page_index = parse_usize_path_part(parts.get(2)?)?;
+        let command_index = parse_usize_path_part(parts.get(3)?)?;
+        let event = data.get("events")?.as_array()?.iter().find(|item| {
+            item.as_object()
+                .and_then(|object| object.get("id"))
+                .and_then(Value::as_i64)
+                == Some(event_id)
+        })?;
+        let commands = event
+            .get("pages")?
+            .as_array()?
+            .get(page_index)?
+            .get("list")?
+            .as_array()?;
+        return Some((
+            commands,
+            command_index,
+            format!("{file_name}/{event_id}/{page_index}"),
+        ));
+    }
+    if file_name == "Troops.json" {
+        let troop_id = parse_i64_path_part(parts.get(1)?)?;
+        let page_index = parse_usize_path_part(parts.get(2)?)?;
+        let command_index = parse_usize_path_part(parts.get(3)?)?;
+        let troop = data.as_array()?.iter().find(|item| {
+            item.as_object()
+                .and_then(|object| object.get("id"))
+                .and_then(Value::as_i64)
+                == Some(troop_id)
+        })?;
+        let commands = troop
+            .get("pages")?
+            .as_array()?
+            .get(page_index)?
+            .get("list")?
+            .as_array()?;
+        return Some((
+            commands,
+            command_index,
+            format!("{file_name}/{troop_id}/{page_index}"),
+        ));
+    }
+    None
 }
 
 fn command_from_common_event_path<'a>(
