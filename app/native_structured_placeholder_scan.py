@@ -116,17 +116,60 @@ def _normalize_native_structured_placeholder_candidate_detail(
     marker = candidate.get("candidate")
     if not isinstance(marker, str):
         raise TypeError(f"{label}.candidate 必须是字符串")
+    text = candidate.get("text")
+    if not isinstance(text, str):
+        raise TypeError(f"{label}.text 必须是字符串")
+    candidate_range = _read_range(candidate, label)
     covered = candidate.get("covered")
     if not isinstance(covered, bool):
         raise TypeError(f"{label}.covered 必须是布尔值")
+    covered_by = _read_enum(
+        candidate,
+        "covered_by",
+        {"standard_placeholder", "custom_placeholder", "structured_placeholder", "none"},
+        label,
+    )
+    candidate_kind = _read_enum(
+        candidate,
+        "candidate_kind",
+        {"structured_shell", "uncovered_candidate"},
+        label,
+    )
+    location_paths = ensure_json_string_list(candidate.get("location_paths"), f"{label}.location_paths")
     matching_rules = ensure_json_string_list(candidate.get("matching_rules", []), f"{label}.matching_rules")
     return {
         "location_path": location_path,
+        "location_paths": list(location_paths),
         "line_number": line_number,
         "candidate": marker,
+        "text": text,
+        "range": candidate_range,
         "covered": covered,
+        "covered_by": covered_by,
         "matching_rules": list(matching_rules),
+        "candidate_kind": candidate_kind,
     }
+
+
+def _read_range(candidate: JsonObject, label: str) -> JsonArray:
+    raw_range = ensure_json_array(candidate.get("range"), f"{label}.range")
+    if len(raw_range) != 2:
+        raise TypeError(f"{label}.range 必须包含 2 个整数")
+    values: JsonArray = []
+    for index, value in enumerate(raw_range):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TypeError(f"{label}.range[{index}] 必须是整数")
+        values.append(value)
+    return values
+
+
+def _read_enum(candidate: JsonObject, field_name: str, allowed_values: set[str], label: str) -> str:
+    value = candidate.get(field_name)
+    if not isinstance(value, str):
+        raise TypeError(f"{label}.{field_name} 必须是字符串")
+    if value not in allowed_values:
+        raise ValueError(f"{label}.{field_name} 非法: {value}")
+    return value
 
 
 __all__: list[str] = [

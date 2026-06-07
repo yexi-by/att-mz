@@ -393,8 +393,13 @@ async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan
                 "location_path": "CommonEvents.json/1/list/0/parameters/0",
                 "line_number": 1,
                 "candidate": "<名前: Alraune>",
+                "text": "<名前: Alraune>",
+                "range": [0, 13],
                 "covered": True,
+                "covered_by": "custom_placeholder",
                 "matching_rules": ["INLINE_NAME"],
+                "candidate_kind": "structured_shell",
+                "location_paths": ["CommonEvents.json/1/list/0/parameters/0"],
             }
         ]
 
@@ -430,6 +435,7 @@ async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan
     assert report.summary["uncovered_count"] == 0
     raw_json = report.to_json_text()
     assert "<名前: Alraune>" in raw_json
+    assert "custom_placeholder" in raw_json
     assert "trailing text" not in raw_json
 
 

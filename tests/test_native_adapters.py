@@ -9,7 +9,14 @@ from typing import cast, override
 
 import pytest
 
-from app import native_javascript_ast, native_note_tag_scan, native_quality, native_scope_index, native_write_plan
+from app import (
+    native_javascript_ast,
+    native_note_tag_scan,
+    native_quality,
+    native_scope_index,
+    native_structured_placeholder_scan,
+    native_write_plan,
+)
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.rmmz.schema import GameData, TranslationItem
@@ -603,6 +610,62 @@ def test_native_rule_candidates_requires_scan_summary(monkeypatch: pytest.Monkey
 
     with pytest.raises(KeyError):
         _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
+
+
+def test_native_structured_placeholder_adapter_preserves_contract_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结构化占位符 adapter 必须保留 native coverage contract 字段。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [{"domain": "structured_placeholders", "candidate_count": 1}],
+            "scan_summary": {
+                "structured_placeholders": {
+                    "candidates": [
+                        {
+                            "location_path": "Map001.json/1/0",
+                            "location_paths": ["Map001.json/1/0"],
+                            "line_number": 1,
+                            "candidate": "<Face:Bob>",
+                            "text": "<Face:Bob>",
+                            "range": [0, 10],
+                            "covered": True,
+                            "covered_by": "custom_placeholder",
+                            "matching_rules": [],
+                            "candidate_kind": "structured_shell",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    details = native_structured_placeholder_scan.collect_native_structured_placeholder_candidate_details_from_entries(
+        entries=[("Map001.json/1/0", ["<Face:Bob>"])],
+        text_rules=TextRules.from_setting(TextRulesSetting()),
+    )
+
+    assert details == [
+        {
+            "location_path": "Map001.json/1/0",
+            "location_paths": ["Map001.json/1/0"],
+            "line_number": 1,
+            "candidate": "<Face:Bob>",
+            "text": "<Face:Bob>",
+            "range": [0, 10],
+            "covered": True,
+            "covered_by": "custom_placeholder",
+            "matching_rules": [],
+            "candidate_kind": "structured_shell",
+        }
+    ]
 
 
 def test_collect_native_note_tag_source_details_returns_source_summary(
