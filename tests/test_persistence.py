@@ -52,9 +52,56 @@ def read_sqlite_table_names(db_path: Path) -> set[str]:
     return {row[0] for row in table_rows}
 
 
+def read_sqlite_table_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> tuple[tuple[int, str, str, int, str | None, int], ...]:
+    """读取测试库中的 SQLite 表列签名。"""
+    rows = cast(
+        list[tuple[int, str, str, int, str | None, int]],
+        connection.execute(f"PRAGMA table_info([{table_name}])").fetchall(),
+    )
+    return tuple(rows)
+
+
+def read_sqlite_foreign_keys(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> tuple[tuple[int, int, str, str, str, str, str, str], ...]:
+    """读取测试库中的 SQLite 外键签名。"""
+    rows = cast(
+        list[tuple[int, int, str, str, str, str, str, str]],
+        connection.execute(f"PRAGMA foreign_key_list([{table_name}])").fetchall(),
+    )
+    return tuple(rows)
+
+
+def read_sqlite_declared_index_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> dict[str, tuple[str, ...]]:
+    """读取测试库中显式声明索引的列集合。"""
+    rows = cast(
+        list[tuple[str]],
+        connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+            (table_name,),
+        ).fetchall(),
+    )
+    index_columns: dict[str, tuple[str, ...]] = {}
+    for (index_name,) in rows:
+        column_rows = cast(
+            list[tuple[int, int, str]],
+            connection.execute(f"PRAGMA index_info([{index_name}])").fetchall(),
+        )
+        index_columns[index_name] = tuple(row[2] for row in column_rows)
+    return index_columns
+
+
 def test_shared_current_schema_resource_creates_declared_static_table_set() -> None:
     """共享 schema 资源必须能创建当前声明的完整静态表集合。"""
     with sqlite3.connect(":memory:") as connection:
+        _ = connection.execute("PRAGMA foreign_keys = ON")
         _ = connection.executescript(current_schema_sql())
         table_rows = cast(
             list[tuple[str]],
@@ -66,10 +113,71 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
                 "SELECT version FROM schema_version WHERE schema_key = 'current'"
             ).fetchone(),
         )
+        text_fact_columns = read_sqlite_table_columns(connection, "text_facts_v2")
+        render_part_columns = read_sqlite_table_columns(connection, "text_fact_render_parts_v2")
+        domain_payload_columns = read_sqlite_table_columns(connection, "text_fact_domain_payloads_v2")
+        scope_columns = read_sqlite_table_columns(connection, "text_fact_scope_v2")
+        render_part_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_render_parts_v2")
+        domain_payload_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_domain_payloads_v2")
+        text_fact_declared_indexes = read_sqlite_declared_index_columns(connection, "text_facts_v2")
 
     assert {row[0] for row in table_rows} - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
+    assert CURRENT_SCHEMA_VERSION == 16
     assert version_row == (CURRENT_SCHEMA_VERSION,)
     assert len(current_schema_fingerprint()) == 64
+    assert text_fact_columns == (
+        (0, "fact_id", "TEXT", 0, None, 1),
+        (1, "schema_version", "INTEGER", 1, None, 0),
+        (2, "domain", "TEXT", 1, None, 0),
+        (3, "location_path", "TEXT", 1, None, 0),
+        (4, "source_file", "TEXT", 1, None, 0),
+        (5, "source_type", "TEXT", 1, None, 0),
+        (6, "item_type", "TEXT", 1, None, 0),
+        (7, "role", "TEXT", 1, None, 0),
+        (8, "selector", "TEXT", 1, None, 0),
+        (9, "raw_text", "TEXT", 1, None, 0),
+        (10, "visible_text", "TEXT", 1, None, 0),
+        (11, "translatable_text", "TEXT", 1, None, 0),
+        (12, "raw_hash", "TEXT", 1, None, 0),
+        (13, "visible_hash", "TEXT", 1, None, 0),
+        (14, "translatable_hash", "TEXT", 1, None, 0),
+        (15, "scope_key", "TEXT", 1, None, 0),
+    )
+    assert render_part_columns == (
+        (0, "fact_id", "TEXT", 1, None, 1),
+        (1, "part_order", "INTEGER", 1, None, 2),
+        (2, "part_kind", "TEXT", 1, None, 0),
+        (3, "raw_text", "TEXT", 1, None, 0),
+        (4, "semantic_text", "TEXT", 1, None, 0),
+        (5, "template_key", "TEXT", 1, None, 0),
+    )
+    assert domain_payload_columns == (
+        (0, "fact_id", "TEXT", 0, None, 1),
+        (1, "payload_json", "TEXT", 1, None, 0),
+    )
+    assert scope_columns == (
+        (0, "scope_key", "TEXT", 0, None, 1),
+        (1, "schema_version", "INTEGER", 1, None, 0),
+        (2, "scope_hash", "TEXT", 1, None, 0),
+        (3, "source_snapshot_hash", "TEXT", 1, None, 0),
+        (4, "rule_hash", "TEXT", 1, None, 0),
+        (5, "text_rules_hash", "TEXT", 1, None, 0),
+        (6, "created_at", "TEXT", 1, None, 0),
+    )
+    assert render_part_foreign_keys == (
+        (0, 0, "text_facts_v2", "fact_id", "fact_id", "NO ACTION", "CASCADE", "NONE"),
+    )
+    assert domain_payload_foreign_keys == (
+        (0, 0, "text_facts_v2", "fact_id", "fact_id", "NO ACTION", "CASCADE", "NONE"),
+    )
+    assert text_fact_declared_indexes == {
+        "idx_text_facts_v2_domain_location": ("domain", "location_path"),
+        "idx_text_facts_v2_domain_source_file": ("domain", "source_file"),
+        "idx_text_facts_v2_scope_key": ("scope_key",),
+        "idx_text_facts_v2_selector": ("selector",),
+        "idx_text_facts_v2_translatable_hash": ("translatable_hash",),
+        "idx_text_facts_v2_visible_hash": ("visible_hash",),
+    }
 
 
 def create_database_with_invalid_table_shapes(db_path: Path, tmp_path: Path) -> None:
@@ -521,6 +629,186 @@ async def test_register_game_creates_declared_static_table_set(minimal_game_dir:
 
     table_names = read_sqlite_table_names(record.db_path)
     assert table_names - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
+
+
+@pytest.mark.asyncio
+async def test_text_fact_v2_records_replace_read_and_require_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """v2 文本事实支持整批替换、稳定读取和当前 scope 显式校验。"""
+    from app.persistence.records import (
+        TextFactDomainPayloadV2Record,
+        TextFactRenderPartV2Record,
+        TextFactScopeV2Record,
+        TextFactV2ReadFilter,
+        TextFactV2Record,
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="en")
+    scope = TextFactScopeV2Record(
+        scope_key="scope-v2",
+        schema_version=CURRENT_SCHEMA_VERSION,
+        scope_hash="scope-hash",
+        source_snapshot_hash="source-snapshot-hash",
+        rule_hash="rule-hash",
+        text_rules_hash="text-rules-hash",
+        created_at="2026-06-07T00:00:00",
+    )
+    namebox_fact = TextFactV2Record(
+        fact_id="fact-namebox",
+        schema_version=CURRENT_SCHEMA_VERSION,
+        domain="mv_virtual_namebox",
+        location_path="Map001.json/events/1/pages/0/list/0",
+        source_file="Map001.json",
+        source_type="event_command",
+        item_type="long_text",
+        role="Dan",
+        selector="event:1:0:0",
+        raw_text="\n<Dan:> Hello  ",
+        visible_text="\n<Dan:> Hello  ",
+        translatable_text="Hello",
+        raw_hash="raw-namebox",
+        visible_hash="visible-namebox",
+        translatable_hash="translatable-namebox",
+        scope_key=scope.scope_key,
+    )
+    event_fact = TextFactV2Record(
+        fact_id="fact-event",
+        schema_version=CURRENT_SCHEMA_VERSION,
+        domain="event_command",
+        location_path="Map001.json/events/1/pages/0/list/1",
+        source_file="Map001.json",
+        source_type="event_command",
+        item_type="long_text",
+        role="",
+        selector="event:1:0:1",
+        raw_text="  Welcome back  ",
+        visible_text="  Welcome back  ",
+        translatable_text="Welcome back",
+        raw_hash="raw-event",
+        visible_hash="visible-event",
+        translatable_hash="translatable-event",
+        scope_key=scope.scope_key,
+    )
+    render_parts = [
+        TextFactRenderPartV2Record(
+            fact_id=namebox_fact.fact_id,
+            part_order=3,
+            part_kind="translated_body",
+            raw_text=" Hello  ",
+            semantic_text="Hello",
+            template_key="body",
+        ),
+        TextFactRenderPartV2Record(
+            fact_id=namebox_fact.fact_id,
+            part_order=0,
+            part_kind="literal",
+            raw_text="\n<",
+            semantic_text="\n<",
+            template_key="prefix",
+        ),
+        TextFactRenderPartV2Record(
+            fact_id=namebox_fact.fact_id,
+            part_order=2,
+            part_kind="literal",
+            raw_text=":> ",
+            semantic_text=":> ",
+            template_key="separator",
+        ),
+        TextFactRenderPartV2Record(
+            fact_id=namebox_fact.fact_id,
+            part_order=1,
+            part_kind="speaker",
+            raw_text="Dan",
+            semantic_text="Dan",
+            template_key="speaker",
+        ),
+    ]
+    payloads = [
+        TextFactDomainPayloadV2Record(
+            fact_id=namebox_fact.fact_id,
+            payload_json='{"speaker_policy":"translate"}',
+        ),
+        TextFactDomainPayloadV2Record(
+            fact_id=event_fact.fact_id,
+            payload_json='{"command_code":401}',
+        ),
+    ]
+
+    async with await registry.open_game(record.game_title) as session:
+        with pytest.raises(RuntimeError, match="rebuild-text-index") as missing_scope_error:
+            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
+        assert "当前命令" in str(missing_scope_error.value)
+        assert "下一步" in str(missing_scope_error.value)
+
+        await session.replace_text_facts_v2(
+            scope=scope,
+            facts=[namebox_fact, event_fact],
+            render_parts=render_parts,
+            domain_payloads=payloads,
+        )
+
+        assert await session.count_text_facts_v2() == 2
+        assert await session.read_text_fact_scope_v2(scope.scope_key) == scope
+        assert await session.require_current_text_fact_scope_v2(scope.scope_key) == scope
+        assert await session.read_text_fact_scope_v2("missing-scope") is None
+        assert await session.read_text_facts_v2() == [event_fact, namebox_fact]
+        assert await session.read_text_facts_v2(
+            TextFactV2ReadFilter(domain="mv_virtual_namebox")
+        ) == [namebox_fact]
+        assert await session.read_text_facts_v2(
+            TextFactV2ReadFilter(source_file="Map001.json", scope_key=scope.scope_key)
+        ) == [event_fact, namebox_fact]
+        assert await session.read_text_facts_v2(
+            TextFactV2ReadFilter(
+                location_paths=(namebox_fact.location_path, event_fact.location_path),
+            )
+        ) == [event_fact, namebox_fact]
+        assert await session.read_text_fact_render_parts_v2([namebox_fact.fact_id]) == [
+            render_parts[1],
+            render_parts[3],
+            render_parts[2],
+            render_parts[0],
+        ]
+        assert await session.read_text_fact_domain_payloads_v2(
+            [namebox_fact.fact_id, event_fact.fact_id]
+        ) == [payloads[1], payloads[0]]
+
+        _ = await session.connection.execute(
+            "UPDATE text_fact_scope_v2 SET schema_version = ? WHERE scope_key = ?",
+            (CURRENT_SCHEMA_VERSION + 1, scope.scope_key),
+        )
+        await session.connection.commit()
+        with pytest.raises(RuntimeError, match="rebuild-text-index") as unsupported_version_error:
+            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
+        assert "schema version" in str(unsupported_version_error.value)
+        assert "当前命令" in str(unsupported_version_error.value)
+        assert "下一步" in str(unsupported_version_error.value)
+
+        _ = await session.connection.execute(
+            "UPDATE text_fact_scope_v2 SET schema_version = ? WHERE scope_key = ?",
+            (CURRENT_SCHEMA_VERSION, scope.scope_key),
+        )
+        _ = await session.connection.execute(
+            "UPDATE text_facts_v2 SET scope_key = ? WHERE fact_id = ?",
+            ("other-scope", event_fact.fact_id),
+        )
+        await session.connection.commit()
+        with pytest.raises(RuntimeError, match="rebuild-text-index") as mismatched_scope_error:
+            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
+        assert "scope 不一致" in str(mismatched_scope_error.value)
+        assert "当前命令" in str(mismatched_scope_error.value)
+        assert "下一步" in str(mismatched_scope_error.value)
+
+        _ = await session.connection.execute("DROP TABLE text_fact_scope_v2")
+        await session.connection.commit()
+        with pytest.raises(RuntimeError, match="rebuild-text-index") as missing_table_error:
+            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
+        assert "text_fact_scope_v2" in str(missing_table_error.value)
+        assert "当前命令" in str(missing_table_error.value)
+        assert "下一步" in str(missing_table_error.value)
 
 
 @pytest.mark.asyncio

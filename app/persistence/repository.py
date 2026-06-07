@@ -51,6 +51,7 @@ from .sql import (
     current_schema_sql,
 )
 from .terminology_records import TerminologyRecordSessionMixin
+from .text_fact_records import TextFactRecordSessionMixin
 from .text_index_records import TextIndexRecordSessionMixin
 from .translation_records import TranslationRecordSessionMixin
 
@@ -660,6 +661,7 @@ class TargetGameSession(
     PluginSourceRuntimeRecordSessionMixin,
     SourceSnapshotRecordSessionMixin,
     RunRecordSessionMixin,
+    TextFactRecordSessionMixin,
     TextIndexRecordSessionMixin,
 ):
     """单个目标游戏的数据库会话。"""

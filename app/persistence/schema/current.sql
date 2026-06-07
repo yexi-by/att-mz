@@ -1,4 +1,4 @@
--- ATT-MZ SQLite schema v15. Shared by Python persistence and Rust native storage.
+-- ATT-MZ SQLite schema v16. Shared by Python persistence and Rust native storage.
 -- Keep schema_version value in app.persistence.sql.CURRENT_SCHEMA_VERSION.
 
 --sql
@@ -354,6 +354,90 @@
     )
 ;
 
+--sql
+    CREATE TABLE IF NOT EXISTS [text_facts_v2] (
+        fact_id            TEXT PRIMARY KEY,
+        schema_version     INTEGER NOT NULL,
+        domain             TEXT NOT NULL,
+        location_path      TEXT NOT NULL,
+        source_file        TEXT NOT NULL,
+        source_type        TEXT NOT NULL,
+        item_type          TEXT NOT NULL,
+        role               TEXT NOT NULL,
+        selector           TEXT NOT NULL,
+        raw_text           TEXT NOT NULL,
+        visible_text       TEXT NOT NULL,
+        translatable_text  TEXT NOT NULL,
+        raw_hash           TEXT NOT NULL,
+        visible_hash       TEXT NOT NULL,
+        translatable_hash  TEXT NOT NULL,
+        scope_key          TEXT NOT NULL
+    )
+;
+
+--sql
+    CREATE TABLE IF NOT EXISTS [text_fact_render_parts_v2] (
+        fact_id       TEXT NOT NULL,
+        part_order    INTEGER NOT NULL,
+        part_kind     TEXT NOT NULL,
+        raw_text      TEXT NOT NULL,
+        semantic_text TEXT NOT NULL,
+        template_key  TEXT NOT NULL,
+        PRIMARY KEY (fact_id, part_order),
+        FOREIGN KEY (fact_id) REFERENCES [text_facts_v2](fact_id) ON DELETE CASCADE
+    )
+;
+
+--sql
+    CREATE TABLE IF NOT EXISTS [text_fact_domain_payloads_v2] (
+        fact_id      TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL,
+        FOREIGN KEY (fact_id) REFERENCES [text_facts_v2](fact_id) ON DELETE CASCADE
+    )
+;
+
+--sql
+    CREATE TABLE IF NOT EXISTS [text_fact_scope_v2] (
+        scope_key            TEXT PRIMARY KEY,
+        schema_version       INTEGER NOT NULL,
+        scope_hash           TEXT NOT NULL,
+        source_snapshot_hash TEXT NOT NULL,
+        rule_hash            TEXT NOT NULL,
+        text_rules_hash      TEXT NOT NULL,
+        created_at           TEXT NOT NULL
+    )
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_domain_location]
+    ON [text_facts_v2](domain, location_path)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_domain_source_file]
+    ON [text_facts_v2](domain, source_file)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_selector]
+    ON [text_facts_v2](selector)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_visible_hash]
+    ON [text_facts_v2](visible_hash)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_translatable_hash]
+    ON [text_facts_v2](translatable_hash)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_scope_key]
+    ON [text_facts_v2](scope_key)
+;
+
 INSERT OR REPLACE INTO [schema_version] (schema_key, version)
-VALUES ('current', 15)
+VALUES ('current', 16)
 ;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -132,3 +133,68 @@ class TextIndexInvalidationRecord:
     reason_key: str
     detail: str
     created_at: str
+
+
+@dataclass(slots=True)
+class TextFactV2Record:
+    """Text Fact Contract v2 的单条文本事实。"""
+
+    fact_id: str
+    schema_version: int
+    domain: str
+    location_path: str
+    source_file: str
+    source_type: str
+    item_type: str
+    role: str
+    selector: str
+    raw_text: str
+    visible_text: str
+    translatable_text: str
+    raw_hash: str
+    visible_hash: str
+    translatable_hash: str
+    scope_key: str
+
+
+@dataclass(slots=True)
+class TextFactRenderPartV2Record:
+    """Text Fact Contract v2 的写回渲染片段。"""
+
+    fact_id: str
+    part_order: int
+    part_kind: str
+    raw_text: str
+    semantic_text: str
+    template_key: str
+
+
+@dataclass(slots=True)
+class TextFactDomainPayloadV2Record:
+    """Text Fact Contract v2 的领域小扩展 JSON。"""
+
+    fact_id: str
+    payload_json: str
+
+
+@dataclass(slots=True)
+class TextFactScopeV2Record:
+    """Text Fact Contract v2 的当前索引 scope 元数据。"""
+
+    scope_key: str
+    schema_version: int
+    scope_hash: str
+    source_snapshot_hash: str
+    rule_hash: str
+    text_rules_hash: str
+    created_at: str
+
+
+@dataclass(slots=True)
+class TextFactV2ReadFilter:
+    """读取 v2 文本事实时使用的最小筛选条件。"""
+
+    domain: str | None = None
+    source_file: str | None = None
+    location_paths: Sequence[str] = ()
+    scope_key: str | None = None

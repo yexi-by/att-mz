@@ -38,11 +38,15 @@ TEXT_INDEX_SCOPE_SUMMARY_TABLE_NAME = "text_index_scope_summary"
 TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME = "text_index_domain_summary"
 TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME = "text_index_rule_hit_summary"
 TEXT_INDEX_INVALIDATIONS_TABLE_NAME = "text_index_invalidations"
+TEXT_FACTS_V2_TABLE_NAME = "text_facts_v2"
+TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME = "text_fact_render_parts_v2"
+TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME = "text_fact_domain_payloads_v2"
+TEXT_FACT_SCOPE_V2_TABLE_NAME = "text_fact_scope_v2"
 METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
 TEXT_INDEX_META_KEY = "current"
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 CURRENT_SCHEMA_RESOURCE_PACKAGE = "app.persistence.schema"
 CURRENT_SCHEMA_RESOURCE_NAME = "current.sql"
 TERMINOLOGY_BUNDLE_STATE_KEY = "current"
@@ -80,6 +84,10 @@ EXPECTED_STATIC_TABLE_NAMES: tuple[str, ...] = (
     TEXT_INDEX_DOMAIN_SUMMARY_TABLE_NAME,
     TEXT_INDEX_RULE_HIT_SUMMARY_TABLE_NAME,
     TEXT_INDEX_INVALIDATIONS_TABLE_NAME,
+    TEXT_FACTS_V2_TABLE_NAME,
+    TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME,
+    TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME,
+    TEXT_FACT_SCOPE_V2_TABLE_NAME,
 )
 
 CREATE_SCHEMA_VERSION_TABLE = f"""
@@ -323,6 +331,68 @@ CREATE_TEXT_INDEX_INVALIDATIONS_TABLE = f"""
         reason_key TEXT PRIMARY KEY,
         detail     TEXT NOT NULL,
         created_at TEXT NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_FACTS_V2_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_FACTS_V2_TABLE_NAME}] (
+        fact_id            TEXT PRIMARY KEY,
+        schema_version     INTEGER NOT NULL,
+        domain             TEXT NOT NULL,
+        location_path      TEXT NOT NULL,
+        source_file        TEXT NOT NULL,
+        source_type        TEXT NOT NULL,
+        item_type          TEXT NOT NULL,
+        role               TEXT NOT NULL,
+        selector           TEXT NOT NULL,
+        raw_text           TEXT NOT NULL,
+        visible_text       TEXT NOT NULL,
+        translatable_text  TEXT NOT NULL,
+        raw_hash           TEXT NOT NULL,
+        visible_hash       TEXT NOT NULL,
+        translatable_hash  TEXT NOT NULL,
+        scope_key          TEXT NOT NULL
+    )
+;
+"""
+
+CREATE_TEXT_FACT_RENDER_PARTS_V2_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME}] (
+        fact_id       TEXT NOT NULL,
+        part_order    INTEGER NOT NULL,
+        part_kind     TEXT NOT NULL,
+        raw_text      TEXT NOT NULL,
+        semantic_text TEXT NOT NULL,
+        template_key  TEXT NOT NULL,
+        PRIMARY KEY (fact_id, part_order),
+        FOREIGN KEY (fact_id) REFERENCES [{TEXT_FACTS_V2_TABLE_NAME}](fact_id) ON DELETE CASCADE
+    )
+;
+"""
+
+CREATE_TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME}] (
+        fact_id      TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL,
+        FOREIGN KEY (fact_id) REFERENCES [{TEXT_FACTS_V2_TABLE_NAME}](fact_id) ON DELETE CASCADE
+    )
+;
+"""
+
+CREATE_TEXT_FACT_SCOPE_V2_TABLE = f"""
+--sql
+    CREATE TABLE IF NOT EXISTS [{TEXT_FACT_SCOPE_V2_TABLE_NAME}] (
+        scope_key            TEXT PRIMARY KEY,
+        schema_version       INTEGER NOT NULL,
+        scope_hash           TEXT NOT NULL,
+        source_snapshot_hash TEXT NOT NULL,
+        rule_hash            TEXT NOT NULL,
+        text_rules_hash      TEXT NOT NULL,
+        created_at           TEXT NOT NULL
     )
 ;
 """
@@ -848,6 +918,63 @@ INSERT_TEXT_INDEX_INVALIDATION = f"""
 ;
 """
 
+INSERT_TEXT_FACT_SCOPE_V2 = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_FACT_SCOPE_V2_TABLE_NAME}]
+    (
+        scope_key,
+        schema_version,
+        scope_hash,
+        source_snapshot_hash,
+        rule_hash,
+        text_rules_hash,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_FACT_V2 = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_FACTS_V2_TABLE_NAME}]
+    (
+        fact_id,
+        schema_version,
+        domain,
+        location_path,
+        source_file,
+        source_type,
+        item_type,
+        role,
+        selector,
+        raw_text,
+        visible_text,
+        translatable_text,
+        raw_hash,
+        visible_hash,
+        translatable_hash,
+        scope_key
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_FACT_RENDER_PART_V2 = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME}]
+    (fact_id, part_order, part_kind, raw_text, semantic_text, template_key)
+    VALUES (?, ?, ?, ?, ?, ?)
+;
+"""
+
+INSERT_TEXT_FACT_DOMAIN_PAYLOAD_V2 = f"""
+--sql
+    INSERT OR REPLACE INTO [{TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME}]
+    (fact_id, payload_json)
+    VALUES (?, ?)
+;
+"""
+
 DELETE_ALL_TRANSLATION_QUALITY_ERRORS = f"""
 --sql
     DELETE FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
@@ -887,6 +1014,30 @@ DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY = f"""
 DELETE_ALL_TEXT_INDEX_INVALIDATIONS = f"""
 --sql
     DELETE FROM [{TEXT_INDEX_INVALIDATIONS_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS_V2 = f"""
+--sql
+    DELETE FROM [{TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_FACT_RENDER_PARTS_V2 = f"""
+--sql
+    DELETE FROM [{TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_FACTS_V2 = f"""
+--sql
+    DELETE FROM [{TEXT_FACTS_V2_TABLE_NAME}]
+;
+"""
+
+DELETE_ALL_TEXT_FACT_SCOPES_V2 = f"""
+--sql
+    DELETE FROM [{TEXT_FACT_SCOPE_V2_TABLE_NAME}]
 ;
 """
 
@@ -1459,6 +1610,37 @@ SELECT_TEXT_INDEX_INVALIDATIONS = f"""
 ;
 """
 
+SELECT_TEXT_FACT_SCOPE_V2 = f"""
+--sql
+    SELECT
+        scope_key,
+        schema_version,
+        scope_hash,
+        source_snapshot_hash,
+        rule_hash,
+        text_rules_hash,
+        created_at
+    FROM [{TEXT_FACT_SCOPE_V2_TABLE_NAME}]
+    WHERE scope_key = ?
+    LIMIT 1
+;
+"""
+
+COUNT_TEXT_FACTS_V2 = f"""
+--sql
+    SELECT COUNT(*) AS fact_count
+    FROM [{TEXT_FACTS_V2_TABLE_NAME}]
+;
+"""
+
+COUNT_TEXT_FACTS_V2_OUTSIDE_SCOPE = f"""
+--sql
+    SELECT COUNT(*) AS mismatch_count
+    FROM [{TEXT_FACTS_V2_TABLE_NAME}]
+    WHERE scope_key <> ?
+;
+"""
+
 DELETE_ALL_PLUGIN_TEXT_RULES = f"""
 --sql
     DELETE FROM [{PLUGIN_TEXT_RULES_TABLE_NAME}]
@@ -1648,6 +1830,10 @@ __all__: list[str] = [
     "CREATE_TEXT_INDEX_META_TABLE",
     "CREATE_TEXT_INDEX_RULE_HIT_SUMMARY_TABLE",
     "CREATE_TEXT_INDEX_SCOPE_SUMMARY_TABLE",
+    "CREATE_TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE",
+    "CREATE_TEXT_FACT_RENDER_PARTS_V2_TABLE",
+    "CREATE_TEXT_FACT_SCOPE_V2_TABLE",
+    "CREATE_TEXT_FACTS_V2_TABLE",
     "CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE",
     "CREATE_FIELD_TRANSLATION_TERMS_TABLE",
     "CREATE_TEXT_GLOSSARY_TERMS_TABLE",
@@ -1676,10 +1862,16 @@ __all__: list[str] = [
     "DELETE_ALL_TEXT_INDEX_META",
     "DELETE_ALL_TEXT_INDEX_RULE_HIT_SUMMARY",
     "DELETE_ALL_TEXT_INDEX_SCOPE_SUMMARY",
+    "DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS_V2",
+    "DELETE_ALL_TEXT_FACT_RENDER_PARTS_V2",
+    "DELETE_ALL_TEXT_FACT_SCOPES_V2",
+    "DELETE_ALL_TEXT_FACTS_V2",
     "DELETE_ALL_TRANSLATION_QUALITY_ERRORS",
     "DELETE_TRANSLATION_ITEM_BY_PATH",
     "DELETE_TRANSLATION_ITEMS_BY_PREFIX",
     "COUNT_PENDING_TEXT_INDEX_QUALITY_ERRORS",
+    "COUNT_TEXT_FACTS_V2",
+    "COUNT_TEXT_FACTS_V2_OUTSIDE_SCOPE",
     "COUNT_TEXT_INDEX_TRANSLATED_ITEMS",
     "COUNT_TRANSLATED_ITEMS",
     "COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX",
@@ -1714,6 +1906,10 @@ __all__: list[str] = [
     "INSERT_TEXT_INDEX_DOMAIN_SUMMARY",
     "INSERT_TEXT_INDEX_ITEM",
     "INSERT_TEXT_INDEX_RULE_HIT_SUMMARY",
+    "INSERT_TEXT_FACT_DOMAIN_PAYLOAD_V2",
+    "INSERT_TEXT_FACT_RENDER_PART_V2",
+    "INSERT_TEXT_FACT_SCOPE_V2",
+    "INSERT_TEXT_FACT_V2",
     "UPSERT_TEXT_INDEX_SCOPE_SUMMARY",
     "LLM_FAILURES_TABLE_NAME",
     "LANGUAGE_SETTINGS_KEY",
@@ -1734,6 +1930,10 @@ __all__: list[str] = [
     "SOURCE_RESIDUAL_RULES_TABLE_NAME",
     "STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE_NAME",
     "STRUCTURED_PLACEHOLDER_RULES_TABLE_NAME",
+    "TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME",
+    "TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME",
+    "TEXT_FACT_SCOPE_V2_TABLE_NAME",
+    "TEXT_FACTS_V2_TABLE_NAME",
     "SELECT_EVENT_COMMAND_TEXT_RULE_FILTERS",
     "SELECT_EVENT_COMMAND_TEXT_RULE_GROUPS",
     "SELECT_EVENT_COMMAND_TEXT_RULE_PATHS",
@@ -1785,6 +1985,7 @@ __all__: list[str] = [
     "SELECT_TEXT_INDEX_META",
     "SELECT_TEXT_INDEX_RULE_HIT_SUMMARY",
     "SELECT_TEXT_INDEX_SCOPE_SUMMARY",
+    "SELECT_TEXT_FACT_SCOPE_V2",
     "SELECT_FIELD_TRANSLATION_TERMS",
     "SCHEMA_VERSION_KEY",
     "SCHEMA_VERSION_TABLE_NAME",
