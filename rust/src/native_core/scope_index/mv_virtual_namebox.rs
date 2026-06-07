@@ -4,6 +4,7 @@ use fancy_regex::{Captures, Regex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::RuleCandidateOutput;
@@ -17,13 +18,13 @@ pub(super) struct MvVirtualNameboxDataFileInput {
     pub(super) data: Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct MvVirtualNameboxActorNameInput {
     pub(super) actor_id: i64,
     pub(super) name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MvVirtualNameboxRuleInput {
     #[serde(default)]
     rule_order: usize,
@@ -84,12 +85,26 @@ pub(super) struct MvVirtualNameboxErrorOutput {
     rendered: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct MvVirtualNameboxSpeakerRequirementOutput {
+    source_text: String,
+    policy: String,
+    requires_speaker_name: bool,
+    rule_name: String,
+    location_paths: Vec<String>,
+    sample_body_lines: Vec<String>,
+    render_template: String,
+    confidence: String,
+}
+
 pub(super) struct MvVirtualNameboxRuleCandidateScan {
     pub(super) candidates: Vec<RuleCandidateOutput>,
     pub(super) candidate_details: Vec<MvVirtualNameboxCandidateOutput>,
     pub(super) errors: Vec<MvVirtualNameboxErrorOutput>,
     pub(super) hit_details: Vec<MvVirtualNameboxHitDetailOutput>,
     pub(super) rule_summaries: Vec<MvVirtualNameboxRuleSummaryOutput>,
+    pub(super) speaker_requirements: Vec<MvVirtualNameboxSpeakerRequirementOutput>,
+    pub(super) scope_hash: String,
     pub(super) scanned_command_count: usize,
     pub(super) scanned_file_count: usize,
 }
@@ -117,7 +132,9 @@ struct VirtualSpeaker {
     rule_name: String,
     speaker: String,
     source_speaker: String,
+    body_text: String,
     speaker_policy: String,
+    render_template: String,
     rendered_source: String,
 }
 
@@ -172,6 +189,7 @@ pub(super) fn scan_mv_virtual_namebox_rule_candidates(
         .collect::<Vec<_>>();
     let mut errors = Vec::new();
     let mut hit_details = Vec::new();
+    let mut speaker_requirements = Vec::new();
     for candidate in &candidate_details {
         let mut matching_rules = Vec::new();
         let mut matches = Vec::new();
@@ -185,6 +203,11 @@ pub(super) fn scan_mv_virtual_namebox_rule_candidates(
                 .matched_candidate_location_paths
                 .insert(candidate.location_path.clone());
             matching_rules.push(rule.rule_name.clone());
+            append_speaker_requirement(
+                &mut speaker_requirements,
+                candidate,
+                &virtual_speaker,
+            );
             if virtual_speaker.speaker_policy == "translate"
                 && is_actor_name_control_text(&virtual_speaker.source_speaker)
             {
@@ -240,6 +263,7 @@ pub(super) fn scan_mv_virtual_namebox_rule_candidates(
 
     Ok(MvVirtualNameboxRuleCandidateScan {
         candidates,
+        scope_hash: build_scope_hash(&candidate_details, actor_names, rules)?,
         candidate_details: candidate_details
             .into_iter()
             .map(|candidate| MvVirtualNameboxCandidateOutput {
@@ -251,6 +275,7 @@ pub(super) fn scan_mv_virtual_namebox_rule_candidates(
         errors,
         hit_details,
         rule_summaries: rule_stats.into_iter().map(RuleStats::into_output).collect(),
+        speaker_requirements,
         scanned_command_count,
         scanned_file_count: data_files.len(),
     })
@@ -560,9 +585,95 @@ fn build_virtual_speaker(
         rule_name: rule.rule_name.clone(),
         speaker,
         source_speaker,
+        body_text,
         speaker_policy: rule.speaker_policy.clone(),
+        render_template: rule.render_template.clone(),
         rendered_source,
     })
+}
+
+fn append_speaker_requirement(
+    requirements: &mut Vec<MvVirtualNameboxSpeakerRequirementOutput>,
+    candidate: &MvVirtualNameboxCandidateOutput,
+    virtual_speaker: &VirtualSpeaker,
+) {
+    let source_text = if virtual_speaker.speaker_policy == "actor_name" {
+        virtual_speaker.speaker.clone()
+    } else {
+        virtual_speaker.source_speaker.clone()
+    };
+    let sample_body_lines = speaker_requirement_sample_lines(candidate, virtual_speaker);
+    if let Some(existing) = requirements.iter_mut().find(|requirement| {
+        requirement.source_text == source_text
+            && requirement.policy == virtual_speaker.speaker_policy
+            && requirement.rule_name == virtual_speaker.rule_name
+            && requirement.render_template == virtual_speaker.render_template
+    }) {
+        if !existing
+            .location_paths
+            .iter()
+            .any(|location_path| location_path == &candidate.location_path)
+        {
+            existing.location_paths.push(candidate.location_path.clone());
+        }
+        for line in sample_body_lines {
+            if existing.sample_body_lines.len() >= 3 {
+                break;
+            }
+            if !existing.sample_body_lines.iter().any(|existing| existing == &line) {
+                existing.sample_body_lines.push(line);
+            }
+        }
+        return;
+    }
+    requirements.push(MvVirtualNameboxSpeakerRequirementOutput {
+        source_text,
+        policy: virtual_speaker.speaker_policy.clone(),
+        requires_speaker_name: matches!(
+            virtual_speaker.speaker_policy.as_str(),
+            "translate" | "actor_name"
+        ),
+        rule_name: virtual_speaker.rule_name.clone(),
+        location_paths: vec![candidate.location_path.clone()],
+        sample_body_lines,
+        render_template: virtual_speaker.render_template.clone(),
+        confidence: "rule_match".to_string(),
+    });
+}
+
+fn speaker_requirement_sample_lines(
+    candidate: &MvVirtualNameboxCandidateOutput,
+    virtual_speaker: &VirtualSpeaker,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !virtual_speaker.body_text.trim().is_empty() {
+        lines.push(virtual_speaker.body_text.trim().to_string());
+    }
+    for line in &candidate.following_lines {
+        if lines.len() >= 3 {
+            break;
+        }
+        if !line.trim().is_empty() {
+            lines.push(line.trim().to_string());
+        }
+    }
+    lines
+}
+
+fn build_scope_hash(
+    candidate_details: &[MvVirtualNameboxCandidateOutput],
+    actor_names: &[MvVirtualNameboxActorNameInput],
+    rules: &[MvVirtualNameboxRuleInput],
+) -> Result<String, String> {
+    let payload = serde_json::to_vec(&(candidate_details, actor_names, rules))
+        .map_err(|error| format!("MV 虚拟名字框 scope hash 输入序列化失败: {error}"))?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(payload);
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn capture_group<'a>(captures: &'a Captures<'_>, group_name: &str) -> Option<&'a str> {

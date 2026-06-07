@@ -23,6 +23,8 @@ mod structured_placeholders;
 
 use self::plugin_source::{PluginSourceFileInput, scan_plugin_source_rule_candidates};
 
+const RULE_CANDIDATES_SCHEMA_VERSION: usize = 1;
+
 #[derive(Debug, Deserialize)]
 struct BuildScopeIndexPayload {
     source_snapshot_fingerprint: String,
@@ -218,9 +220,12 @@ struct BuildScopeIndexOutput {
 
 #[derive(Debug, Serialize)]
 struct RuleCandidatesOutput {
+    schema_version: usize,
     candidates: Vec<RuleCandidateOutput>,
     candidate_summary: Vec<CandidateGroupOutput>,
     scan_summary: BTreeMap<String, Value>,
+    timings_ms: BTreeMap<String, u64>,
+    counters: BTreeMap<String, usize>,
 }
 
 fn default_source_text_exclusion_profile() -> String {
@@ -762,8 +767,10 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "hit_details": mv_virtual_namebox_scan.hit_details,
                 "matched_candidate_count": mv_virtual_namebox_scan.hit_details.len(),
                 "rule_summaries": mv_virtual_namebox_scan.rule_summaries,
+                "scope_hash": mv_virtual_namebox_scan.scope_hash,
                 "scanned_command_count": mv_virtual_namebox_scan.scanned_command_count,
                 "scanned_file_count": mv_virtual_namebox_scan.scanned_file_count,
+                "speaker_requirements": mv_virtual_namebox_scan.speaker_requirements,
             }),
         );
         candidates.extend(mv_virtual_namebox_scan.candidates);
@@ -817,7 +824,11 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
     for (domain, candidate_count) in extra_summary_by_domain {
         *summary_by_domain.entry(domain).or_default() += candidate_count;
     }
+    let candidate_count = summary_by_domain.values().sum();
+    let mut counters = BTreeMap::new();
+    counters.insert("candidate_count".to_string(), candidate_count);
     let output = RuleCandidatesOutput {
+        schema_version: RULE_CANDIDATES_SCHEMA_VERSION,
         candidates,
         candidate_summary: summary_by_domain
             .into_iter()
@@ -827,6 +838,8 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
             })
             .collect(),
         scan_summary,
+        timings_ms: BTreeMap::new(),
+        counters,
     };
     serde_json::to_string(&output).map_err(|error| format!("规则候选输出 JSON 序列化失败: {error}"))
 }
@@ -1089,6 +1102,10 @@ mod tests {
         let output = scan_rule_candidates_impl(&payload.to_string()).expect("候选汇总应成功");
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
 
+        assert_eq!(value["schema_version"], json!(1));
+        assert!(value["scan_summary"].is_object());
+        assert!(value["timings_ms"].is_object());
+        assert_eq!(value["counters"]["candidate_count"], json!(3));
         assert_eq!(value["candidates"].as_array().map(Vec::len), Some(3));
         assert_eq!(
             value["candidate_summary"],
@@ -1357,13 +1374,19 @@ mod tests {
                                 {"code": 101, "parameters": [0, 0, 0, 2]},
                                 {"code": 401, "parameters": ["案内人："]},
                                 {"code": 401, "parameters": ["本文です"]},
+                                {"code": 101, "parameters": [0, 0, 0, 2]},
+                                {"code": 401, "parameters": ["\\N[2]："]},
+                                {"code": 401, "parameters": ["二番目の本文"]},
+                                {"code": 101, "parameters": [0, 0, 0, 2]},
+                                {"code": 401, "parameters": ["\\N[1]："]},
+                                {"code": 401, "parameters": ["勇者の本文"]},
                                 {"code": 0, "parameters": []}
                             ]
                         }
                     ]
                 }
             ],
-            "mv_virtual_namebox_actor_names": [],
+            "mv_virtual_namebox_actor_names": [{"actor_id": 1, "name": "MV勇者"}],
             "mv_virtual_namebox_rules": [
                 {
                     "rule_order": 0,
@@ -1372,6 +1395,24 @@ mod tests {
                     "speaker_group": "speaker",
                     "body_group": "",
                     "speaker_policy": "translate",
+                    "render_template": "{speaker}："
+                },
+                {
+                    "rule_order": 1,
+                    "rule_name": "preserve-actor-control",
+                    "pattern_text": r"^(?P<speaker>\\N\[2\])：$",
+                    "speaker_group": "speaker",
+                    "body_group": "",
+                    "speaker_policy": "preserve",
+                    "render_template": "{speaker}："
+                },
+                {
+                    "rule_order": 2,
+                    "rule_name": "actor-control",
+                    "pattern_text": r"^(?P<speaker>\\N\[1\])：$",
+                    "speaker_group": "speaker",
+                    "body_group": "",
+                    "speaker_policy": "actor_name",
                     "render_template": "{speaker}："
                 }
             ]
@@ -1383,7 +1424,7 @@ mod tests {
 
         assert_eq!(
             value["candidate_summary"],
-            json!([{"domain": "mv_virtual_namebox", "candidate_count": 1}])
+            json!([{"domain": "mv_virtual_namebox", "candidate_count": 3}])
         );
         assert_eq!(
             value["scan_summary"]["mv_virtual_namebox"]["candidate_details"],
@@ -1392,6 +1433,16 @@ mod tests {
                     "location_path": "CommonEvents.json/1/1",
                     "text": "案内人：",
                     "following_lines": ["本文です"]
+                },
+                {
+                    "location_path": "CommonEvents.json/1/4",
+                    "text": "\\N[2]：",
+                    "following_lines": ["二番目の本文"]
+                },
+                {
+                    "location_path": "CommonEvents.json/1/7",
+                    "text": "\\N[1]：",
+                    "following_lines": ["勇者の本文"]
                 }
             ])
         );
@@ -1407,6 +1458,58 @@ mod tests {
                     "matched_candidate_location_paths": ["CommonEvents.json/1/1"],
                     "rule_index": 0,
                     "rule_name": "standalone-colon"
+                },
+                {
+                    "matched_candidate_count": 1,
+                    "matched_candidate_location_paths": ["CommonEvents.json/1/4"],
+                    "rule_index": 1,
+                    "rule_name": "preserve-actor-control"
+                },
+                {
+                    "matched_candidate_count": 1,
+                    "matched_candidate_location_paths": ["CommonEvents.json/1/7"],
+                    "rule_index": 2,
+                    "rule_name": "actor-control"
+                }
+            ])
+        );
+        assert!(
+            value["scan_summary"]["mv_virtual_namebox"]["scope_hash"]
+                .as_str()
+                .is_some_and(|scope_hash| !scope_hash.is_empty())
+        );
+        assert_eq!(
+            value["scan_summary"]["mv_virtual_namebox"]["speaker_requirements"],
+            json!([
+                {
+                    "source_text": "案内人",
+                    "policy": "translate",
+                    "requires_speaker_name": true,
+                    "rule_name": "standalone-colon",
+                    "location_paths": ["CommonEvents.json/1/1"],
+                    "sample_body_lines": ["本文です"],
+                    "render_template": "{speaker}：",
+                    "confidence": "rule_match"
+                },
+                {
+                    "source_text": "\\N[2]",
+                    "policy": "preserve",
+                    "requires_speaker_name": false,
+                    "rule_name": "preserve-actor-control",
+                    "location_paths": ["CommonEvents.json/1/4"],
+                    "sample_body_lines": ["二番目の本文"],
+                    "render_template": "{speaker}：",
+                    "confidence": "rule_match"
+                },
+                {
+                    "source_text": "MV勇者",
+                    "policy": "actor_name",
+                    "requires_speaker_name": true,
+                    "rule_name": "actor-control",
+                    "location_paths": ["CommonEvents.json/1/7"],
+                    "sample_body_lines": ["勇者の本文"],
+                    "render_template": "{speaker}：",
+                    "confidence": "rule_match"
                 }
             ])
         );
