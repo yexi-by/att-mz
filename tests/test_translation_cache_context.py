@@ -25,6 +25,7 @@ def _make_text_fact_record(
     visible_text: str,
     translatable_text: str,
     role: str = "Dan",
+    item_type: str = "long_text",
 ) -> TextFactV2Record:
     """构造最小 Text Fact Contract v2 记录。"""
     return TextFactV2Record(
@@ -34,7 +35,7 @@ def _make_text_fact_record(
         location_path=location_path,
         source_file="Map001.json",
         source_type="event_command",
-        item_type="long_text",
+        item_type=item_type,
         role=role,
         selector=f"selector:{location_path}",
         raw_text=raw_text,
@@ -103,6 +104,45 @@ def test_text_fact_v2_adapter_uses_translatable_text_and_hash_dedupes_prompt() -
     assert "location_path" not in user_prompt
     assert "translated_text" not in user_prompt
     assert "位置:" not in user_prompt
+
+
+def test_text_fact_v2_dedupe_keeps_role_and_item_type_boundaries() -> None:
+    """v2 相同可译正文只在同结构和同说话人内去重。"""
+    first = _make_text_fact_record(
+        fact_id="fact-1",
+        location_path="Map001.json/1/0",
+        raw_text=r"\n<Dan:> Hello",
+        visible_text=r"\n<Dan:> Hello",
+        translatable_text="Hello",
+        role="Dan",
+    )
+    same_text_different_role = _make_text_fact_record(
+        fact_id="fact-2",
+        location_path="Map001.json/1/1",
+        raw_text=r"\n<Eve:> Hello",
+        visible_text=r"\n<Eve:> Hello",
+        translatable_text="Hello",
+        role="Eve",
+    )
+    same_text_different_item_type = _make_text_fact_record(
+        fact_id="fact-3",
+        location_path="Map001.json/1/2",
+        raw_text="Hello",
+        visible_text="Hello",
+        translatable_text="Hello",
+        role="Dan",
+        item_type="short_text",
+    )
+
+    translation_data_map = text_fact_records_to_translation_data_map(
+        [first, same_text_different_role, same_text_different_item_type]
+    )
+    deduplicated_map = deduplicate_translation_data(
+        translation_data_map=translation_data_map,
+        translation_cache=TranslationCache(),
+    )
+
+    assert count_translation_items(deduplicated_map) == 3
 
 
 def test_translation_context_prompt_contains_map_and_body_without_terms() -> None:

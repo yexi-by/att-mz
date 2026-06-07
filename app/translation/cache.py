@@ -17,7 +17,7 @@ class TranslationCache:
     def build_cache_key(self, item: TranslationItem) -> TranslationCacheKey:
         """为单个正文条目构造稳定去重键。"""
         if item.translation_dedupe_key:
-            return ("dedupe_key", item.translation_dedupe_key, None, None)
+            return ("dedupe_key", item.translation_dedupe_key, item.item_type, item.role)
         return ("source_fields", tuple(item.original_lines), item.item_type, item.role)
 
     def remember_or_defer(self, item: TranslationItem) -> bool:
@@ -45,7 +45,7 @@ class TranslationCache:
     ) -> list[TranslationItem]:
         """根据正文主键字段取出重复条目。"""
         if translation_dedupe_key:
-            cache_key: TranslationCacheKey = ("dedupe_key", translation_dedupe_key, None, None)
+            cache_key: TranslationCacheKey = ("dedupe_key", translation_dedupe_key, item_type, role)
         else:
             cache_key = ("source_fields", tuple(original_lines), item_type, role)
         return self.duplicate_items.pop(cache_key, [])
