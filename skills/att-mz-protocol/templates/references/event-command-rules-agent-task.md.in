@@ -2,6 +2,8 @@
 
 本契约用于把事件指令参数里的玩家可见文本整理成导入规则。执行者只按本文件、CLI 输出、工作区文件和任务说明工作，不读取项目源码、数据库或程序内部对象。
 
+本任务是工作子代理任务。执行者除最终规则草稿外，还必须写工作报告和必要的审计材料；规则导入前会由外部规则审查代理复核。
+
 ## 输入
 
 - 只读文件：`<工作区>/event-commands.json`。
@@ -25,6 +27,8 @@
 ## 输出
 
 - 唯一可写文件：`<工作区>/event-command-rules.json`。
+- 工作报告：`<工作区>/agent-reports/external_rules/event_command_rules_discovery.json`。
+- 脚本和统计：`<工作区>/agent-scratch/external_rules/event_command_rules_discovery/`。
 - 顶层必须是对象，格式为 `{指令编码字符串: [{match, paths}]}`。
 - `match` 必须是对象，键为参数索引字符串，值为对应参数的精确字符串值。
 - `paths` 必须是 JSONPath 字符串数组，路径从 `$['parameters']` 开始，并命中字符串叶子。
@@ -71,7 +75,9 @@ uv run python main.py validate-event-command-rules --game <游戏标题> --input
 完成时报告：
 
 - 改动文件。
+- 读取文件、写入脚本、统计产物和运行过的只读/validate 命令。
 - 命中的指令编码、规则数量和路径数量。
+- 程序候选之外的主动发现。
 - 是否为空结果；为空时说明检查范围和空结果理由。
 - 交叉验证摘要：选中项依据、重点排除项依据、空结果依据、仍需主代理确认的指令形态。
 - 主要排除类别。

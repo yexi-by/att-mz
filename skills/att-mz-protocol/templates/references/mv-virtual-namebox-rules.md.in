@@ -2,17 +2,20 @@
 
 本参考只用于 RPG Maker MV。MZ 使用标准 `101.parameters[4]` 名字框，不使用本规则。
 
-MV 没有官方名字框字段。很多游戏用插件或事件约定把说话人写在 `101` 后第一条非空 `401` 正文里，例如独立名牌行、正文前缀、控制符包裹名牌或动态角色名。主代理必须按当前游戏候选亲自判断规则，不能让程序猜测。
+MV 没有官方名字框字段。很多游戏用插件或事件约定把说话人写在 `101` 后第一条非空 `401` 正文里，例如独立名牌行、正文前缀、控制符包裹名牌或动态角色名。本阶段采用发现型任务：工作子代理主动发现当前游戏的发言人/名牌模式，审查子代理反向检查过拟合、漏同类和误伤，主代理裁决后才允许导入。不要把任何样例当成当前游戏固定答案。
 
 ## 工作顺序
 
 1. 准备工作区后，先读取 `mv-virtual-namebox-candidates.json`。
-2. 阅读本文件，只按当前候选填写 `mv-virtual-namebox-rules.json`。
-3. 运行 `validate-mv-virtual-namebox-rules --game <游戏标题> --input <工作区>/mv-virtual-namebox-rules.json --output <工作区>/mv-virtual-namebox-validate-report.json`。
-4. 检查校验报告中的 `newly_matched_candidates`，确认每个新命中样本确实是说话人名字框；不是说话人的样本必须通过收紧规则排除。
-5. 校验通过后运行 `import-mv-virtual-namebox-rules --game <游戏标题> --input <工作区>/mv-virtual-namebox-rules.json`。
-6. 如果确认当前 MV 游戏没有虚拟名字框规则，文件写成 `{"rules":[]}`，导入时加 `--confirm-empty`。
-7. 重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`，再开始术语候选第一轮。
+2. 按 `agent-review-workflow.md` 派发 `mv_namebox_discovery` 工作任务。工作子代理可以在 `<工作区>/agent-scratch/mv_virtual_namebox/mv_namebox_discovery/` 写一次性脚本，统计对白块开头短文本、重复前缀、包裹符号、控制符、插件名牌形态、覆盖样本和误伤样本。
+3. 工作子代理只写 `<工作区>/mv-virtual-namebox-rules.json`、`agent-reports/mv_virtual_namebox/mv_namebox_discovery.json` 和审计材料；不得导入规则。
+4. 运行 `validate-mv-virtual-namebox-rules --game <游戏标题> --input <工作区>/mv-virtual-namebox-rules.json --output <工作区>/mv-virtual-namebox-validate-report.json`。
+5. 派发 `mv_namebox_review` 审查任务，读取规则草稿、validate 报告、工作报告和脚本产物，检查过拟合、漏掉同类高频模式、普通正文误伤、动态控制符误翻、speaker/body 分组不稳定和模板无法重建源文本。
+6. 主代理读取工作报告、审查报告和校验报告，检查 `newly_matched_candidates`，确认每个新命中样本确实是说话人名字框；不是说话人的样本必须通过收紧规则排除。
+7. 主代理写 `<工作区>/review-decisions/mv_virtual_namebox.json`。存在未关闭 `blocker` 时禁止导入。
+8. 校验通过且裁决为 `approved` 后运行 `import-mv-virtual-namebox-rules --game <游戏标题> --input <工作区>/mv-virtual-namebox-rules.json`。
+9. 如果发现和审查都确认当前 MV 游戏没有虚拟名字框规则，文件写成 `{"rules":[]}`，裁决记录空结果理由，导入时加 `--confirm-empty`。
+10. 重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`，再开始术语候选第一轮。
 
 ## JSON 结构
 

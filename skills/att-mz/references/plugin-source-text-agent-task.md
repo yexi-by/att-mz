@@ -2,6 +2,8 @@
 
 本任务只处理 `<游戏目录>/js/plugins` 直接 `.js` 文件中的硬编码显示文本。它是罕见高风险支线，不替代插件参数规则、事件指令规则或 Note 标签规则。
 
+本支线一旦启动，必须按 `agent-review-workflow.md` 走工作、审查和主代理裁决。工作子代理全量归类活跃 selector，审查子代理检查未审查 selector、误选机器协议、漏选玩家可见文本、selector 来源和目录越权；存在未关闭 `blocker` 时禁止导入。
+
 ## 触发条件
 
 - 默认先读取 `plugin-source-risk-report.json`。低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务。
@@ -30,7 +32,7 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 
 ## 输出
 
-唯一可写文件是 `<工作区>/plugin-source-rules.json`，顶层必须是数组：
+唯一可写最终规则文件是 `<工作区>/plugin-source-rules.json`，顶层必须是数组。工作报告写入 `<工作区>/agent-reports/branch_rules/plugin_source_text_classification.json`，一次性脚本和统计写入 `<工作区>/agent-scratch/branch_rules/plugin_source_text_classification/`：
 
 ```json
 [
@@ -56,7 +58,9 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 - selector 必须来自 AST 地图原样复制，禁止手写字节范围或改写 selector。
 - `validate-plugin-source-rules` 会报告翻译 selector 数、排除 selector 数和未审查 selector 数；未审查数量不为 0 时，补全 `plugin-source-rules.json` 后重新校验。
 - `plugin-source-rules.json` 完成后运行 `validate-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json`。
-- validate 通过后运行 `import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json`。
+- validate 前必须完成 `plugin_source_text_review`，审查报告写入 `<工作区>/review-reports/branch_rules/plugin_source_text_review.json`。
+- 主代理读取工作报告、审查报告和 AST 地图，写入 `<工作区>/review-decisions/branch_rules.json`；存在未关闭 `blocker` 时停止。
+- validate 通过且主代理裁决为 `approved` 后运行 `import-plugin-source-rules --game <游戏标题> --input <工作区>/plugin-source-rules.json`。
 - `quality-report` 检查已保存译文记录和规则质量；`audit-active-runtime` 审计当前运行文件。默认审计不是补译清单；只有插件源码规则或写回映射已存在时，当前运行源码文本问题才作为支线诊断处理；不要把当前运行审计结果当作规则 selector 来源。
 
 ## 停止条件
@@ -64,9 +68,10 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 - 用户未确认处理高风险插件源码文本。
 - AST 地图无法生成或 selector 反复失效。
 - 规则校验返回 error。
+- 审查报告存在未关闭 `blocker`。
 - 高风险或已启动支线时存在未归类 selector。
 - 需要扫描 `js/plugins` 以外目录。
 
 ## 完成报告
 
-报告选择的文件数、翻译 selector 数、排除 selector 数、未审查 selector 数、交叉验证摘要、validate 结果、导入结果和仍需人工确认的候选类别。交叉验证摘要必须说明读取过哪些直接插件源码文件、源码注释或相邻结构如何支持选中项、哪些候选被排除以及排除依据。导入完成后，重新准备工作区或重新扫描占位符候选，再进入占位符收束阶段。
+工作报告必须报告选择的文件数、翻译 selector 数、排除 selector 数、未审查 selector 数、脚本和统计产物、交叉验证摘要、validate 建议命令和仍需人工确认的候选类别。交叉验证摘要必须说明读取过哪些直接插件源码文件、源码注释或相邻结构如何支持选中项、哪些候选被排除以及排除依据。审查报告必须用 `blocker`、`warning`、`info` 分级说明未审查 selector、selector 失效、误选、漏选和越权读取风险。导入完成后，重新准备工作区或重新扫描占位符候选，再进入占位符收束阶段。

@@ -35,6 +35,26 @@ REQUIRED_FLOW_COMMANDS = frozenset(
         "verify-feedback-text",
     }
 )
+REQUIRED_AGENT_REVIEW_STAGE_IDS = frozenset(
+    {
+        "workspace",
+        "mv_virtual_namebox",
+        "terminology",
+        "external_rules",
+        "branch_rules",
+        "placeholder_closure",
+    }
+)
+REQUIRED_AGENT_REVIEW_AGENT_IDS = frozenset(
+    {
+        "att_mz_mv_namebox_discoverer",
+        "att_mz_mv_namebox_reviewer",
+        "att_mz_terminology_reviewer",
+        "att_mz_external_rule_reviewer",
+        "att_mz_branch_reviewer",
+        "att_mz_placeholder_sentinel",
+    }
+)
 COMMAND_LINE_PATTERNS = (
     re.compile(r"uv\s+run\s+python\s+main\.py\s+([a-z][a-z0-9-]+)"),
     re.compile(r"(?:\.\\att-mz\.exe|att-mz\.exe)\s+([a-z][a-z0-9-]+)"),
@@ -103,6 +123,65 @@ def test_skill_protocol_workflow_manifest_commands_and_references_are_valid() ->
             assert (DEV_SKILL_DIR / "references" / reference).is_file(), reference
             assert reference in _read_text(DEV_SKILL_DIR / "SKILL.md"), reference
             assert reference in _read_text(RELEASE_SKILL_DIR / "SKILL.md"), reference
+
+
+def test_agent_review_workflow_reference_is_attached_to_analysis_stages() -> None:
+    """分析与规则产出阶段必须引用审查型工作流契约。"""
+    workflow = _read_toml(PROTOCOL_DIR / "workflow.toml")
+    stages = cast(list[dict[str, object]], workflow["stages"])
+    stage_by_id = {cast(str, stage["id"]): stage for stage in stages}
+
+    assert REQUIRED_AGENT_REVIEW_STAGE_IDS <= set(stage_by_id)
+    for stage_id in REQUIRED_AGENT_REVIEW_STAGE_IDS:
+        references = set(cast(list[str], stage_by_id[stage_id]["references"]))
+        assert "agent-review-workflow.md" in references, stage_id
+
+
+def test_agent_review_protocol_exposes_auditable_reports_and_gates() -> None:
+    """公开 Skill 必须包含审查型工作流的目录、报告字段和门禁词。"""
+    required_terms = {
+        "agent-scratch/",
+        "agent-reports/",
+        "review-reports/",
+        "review-decisions/",
+        "active_discoveries",
+        "blocker | warning | info",
+        "approved | needs_revision | skipped_by_user | blocked",
+        "存在未关闭 `blocker` 时",
+        "禁止任何 import、写回、重建、重置、数据库写入或游戏文件写入",
+    }
+    protocol_paths = [
+        DEV_SKILL_DIR / "references" / "agent-review-workflow.md",
+        RELEASE_SKILL_DIR / "references" / "agent-review-workflow.md",
+    ]
+
+    for path in protocol_paths:
+        text = _read_text(path)
+        for term in required_terms:
+            assert term in text, path
+
+
+def test_agent_review_subagent_manifest_declares_review_roles_and_schema() -> None:
+    """子代理 manifest 必须声明新增审查角色和分级 findings schema。"""
+    subagents = _read_toml(PROTOCOL_DIR / "subagents.toml")
+    agents = cast(list[dict[str, object]], subagents["agents"])
+    agent_by_id = {cast(str, agent["id"]): agent for agent in agents}
+
+    assert REQUIRED_AGENT_REVIEW_AGENT_IDS <= set(agent_by_id)
+    for agent_id in REQUIRED_AGENT_REVIEW_AGENT_IDS:
+        agent = agent_by_id[agent_id]
+        schema = set(cast(list[str], agent["report_schema"]))
+        if "reviewer" in agent_id or agent_id in {
+            "att_mz_terminology_reviewer",
+            "att_mz_external_rule_reviewer",
+            "att_mz_branch_reviewer",
+            "att_mz_placeholder_sentinel",
+        }:
+            assert {"findings", "coverage_checks", "anti_overfit_checks", "quality_checks"} <= schema, agent_id
+
+    for worker_id in ("att_mz_term_curator", "att_mz_rule_analyst", "att_mz_branch_analyst"):
+        schema = set(cast(list[str], agent_by_id[worker_id]["report_schema"]))
+        assert {"active_discoveries", "scripts_written", "cli_commands_run", "outputs_written"} <= schema
 
 
 def test_generated_skill_entrypoints_are_profile_specific() -> None:

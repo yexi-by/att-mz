@@ -77,8 +77,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 场景 | 命令 | 判断与下一步 |
 | --- | --- | --- |
 | 建立 warm index | `rebuild-text-index --game <游戏标题>` | `summary.index_status=rebuilt`，索引数量可解释；大型游戏规则导入、源文件变化或规则变化后先运行。 |
-| 小批量试跑 | `translate --game <游戏标题> --max-items 3` | 正常结束，`summary.pending_count` 是本轮数量，`summary.total_pending_count` 是总剩余，`summary.text_index_status` 可解释索引来源。 |
-| 持续正文翻译 | `translate --game <游戏标题>` | 剩余量下降且没有规则性事故就继续；同类失败多轮不下降时转修规则、换模型或手动处理。 |
+| 小批量试跑 | `translate --game <游戏标题> --max-items 3` | 只用于观察模型、规则和控制符风险；不以 0 失败作为指标。正常结束，`summary.pending_count` 是本轮数量，`summary.total_pending_count` 是总剩余，`summary.text_index_status` 可解释索引来源。小批量阶段禁止导出修复表、手填译文或重置译文。 |
+| 持续正文翻译 | `translate --game <游戏标题>` | 剩余量下降且没有规则性事故就继续，主要靠全量多轮重试收敛；同类失败多轮不下降或剩余量已很小时，才转修规则、换模型或手动处理。 |
 | 查看进度 | `translation-status --game <游戏标题>` | 数量能解释；需按当前范围刷新时加 `--refresh-scope`。 |
 | 查看文本范围 | `text-scope --game <游戏标题>` | `status` 为 `ok`；加 `--include-write-probe` 只标记索引可写状态，不执行写回级检查。 |
 | 覆盖审计 | `audit-coverage --game <游戏标题>` | `status` 为 `ok`；发现规则命中、译文或范围缺口时先补规则、补译文或精确重置。 |

@@ -6,6 +6,8 @@
 
 外部只通过 `<工作区>/structured-placeholder-rules.json` 和三条 CLI 命令与程序交互。规则导入成功后，翻译、质量检查和写进游戏文件流程只读取当前游戏已经保存的规则，不直接读取外部 JSON；不要手工改数据库，也不要让子代理阅读源码猜格式。
 
+结构化占位符最终规则仍由主代理负责，但必须经过审查子代理反向检查。审查只找风险，不替主代理生成最终规则；存在未关闭 `blocker` 时禁止导入。
+
 ## 文件格式
 
 文件名固定为 `structured-placeholder-rules.json`。合法空结构如下：
@@ -52,8 +54,11 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 2. 编写或修改 `<工作区>/structured-placeholder-rules.json`。
 3. 运行 `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
 4. 运行 `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>`，检查候选覆盖和未覆盖风险；如果报告是 `summary.report_detail_mode=sampled`，只把样本当提示，完整候选必须看 `--output` 写出的 full 报告。
-5. 校验通过且覆盖风险已处理或已确认后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
-6. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`，确保工作区整体可继续。
+5. 派发 `structured_placeholder_rule_review` 审查任务。审查子代理读取结构化规则、普通占位符规则、validate/scan 报告和候选样本，可以在 `<工作区>/agent-scratch/placeholder_closure/structured_placeholder_rule_review/` 下写一次性脚本复核重叠、抢占和误伤。
+6. 审查必须检查：是否有成对外壳被错误拆成普通占位符，`translatable_group` 是否真是玩家可见文本，`protected_groups` 是否只保护固定外壳，普通占位符与结构化规则是否重叠，两条结构化规则是否抢同一段文本，是否为通过扫描而编造规则，空结构是否确实已审查。
+7. 主代理读取审查报告，写入 `<工作区>/review-decisions/placeholder_closure.json`；存在未关闭 `blocker` 时停止。
+8. 校验通过、覆盖风险已处理或已确认，且主代理裁决为 `approved` 后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
+9. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`，确保工作区整体可继续。
 
 这套流程和普通正则占位符规则是并列关系：普通规则继续负责整段不可翻译片段，结构化规则只保护固定协议外壳并暴露中间显示文本。两者都必须通过 CLI 校验后保存为当前游戏有效规则，不能互相覆盖保护范围。
 

@@ -4,6 +4,8 @@
 
 结构化占位符规则是并列能力，用于“固定协议外壳必须保留，中间显示文本需要翻译”的场景，见 `structured-placeholder-rules.md`。
 
+普通占位符最终规则仍由主代理负责，但必须经过审查子代理反向检查。审查只找风险，不替主代理生成最终规则；存在未关闭 `blocker` 时禁止导入。
+
 ## 作用范围
 
 普通占位符规则只作用于当前已经进入正文翻译集合的文本：
@@ -65,7 +67,10 @@ uv run python main.py scan-placeholder-candidates --game <游戏标题> --input 
 ```
 
 6. 审查 `summary.uncovered_count` 和候选详情；如果报告是 `summary.report_detail_mode=sampled`，只把 `samples` 当样本，完整候选必须看 `--output` 写出的 full 报告。确实需要保护的协议片段必须修规则后重新 validate 和 scan，确认无需写规则的误报或特殊候选可以在导入时确认风险。
-7. 覆盖风险已处理或已确认后运行：
+7. 派发 `placeholder_rule_review` 审查任务。审查子代理读取规则草稿、validate/scan 报告、预览样本和外部规则变化范围，可以在 `<工作区>/agent-scratch/placeholder_closure/placeholder_rule_review/` 下写一次性脚本复核覆盖和误伤。
+8. 审查必须检查：未覆盖疑似控制符、规则吞掉玩家可见文本、规则过宽或过窄、外部规则变化后未重扫、sampled 报告是否被误当完整候选、`validate --sample` 预览去掉占位符后是否仍保留应翻译文本。
+9. 主代理读取审查报告，写入 `<工作区>/review-decisions/placeholder_closure.json`；存在未关闭 `blocker` 时停止。
+10. 覆盖风险已处理或已确认，且主代理裁决为 `approved` 后运行：
 
 ```powershell
 uv run python main.py import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json

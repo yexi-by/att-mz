@@ -2,6 +2,8 @@
 
 本任务只处理非标准 `data/*.json` 中已经被工具标成高风险的源语言自然文本候选。它不是日常默认任务；没有非标准 data 文件，或只有资源名、公式、ID、布尔、数字和协议值时，不启动本任务。
 
+本支线一旦启动，必须按 `agent-review-workflow.md` 走工作、审查和主代理裁决。工作子代理全量归类候选，审查子代理检查未归类、误选、误排、路径真实性和用户跳过确认；存在未关闭 `blocker` 时禁止导入。
+
 ## 触发条件
 
 - 默认先读取 `nonstandard-data-risk-report.json`。低风险默认只报告，不启动本任务。
@@ -24,7 +26,7 @@
 
 ## 输出
 
-唯一可写文件是 `<工作区>/nonstandard-data-rules.json`，顶层必须是数组：
+唯一可写最终规则文件是 `<工作区>/nonstandard-data-rules.json`，顶层必须是数组。工作报告写入 `<工作区>/agent-reports/branch_rules/nonstandard_data_classification.json`，一次性脚本和统计写入 `<工作区>/agent-scratch/branch_rules/nonstandard_data_classification/`：
 
 ```json
 [
@@ -48,16 +50,19 @@
 - 排除资源路径、图片/音频文件名、脚本、公式、ID、布尔值、数字、枚举、内部键、颜色、坐标和纯协议值。
 - 判断不清时，用同一对象的字段名、相邻字段、重复结构、同文件样本和源 JSON 副本交叉验证；证据不足时向主代理报告，不编造规则。
 - 完成后运行 `uv run python main.py validate-nonstandard-data-rules --game <游戏标题> --input <工作区>/nonstandard-data-rules.json`。
-- validate 通过后运行 `uv run python main.py import-nonstandard-data-rules --game <游戏标题> --input <工作区>/nonstandard-data-rules.json`。
+- validate 前必须完成 `nonstandard_data_review`，审查报告写入 `<工作区>/review-reports/branch_rules/nonstandard_data_review.json`。
+- 主代理读取工作报告、审查报告和候选文件，写入 `<工作区>/review-decisions/branch_rules.json`；存在未关闭 `blocker` 时停止。
+- validate 通过且主代理裁决为 `approved` 后运行 `uv run python main.py import-nonstandard-data-rules --game <游戏标题> --input <工作区>/nonstandard-data-rules.json`。
 
 ## 停止条件
 
 - 用户不确认处理或跳过高风险文件。
 - `candidates.json` 缺失或与源 JSON 副本对不上。
 - 规则校验返回 error。
+- 审查报告存在未关闭 `blocker`。
 - 仍有候选没有归类。
 - 需要读取工作区以外的游戏文件或项目源码才能判断。
 
 ## 完成报告
 
-报告处理的文件数、翻译路径数、排除路径数、跳过文件数、未归类候选数、validate 结果、导入结果和仍需主代理确认的风险。交叉验证摘要必须说明选中项依据、重点排除项依据、跳过确认依据和空结果依据。
+工作报告必须报告处理的文件数、翻译路径数、排除路径数、跳过文件数、未归类候选数、脚本和统计产物、validate 建议命令和仍需主代理确认的风险。交叉验证摘要必须说明选中项依据、重点排除项依据、跳过确认依据和空结果依据。审查报告必须用 `blocker`、`warning`、`info` 分级说明未归类、误选、误排、路径失效和越权读取风险。

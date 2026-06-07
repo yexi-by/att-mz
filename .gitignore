@@ -44,5 +44,6 @@ tmp/
 setting.toml
 
 outputs/
+output/
 
 .codex/

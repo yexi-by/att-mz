@@ -29,10 +29,16 @@
 - `event-command-rules.json`：事件指令规则草稿。合法空结构是 `{}`。
 - `note-tag-candidates.json`：标准 `data/*.json` 中全部 `note` 字段的标签候选报告。
 - `note-tag-rules.json`：Note 标签规则草稿。合法空结构是 `{}`。
+- `agent-scratch/`：Agent 一次性脚本、统计、抽样、覆盖和反例材料，只服务当前任务审计，不是 CLI 规则事实源。
+- `agent-reports/`：工作子代理报告目录，记录读取输入、脚本、CLI 命令、主动发现、候选、证据和风险。
+- `review-reports/`：审查子代理报告目录，记录 `blocker`、`warning`、`info` 分级 findings、覆盖检查、过拟合检查和质量检查。
+- `review-decisions/`：主代理阶段裁决目录，记录 blocker 关闭方式、warning 确认、用户确认和允许的下一步命令。
 
 `prepare-agent-workspace` 会优先把 CLI 已保存到当前游戏状态里的字段译名表、正文术语表、MV 虚拟名字框规则、插件规则、事件指令规则、Note 标签规则、非标准 data 规则、普通占位符规则和结构化占位符规则回填到工作区。插件源码规则和非标准 data 规则只在高风险或支线已启动时回填。
 
 工作区目录本身不是事实来源；本轮 `manifest.files` 才是 Agent、CLI 校验和清理命令共同认可的输入集合。复用旧工作区时，旧的 `plugin-source-rules.json`、`nonstandard-data-rules.json` 或 `nonstandard-data/` 只有在当前 manifest 明确列出时才参与本轮验收。
+
+新增的 `agent-scratch/`、`agent-reports/`、`review-reports/` 和 `review-decisions/` 是 Agent 审计材料。它们可以证明工作过程、审查结论和主代理裁决，但不能单独让文本进入翻译范围，也不能替代规则文件、validate/import 命令或当前游戏已保存状态。
 
 ## 报告明细模式
 
