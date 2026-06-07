@@ -55,7 +55,6 @@ from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
-    mv_virtual_namebox_rule_scope_hash,
 )
 from app.text_index import text_index_source_branch_gates_prechecked
 from app.plugin_source_text import build_native_plugin_source_scan
@@ -274,9 +273,7 @@ class RuleValidationAgentMixin:
                     else:
                         await session.replace_rule_review_state(
                             rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-                            scope_hash=mv_virtual_namebox_rule_scope_hash(
-                                native_scan.candidate_details
-                            ),
+                            scope_hash=native_scan.scope_hash,
                             reviewed_empty=True,
                         )
         except Exception as error:

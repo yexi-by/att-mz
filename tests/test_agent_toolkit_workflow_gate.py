@@ -6,6 +6,7 @@ import json
 
 from tests.agent_toolkit_contract_fixtures import *
 from app.llm.schemas import ChatMessage
+from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.terminology import TerminologyPromptIndex
 
 @pytest.mark.asyncio
@@ -70,6 +71,7 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
     assert "mv_virtual_namebox_missing" not in {error.code for error in after_errors}
     assert state is not None
     assert state.scope_hash == mv_virtual_namebox_rule_scope_hash_for_game_data(game_data)
+    assert state.scope_hash == scan_native_mv_virtual_namebox(game_data=game_data).scope_hash
 @pytest.mark.asyncio
 async def test_workflow_gate_blocks_external_rule_hits_outside_writable_scope(
     minimal_game_dir: Path,

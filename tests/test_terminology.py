@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NoReturn, cast
 
 import pytest
@@ -26,7 +27,11 @@ from app.terminology import (
     load_terminology_registry,
     validate_terminology_bundle,
 )
-from app.terminology.extraction import build_speaker_sample_file_name, is_translatable_terminology_source
+from app.terminology.extraction import (
+    TerminologyExtraction,
+    build_speaker_sample_file_name,
+    is_translatable_terminology_source,
+)
 from app.terminology.files import reserve_speaker_sample_file_name
 from app.translation import iter_translation_context_batches
 from tests._native_write_plan_helper import reset_writable_copies, write_terminology_text
@@ -475,6 +480,51 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     name_command = ensure_json_object(commands[0], "CommonEvents[1].list[0]")
     parameters = ensure_json_array(name_command["parameters"], "CommonEvents[1].list[0].parameters")
     assert len(parameters) == 4
+
+
+@pytest.mark.asyncio
+async def test_mv_terminology_consumes_native_speaker_requirements(
+    minimal_mv_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MV 说话人术语需求来自 native speaker_requirements。"""
+    game_data = await load_game_data(minimal_mv_game_dir)
+    calls: list[object] = []
+
+    def fake_scan_native_mv_virtual_namebox(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            rule_errors=[],
+            speaker_requirements=[
+                SimpleNamespace(
+                    source_text="Native案内人",
+                    requires_speaker_name=True,
+                    sample_body_lines=["native 本文"],
+                ),
+                SimpleNamespace(
+                    source_text="\\N[2]",
+                    requires_speaker_name=False,
+                    sample_body_lines=["保留项正文"],
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(
+        "app.terminology.extraction.scan_native_mv_virtual_namebox",
+        fake_scan_native_mv_virtual_namebox,
+        raising=False,
+    )
+
+    registry, contexts, _database_contexts = TerminologyExtraction(
+        game_data,
+        mv_virtual_namebox_rule_records=[],
+    ).extract_registry_and_contexts()
+
+    assert calls == [{"game_data": game_data, "records": []}]
+    assert registry.speaker_names == {"Native案内人": ""}
+    assert {context.name: context.dialogue_lines for context in contexts} == {
+        "Native案内人": ["native 本文"]
+    }
 
 
 @pytest.mark.asyncio

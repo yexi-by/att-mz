@@ -22,6 +22,8 @@ class NativeMvVirtualNameboxScan:
     candidate_details: JsonArray
     rule_errors: JsonArray
     match_details: JsonArray
+    speaker_requirements: list["NativeMvVirtualNameboxSpeakerRequirement"]
+    scope_hash: str
 
     @property
     def candidate_count(self) -> int:
@@ -32,6 +34,20 @@ class NativeMvVirtualNameboxScan:
     def matched_candidate_count(self) -> int:
         """命中候选数量。"""
         return len(self.match_details)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMvVirtualNameboxSpeakerRequirement:
+    """native 产出的 MV 说话人译名需求。"""
+
+    source_text: str
+    policy: str
+    requires_speaker_name: bool
+    rule_name: str
+    location_paths: list[str]
+    sample_body_lines: list[str]
+    render_template: str
+    confidence: str
 
 
 def scan_native_mv_virtual_namebox(
@@ -96,6 +112,12 @@ def _scan_from_native_result(native_result: NativeRuleCandidatesResult) -> Nativ
             summary["hit_details"],
             "native_rule_candidates_result.scan_summary.mv_virtual_namebox.hit_details",
         ),
+        speaker_requirements=_read_speaker_requirements(summary),
+        scope_hash=_read_string(
+            summary,
+            "scope_hash",
+            "native_rule_candidates_result.scan_summary.mv_virtual_namebox",
+        ),
     )
 
 
@@ -115,8 +137,41 @@ def _read_string_array(payload: JsonObject, field_name: str, context: str) -> li
     return values
 
 
+def _read_speaker_requirements(summary: JsonObject) -> list[NativeMvVirtualNameboxSpeakerRequirement]:
+    requirements: list[NativeMvVirtualNameboxSpeakerRequirement] = []
+    for index, raw_requirement in enumerate(
+        ensure_json_array(
+            summary["speaker_requirements"],
+            "native_rule_candidates_result.scan_summary.mv_virtual_namebox.speaker_requirements",
+        )
+    ):
+        context = f"native_rule_candidates_result.scan_summary.mv_virtual_namebox.speaker_requirements[{index}]"
+        requirement = ensure_json_object(raw_requirement, context)
+        requirements.append(
+            NativeMvVirtualNameboxSpeakerRequirement(
+                source_text=_read_string(requirement, "source_text", context),
+                policy=_read_string(requirement, "policy", context),
+                requires_speaker_name=_read_bool(requirement, "requires_speaker_name", context),
+                rule_name=_read_string(requirement, "rule_name", context),
+                location_paths=_read_string_array(requirement, "location_paths", context),
+                sample_body_lines=_read_string_array(requirement, "sample_body_lines", context),
+                render_template=_read_string(requirement, "render_template", context),
+                confidence=_read_string(requirement, "confidence", context),
+            )
+        )
+    return requirements
+
+
+def _read_bool(payload: JsonObject, field_name: str, context: str) -> bool:
+    value = payload[field_name]
+    if not isinstance(value, bool):
+        raise TypeError(f"{context}.{field_name} 必须是布尔值")
+    return value
+
+
 __all__ = [
     "NativeMvVirtualNameboxScan",
+    "NativeMvVirtualNameboxSpeakerRequirement",
     "native_mv_virtual_namebox_candidates_from_details",
     "native_mv_virtual_namebox_candidates_payload",
     "scan_native_mv_virtual_namebox",

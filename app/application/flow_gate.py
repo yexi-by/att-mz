@@ -55,7 +55,6 @@ from app.rule_review import (
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
     event_command_rule_scope_hash_for_codes,
-    mv_virtual_namebox_rule_scope_hash,
     note_tag_rule_scope_hash_for_candidates,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
@@ -366,7 +365,7 @@ def note_tag_rule_scope_hash_for_text_rules(*, game_data: GameData, text_rules: 
 def mv_virtual_namebox_rule_scope_hash_for_game_data(game_data: GameData) -> str:
     """按 native MV 虚拟名字框候选计算空规则确认范围哈希。"""
     native_scan = scan_native_mv_virtual_namebox(game_data=game_data)
-    return mv_virtual_namebox_rule_scope_hash(native_scan.candidate_details)
+    return native_scan.scope_hash
 
 
 def normal_placeholder_scope_hash(
