@@ -20,6 +20,8 @@ async def test_text_scope_and_audit_coverage_use_unified_contract(
     entries = ensure_json_array(scope_report.details["entries"], "entries")
     first_entry = ensure_json_object(entries[0], "entries[0]")
     assert scope_report.status == "ok"
+    assert scope_report.summary["text_index_status"] == "cold_rebuilt"
+    assert scope_report.summary["text_fact_count"] == len(entries)
     assert scope_report.summary["entry_count"] == len(entries)
     assert first_entry.keys() >= {
         "location_path",
@@ -32,8 +34,78 @@ async def test_text_scope_and_audit_coverage_use_unified_contract(
         "cannot_process_reason",
     }
     assert audit_report.status == "error"
+    assert audit_report.summary["text_index_status"] == "used"
+    assert audit_report.summary["text_fact_count"] == scope_report.summary["text_fact_count"]
     assert audit_report.summary["extractable_count"] == scope_report.summary["extractable_count"]
     assert audit_report.summary["pending_count"] == scope_report.summary["extractable_count"]
+
+
+@pytest.mark.asyncio
+async def test_text_scope_and_audit_coverage_count_current_v2_facts_not_index_rows(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm 报告必须按当前 v2 facts 计数，不继续按旧索引行计数。"""
+
+    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("warm 报告不应构建完整文本范围")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+    indexed_count = rebuild_report.summary["indexed_count"]
+    assert isinstance(indexed_count, int)
+    assert indexed_count > 1
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+                SELECT fact_id
+                FROM text_facts_v2
+                ORDER BY domain, location_path, fact_id
+                LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        kept_fact_id = cast(str, row["fact_id"])
+        _ = await session.connection.execute(
+            "DELETE FROM text_fact_domain_payloads_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_fact_render_parts_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        await session.connection.commit()
+    monkeypatch.setattr(TextScopeService, "build", forbidden_scope_build)
+
+    scope_report = await service.text_scope(game_title="テストゲーム")
+    audit_report = await service.audit_coverage(game_title="テストゲーム")
+
+    entries = ensure_json_array(scope_report.details["entries"], "entries")
+    coverage_pending = ensure_json_object(
+        audit_report.details["pending_location_paths"],
+        "pending_location_paths",
+    )
+    assert scope_report.summary["text_index_status"] == "used"
+    assert audit_report.summary["text_index_status"] == "used"
+    assert scope_report.summary["text_fact_count"] == 1
+    assert audit_report.summary["text_fact_count"] == 1
+    assert scope_report.summary["entry_count"] == 1
+    assert scope_report.summary["extractable_count"] == 1
+    assert audit_report.summary["extractable_count"] == 1
+    assert audit_report.summary["pending_count"] == 1
+    assert len(entries) == 1
+    assert coverage_pending["count"] == 1
 @pytest.mark.asyncio
 async def test_text_scope_and_audit_coverage_include_write_probe_does_not_call_python_probe(
     minimal_game_dir: Path,

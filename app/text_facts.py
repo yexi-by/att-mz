@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import aiosqlite
 
@@ -135,6 +135,70 @@ async def count_translated_text_facts_v2(session: TargetGameSession) -> int:
     )
 
 
+async def count_writable_text_facts_v2(session: TargetGameSession) -> int:
+    """统计当前 v2 scope 内可写回的文本事实数量。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    return await _read_count(
+        session=session,
+        sql=f"""
+--sql
+            SELECT COUNT(*) AS writable_count
+            FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+            INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE facts.scope_key = ?
+                AND indexed.writable = 1
+        ;
+        """,
+        parameters=(scope.scope_key,),
+        column_name="writable_count",
+    )
+
+
+async def count_rule_hit_text_facts_v2(session: TargetGameSession) -> int:
+    """统计当前 v2 scope 中来自外部规则支线的文本事实数量。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    return await _read_count(
+        session=session,
+        sql=f"""
+--sql
+            SELECT COUNT(*) AS rule_hit_count
+            FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+            WHERE facts.scope_key = ?
+                AND facts.source_type <> 'standard_data'
+        ;
+        """,
+        parameters=(scope.scope_key,),
+        column_name="rule_hit_count",
+    )
+
+
+async def count_stale_translations_outside_writable_text_facts_v2(session: TargetGameSession) -> int:
+    """统计不属于当前可写 v2 fact 范围的已保存译文数量。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    return await _read_count(
+        session=session,
+        sql=f"""
+--sql
+            SELECT COUNT(*) AS stale_translation_count
+            FROM [{TRANSLATION_TABLE_NAME}] AS translations
+            LEFT JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+                ON facts.location_path = translations.location_path
+                AND facts.scope_key = ?
+            LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                ON indexed.location_path = facts.location_path
+                AND indexed.writable = 1
+            WHERE indexed.location_path IS NULL
+        ;
+        """,
+        parameters=(scope.scope_key,),
+        column_name="stale_translation_count",
+    )
+
+
 async def count_pending_text_fact_quality_errors_v2(
     session: TargetGameSession,
     run_id: str,
@@ -250,6 +314,128 @@ async def read_pending_text_fact_records_v2(
     return [_text_fact_v2_from_row(row, session=session) for row in rows]
 
 
+async def read_current_text_fact_records_v2(
+    session: TargetGameSession,
+    *,
+    limit: int | None,
+) -> list[TextFactV2Record]:
+    """按当前 scope 读取 v2 fact；报告明细调用方必须传入有限 limit 或确认小库。"""
+    if limit is not None and limit <= 0:
+        raise ValueError("limit 必须是正整数")
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    sql_limit = -1 if limit is None else limit
+    async with session.connection.execute(
+        f"""
+--sql
+            SELECT
+{TEXT_FACT_SELECT_COLUMNS}
+            FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+            WHERE facts.scope_key = ?
+            ORDER BY facts.domain, facts.location_path, facts.fact_id
+            LIMIT ?
+        ;
+        """,
+        (scope.scope_key, sql_limit),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [_text_fact_v2_from_row(row, session=session) for row in rows]
+
+
+async def read_unwritable_text_fact_records_v2(
+    session: TargetGameSession,
+    *,
+    limit: int,
+) -> list[TextFactV2Record]:
+    """读取当前 scope 中不可写回的 v2 fact 样本。"""
+    if limit <= 0:
+        raise ValueError("limit 必须是正整数")
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    async with session.connection.execute(
+        f"""
+--sql
+            SELECT
+{TEXT_FACT_SELECT_COLUMNS}
+            FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+            LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE facts.scope_key = ?
+                AND COALESCE(indexed.writable, 0) <> 1
+            ORDER BY facts.domain, facts.location_path, facts.fact_id
+            LIMIT ?
+        ;
+        """,
+        (scope.scope_key, limit),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [_text_fact_v2_from_row(row, session=session) for row in rows]
+
+
+async def read_pending_text_fact_path_samples_v2(
+    session: TargetGameSession,
+    *,
+    limit: int,
+) -> list[str]:
+    """读取当前 pending v2 facts 的定位路径样本。"""
+    if limit <= 0:
+        raise ValueError("limit 必须是正整数")
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    async with session.connection.execute(
+        f"""
+--sql
+            SELECT facts.location_path
+            FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+            INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                ON indexed.location_path = facts.location_path
+            LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+                ON translations.location_path = facts.location_path
+            WHERE facts.scope_key = ?
+                AND indexed.writable = 1
+                AND translations.location_path IS NULL
+            ORDER BY facts.domain, facts.location_path, facts.fact_id
+            LIMIT ?
+        ;
+        """,
+        (scope.scope_key, limit),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [row_str(row, "location_path", session.db_path) for row in rows]
+
+
+async def read_stale_translation_path_samples_outside_writable_text_facts_v2(
+    session: TargetGameSession,
+    *,
+    limit: int,
+) -> list[str]:
+    """读取不属于当前可写 v2 fact 范围的已保存译文路径样本。"""
+    if limit <= 0:
+        raise ValueError("limit 必须是正整数")
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    async with session.connection.execute(
+        f"""
+--sql
+            SELECT translations.location_path
+            FROM [{TRANSLATION_TABLE_NAME}] AS translations
+            LEFT JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+                ON facts.location_path = translations.location_path
+                AND facts.scope_key = ?
+            LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                ON indexed.location_path = facts.location_path
+                AND indexed.writable = 1
+            WHERE indexed.location_path IS NULL
+            ORDER BY translations.location_path
+            LIMIT ?
+        ;
+        """,
+        (scope.scope_key, limit),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [row_str(row, "location_path", session.db_path) for row in rows]
+
+
 async def read_pending_text_fact_translation_items(
     session: TargetGameSession,
     *,
@@ -312,10 +498,14 @@ async def read_writable_text_fact_translation_items_by_paths(
 async def read_text_fact_quality_items_for_translations(
     session: TargetGameSession,
     translated_items: Sequence[TranslationItem],
+    *,
+    source_text: Literal["translatable", "visible", "raw"] = "translatable",
 ) -> list[TranslationItem]:
-    """把已保存译文的源文替换为 v2 visible_text，供质量检查使用。"""
+    """把已保存译文的源文替换为 v2 指定正文，供质量检查使用。"""
     if not translated_items:
         return []
+    if source_text not in {"translatable", "visible", "raw"}:
+        raise ValueError("source_text 必须是 translatable、visible 或 raw")
     location_paths = [item.location_path for item in translated_items]
     facts = await _read_current_text_facts_by_paths(session=session, location_paths=location_paths)
     facts_by_path = {fact.location_path: fact for fact in facts}
@@ -326,12 +516,43 @@ async def read_text_fact_quality_items_for_translations(
             quality_items.append(item)
             continue
         cloned_item = item.model_copy(deep=True)
-        translatable_lines = _text_fact_lines(fact.translatable_text, item_type=cloned_item.item_type)
+        raw_lines = _text_fact_lines(fact.raw_text, item_type=cloned_item.item_type)
         visible_lines = _text_fact_lines(fact.visible_text, item_type=cloned_item.item_type)
-        if cloned_item.original_lines == translatable_lines or cloned_item.original_lines == visible_lines:
+        translatable_lines = _text_fact_lines(fact.translatable_text, item_type=cloned_item.item_type)
+        if cloned_item.original_lines not in (raw_lines, visible_lines, translatable_lines):
+            quality_items.append(cloned_item)
+            continue
+        if source_text == "raw":
+            cloned_item.original_lines = raw_lines
+        elif source_text == "visible":
             cloned_item.original_lines = visible_lines
+        else:
+            cloned_item.original_lines = translatable_lines
         quality_items.append(cloned_item)
     return quality_items
+
+
+async def read_text_fact_sample_details_by_paths_v2(
+    session: TargetGameSession,
+    location_paths: Sequence[str],
+    *,
+    max_chars: int = 120,
+) -> dict[str, JsonObject]:
+    """读取当前 v2 facts 的 raw/visible/translatable 短样本。"""
+    if max_chars <= 0:
+        raise ValueError("max_chars 必须是正整数")
+    facts = await _read_current_text_facts_by_paths(session=session, location_paths=location_paths)
+    return {
+        fact.location_path: {
+            "raw_text_sample": _short_text_sample(fact.raw_text, max_chars=max_chars),
+            "visible_text_sample": _short_text_sample(fact.visible_text, max_chars=max_chars),
+            "translatable_text_sample": _short_text_sample(
+                fact.translatable_text,
+                max_chars=max_chars,
+            ),
+        }
+        for fact in facts
+    }
 
 
 def text_fact_records_to_translation_data_map(
@@ -566,6 +787,13 @@ def _text_fact_lines(text: str, *, item_type: ItemType) -> list[str]:
     return [text]
 
 
+def _short_text_sample(text: str, *, max_chars: int) -> str:
+    """生成报告用短样本，避免错误明细展开长文本。"""
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
 def _display_name_from_index_record(record: TextIndexItemRecord | None) -> str | None:
     """从旧 text index locator 中读取地图名；v2 adapter 不依赖 docs 或游戏文件。"""
     locator = _locator_object_from_index_record(record)
@@ -622,14 +850,22 @@ __all__ = [
     "count_pending_text_fact_quality_errors_by_type_v2",
     "count_pending_text_fact_quality_errors_v2",
     "count_pending_text_facts_v2",
+    "count_rule_hit_text_facts_v2",
+    "count_stale_translations_outside_writable_text_facts_v2",
     "count_translated_text_facts_v2",
+    "count_writable_text_facts_v2",
     "read_current_text_fact_scope_v2",
+    "read_current_text_fact_records_v2",
     "read_pending_text_fact_quality_error_paths_v2",
     "read_pending_text_fact_records_v2",
+    "read_pending_text_fact_path_samples_v2",
     "read_pending_text_fact_translation_data_map",
     "read_pending_text_fact_translation_items",
+    "read_stale_translation_path_samples_outside_writable_text_facts_v2",
+    "read_text_fact_sample_details_by_paths_v2",
     "read_text_fact_quality_error_paths_v2",
     "read_text_fact_quality_items_for_translations",
+    "read_unwritable_text_fact_records_v2",
     "read_writable_text_fact_translation_items_by_paths",
     "text_fact_record_to_quality_item",
     "text_fact_record_to_translation_item",

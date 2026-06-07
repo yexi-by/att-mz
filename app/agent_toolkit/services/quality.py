@@ -81,13 +81,18 @@ from app.text_index import collect_text_index_placeholder_gate_decisions
 from app.text_index import text_index_item_to_translation_item
 from app.text_index import text_index_source_branch_gates_prechecked
 from app.text_facts import (
+    count_current_text_facts_v2,
     count_pending_text_fact_quality_errors_by_type_v2,
     count_pending_text_fact_quality_errors_v2,
     count_pending_text_facts_v2,
+    count_stale_translations_outside_writable_text_facts_v2,
     count_translated_text_facts_v2,
+    count_writable_text_facts_v2,
+    read_current_text_fact_records_v2,
     read_pending_text_fact_quality_error_paths_v2,
     read_text_fact_quality_error_paths_v2,
     read_text_fact_quality_items_for_translations,
+    read_text_fact_sample_details_by_paths_v2,
 )
 from app.observability import current_diagnostics
 
@@ -269,6 +274,7 @@ def _text_index_coverage_report_from_counts(
         summary={
             "rule_hit_count": 0,
             "extractable_count": extractable_count,
+            "text_fact_count": extractable_count,
             "translated_count": translated_count,
             "writable_count": writable_count,
             "pending_count": pending_count,
@@ -428,6 +434,21 @@ def _int_counts_to_json_object(counts: dict[str, int]) -> JsonObject:
     for key, value in counts.items():
         result[key] = value
     return result
+
+
+def _quality_error_fact_sample_fields(sample: JsonObject | None) -> JsonObject:
+    """返回质量错误明细里的 v2 fact 短样本字段。"""
+    if sample is None:
+        return {
+            "raw_text_sample": "",
+            "visible_text_sample": "",
+            "translatable_text_sample": "",
+        }
+    return {
+        "raw_text_sample": sample.get("raw_text_sample", ""),
+        "visible_text_sample": sample.get("visible_text_sample", ""),
+        "translatable_text_sample": sample.get("translatable_text_sample", ""),
+    }
 
 
 def _source_branch_gate_errors_from_rebuild_details(details: JsonObject) -> list[AgentIssue] | None:
@@ -1296,15 +1317,19 @@ class QualityAgentMixin:
             and not include_write_probe
         )
         active_translated_items: list[TranslationItem] = []
+        native_visible_quality_items: list[TranslationItem] = []
+        native_raw_quality_items: list[TranslationItem] = []
         writable_paths: set[str] = set()
         if use_count_fast_path:
             assert latest_run is not None
             scope_summary = await session.read_text_index_scope_summary()
             if scope_summary is None:
                 raise RuntimeError("持久文本范围索引摘要不可读取，请重新运行 rebuild-text-index")
+            text_fact_count = await count_current_text_facts_v2(session)
             translated_count = await count_translated_text_facts_v2(session)
             pending_count = await count_pending_text_facts_v2(session)
-            stale_translation_count = await session.count_translations_outside_writable_text_index()
+            writable_count = await count_writable_text_facts_v2(session)
+            stale_translation_count = await count_stale_translations_outside_writable_text_facts_v2(session)
             active_quality_error_paths = await read_text_fact_quality_error_paths_v2(session, latest_run.run_id)
             pending_quality_error_paths = await read_pending_text_fact_quality_error_paths_v2(
                 session,
@@ -1315,13 +1340,26 @@ class QualityAgentMixin:
                 for item in run_quality_error_items
                 if item.location_path in pending_quality_error_paths
             ]
+            active_quality_error_items = await session.read_translated_items_by_paths(
+                sorted(active_quality_error_paths)
+            )
             native_quality_items = await read_text_fact_quality_items_for_translations(
                 session,
-                await session.read_translated_items_by_paths(sorted(active_quality_error_paths)),
+                active_quality_error_items,
+                source_text="translatable",
             )
-            active_count = scope_summary.active_count
-            writable_count = scope_summary.writable_count
-            unwritable_count = scope_summary.unwritable_count
+            native_visible_quality_items = await read_text_fact_quality_items_for_translations(
+                session,
+                active_quality_error_items,
+                source_text="visible",
+            )
+            native_raw_quality_items = await read_text_fact_quality_items_for_translations(
+                session,
+                active_quality_error_items,
+                source_text="raw",
+            )
+            active_count = text_fact_count
+            unwritable_count = max(0, text_fact_count - writable_count)
             writable_translation_count = max(0, writable_count - pending_count)
             pending_paths_count = pending_count
             stale_paths_count = stale_translation_count
@@ -1335,21 +1373,21 @@ class QualityAgentMixin:
                 stale_translation_count=stale_translation_count,
             )
         else:
-            index_records = await session.read_text_index_items()
+            text_fact_records = await read_current_text_fact_records_v2(session, limit=None)
+            active_paths = {record.location_path for record in text_fact_records}
+            index_records = await session.read_text_index_items_by_paths(sorted(active_paths))
             translated_items = await session.read_translated_items()
-            active_paths = {record.location_path for record in index_records}
             writable_paths = {
                 record.location_path
                 for record in index_records
                 if record.writable
             }
-            translated_paths = {item.location_path for item in translated_items}
             active_translated_items = [
                 item
                 for item in translated_items
                 if item.location_path in active_paths
             ]
-            index_source_files = {record.source_file for record in index_records}
+            index_source_files = {record.source_file for record in text_fact_records}
             source_existing_stale_items = [
                 item
                 for item in translated_items
@@ -1361,7 +1399,6 @@ class QualityAgentMixin:
                 translated_items=translated_items,
                 include_write_probe=include_write_probe,
             )
-            stale_paths = translated_paths - writable_paths
             stale_source_residual_rule_paths = {
                 rule.location_path
                 for rule in source_residual_rules
@@ -1387,7 +1424,7 @@ class QualityAgentMixin:
             translated_count = await count_translated_text_facts_v2(session)
             pending_paths_count = await count_pending_text_facts_v2(session)
             writable_translation_count = max(0, writable_count - pending_paths_count)
-            stale_paths_count = len(stale_paths)
+            stale_paths_count = await count_stale_translations_outside_writable_text_facts_v2(session)
             if latest_run is None or len(active_translated_items) <= QUALITY_REPORT_FULL_RECHECK_LIMIT:
                 native_quality_items = [
                     *active_translated_items,
@@ -1399,9 +1436,20 @@ class QualityAgentMixin:
                     for item in active_translated_items
                     if item.location_path in active_quality_error_paths
                 ]
+            native_visible_quality_items = await read_text_fact_quality_items_for_translations(
+                session,
+                native_quality_items,
+                source_text="visible",
+            )
+            native_raw_quality_items = await read_text_fact_quality_items_for_translations(
+                session,
+                native_quality_items,
+                source_text="raw",
+            )
             native_quality_items = await read_text_fact_quality_items_for_translations(
                 session,
                 native_quality_items,
+                source_text="translatable",
             )
         record_stage("build_index_scope", _elapsed_ms(stage_started))
         stage_started = time.perf_counter()
@@ -1458,12 +1506,28 @@ class QualityAgentMixin:
             text_rules=text_rules,
             source_residual_rules=source_residual_rules,
         )
+        native_visible_quality_counts = collect_agent_service_native_quality_counts(
+            items=native_visible_quality_items,
+            text_rules=text_rules,
+            source_residual_rules=source_residual_rules,
+        ) if native_visible_quality_items != native_quality_items else native_quality_counts
+        native_raw_quality_counts = (
+            native_quality_counts
+            if native_raw_quality_items == native_quality_items
+            else native_visible_quality_counts
+            if native_raw_quality_items == native_visible_quality_items
+            else collect_agent_service_native_quality_counts(
+                items=native_raw_quality_items,
+                text_rules=text_rules,
+                source_residual_rules=source_residual_rules,
+            )
+        )
         has_native_quality_issues = any(
             (
                 native_quality_counts.source_residual_count,
                 native_quality_counts.text_structure_count,
-                native_quality_counts.placeholder_risk_count,
-                native_quality_counts.overwide_line_count,
+                native_raw_quality_counts.placeholder_risk_count,
+                native_visible_quality_counts.overwide_line_count,
             )
         )
         native_quality_details = (
@@ -1475,11 +1539,35 @@ class QualityAgentMixin:
             if include_write_probe or has_native_quality_issues or len(native_quality_items) <= 1000
             else None
         )
+        native_visible_quality_details = (
+            native_quality_details
+            if native_visible_quality_items == native_quality_items
+            else collect_agent_service_native_quality_details(
+                    items=native_visible_quality_items,
+                    text_rules=text_rules,
+                    source_residual_rules=source_residual_rules,
+                )
+                if include_write_probe or has_native_quality_issues or len(native_visible_quality_items) <= 1000
+                else None
+        )
+        native_raw_quality_details = (
+            native_quality_details
+            if native_raw_quality_items == native_quality_items
+            else native_visible_quality_details
+            if native_raw_quality_items == native_visible_quality_items
+            else collect_agent_service_native_quality_details(
+                    items=native_raw_quality_items,
+                    text_rules=text_rules,
+                    source_residual_rules=source_residual_rules,
+                )
+                if include_write_probe or has_native_quality_issues or len(native_raw_quality_items) <= 1000
+                else None
+        )
         record_stage("native_quality", _elapsed_ms(stage_started))
         residual_items = native_quality_details.source_residual_items if native_quality_details is not None else []
         text_structure_items = native_quality_details.text_structure_items if native_quality_details is not None else []
-        placeholder_risk_items = native_quality_details.placeholder_risk_items if native_quality_details is not None else []
-        overwide_line_items = native_quality_details.overwide_line_items if native_quality_details is not None else []
+        placeholder_risk_items = native_raw_quality_details.placeholder_risk_items if native_raw_quality_details is not None else []
+        overwide_line_items = native_visible_quality_details.overwide_line_items if native_visible_quality_details is not None else []
         advance_progress(len(native_quality_items) * 4)
 
         write_back_gate_summary: JsonObject = {}
@@ -1550,8 +1638,14 @@ class QualityAgentMixin:
             errors.append(issue("stale_source_residual_rules", f"发现 {len(stale_source_residual_rule_paths)} 条不在当前提取范围内的源文残留例外规则"))
 
         quality_error_details: JsonArray = []
+        quality_error_fact_samples = await read_text_fact_sample_details_by_paths_v2(
+            session,
+            [item.location_path for item in quality_error_items],
+        )
         for item in quality_error_items:
-            quality_error_details.append(_build_translation_error_quality_detail(item))
+            detail = _build_translation_error_quality_detail(item)
+            detail.update(_quality_error_fact_sample_fields(quality_error_fact_samples.get(item.location_path)))
+            quality_error_details.append(detail)
         error_type_counts = Counter(item.error_type for item in quality_error_items)
         llm_failure_counts = Counter(failure.category for failure in llm_failures)
         plugin_source_summary = _plugin_source_quality_summary(plugin_source_review)
@@ -1565,11 +1659,13 @@ class QualityAgentMixin:
                 write_back_protocol_items=write_back_protocol_items,
             )
             if native_quality_details is not None
+            and native_visible_quality_details is not None
+            and native_raw_quality_details is not None
             else QualityGateResult.from_counts(
                 source_residual_count=native_quality_counts.source_residual_count,
                 text_structure_count=native_quality_counts.text_structure_count,
-                placeholder_risk_count=native_quality_counts.placeholder_risk_count,
-                overwide_line_count=native_quality_counts.overwide_line_count,
+                placeholder_risk_count=native_raw_quality_counts.placeholder_risk_count,
+                overwide_line_count=native_visible_quality_counts.overwide_line_count,
             )
         )
         set_progress(total_progress_steps, total_progress_steps)
@@ -1592,6 +1688,7 @@ class QualityAgentMixin:
             warnings=warnings,
             summary={
                 "extractable_count": active_count,
+                "text_fact_count": active_count,
                 "translated_count": translated_count,
                 "pending_count": pending_paths_count,
                 "stale_translation_count": stale_paths_count,

@@ -391,6 +391,7 @@ async def test_quality_report_cold_rebuilds_missing_text_index(
     report = await service.quality_report(game_title="テストゲーム")
 
     assert report.summary["text_index_status"] == "cold_rebuilt"
+    assert report.summary["text_fact_count"] == report.summary["extractable_count"]
     rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "text_index_rebuild_summary")
     assert rebuild_summary["index_status"] == "rebuilt"
     assert "stage_timings" not in rebuild_summary
@@ -432,6 +433,7 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
         report = await service.quality_report(game_title="テストゲーム")
 
     assert report.summary["text_index_status"] == "used"
+    assert report.summary["text_fact_count"] == rebuild_report.summary["text_fact_count"]
     assert report.summary["extractable_count"] == rebuild_report.summary["indexed_count"]
     assert "stage_timings" not in report.summary
     assert "native_thread_count" not in report.summary
@@ -444,6 +446,70 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
     assert coverage["detail_mode"] == "sampled"
     pending_paths = ensure_json_object(coverage["pending_location_paths"], "pending_location_paths")
     assert set(pending_paths) == {"count", "samples", "omitted_count"}
+
+
+@pytest.mark.asyncio
+async def test_quality_report_counts_current_v2_facts_not_index_rows(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm quality-report 的核心计数必须来自当前 v2 facts。"""
+
+    async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("warm quality-report 不应加载完整游戏数据")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    indexed_count = rebuild_report.summary["indexed_count"]
+    assert isinstance(indexed_count, int)
+    assert indexed_count > 1
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+                SELECT fact_id
+                FROM text_facts_v2
+                ORDER BY domain, location_path, fact_id
+                LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        kept_fact_id = cast(str, row["fact_id"])
+        _ = await session.connection.execute(
+            "DELETE FROM text_fact_domain_payloads_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_fact_render_parts_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts_v2 WHERE fact_id <> ?",
+            (kept_fact_id,),
+        )
+        await session.connection.commit()
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
+        forbidden_game_data_load,
+    )
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    coverage = ensure_json_object(report.details["coverage"], "coverage")
+    pending_paths = ensure_json_object(coverage["pending_location_paths"], "pending_location_paths")
+    assert report.summary["text_index_status"] == "used"
+    assert report.summary["text_fact_count"] == 1
+    assert report.summary["extractable_count"] == 1
+    assert report.summary["pending_count"] == 1
+    assert coverage["index_item_count"] == 1
+    assert pending_paths["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -884,9 +950,72 @@ async def test_quality_report_counts_errors_and_model_response(
     overwide_detail = ensure_json_object(overwide_items[0], "overwide_line_items[0]")
     assert quality_error_detail["location_path"] == "CommonEvents.json/1/2"
     assert quality_error_detail["error_type"] == "AI漏翻"
+    assert isinstance(quality_error_detail["raw_text_sample"], str)
+    assert isinstance(quality_error_detail["visible_text_sample"], str)
+    assert isinstance(quality_error_detail["translatable_text_sample"], str)
+    assert 0 < len(quality_error_detail["visible_text_sample"]) <= 120
     assert placeholder_detail["location_path"] == "CommonEvents.json/1/0"
     assert overwide_detail["location_path"] == "CommonEvents.json/1/0"
     assert overwide_detail["line_width"] == 30
+
+
+@pytest.mark.asyncio
+async def test_quality_report_uses_translatable_text_for_semantic_source_checks(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """raw/visible 外壳空白不应当作正文结构或源文残留质量失败。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+                SELECT fact_id, location_path
+                FROM text_facts_v2
+                WHERE item_type = 'short_text'
+                ORDER BY domain, location_path, fact_id
+                LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        fact_id = cast(str, row["fact_id"])
+        location_path = cast(str, row["location_path"])
+        _ = await session.connection.execute(
+            """
+--sql
+                UPDATE text_facts_v2
+                SET raw_text = ?,
+                    visible_text = ?,
+                    translatable_text = ?
+                WHERE fact_id = ?
+            ;
+            """,
+            (r"  \n<Dan:> Hello  ", r"  \n<Dan:> Hello  ", "Hello", fact_id),
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=location_path,
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["Hello"],
+                    source_line_paths=[location_path],
+                    translation_lines=["你好"],
+                )
+            ]
+        )
+        await session.connection.commit()
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    assert report.summary["text_structure_count"] == 0
+    assert report.summary["source_residual_count"] == 0
 @pytest.mark.asyncio
 async def test_quality_report_flags_internal_placeholder_leak(
     minimal_game_dir: Path,
