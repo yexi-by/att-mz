@@ -519,9 +519,6 @@ async def read_text_fact_quality_items_for_translations(
         raw_lines = _text_fact_lines(fact.raw_text, item_type=cloned_item.item_type)
         visible_lines = _text_fact_lines(fact.visible_text, item_type=cloned_item.item_type)
         translatable_lines = _text_fact_lines(fact.translatable_text, item_type=cloned_item.item_type)
-        if cloned_item.original_lines not in (raw_lines, visible_lines, translatable_lines):
-            quality_items.append(cloned_item)
-            continue
         if source_text == "raw":
             cloned_item.original_lines = raw_lines
         elif source_text == "visible":

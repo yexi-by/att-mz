@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
+from app.text_facts import read_text_fact_quality_items_for_translations
 
 @pytest.mark.asyncio
 async def test_mv_virtual_namebox_validation_reports_overwide_angle_rule_hits(
@@ -1016,6 +1017,64 @@ async def test_quality_report_uses_translatable_text_for_semantic_source_checks(
 
     assert report.summary["text_structure_count"] == 0
     assert report.summary["source_residual_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quality_report_replaces_stale_saved_source_with_v2_fact_source(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """已保存译文的旧 source 不匹配当前 v2 fact 时，adapter 必须使用 v2 source。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+                SELECT fact_id, location_path
+                FROM text_facts_v2
+                WHERE item_type = 'short_text'
+                ORDER BY domain, location_path, fact_id
+                LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        fact_id = cast(str, row["fact_id"])
+        location_path = cast(str, row["location_path"])
+        _ = await session.connection.execute(
+            """
+--sql
+                UPDATE text_facts_v2
+                SET raw_text = ?,
+                    visible_text = ?,
+                    translatable_text = ?
+                WHERE fact_id = ?
+            ;
+            """,
+            ("Hello", "Hello", "Hello", fact_id),
+        )
+        stale_saved_item = TranslationItem(
+            location_path=location_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["古い源文"],
+            source_line_paths=[location_path],
+            translation_lines=["你好"],
+        )
+        await session.write_translation_items([stale_saved_item])
+        await session.connection.commit()
+        quality_items = await read_text_fact_quality_items_for_translations(
+            session,
+            [stale_saved_item],
+            source_text="translatable",
+        )
+
+    assert quality_items[0].original_lines == ["Hello"]
 @pytest.mark.asyncio
 async def test_quality_report_flags_internal_placeholder_leak(
     minimal_game_dir: Path,
@@ -1145,6 +1204,7 @@ async def test_quality_report_accepts_structured_placeholder_shell_and_rejects_c
     tmp_path: Path,
 ) -> None:
     """质量报告不把已保护外壳当英文残留，但会拦截被改坏的外壳。"""
+    _replace_first_common_event_text(minimal_english_game_dir, "<Mini Label: Alraune>")
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
     structured_rule = StructuredPlaceholderRuleRecord(
