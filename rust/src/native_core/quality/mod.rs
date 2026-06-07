@@ -176,4 +176,28 @@ mod tests {
             json!("甲乙丙丁戊")
         );
     }
+
+    #[test]
+    fn quality_scan_reports_control_code_split_hint_on_placeholder_risk() {
+        let payload = quality_payload(json!([
+            {
+                "location_path": "CommonEvents.json/1/0",
+                "item_type": "long_text",
+                "role": null,
+                "original_lines": ["こんにちは"],
+                "translation_lines": [r"\fb21st"]
+            }
+        ]));
+
+        let output_text = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let output: Value = serde_json::from_str(&output_text).expect("输出应是 JSON");
+        let item = &output["placeholder_risk_items"][0];
+
+        assert_eq!(item["location_path"], json!("CommonEvents.json/1/0"));
+        assert_eq!(item["hint"]["hint_kind"], json!("possible_control_split"));
+        assert_eq!(item["hint"]["original"], json!(r"\fb21st"));
+        assert_eq!(item["hint"]["candidate"], json!(r"\fb21"));
+        assert_eq!(item["hint"]["possible_split"]["control"], json!(r"\fb2"));
+        assert_eq!(item["hint"]["possible_split"]["tail"], json!("1st"));
+    }
 }

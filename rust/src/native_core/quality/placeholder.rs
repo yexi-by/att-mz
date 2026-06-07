@@ -4,6 +4,7 @@
 
 use serde_json::{Value, json};
 
+use super::super::controls::collect_control_code_hints;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeTranslationItem};
 use super::super::placeholders::{
@@ -44,6 +45,11 @@ pub(super) fn collect_placeholder_detail(
         Err(reason) => {
             let mut detail = base_detail(item);
             detail.insert("reason".to_string(), json!(reason));
+            let hints = collect_control_code_hints(&item.translation_lines, rules);
+            if let Some(first_hint) = hints.first() {
+                detail.insert("hint".to_string(), json!(first_hint));
+                detail.insert("control_code_hints".to_string(), json!(hints));
+            }
             Some(Value::Object(detail))
         }
     }

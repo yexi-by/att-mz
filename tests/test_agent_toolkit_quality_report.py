@@ -871,6 +871,45 @@ async def test_quality_report_flags_internal_placeholder_leak(
     placeholder_detail = ensure_json_object(placeholder_items[0], "placeholder_risk_items[0]")
     assert placeholder_detail["location_path"] == "CommonEvents.json/1/0"
     assert "译文残留项目内部占位符" in str(placeholder_detail["reason"])
+
+
+@pytest.mark.asyncio
+async def test_quality_report_includes_control_code_split_hint(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量报告要把 native 控制符拆分提示透传给 Agent。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="CommonEvents.json/1/0",
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=[r"\fb21st"],
+                )
+            ]
+        )
+
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    report = await service.quality_report(game_title="テストゲーム")
+
+    assert report.status == "error"
+    assert report.summary["placeholder_risk_count"] == 1
+    placeholder_items = ensure_json_array(report.details["placeholder_risk_items"], "placeholder_risk_items")
+    placeholder_detail = ensure_json_object(placeholder_items[0], "placeholder_risk_items[0]")
+    hint = ensure_json_object(placeholder_detail["hint"], "placeholder_risk_items[0].hint")
+    possible_split = ensure_json_object(hint["possible_split"], "placeholder_risk_items[0].hint.possible_split")
+    assert hint["hint_kind"] == "possible_control_split"
+    assert hint["original"] == r"\fb21st"
+    assert hint["candidate"] == r"\fb21"
+    assert possible_split["control"] == r"\fb2"
+    assert possible_split["tail"] == "1st"
+    assert "疑似控制符和后续数字或文本粘连" in str(hint["message"])
 @pytest.mark.asyncio
 async def test_quality_report_accepts_saved_short_text_real_line_breaks(
     minimal_game_dir: Path,

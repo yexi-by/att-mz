@@ -3,7 +3,8 @@
 //! 本模块负责识别 RMMZ 标准控制符、自定义控制符和未保护控制片段。
 
 use regex::Regex;
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 
 use super::models::{CompiledRules, ControlSpan, SpanSource};
 use super::placeholders::LITERAL_LINE_BREAK_PLACEHOLDER;
@@ -594,6 +595,35 @@ pub(crate) fn collect_unprotected_control_sequences(
     Ok(counts)
 }
 
+pub(crate) fn collect_control_code_hints(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Vec<ControlCodeHint> {
+    let mut hints = Vec::new();
+    let mut seen = HashSet::new();
+    for line in lines {
+        let protected_spans = iter_control_sequence_spans_lossy(line, rules);
+        for candidate in iter_raw_control_sequence_candidates(line) {
+            if is_covered_by_control_span(&candidate, &protected_spans) {
+                continue;
+            }
+            let Some(hint) = possible_control_split_hint(line, &candidate) else {
+                continue;
+            };
+            let key = (
+                hint.original.clone(),
+                hint.candidate.clone(),
+                hint.possible_split.control.clone(),
+                hint.possible_split.tail.clone(),
+            );
+            if seen.insert(key) {
+                hints.push(hint);
+            }
+        }
+    }
+    hints
+}
+
 pub(crate) fn collect_unexpected_escape_fragments(
     lines: &[String],
     rules: &CompiledRules,
@@ -660,6 +690,84 @@ fn is_covered_by_control_span(
     false
 }
 
+fn possible_control_split_hint(
+    line: &str,
+    candidate: &RawControlSequenceCandidate,
+) -> Option<ControlCodeHint> {
+    let marker = candidate.original.strip_prefix('\\')?;
+    let code_end = marker
+        .char_indices()
+        .find_map(|(index, char_value)| {
+            if char_value.is_ascii_alphabetic() {
+                None
+            } else {
+                Some(index)
+            }
+        })
+        .unwrap_or(marker.len());
+    let code = &marker[..code_end];
+    let digits = &marker[code_end..];
+    if code.is_empty()
+        || digits.is_empty()
+        || !digits.chars().all(|char_value| char_value.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let trailing = ascii_alphanumeric_tail(line, candidate.end);
+    let digit_count = digits.chars().count();
+    let (control, tail) = if digit_count >= 2 {
+        let split_index = digits
+            .char_indices()
+            .last()
+            .map(|(index, _char)| index)
+            .unwrap_or(0);
+        (
+            format!("\\{}{}", code, &digits[..split_index]),
+            format!("{}{}", &digits[split_index..], trailing),
+        )
+    } else if !trailing.is_empty() {
+        (candidate.original.clone(), trailing)
+    } else {
+        return None;
+    };
+
+    if tail.is_empty() {
+        return None;
+    }
+    Some(ControlCodeHint {
+        original: format!(
+            "{}{}",
+            candidate.original,
+            tail_suffix_after_candidate(&tail, digit_count)
+        ),
+        candidate: candidate.original.clone(),
+        hint_kind: "possible_control_split".to_string(),
+        possible_split: ControlCodeSplitHint { control, tail },
+        message: "疑似控制符和后续数字或文本粘连，请确认是否需要把控制符写成独立 placeholder。"
+            .to_string(),
+    })
+}
+
+fn ascii_alphanumeric_tail(line: &str, byte_index: usize) -> String {
+    line[byte_index..]
+        .chars()
+        .take_while(|char_value| char_value.is_ascii_alphanumeric())
+        .take(16)
+        .collect()
+}
+
+fn tail_suffix_after_candidate(tail: &str, digit_count: usize) -> &str {
+    if digit_count >= 2 {
+        tail.chars()
+            .next()
+            .map(|first_char| &tail[first_char.len_utf8()..])
+            .unwrap_or("")
+    } else {
+        tail
+    }
+}
+
 pub(crate) fn format_control_counts(counts: &HashMap<String, usize>) -> String {
     if counts.is_empty() {
         return "无".to_string();
@@ -693,6 +801,21 @@ pub(crate) struct RawControlSequenceCandidate {
     pub(crate) original: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ControlCodeHint {
+    pub(crate) original: String,
+    pub(crate) candidate: String,
+    pub(crate) hint_kind: String,
+    pub(crate) possible_split: ControlCodeSplitHint,
+    pub(crate) message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ControlCodeSplitHint {
+    pub(crate) control: String,
+    pub(crate) tail: String,
+}
+
 pub(crate) struct UnexpectedEscapeFragment {
     pub(crate) line_number: usize,
     pub(crate) fragment: String,
@@ -702,8 +825,8 @@ pub(crate) struct UnexpectedEscapeFragment {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_unexpected_escape_fragments, iter_control_sequence_spans,
-        iter_raw_control_sequence_candidates,
+        collect_control_code_hints, collect_unexpected_escape_fragments,
+        iter_control_sequence_spans, iter_raw_control_sequence_candidates,
     };
     use crate::native_core::models::{
         NativeStructuredPlaceholderRule, NativeTextRules, SpanSource,
@@ -774,5 +897,20 @@ mod tests {
         assert_eq!(fragments[0].line_number, 2);
         assert_eq!(fragments[0].fragment, "\\");
         assert!(fragments[0].trailing);
+    }
+
+    #[test]
+    fn control_code_hints_explain_possible_digit_tail_split() {
+        let rules = compile_test_rules(Vec::new());
+        let lines = vec![r"\fb21st".to_string()];
+
+        let hints = collect_control_code_hints(&lines, &rules);
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].original, r"\fb21st");
+        assert_eq!(hints[0].candidate, r"\fb21");
+        assert_eq!(hints[0].hint_kind, "possible_control_split");
+        assert_eq!(hints[0].possible_split.control, r"\fb2");
+        assert_eq!(hints[0].possible_split.tail, "1st");
     }
 }
