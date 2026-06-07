@@ -29,6 +29,7 @@ from app.rmmz.text_rules import (
 
 _PLUGIN_SOURCE_RUST_PREFILTER_PATTERN = r"[\s\S]"
 _RULE_CANDIDATES_SCHEMA_VERSION = 1
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 class NativeScopeIndexModule(Protocol):
@@ -552,8 +553,8 @@ def _validate_text_fact_storage_contract(result: JsonObject, label: str) -> None
     if not isinstance(scope_key, str) or not scope_key:
         raise TypeError(f"{label}.scope_key 必须是非空字符串")
     scope_hash = result["scope_hash"]
-    if not isinstance(scope_hash, str) or len(scope_hash) != 64:
-        raise TypeError(f"{label}.scope_hash 必须是 64 位 SHA-256 字符串")
+    if not isinstance(scope_hash, str) or len(scope_hash) != 64 or not set(scope_hash) <= _HEX_DIGITS:
+        raise TypeError(f"{label}.scope_hash 必须是 64 位 SHA-256 十六进制字符串")
 
 
 def _text_fact_schema_version() -> int:

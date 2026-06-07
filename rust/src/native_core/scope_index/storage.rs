@@ -19,6 +19,7 @@ const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schem
 const CURRENT_SCHEMA_VERSION: i64 = 16;
 const SCHEMA_VERSION_KEY: &str = "current";
 const TEXT_INDEX_META_KEY: &str = "current";
+type TextFactIdentity = (String, String, String, String, String, String);
 
 #[derive(Debug, Deserialize)]
 struct InspectStoragePayload {
@@ -545,6 +546,7 @@ fn validate_text_fact_write_payload(
     }
 
     let mut fact_ids = BTreeSet::new();
+    let mut facts_by_id = BTreeMap::new();
     for fact in &payload.text_facts {
         fact.validate().map_err(|message| {
             structured_error("scope_index_storage_text_fact_invalid", message)
@@ -573,9 +575,14 @@ fn validate_text_fact_write_payload(
                 format!("text fact v2 fact_id 重复: {}", fact.fact_id),
             ));
         }
+        facts_by_id.insert(fact.fact_id.clone(), fact);
+    }
+    if has_explicit_text_fact_payload {
+        validate_text_index_fact_identities(payload)?;
     }
 
     let mut render_part_keys = BTreeSet::new();
+    let mut render_parts_by_fact_id: BTreeMap<String, Vec<&TextFactRenderPart>> = BTreeMap::new();
     for part in &payload.text_fact_render_parts {
         part.validate().map_err(|message| {
             structured_error("scope_index_storage_text_fact_invalid", message)
@@ -599,7 +606,12 @@ fn validate_text_fact_write_payload(
                 ),
             ));
         }
+        render_parts_by_fact_id
+            .entry(part.fact_id.clone())
+            .or_default()
+            .push(part);
     }
+    validate_render_parts_rebuild_raw_text(&facts_by_id, &mut render_parts_by_fact_id)?;
 
     let mut payload_fact_ids = BTreeSet::new();
     for domain_payload in &payload.text_fact_domain_payloads {
@@ -622,6 +634,87 @@ fn validate_text_fact_write_payload(
                     "text fact v2 domain payload 重复: fact_id={}",
                     domain_payload.fact_id
                 ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_text_index_fact_identities(payload: &WriteStoragePayload) -> Result<(), String> {
+    let text_index_identities = text_index_identity_counts(&payload.text_index_rows);
+    let text_fact_identities = text_fact_identity_counts(&payload.text_facts);
+    if text_index_identities != text_fact_identities {
+        return Err(structured_error(
+            "scope_index_storage_text_fact_identity_mismatch",
+            "warm index rows 与 v2 facts 的文本身份不一致，拒绝写入混合来源数据".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn text_index_identity_counts(rows: &[TextIndexRowInput]) -> BTreeMap<TextFactIdentity, usize> {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let identity = (
+            row.location_path.clone(),
+            row.source_file.clone(),
+            row.source_type.clone(),
+            row.item_type.clone(),
+            row.role.clone().unwrap_or_default(),
+            row.original_lines.join("\n"),
+        );
+        *counts.entry(identity).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, usize> {
+    let mut counts = BTreeMap::new();
+    for fact in facts {
+        let identity = (
+            fact.location_path.clone(),
+            fact.source_file.clone(),
+            fact.source_type.clone(),
+            fact.item_type.clone(),
+            fact.role.clone(),
+            fact.raw_text.clone(),
+        );
+        *counts.entry(identity).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn validate_render_parts_rebuild_raw_text(
+    facts_by_id: &BTreeMap<String, &TextFact>,
+    render_parts_by_fact_id: &mut BTreeMap<String, Vec<&TextFactRenderPart>>,
+) -> Result<(), String> {
+    for (fact_id, parts) in render_parts_by_fact_id {
+        parts.sort_by_key(|part| part.part_order);
+        for (expected_order, part) in parts.iter().enumerate() {
+            if part.part_order != expected_order as i64 {
+                return Err(structured_error(
+                    "scope_index_storage_text_fact_invalid",
+                    format!(
+                        "text fact v2 render part_order 必须从 0 连续: fact_id={fact_id}, expected={expected_order}, actual={}",
+                        part.part_order
+                    ),
+                ));
+            }
+        }
+        let rebuilt_raw_text = parts
+            .iter()
+            .map(|part| part.raw_text.as_str())
+            .collect::<String>();
+        let Some(fact) = facts_by_id.get(fact_id) else {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!("text fact v2 render part 引用了未知 fact_id: {fact_id}"),
+            ));
+        };
+        if rebuilt_raw_text != fact.raw_text {
+            return Err(structured_error(
+                "scope_index_storage_text_fact_invalid",
+                format!("text fact v2 render parts 无法重建 raw_text: fact_id={fact_id}"),
             ));
         }
     }
@@ -1359,6 +1452,146 @@ mod tests {
         fs::remove_dir_all(fixture).expect("测试目录应可清理");
     }
 
+    #[test]
+    fn write_scope_index_storage_rejects_text_index_fact_identity_mismatch() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_identity_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture");
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact],
+            Vec::new(),
+            Vec::new(),
+        );
+        payload.text_index_rows[0].location_path = "System.json/currencyUnit".to_string();
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("warm index 与 v2 fact 身份不一致必须拒绝");
+        assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_rejects_non_contiguous_render_parts() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_part_gap_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture");
+        let payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact.clone()],
+            vec![
+                TextFactRenderPart::new(fact.fact_id.clone(), 0, "literal", "Fix", "Fix", "a"),
+                TextFactRenderPart::new(
+                    fact.fact_id.clone(),
+                    2,
+                    "translated_body",
+                    "ture",
+                    "ture",
+                    "b",
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("render part_order 不连续必须拒绝");
+        assert!(error.contains("scope_index_storage_text_fact_invalid"));
+        assert!(error.contains("part_order"));
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_rejects_render_parts_not_rebuilding_raw_text() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_part_raw_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture");
+        let payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![fact.clone()],
+            vec![TextFactRenderPart::new(
+                fact.fact_id.clone(),
+                0,
+                "translated_body",
+                "Other",
+                "Other",
+                "body",
+            )],
+            Vec::new(),
+        );
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("render parts 无法重建 raw_text 必须拒绝");
+        assert!(error.contains("scope_index_storage_text_fact_invalid"));
+        assert!(error.contains("raw_text"));
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
     fn text_fact_payload(
         db_path: String,
         scope: TextFactScope,
@@ -1428,5 +1661,24 @@ mod tests {
             rules_fingerprint: "rules-v1".to_string(),
             locator_json: "{}".to_string(),
         }
+    }
+
+    fn standard_text_fact(scope: &TextFactScope, location_path: &str, raw_text: &str) -> TextFact {
+        TextFact::from_input(
+            TextFactInput {
+                domain: domains::STANDARD_DATA.to_string(),
+                location_path: location_path.to_string(),
+                source_file: "System.json".to_string(),
+                source_type: "standard_data".to_string(),
+                item_type: "short_text".to_string(),
+                role: String::new(),
+                selector: location_path.to_string(),
+                raw_text: raw_text.to_string(),
+                visible_text: raw_text.to_string(),
+                translatable_text: raw_text.to_string(),
+            },
+            scope.scope_key.clone(),
+        )
+        .expect("标准 data fact 应可创建")
     }
 }

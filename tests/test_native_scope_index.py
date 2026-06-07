@@ -595,6 +595,39 @@ def test_write_native_scope_index_storage_rejects_unsupported_text_fact_schema_v
         _ = write_native_scope_index_storage({})
 
 
+def test_write_native_scope_index_storage_rejects_non_hex_scope_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python native adapter 必须拒绝非十六进制 scope_hash。"""
+
+    class FakeNativeScopeIndexModule:
+        def write_scope_index_storage(self, payload_json: str) -> str:
+            _ = payload_json
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "written_item_count": 0,
+                    "domain_summary_count": 0,
+                    "rule_hit_summary_count": 0,
+                    "text_fact_count": 0,
+                    "render_part_count": 0,
+                    "scope_key": "scope-v2",
+                    "scope_hash": "g" * 64,
+                    "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION,
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(
+        native_scope_index,
+        "_load_native_scope_index_module",
+        lambda: FakeNativeScopeIndexModule(),
+    )
+
+    with pytest.raises(TypeError, match="64 位 SHA-256 十六进制字符串"):
+        _ = write_native_scope_index_storage({})
+
+
 def test_build_native_event_command_candidates_payload_includes_data_codes_and_rules() -> None:
     """事件指令 Rust 候选载荷必须包含排序后的 data 文件、编码和可选规则。"""
     rules = cast(

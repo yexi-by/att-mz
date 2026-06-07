@@ -420,7 +420,7 @@ fn rebuild_with_context(
         "build_workflow_gate_metadata",
         stage_started,
     );
-    let text_rules_hash = stable_json_fingerprint(&payload.text_rules_setting)?;
+    let text_rules_hash = rebuild_text_rules_hash(&payload)?;
     let stage_started = Instant::now();
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
@@ -878,6 +878,58 @@ fn sanitized_text_rules_setting(raw_setting: &Value) -> Value {
         object.remove(TEXT_INDEX_PROMPT_CONTEXT_VERSION_KEY);
     }
     setting
+}
+
+fn rebuild_text_rules_hash(payload: &RebuildStoragePayload) -> Result<String, String> {
+    stable_json_fingerprint(&rebuild_text_rules_hash_payload(payload))
+}
+
+fn rebuild_text_rules_hash_payload(payload: &RebuildStoragePayload) -> Value {
+    json!({
+        "engine_kind": payload.engine_kind,
+        "event_command_scope_codes": payload.event_command_scope_codes,
+        "rule_candidate_text_rules": rule_candidate_text_rules_value(&payload.rule_candidate_text_rules),
+        "source_text_required_pattern": payload.source_text_required_pattern,
+        "text_rules_setting": payload.text_rules_setting,
+    })
+}
+
+fn rule_candidate_text_rules_value(text_rules: &RuleCandidateTextRules) -> Value {
+    let custom_placeholder_rules = text_rules
+        .custom_placeholder_rules
+        .iter()
+        .map(|rule| {
+            json!({
+                "pattern_text": rule.pattern_text,
+                "placeholder_template": rule.placeholder_template,
+            })
+        })
+        .collect::<Vec<_>>();
+    let structured_placeholder_rules = text_rules
+        .structured_placeholder_rules
+        .iter()
+        .map(|rule| {
+            let protected_groups = rule
+                .protected_groups
+                .iter()
+                .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                .collect::<serde_json::Map<_, _>>();
+            json!({
+                "rule_name": rule.rule_name,
+                "rule_type": rule.rule_type,
+                "pattern_text": rule.pattern_text,
+                "translatable_group": rule.translatable_group,
+                "protected_groups": Value::Object(protected_groups),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "custom_placeholder_rules": custom_placeholder_rules,
+        "structured_placeholder_rules": structured_placeholder_rules,
+        "strip_wrapping_punctuation_pairs": text_rules.strip_wrapping_punctuation_pairs,
+        "source_text_required_pattern": text_rules.source_text_required_pattern,
+        "source_text_exclusion_profile": text_rules.source_text_exclusion_profile,
+    })
 }
 
 fn rule_candidate_text_rules(payload: &RebuildStoragePayload) -> RuleCandidateTextRules {
@@ -3211,5 +3263,100 @@ fn structured_error(code: &str, message: String) -> String {
     })) {
         Ok(text) => text,
         Err(_) => format!("{code}: {message}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RebuildStoragePayload, RuleCandidateTextRules, rebuild_text_rules_hash};
+    use crate::native_core::models::{
+        NativeCustomPlaceholderRule, NativeStructuredPlaceholderRule,
+    };
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn rebuild_text_rules_hash_changes_for_scan_affecting_inputs() {
+        let base_hash = rebuild_text_rules_hash(&minimal_rebuild_payload())
+            .expect("基础 text rule scope hash 应可计算");
+
+        let mut changed_pattern = minimal_rebuild_payload();
+        changed_pattern.source_text_required_pattern = "[A-Z]+".to_string();
+        assert_ne!(
+            base_hash,
+            rebuild_text_rules_hash(&changed_pattern).expect("正则变化后应可计算 hash")
+        );
+
+        let mut changed_event_codes = minimal_rebuild_payload();
+        changed_event_codes.event_command_scope_codes = vec![401];
+        assert_ne!(
+            base_hash,
+            rebuild_text_rules_hash(&changed_event_codes).expect("事件指令编码变化后应可计算 hash")
+        );
+
+        let mut changed_candidate_rules = minimal_rebuild_payload();
+        changed_candidate_rules
+            .rule_candidate_text_rules
+            .custom_placeholder_rules
+            .push(NativeCustomPlaceholderRule {
+                pattern_text: r"\\V\[\d+\]".to_string(),
+                placeholder_template: r"\\V[{n}]".to_string(),
+            });
+        assert_ne!(
+            base_hash,
+            rebuild_text_rules_hash(&changed_candidate_rules)
+                .expect("候选文本规则变化后应可计算 hash")
+        );
+    }
+
+    #[test]
+    fn rebuild_text_rules_hash_is_stable_for_json_object_key_order() {
+        let mut first = minimal_rebuild_payload();
+        first.text_rules_setting = json!({
+            "b": {"second": true, "first": false},
+            "a": 1
+        });
+        let mut second = minimal_rebuild_payload();
+        second.text_rules_setting = json!({
+            "a": 1,
+            "b": {"first": false, "second": true}
+        });
+
+        assert_eq!(
+            rebuild_text_rules_hash(&first).expect("第一种 JSON key 顺序应可计算 hash"),
+            rebuild_text_rules_hash(&second).expect("第二种 JSON key 顺序应可计算 hash")
+        );
+    }
+
+    fn minimal_rebuild_payload() -> RebuildStoragePayload {
+        RebuildStoragePayload {
+            db_path: "fixture.db".to_string(),
+            game_path: "fixture-game".to_string(),
+            source_snapshot_fingerprint: Some("snapshot-v1".to_string()),
+            rules_fingerprint: Some("rules-v1".to_string()),
+            source_language: "ja".to_string(),
+            target_language: "zh-Hans".to_string(),
+            engine_kind: "mz".to_string(),
+            text_rules_setting: json!({
+                "source_text_required_pattern": "[\\u3040-\\u30ff]+",
+                "source_text_exclusion_profile": "none"
+            }),
+            rule_candidate_text_rules: RuleCandidateTextRules {
+                custom_placeholder_rules: Vec::new(),
+                structured_placeholder_rules: vec![NativeStructuredPlaceholderRule {
+                    rule_name: "颜色".to_string(),
+                    rule_type: "regex".to_string(),
+                    pattern_text: r"\\C\[(?P<code>\d+)\](?P<body>.*?)\\C\[0\]".to_string(),
+                    translatable_group: "body".to_string(),
+                    protected_groups: HashMap::from([("code".to_string(), "{code}".to_string())]),
+                }],
+                strip_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
+                source_text_required_pattern: "[\\u3040-\\u30ff]+".to_string(),
+                source_text_exclusion_profile: "none".to_string(),
+            },
+            event_command_scope_codes: vec![357],
+            source_text_required_pattern: "[\\u3040-\\u30ff]+".to_string(),
+            created_at: "2026-06-05T00:00:00".to_string(),
+        }
     }
 }
