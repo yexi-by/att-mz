@@ -1444,6 +1444,42 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
     assert state.reviewed_empty is True
     assert state.scope_hash == coverage.scope_hash
     assert "structured_placeholder_uncovered" not in {error.code for error in errors}
+
+
+@pytest.mark.asyncio
+async def test_import_empty_structured_placeholder_rules_respects_custom_placeholder_coverage(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """结构化空规则确认必须复用普通 custom placeholder 覆盖事实。"""
+    _replace_first_common_event_text(minimal_english_game_dir, "<Face:1>")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_english_game_dir, source_language="en")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="English Fixture Game",
+        game_dir=minimal_english_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    placeholder_report = await service.import_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text=json.dumps({r"<Face:\d+>": "[CUSTOM_FACE_ID_{index}]"}, ensure_ascii=False),
+    )
+
+    structured_report = await service.import_structured_placeholder_rules(
+        game_title="English Fixture Game",
+        rules_text='{"paired_shell_rules": []}',
+        confirm_empty=True,
+    )
+
+    assert placeholder_report.status == "ok"
+    assert structured_report.summary["uncovered_count"] == 0
+    assert "structured_placeholder_uncovered_reviewed" not in {
+        warning.code
+        for warning in structured_report.warnings
+    }
+
+
 @pytest.mark.asyncio
 async def test_import_empty_structured_placeholder_rules_uses_full_candidate_hash(
     minimal_english_game_dir: Path,

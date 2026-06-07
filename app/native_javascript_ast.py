@@ -9,8 +9,9 @@ from importlib import import_module
 from typing import Protocol, cast
 
 from app.native_contract import ensure_native_contract_version
+from app.native_quality import build_native_text_rules_payload
 from app.rmmz.schema import PluginSourceRuntimeLiteralAuditSeverity, PluginSourceRuntimeLiteralKind
-from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
+from app.rmmz.text_rules import JsonArray, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 
 _LITERAL_KINDS = frozenset(
     {
@@ -37,6 +38,10 @@ class NativeJavaScriptAstModule(Protocol):
 
     def parse_javascript_string_spans_batch(self, payload_json: str) -> str:
         """批量解析 JavaScript 字符串节点范围。"""
+        raise NotImplementedError
+
+    def collect_runtime_literal_issue_facts(self, payload_json: str) -> str:
+        """批量收集当前运行源码字符串审计风险事实。"""
         raise NotImplementedError
 
 
@@ -74,6 +79,15 @@ class NativeJavaScriptStringScan:
 
     has_error: bool
     spans: list[NativeJavaScriptStringSpan]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeLiteralIssueFact:
+    """Rust 返回的当前运行源码字符串审计风险事实。"""
+
+    issue_codes: tuple[str, ...]
+    placeholder_fragments: tuple[str, ...]
+    control_code_hints: JsonArray
 
 
 def parse_native_javascript_string_spans(source: str) -> NativeJavaScriptStringScan:
@@ -148,6 +162,68 @@ def parse_native_javascript_string_spans_batch(
         samples = "、".join(sorted(missing_files)[:5])
         raise RuntimeError(f"批量 JS AST 结果缺少文件: {samples}")
     return scans
+
+
+def collect_native_runtime_literal_issue_facts(
+    *,
+    literals: Mapping[str, tuple[str, str]],
+    text_rules: TextRules,
+) -> dict[str, NativeRuntimeLiteralIssueFact]:
+    """调用 Rust 批量收集当前运行源码字符串审计风险事实。"""
+    native_module = _load_native_javascript_ast_module()
+    result_text = native_module.collect_runtime_literal_issue_facts(
+        json.dumps(
+            {
+                "literals": [
+                    {
+                        "id": literal_id,
+                        "raw_text": raw_text,
+                        "text": text,
+                    }
+                    for literal_id, (raw_text, text) in sorted(literals.items())
+                ],
+                "text_rules": build_native_text_rules_payload(text_rules),
+            },
+            ensure_ascii=False,
+        )
+    )
+    result = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(result_text))),
+        "native_runtime_literal_issue_facts_result",
+    )
+    facts: dict[str, NativeRuntimeLiteralIssueFact] = {}
+    raw_facts = ensure_json_array(result["facts"], "native_runtime_literal_issue_facts_result.facts")
+    for index, raw_fact in enumerate(raw_facts):
+        fact = ensure_json_object(raw_fact, f"native_runtime_literal_issue_facts_result.facts[{index}]")
+        literal_id = _ensure_string(fact["id"], f"native_runtime_literal_issue_facts_result.facts[{index}].id")
+        facts[literal_id] = NativeRuntimeLiteralIssueFact(
+            issue_codes=tuple(
+                _ensure_string(code, f"native_runtime_literal_issue_facts_result.facts[{index}].issue_codes[]")
+                for code in ensure_json_array(
+                    fact["issue_codes"],
+                    f"native_runtime_literal_issue_facts_result.facts[{index}].issue_codes",
+                )
+            ),
+            placeholder_fragments=tuple(
+                _ensure_string(
+                    fragment,
+                    f"native_runtime_literal_issue_facts_result.facts[{index}].placeholder_fragments[]",
+                )
+                for fragment in ensure_json_array(
+                    fact["placeholder_fragments"],
+                    f"native_runtime_literal_issue_facts_result.facts[{index}].placeholder_fragments",
+                )
+            ),
+            control_code_hints=ensure_json_array(
+                fact["control_code_hints"],
+                f"native_runtime_literal_issue_facts_result.facts[{index}].control_code_hints",
+            ),
+        )
+    missing_ids = set(literals) - set(facts)
+    if missing_ids:
+        samples = "、".join(sorted(missing_ids)[:5])
+        raise RuntimeError(f"运行源码字符串风险事实缺少条目: {samples}")
+    return facts
 
 
 def _load_native_javascript_ast_module() -> NativeJavaScriptAstModule:
@@ -263,8 +339,10 @@ def _ensure_optional_int(value: object, label: str) -> int | None:
 
 __all__ = [
     "NativeJavaScriptAstContext",
+    "NativeRuntimeLiteralIssueFact",
     "NativeJavaScriptStringScan",
     "NativeJavaScriptStringSpan",
+    "collect_native_runtime_literal_issue_facts",
     "parse_native_javascript_string_spans",
     "parse_native_javascript_string_spans_batch",
 ]

@@ -3,9 +3,15 @@
 //! 本模块解析源码，返回稳定范围，并输出运行审计需要的字符串分类事实。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tree_sitter::{Node, Parser};
 
+use super::controls::{
+    ControlCodeHint, collect_control_code_hints, collect_unprotected_control_sequences,
+};
+use super::models::{CompiledRules, NativeTextRules};
 use super::pool::run_with_optional_pool;
+use super::rules::compile_rules;
 use rayon::prelude::*;
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +28,32 @@ struct JavaScriptAstBatchPayload {
 struct JavaScriptAstBatchInput {
     file_name: String,
     source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeLiteralIssueFactsPayload {
+    literals: Vec<RuntimeLiteralIssueFactsInput>,
+    text_rules: NativeTextRules,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeLiteralIssueFactsInput {
+    id: String,
+    raw_text: String,
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeLiteralIssueFactsResult {
+    facts: Vec<RuntimeLiteralIssueFactOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeLiteralIssueFactOutput {
+    id: String,
+    issue_codes: Vec<String>,
+    placeholder_fragments: Vec<String>,
+    control_code_hints: Vec<ControlCodeHint>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -90,6 +122,115 @@ pub(crate) fn parse_javascript_string_spans_batch_impl(
     })??;
     let output = JavaScriptAstBatchOutput { files };
     serde_json::to_string(&output).map_err(|error| format!("批量 JS AST 输出 JSON 失败: {error}"))
+}
+
+pub(crate) fn collect_runtime_literal_issue_facts_impl(
+    payload_json: &str,
+) -> Result<String, String> {
+    let payload: RuntimeLiteralIssueFactsPayload = serde_json::from_str(payload_json)
+        .map_err(|error| format!("运行源码字符串风险事实输入不是有效 JSON: {error}"))?;
+    let rules = compile_rules(payload.text_rules)?;
+    let mut facts = Vec::with_capacity(payload.literals.len());
+    for literal in payload.literals {
+        facts.push(collect_runtime_literal_issue_fact(literal, &rules)?);
+    }
+    let output = RuntimeLiteralIssueFactsResult { facts };
+    serde_json::to_string(&output)
+        .map_err(|error| format!("运行源码字符串风险事实输出 JSON 失败: {error}"))
+}
+
+fn collect_runtime_literal_issue_fact(
+    literal: RuntimeLiteralIssueFactsInput,
+    rules: &CompiledRules,
+) -> Result<RuntimeLiteralIssueFactOutput, String> {
+    let mut fragments = BTreeSet::new();
+    fragments.extend(collect_linebreak_control_fragments(
+        &literal.raw_text,
+        &literal.text,
+    ));
+    let lines = vec![literal.text.clone()];
+    for (fragment, _count) in collect_unprotected_control_sequences(&lines, rules)? {
+        fragments.insert(fragment);
+    }
+    let control_code_hints = collect_control_code_hints(&lines, rules);
+    let placeholder_fragments = fragments.into_iter().collect::<Vec<_>>();
+    let issue_codes = if placeholder_fragments.is_empty() {
+        Vec::new()
+    } else {
+        vec!["active_runtime_placeholder_risk".to_string()]
+    };
+    Ok(RuntimeLiteralIssueFactOutput {
+        id: literal.id,
+        issue_codes,
+        placeholder_fragments,
+        control_code_hints,
+    })
+}
+
+fn collect_linebreak_control_fragments(raw_text: &str, text: &str) -> BTreeSet<String> {
+    let mut fragments = BTreeSet::new();
+    let mut search_start = 0usize;
+    while let Some(relative_index) = raw_text[search_start..].find(r"\n") {
+        let marker_index = search_start + relative_index;
+        if marker_index == 0 || !raw_text[..marker_index].ends_with('\\') {
+            let fragment_start = marker_index + 2;
+            if let Some(fragment) = read_visible_control_fragment(raw_text, fragment_start) {
+                fragments.insert(fragment);
+            }
+        }
+        search_start = marker_index + 2;
+    }
+    for (byte_index, char_value) in text.char_indices() {
+        if char_value != '\n' && char_value != '\r' {
+            continue;
+        }
+        let fragment_start = byte_index + char_value.len_utf8();
+        if let Some(fragment) = read_visible_control_fragment(text, fragment_start) {
+            fragments.insert(fragment);
+        }
+    }
+    fragments
+}
+
+fn read_visible_control_fragment(text: &str, byte_start: usize) -> Option<String> {
+    let tail = text.get(byte_start..)?;
+    let mut chars = tail.char_indices().peekable();
+    let mut has_letter = false;
+    while let Some((_relative_index, char_value)) = chars.peek().copied() {
+        if !char_value.is_ascii_alphabetic() {
+            break;
+        }
+        has_letter = true;
+        chars.next();
+    }
+    if !has_letter {
+        return None;
+    }
+    while let Some((_relative_index, char_value)) = chars.peek().copied() {
+        if !char_value.is_ascii_digit() {
+            break;
+        }
+        chars.next();
+    }
+    let (_relative_index, char_value) = chars.next()?;
+    if char_value != '[' {
+        return None;
+    }
+    let mut bracket_content_len = 0usize;
+    for (relative_index, char_value) in chars {
+        if char_value == '\r' || char_value == '\n' {
+            return None;
+        }
+        if char_value == ']' {
+            let end = byte_start + relative_index + char_value.len_utf8();
+            return text.get(byte_start..end).map(str::to_string);
+        }
+        bracket_content_len += 1;
+        if bracket_content_len > 64 {
+            return None;
+        }
+    }
+    None
 }
 
 fn parse_javascript_file_spans(
@@ -584,6 +725,51 @@ mod tests {
     }
 
     #[test]
+    fn runtime_literal_issue_facts_report_control_fragments_and_hints() {
+        let payload = json!({
+            "literals": [
+                {
+                    "id": "plain",
+                    "raw_text": "\\\\ii[1]",
+                    "text": "\\ii[1]"
+                },
+                {
+                    "id": "linebreak",
+                    "raw_text": "prefix\\nN[1]",
+                    "text": "prefix\nN[1]"
+                },
+                {
+                    "id": "hint",
+                    "raw_text": "\\\\fb21st",
+                    "text": "\\fb21st"
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+        });
+        let output = collect_runtime_literal_issue_facts_impl(&payload.to_string())
+            .expect("运行字符串风险事实应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let facts = value["facts"].as_array().expect("facts 应为数组");
+
+        assert_eq!(facts[0]["id"], json!("plain"));
+        assert_eq!(
+            facts[0]["issue_codes"],
+            json!(["active_runtime_placeholder_risk"])
+        );
+        assert_eq!(facts[0]["placeholder_fragments"], json!(["\\ii[1]"]));
+        assert_eq!(facts[1]["placeholder_fragments"], json!(["N[1]"]));
+        assert_eq!(facts[2]["placeholder_fragments"], json!(["\\fb21"]));
+        assert_eq!(
+            facts[2]["control_code_hints"][0]["original"],
+            json!("\\fb21st")
+        );
+        assert_eq!(
+            facts[2]["control_code_hints"][0]["hint_kind"],
+            json!("possible_control_split")
+        );
+    }
+
+    #[test]
     fn parses_string_nodes_for_batch_files() {
         let payload = json!({
             "files": [
@@ -602,6 +788,25 @@ mod tests {
             value["files"][1]["spans"][0]["ast_context"]["call_name"],
             json!("Window_Base.prototype.drawText")
         );
+    }
+
+    fn minimal_text_rules() -> Value {
+        json!({
+            "custom_placeholder_rules": [],
+            "structured_placeholder_rules": [],
+            "source_residual_allowed_chars": [],
+            "source_residual_allowed_tail_chars": [],
+            "source_residual_segment_pattern": r"[\p{Hiragana}\p{Katakana}\p{Han}]+",
+            "source_residual_label": "日文",
+            "allowed_source_residual_terms": [],
+            "source_residual_terms_ignore_case": true,
+            "source_residual_detection_profile": "japanese_strict",
+            "english_source_copy_min_words": 4,
+            "english_source_copy_min_letters": 12,
+            "line_width_count_pattern": r"\S",
+            "residual_escape_sequence_pattern": r"\\[nrt]",
+            "long_text_line_width_limit": 26
+        })
     }
 
     #[test]

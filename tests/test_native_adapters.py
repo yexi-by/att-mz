@@ -20,7 +20,7 @@ from app import (
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.rmmz.schema import GameData, TranslationItem
-from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
+from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, ensure_json_object
 
 
 class _FakeWritePlanModule:
@@ -76,6 +76,11 @@ class _FakeJavaScriptAstModule:
         """返回测试预置的批量 AST 扫描结果。"""
         _ = payload_json
         return json.dumps({"files": [{"file_name": "test.js", **self._payload}]}, ensure_ascii=False)
+
+    def collect_runtime_literal_issue_facts(self, payload_json: str) -> str:
+        """返回测试预置的运行源码字符串风险事实。"""
+        _ = payload_json
+        return json.dumps(self._payload, ensure_ascii=False)
 
 
 class _FakeJavaScriptAstModuleWithoutContract:
@@ -598,6 +603,48 @@ def test_native_javascript_ast_preserves_runtime_literal_classification(
 
     assert scan.spans[0].literal_kind == "regex_pattern"
     assert scan.spans[0].audit_default_severity == "warning"
+
+
+def test_native_javascript_ast_preserves_runtime_literal_issue_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python 适配层必须保留 Rust 返回的运行字符串风险事实。"""
+    fake_module = _FakeJavaScriptAstModule(
+        {
+            "facts": [
+                {
+                    "id": "Plugin.js\nast:string:1:7:abcdef",
+                    "issue_codes": ["active_runtime_placeholder_risk"],
+                    "placeholder_fragments": [r"\ii[1]"],
+                    "control_code_hints": [
+                        {
+                            "original": r"\fb21st",
+                            "candidate": r"\fb21",
+                            "hint_kind": "possible_control_split",
+                            "possible_split": {"control": r"\fb2", "tail": "1st"},
+                            "message": "疑似控制符和后续数字或文本粘连",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    def load_fake_module() -> native_javascript_ast.NativeJavaScriptAstModule:
+        """返回测试用 AST 模块。"""
+        return cast(native_javascript_ast.NativeJavaScriptAstModule, fake_module)
+
+    monkeypatch.setattr(native_javascript_ast, "_load_native_javascript_ast_module", load_fake_module)
+
+    facts = native_javascript_ast.collect_native_runtime_literal_issue_facts(
+        literals={"Plugin.js\nast:string:1:7:abcdef": ("\\\\ii[1]", r"\ii[1]")},
+        text_rules=TextRules.from_setting(TextRulesSetting()),
+    )
+
+    fact = facts["Plugin.js\nast:string:1:7:abcdef"]
+    assert fact.issue_codes == ("active_runtime_placeholder_risk",)
+    assert fact.placeholder_fragments == (r"\ii[1]",)
+    assert ensure_json_object(fact.control_code_hints[0], "hint")["hint_kind"] == "possible_control_split"
 
 
 def test_native_quality_counts_parse_count_only_payload(monkeypatch: pytest.MonkeyPatch) -> None:

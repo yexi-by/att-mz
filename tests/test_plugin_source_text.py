@@ -4,7 +4,7 @@
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -1177,6 +1177,46 @@ async def test_active_runtime_audit_reports_current_runtime_control_risk(
         game_data=game_data,
         text_rules=text_rules,
         plugin_source_files=game_data.writable_plugin_source_files,
+    )
+
+    assert audit.issue_counts["active_runtime_placeholder_risk"] == 1
+    issue = next(issue for issue in audit.issues if issue.code == "active_runtime_placeholder_risk")
+    assert issue.fragment == "\\ii[1]"
+
+
+@pytest.mark.asyncio
+async def test_active_runtime_control_risk_uses_native_literal_facts(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前运行源码控制符风险必须消费 Rust fact，不能回到 Python 文本规则扫描。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
+    plugins.append({"name": "NativeControlFacts", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "NativeControlFacts.js").write_text(
+        "const Messages = { protocol: '\\\\ii[1]' };\n",
+        encoding="utf-8",
+    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    game_data = await load_game_data(minimal_game_dir)
+
+    def forbidden_python_control_scan(self: TextRules, text: str) -> NoReturn:
+        """active runtime 不能调用 Python 控制符候选扫描。"""
+        _ = (self, text)
+        raise AssertionError("active runtime must use native literal facts")
+
+    monkeypatch.setattr(
+        TextRules,
+        "iter_unprotected_control_sequence_candidates",
+        forbidden_python_control_scan,
+    )
+
+    audit = audit_active_runtime_plugin_source(
+        game_data=game_data,
+        text_rules=text_rules,
     )
 
     assert audit.issue_counts["active_runtime_placeholder_risk"] == 1

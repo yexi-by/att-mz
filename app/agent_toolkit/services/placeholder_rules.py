@@ -492,6 +492,7 @@ class PlaceholderRuleAgentMixin:
                         translation_data_map=translation_data_map,
                         structured_rules=structured_rules,
                         rule_count=len(rule_records),
+                        text_rules=text_rules,
                     )
         except Exception as error:
             return AgentReport.from_parts(

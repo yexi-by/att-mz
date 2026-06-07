@@ -58,6 +58,11 @@ pub fn parse_javascript_string_spans_batch_impl(payload_json: &str) -> Result<St
     javascript_ast::parse_javascript_string_spans_batch_impl(payload_json)
 }
 
+/// 批量收集当前运行源码字符串审计风险事实。
+pub fn collect_runtime_literal_issue_facts_impl(payload_json: &str) -> Result<String, String> {
+    javascript_ast::collect_runtime_literal_issue_facts_impl(payload_json)
+}
+
 /// 构建写回或重建运行文件计划并返回 JSON 计划。
 pub fn build_write_back_plan_impl(
     game_path: &str,

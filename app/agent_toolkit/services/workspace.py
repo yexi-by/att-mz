@@ -237,14 +237,10 @@ def _normal_placeholder_coverage_result_from_entries(
 def _structured_placeholder_coverage_result_from_entries(
     *,
     entries: list[tuple[str, list[str]]],
-    structured_rules: tuple[StructuredPlaceholderRule, ...],
+    text_rules: TextRules,
     rule_count: int,
 ) -> RuleCoverageResult:
     """用轻量索引正文构建结构化占位符覆盖结果。"""
-    text_rules = TextRules.from_setting(
-        TextRulesSetting(),
-        structured_placeholder_rules=structured_rules,
-    )
     candidate_details = collect_native_structured_placeholder_candidate_details_from_entries(
         entries=entries,
         text_rules=text_rules,
@@ -1099,6 +1095,7 @@ class WorkspaceAgentMixin:
                         warnings.append(mv_namebox_empty_issue)
             else:
                 errors.append(issue("mv_virtual_namebox_rules_missing", f"MV 工作区缺少 {MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME}"))
+        workspace_custom_rules = text_rules.custom_placeholder_rules
         if placeholder_rules_path.exists():
             async with aiofiles.open(placeholder_rules_path, "r", encoding="utf-8") as file:
                 placeholder_rules_text = await file.read()
@@ -1156,7 +1153,7 @@ class WorkspaceAgentMixin:
                     game_title=game_title,
                     rules_text=structured_placeholder_rules_text,
                     setting_text_rules=setting.text_rules,
-                    custom_rules=text_rules.custom_placeholder_rules,
+                    custom_rules=workspace_custom_rules,
                     entries=placeholder_entries,
                 )
             errors.extend(structured_placeholder_report.errors)
@@ -1172,9 +1169,14 @@ class WorkspaceAgentMixin:
                     warnings.append(structured_placeholder_empty_issue)
             try:
                 workspace_structured_rules = load_structured_placeholder_rules_text(structured_placeholder_rules_text)
+                workspace_structured_text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=workspace_custom_rules,
+                    structured_placeholder_rules=workspace_structured_rules,
+                )
                 structured_placeholder_coverage = _structured_placeholder_coverage_result_from_entries(
                     entries=placeholder_entries,
-                    structured_rules=workspace_structured_rules,
+                    text_rules=workspace_structured_text_rules,
                     rule_count=len(workspace_structured_rules),
                 )
                 if structured_placeholder_coverage.uncovered_count:

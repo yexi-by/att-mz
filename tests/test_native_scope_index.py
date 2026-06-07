@@ -1303,8 +1303,13 @@ def test_scan_native_rule_candidates_scans_structured_placeholder_candidates() -
         "location_path": "Map001.json/events/1/pages/0/list/0",
         "line_number": 1,
         "candidate": "<name:薬草>",
+        "text": "<name:薬草>",
+        "range": [0, 13],
         "covered": True,
+        "covered_by": "structured_placeholder",
         "matching_rules": ["INLINE_LABEL"],
+        "candidate_kind": "structured_shell",
+        "location_paths": ["Map001.json/events/1/pages/0/list/0"],
     }
     assert candidates_by_text["<other:未覆盖>"]["covered"] is False
     assert candidates_by_text["<other:未覆盖>"]["matching_rules"] == []

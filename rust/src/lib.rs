@@ -7,7 +7,7 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-const NATIVE_CONTRACT_VERSION: usize = 10;
+const NATIVE_CONTRACT_VERSION: usize = 11;
 
 #[pyfunction]
 fn native_contract_version() -> usize {
@@ -158,6 +158,15 @@ fn parse_javascript_string_spans_batch(py: Python<'_>, payload_json: String) -> 
 }
 
 #[pyfunction]
+fn collect_runtime_literal_issue_facts(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::collect_runtime_literal_issue_facts_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
 fn build_write_back_plan(
     py: Python<'_>,
     game_path: String,
@@ -200,6 +209,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scan_font_replacements, m)?)?;
     m.add_function(wrap_pyfunction!(parse_javascript_string_spans, m)?)?;
     m.add_function(wrap_pyfunction!(parse_javascript_string_spans_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(collect_runtime_literal_issue_facts, m)?)?;
     m.add_function(wrap_pyfunction!(build_write_back_plan, m)?)?;
     Ok(())
 }

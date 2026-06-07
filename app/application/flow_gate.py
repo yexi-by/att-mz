@@ -386,12 +386,14 @@ def structured_placeholder_scope_hash(
     *,
     translation_data_map: dict[str, TranslationData],
     structured_rules: tuple[StructuredPlaceholderRule, ...],
+    text_rules: TextRules | None = None,
 ) -> str:
     """计算结构化占位符空规则确认依赖的当前候选哈希。"""
     coverage = build_structured_placeholder_coverage_result(
         translation_data_map=translation_data_map,
         structured_rules=structured_rules,
         rule_count=len(structured_rules),
+        text_rules=text_rules,
     )
     return coverage.scope_hash
 
@@ -424,12 +426,17 @@ def build_structured_placeholder_coverage_result(
     translation_data_map: dict[str, TranslationData],
     structured_rules: tuple[StructuredPlaceholderRule, ...],
     rule_count: int,
+    text_rules: TextRules | None = None,
 ) -> RuleCoverageResult:
     """构建结构化占位符候选覆盖的完整内部结果。"""
-    text_rules = _structured_placeholder_candidate_text_rules(structured_rules)
+    active_text_rules = (
+        text_rules
+        if text_rules is not None
+        else _structured_placeholder_candidate_text_rules(structured_rules)
+    )
     details = collect_native_structured_placeholder_candidate_details(
         translation_data_map=translation_data_map,
-        text_rules=text_rules,
+        text_rules=active_text_rules,
     )
     uncovered_count = count_uncovered_structured_placeholder_candidate_details(details)
     return RuleCoverageResult(
@@ -447,12 +454,17 @@ def count_uncovered_structured_placeholder_candidates(
     *,
     translation_data_map: dict[str, TranslationData],
     structured_rules: tuple[StructuredPlaceholderRule, ...],
+    text_rules: TextRules | None = None,
 ) -> int:
     """统计未被结构化规则覆盖的协议外壳候选数量。"""
-    text_rules = _structured_placeholder_candidate_text_rules(structured_rules)
+    active_text_rules = (
+        text_rules
+        if text_rules is not None
+        else _structured_placeholder_candidate_text_rules(structured_rules)
+    )
     details = collect_native_structured_placeholder_candidate_details(
         translation_data_map=translation_data_map,
-        text_rules=text_rules,
+        text_rules=active_text_rules,
     )
     return count_uncovered_structured_placeholder_candidate_details(details)
 
@@ -698,6 +710,7 @@ async def collect_placeholder_candidate_review_decisions(
         translation_data_map=scope.translation_data_map,
         structured_rules=text_rules.structured_placeholder_rules,
         rule_count=structured_rule_count,
+        text_rules=text_rules,
     )
     structured_decision = await _build_candidate_review_decision(
         session=session,

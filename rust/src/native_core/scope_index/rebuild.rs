@@ -581,10 +581,7 @@ fn build_workflow_gate_scope_hashes(
         )?;
         metadata.insert(
             MV_VIRTUAL_NAMEBOX_RULE_DOMAIN.to_string(),
-            stable_json_fingerprint(&to_json_value(
-                &mv_scan.candidate_details,
-                "MV 虚拟名字框候选",
-            )?)?,
+            mv_scan.scope_hash,
         );
         record_stage(
             stage_timings,

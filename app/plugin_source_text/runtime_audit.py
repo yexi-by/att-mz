@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
+from app.native_javascript_ast import NativeRuntimeLiteralIssueFact, collect_native_runtime_literal_issue_facts
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import (
     GameData,
@@ -15,7 +15,7 @@ from app.rmmz.schema import (
     PluginSourceRuntimeWriteMapRecord,
     PluginSourceTextRuleRecord,
 )
-from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
+from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, coerce_json_value, ensure_json_object
 
 from .scanner import (
     PluginSourceBatchTextScan,
@@ -26,13 +26,6 @@ from .scanner import (
     scan_plugin_source_runtime_files_text_strict,
 )
 from .runtime_mapping import plugin_source_runtime_hash_text
-
-RAW_LITERAL_LINE_BREAK_CONTROL_PATTERN: re.Pattern[str] = re.compile(
-    r"(?<!\\)\\n(?P<fragment>[A-Za-z]+\d*\[[^\]\r\n]{0,64}\])"
-)
-VISIBLE_LINE_START_CONTROL_PATTERN: re.Pattern[str] = re.compile(
-    r"(?:(?<=\n)|(?<=\r))(?P<fragment>[A-Za-z]+\d*\[[^\]\r\n]{0,64}\])"
-)
 
 type ActiveRuntimeMappingStatus = Literal[
     "mapped_translate",
@@ -65,6 +58,7 @@ class ActiveRuntimePluginSourceIssue:
     mapping_status: ActiveRuntimeMappingStatus = "not_applicable"
     actionability: ActiveRuntimeActionability = "fix_runtime_file"
     source_review_required: bool = False
+    hint: JsonObject | None = None
 
     def to_json_object(self) -> JsonObject:
         """转换成报告 JSON 对象。"""
@@ -86,6 +80,8 @@ class ActiveRuntimePluginSourceIssue:
             payload["read_error"] = self.read_error
         if self.syntax_error:
             payload["syntax_error"] = self.syntax_error
+        if self.hint is not None:
+            payload["hint"] = self.hint
         return payload
 
 
@@ -221,6 +217,11 @@ def audit_active_runtime_plugin_source(
         files=source_files,
         active_file_names=enabled_plugin_files,
     )
+    native_issue_facts = (
+        _collect_native_literal_issue_facts_by_key(batch_scan=batch_scan, text_rules=text_rules)
+        if audit_text_issues
+        else {}
+    )
     for file_name in sorted(active_read_error_file_names):
         issues.append(
             ActiveRuntimePluginSourceIssue(
@@ -282,6 +283,7 @@ def audit_active_runtime_plugin_source(
                 _audit_literal(
                     literal=literal,
                     text_rules=text_rules,
+                    native_issue_fact=native_issue_facts.get(_literal_fact_key(literal)),
                     runtime_write_map_by_key=runtime_write_map_by_key,
                     excluded_source_review_keys=excluded_source_review_keys,
                 )
@@ -498,10 +500,64 @@ def _strict_active_runtime_syntax_issue(
     )
 
 
+def _collect_native_literal_issue_facts_by_key(
+    *,
+    batch_scan: PluginSourceBatchTextScan,
+    text_rules: TextRules,
+) -> dict[tuple[str, str], NativeRuntimeLiteralIssueFact]:
+    """按当前文本规则从 Rust 收集运行源码字符串风险事实。"""
+    native_input: dict[str, tuple[str, str]] = {}
+    key_by_id: dict[str, tuple[str, str]] = {}
+    for file_scan in batch_scan.file_scans.values():
+        for literal in file_scan.literals:
+            key = _literal_fact_key(literal)
+            literal_id = _literal_fact_id(key)
+            native_input[literal_id] = (literal.raw_text, literal.text)
+            key_by_id[literal_id] = key
+    if not native_input:
+        return {}
+    native_facts = collect_native_runtime_literal_issue_facts(
+        literals=native_input,
+        text_rules=text_rules,
+    )
+    return {
+        key_by_id[literal_id]: fact
+        for literal_id, fact in native_facts.items()
+    }
+
+
+def _literal_fact_key(literal: PluginSourceStringLiteral) -> tuple[str, str]:
+    """返回运行源码字符串风险事实的稳定键。"""
+    return (literal.file_name, literal.selector)
+
+
+def _literal_fact_id(key: tuple[str, str]) -> str:
+    """把稳定键编码为 native batch 内部 ID。"""
+    file_name, selector = key
+    return f"{file_name}\n{selector}"
+
+
+def _control_hint_for_fragment(
+    native_issue_fact: NativeRuntimeLiteralIssueFact | None,
+    fragment: str,
+) -> JsonObject | None:
+    """按 fragment 取 Rust 控制符拆分 hint。"""
+    if native_issue_fact is None:
+        return None
+    for raw_hint in native_issue_fact.control_code_hints:
+        hint = ensure_json_object(coerce_json_value(raw_hint), "runtime_literal.control_code_hint")
+        original = hint.get("original")
+        if original != fragment:
+            continue
+        return hint
+    return None
+
+
 def _audit_literal(
     *,
     literal: PluginSourceStringLiteral,
     text_rules: TextRules,
+    native_issue_fact: NativeRuntimeLiteralIssueFact | None,
     runtime_write_map_by_key: dict[tuple[str, str], PluginSourceRuntimeWriteMapRecord],
     excluded_source_review_keys: frozenset[tuple[str, str]],
 ) -> list[ActiveRuntimePluginSourceIssue]:
@@ -515,11 +571,12 @@ def _audit_literal(
     if classification.mapping_status == "mapped_excluded":
         return []
     issues: list[ActiveRuntimePluginSourceIssue] = []
-    for fragment in _collect_bad_control_fragments(literal):
+    placeholder_fragments = () if native_issue_fact is None else native_issue_fact.placeholder_fragments
+    for fragment in placeholder_fragments:
         issues.append(
             ActiveRuntimePluginSourceIssue(
                 code="active_runtime_placeholder_risk",
-                message="当前游戏运行文件里的插件源码疑似把游戏控制符反斜杠写坏",
+                message="当前游戏运行文件里的插件源码存在未受保护的游戏控制符片段",
                 file_name=literal.file_name,
                 fragment=fragment,
                 literal=literal,
@@ -527,20 +584,7 @@ def _audit_literal(
                 mapping_status=classification.mapping_status,
                 actionability=classification.actionability,
                 source_review_required=classification.source_review_required,
-            )
-        )
-    for candidate in text_rules.iter_unprotected_control_sequence_candidates(literal.text):
-        issues.append(
-            ActiveRuntimePluginSourceIssue(
-                code="active_runtime_placeholder_risk",
-                message="当前游戏运行文件里的插件源码存在未受保护的游戏控制符片段",
-                file_name=literal.file_name,
-                fragment=candidate.original,
-                literal=literal,
-                blocking=classification.blocking,
-                mapping_status=classification.mapping_status,
-                actionability=classification.actionability,
-                source_review_required=classification.source_review_required,
+                hint=_control_hint_for_fragment(native_issue_fact, fragment),
             )
         )
     try:
@@ -645,16 +689,6 @@ def _reviewed_excluded_source_keys(
         for selector in record.excluded_selectors:
             keys.add((record.file_name, selector))
     return frozenset(keys)
-
-
-def _collect_bad_control_fragments(literal: PluginSourceStringLiteral) -> list[str]:
-    """收集反斜杠被 JS 换行转义吃掉后的裸控制符片段。"""
-    fragments: list[str] = []
-    for match in RAW_LITERAL_LINE_BREAK_CONTROL_PATTERN.finditer(literal.raw_text):
-        fragments.append(match.group("fragment"))
-    for match in VISIBLE_LINE_START_CONTROL_PATTERN.finditer(literal.text):
-        fragments.append(match.group("fragment"))
-    return sorted(set(fragments))
 
 
 def _deduplicate_issues(
