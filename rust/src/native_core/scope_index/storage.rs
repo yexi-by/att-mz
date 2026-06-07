@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
-const CURRENT_SCHEMA_VERSION: i64 = 15;
+const CURRENT_SCHEMA_VERSION: i64 = 16;
 const SCHEMA_VERSION_KEY: &str = "current";
 const TEXT_INDEX_META_KEY: &str = "current";
 
