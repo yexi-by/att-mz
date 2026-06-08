@@ -1,4 +1,5 @@
 """RPG Maker 写回计划和 native 写回助手业务契约测试。"""
+# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -18,7 +19,55 @@ from app.text_index import (
     rebuild_text_index_native_storage,
 )
 
+from tests._native_write_plan_helper import (
+    _text_fact_domain_for_helper,
+    _translation_item_row_for_temp_db,
+)
 from tests.rmmz_writeback_contract_fixtures import *
+
+
+def test_native_write_plan_helper_serializes_temp_rows_by_item_index() -> None:
+    """测试临时译文行必须按 item 身份取 v2 fact，不能按 path 合并。"""
+    location_path = "CommonEvents.json/1/0"
+    first_item = TranslationItem(
+        location_path=location_path,
+        item_type="long_text",
+        role="アリス",
+        original_lines=["こんにちは"],
+        source_line_paths=[location_path],
+        translation_lines=["你好"],
+    )
+    second_item = TranslationItem(
+        location_path=location_path,
+        item_type="long_text",
+        role="ボブ",
+        original_lines=["こんばんは"],
+        source_line_paths=[location_path],
+        translation_lines=["晚上好"],
+    )
+
+    first_row = _translation_item_row_for_temp_db(
+        first_item,
+        0,
+        {0: ("fact-a", "raw-a", "translatable-a"), 1: ("fact-b", "raw-b", "translatable-b")},
+    )
+    second_row = _translation_item_row_for_temp_db(
+        second_item,
+        1,
+        {0: ("fact-a", "raw-a", "translatable-a"), 1: ("fact-b", "raw-b", "translatable-b")},
+    )
+
+    assert first_row[0] == "fact-a"
+    assert first_row[6:8] == ("raw-a", "translatable-a")
+    assert second_row[0] == "fact-b"
+    assert second_row[6:8] == ("raw-b", "translatable-b")
+    assert first_row[1] == second_row[1] == location_path
+
+
+def test_native_write_plan_helper_rejects_unknown_current_fact_path() -> None:
+    """测试 helper 不再把未知当前文本事实路径塞进 fake domain。"""
+    with pytest.raises(AssertionError, match="测试 helper 不支持的当前文本事实路径"):
+        _ = _text_fact_domain_for_helper("helper-only/path")
 
 
 async def _current_fact_id_for_path(session: TargetGameSession, location_path: str) -> str:

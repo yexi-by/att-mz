@@ -261,7 +261,7 @@ def _write_temp_db(
                 ]
             )
         )
-        fact_identity_by_location = _insert_text_fact_v2_contract(
+        fact_identity_by_item_index = _insert_text_fact_v2_contract(
             connection,
             items,
             game_data,
@@ -286,8 +286,8 @@ def _write_temp_db(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                _translation_item_row_for_temp_db(item, fact_identity_by_location)
-                for item in items
+                _translation_item_row_for_temp_db(item, item_index, fact_identity_by_item_index)
+                for item_index, item in enumerate(items)
             ],
         )
         _insert_speaker_terms(connection, speaker_name_translations)
@@ -307,7 +307,7 @@ def _insert_text_fact_v2_contract(
     speaker_name_translations: dict[str, str] | None,
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
-) -> dict[str, tuple[str, str, str]]:
+) -> dict[int, tuple[str, str, str]]:
     """让测试临时库满足 Rust 写回的 v2 fact scope 契约。"""
     scope_key = "test-helper-current"
     _ = connection.execute(
@@ -325,7 +325,7 @@ def _insert_text_fact_v2_contract(
     index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]] = []
     fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]] = []
     render_rows: list[tuple[str, int, str, str, str, str]] = []
-    fact_identity_by_location: dict[str, tuple[str, str, str]] = {}
+    fact_identity_by_item_index: dict[int, tuple[str, str, str]] = {}
     plugin_source_literals = _plugin_source_literals_by_location_path(game_data)
     source_line_paths_by_location = {
         item.location_path: list(item.source_line_paths)
@@ -347,10 +347,14 @@ def _insert_text_fact_v2_contract(
             _virtual_speaker,
         ) in mv_virtual_namebox_candidates
     }
+    mv_virtual_namebox_items_by_location_path: dict[str, list[tuple[int, TranslationItem]]] = {}
     for item_index, item in enumerate(items):
         if item.location_path in mv_virtual_namebox_location_paths:
+            mv_virtual_namebox_items_by_location_path.setdefault(item.location_path, []).append(
+                (item_index, item)
+            )
             continue
-        fact_id = f"test-helper-fact-{item_index:04d}"
+        fact_id = item.fact_id or f"test-helper-fact-{item_index:04d}"
         domain = _text_fact_domain_for_helper(item.location_path)
         source_file = _source_file_for_helper(item.location_path)
         source_type = domain
@@ -368,7 +372,7 @@ def _insert_text_fact_v2_contract(
         if _helper_domain_requires_render_parts(domain):
             render_rows.append((fact_id, 0, "translated_body", raw_text, translatable_text, "body"))
         translatable_hash = _sha256_text(translatable_text)
-        fact_identity_by_location[item.location_path] = (fact_id, raw_hash, translatable_hash)
+        fact_identity_by_item_index[item_index] = (fact_id, raw_hash, translatable_hash)
         index_rows.append(
             (
                 item.location_path,
@@ -412,7 +416,8 @@ def _insert_text_fact_v2_contract(
         index_rows=index_rows,
         fact_rows=fact_rows,
         render_rows=render_rows,
-        fact_identity_by_location=fact_identity_by_location,
+        mv_virtual_namebox_items_by_location_path=mv_virtual_namebox_items_by_location_path,
+        fact_identity_by_item_index=fact_identity_by_item_index,
     )
     if index_rows:
         _ = connection.executemany(INSERT_TEXT_INDEX_ITEM, index_rows)
@@ -420,17 +425,18 @@ def _insert_text_fact_v2_contract(
         _ = connection.executemany(INSERT_TEXT_FACT_V2, fact_rows)
     if render_rows:
         _ = connection.executemany(INSERT_TEXT_FACT_RENDER_PART_V2, render_rows)
-    return fact_identity_by_location
+    return fact_identity_by_item_index
 
 
 def _translation_item_row_for_temp_db(
     item: TranslationItem,
-    fact_identity_by_location: dict[str, tuple[str, str, str]],
+    item_index: int,
+    fact_identity_by_item_index: dict[int, tuple[str, str, str]],
 ) -> tuple[str, str, str, str | None, str, str, str, str, str]:
     """按测试临时 v2 fact 身份序列化保存译文行。"""
-    identity = fact_identity_by_location.get(item.location_path)
+    identity = fact_identity_by_item_index.get(item_index)
     if identity is None:
-        raise AssertionError(f"测试临时库缺少当前 v2 fact: {item.location_path}")
+        raise AssertionError(f"测试临时库缺少当前 v2 fact: index={item_index}, path={item.location_path}")
     fact_id, raw_hash, translatable_hash = identity
     return (
         fact_id,
@@ -459,7 +465,7 @@ def _text_fact_domain_for_helper(location_path: str) -> str:
         return "event_command"
     if _is_json_data_location_path(location_path):
         return "standard_data"
-    return "test_helper"
+    raise AssertionError(f"测试 helper 不支持的当前文本事实路径: {location_path}")
 
 
 def _helper_domain_requires_render_parts(domain: str) -> bool:
@@ -529,16 +535,25 @@ def _append_mv_virtual_namebox_fact_rows(
     index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
     fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
     render_rows: list[tuple[str, int, str, str, str, str]],
-    fact_identity_by_location: dict[str, tuple[str, str, str]],
+    mv_virtual_namebox_items_by_location_path: dict[str, list[tuple[int, TranslationItem]]],
+    fact_identity_by_item_index: dict[int, tuple[str, str, str]],
 ) -> None:
     """为 MV 虚拟名字框术语写回补当前 v2 fact/render parts 测试契约。"""
     next_fact_index = first_fact_index
     for source_file, location_path, source_line_path, raw_text, virtual_speaker in candidates:
-        source_line_paths = source_line_paths_by_location.get(location_path) or [source_line_path]
-        fact_id = f"test-helper-mv-namebox-{next_fact_index:04d}"
+        pending_items = mv_virtual_namebox_items_by_location_path.get(location_path) or []
+        if pending_items:
+            item_index, item = pending_items.pop(0)
+            source_line_paths = [path for path in item.source_line_paths] or [source_line_path]
+            fact_id = item.fact_id or f"test-helper-mv-namebox-{next_fact_index:04d}"
+        else:
+            item_index = None
+            source_line_paths = source_line_paths_by_location.get(location_path) or [source_line_path]
+            fact_id = f"test-helper-mv-namebox-{next_fact_index:04d}"
         next_fact_index += 1
         _append_single_mv_virtual_namebox_fact_row(
             fact_id=fact_id,
+            item_index=item_index,
             scope_key=scope_key,
             source_file=source_file,
             location_path=location_path,
@@ -548,7 +563,7 @@ def _append_mv_virtual_namebox_fact_rows(
             index_rows=index_rows,
             fact_rows=fact_rows,
             render_rows=render_rows,
-            fact_identity_by_location=fact_identity_by_location,
+            fact_identity_by_item_index=fact_identity_by_item_index,
         )
 
 
@@ -620,6 +635,7 @@ def _speaker_terms_for_mv_virtual_namebox_facts(
 def _append_single_mv_virtual_namebox_fact_row(
     *,
     fact_id: str,
+    item_index: int | None,
     scope_key: str,
     source_file: str,
     location_path: str,
@@ -629,14 +645,15 @@ def _append_single_mv_virtual_namebox_fact_row(
     index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
     fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
     render_rows: list[tuple[str, int, str, str, str, str]],
-    fact_identity_by_location: dict[str, tuple[str, str, str]],
+    fact_identity_by_item_index: dict[int, tuple[str, str, str]],
 ) -> None:
     """追加单条 MV virtual namebox v2 fact 测试行。"""
     render_parts = _mv_virtual_namebox_render_parts(raw_text, virtual_speaker)
     translatable_text = virtual_speaker.body_text
     raw_hash = _sha256_text(raw_text)
     translatable_hash = _sha256_text(translatable_text)
-    fact_identity_by_location[location_path] = (fact_id, raw_hash, translatable_hash)
+    if item_index is not None:
+        fact_identity_by_item_index[item_index] = (fact_id, raw_hash, translatable_hash)
     index_rows.append(
         (
             location_path,
