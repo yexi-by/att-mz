@@ -26,7 +26,7 @@ from app.native_scope_index import (
     NativeRuleCandidatesResult,
     scan_native_rule_candidates as real_scan_native_rule_candidates,
 )
-from app.persistence import GameRegistry, TargetGameSession
+from app.persistence import GameRegistry
 from app.plugin_source_text import (
     PluginSourceCandidate,
     PluginSourceScan,
@@ -2373,7 +2373,6 @@ async def test_validate_plugin_source_rules_errors_when_review_is_incomplete(
 async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_count(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """插件源码规则校验只读取插件源码前缀内的已保存译文。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
@@ -2447,11 +2446,6 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
                 ),
             ]
         )
-
-    async def forbidden_full_fact_id_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("插件源码规则校验不能全量读取已保存 fact_id")
-
-    monkeypatch.setattr(TargetGameSession, "read_translation_fact_ids", forbidden_full_fact_id_read)
 
     report = await service.validate_plugin_source_rules(
         game_title="テストゲーム",

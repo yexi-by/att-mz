@@ -37,6 +37,7 @@ from app.rmmz.schema import (
     TranslationItem,
 )
 from app.rmmz.text_rules import TextRules
+from app.text_fact_identity import TranslationFactIdentity, translation_item_fact_identity
 
 from .models import TextScopeEntry, TextScopeResult, TextScopeRuleHit, TextSourceType, WriteBackProbeError
 from .plugin_rules import read_fresh_plugin_text_rules
@@ -98,7 +99,7 @@ class TextScopeService:
         mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
         if translated_items is None:
             translated_items = await session.read_translated_items()
-        translated_fact_ids = _require_translation_fact_ids(translated_items)
+        translated_identities = _require_translation_identities(translated_items)
 
         translation_data_map = build_translation_data_map(
             game_data=game_data,
@@ -132,7 +133,7 @@ class TextScopeService:
         entries = [
             _active_item_to_scope_entry(
                 item=item,
-                translated_fact_ids=translated_fact_ids,
+                translated_identities=translated_identities,
                 write_back_reason=write_back_reasons.get(item.location_path, ""),
             )
             for item in active_items.values()
@@ -257,7 +258,7 @@ def collect_translation_data_paths(translation_data_map: dict[str, TranslationDa
 def _active_item_to_scope_entry(
     *,
     item: TranslationItem,
-    translated_fact_ids: set[str],
+    translated_identities: set[TranslationFactIdentity],
     write_back_reason: str,
 ) -> TextScopeEntry:
     """把当前可翻译条目转换成文本清单记录。"""
@@ -273,7 +274,7 @@ def _active_item_to_scope_entry(
         enters_translation=True,
         can_save_translation=True,
         can_write_back=can_write_back,
-        translated=item.fact_id is not None and item.fact_id in translated_fact_ids,
+        translated=translation_item_fact_identity(item, label="当前文本范围") in translated_identities,
         cannot_process_reason=write_back_reason,
     )
 
@@ -336,14 +337,12 @@ def _rule_source_label(source_type: TextSourceType) -> str:
     return "RPG Maker 标准数据结构"
 
 
-def _require_translation_fact_ids(items: list[TranslationItem]) -> set[str]:
-    """读取已保存译文 fact_id；缺失说明旧形状混入当前流程。"""
-    fact_ids: set[str] = set()
+def _require_translation_identities(items: list[TranslationItem]) -> set[TranslationFactIdentity]:
+    """读取已保存译文完整 identity；缺失说明旧形状混入当前流程。"""
+    identities: set[TranslationFactIdentity] = set()
     for item in items:
-        if not item.fact_id:
-            raise ValueError(f"已保存译文缺少 fact_id，无法判断当前事实身份: {item.location_path}")
-        fact_ids.add(item.fact_id)
-    return fact_ids
+        identities.add(translation_item_fact_identity(item, label="已保存译文"))
+    return identities
 
 
 def _fresh_nonstandard_data_rules_for_scope(

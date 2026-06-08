@@ -446,6 +446,48 @@ def test_text_fact_v2_migrated_flows_do_not_use_translated_paths_sets() -> None:
             assert marker not in source, f"{path.as_posix()} still contains {marker}"
 
 
+def test_text_fact_v2_success_identity_requires_current_hash_match() -> None:
+    """已翻译身份必须由当前 v2 fact 与保存译文完整 identity 匹配得出。"""
+    text_scope_source = Path("app/text_scope/builder.py").read_text(encoding="utf-8")
+    active_entry_source = _source_for_function(text_scope_source, "_active_item_to_scope_entry")
+    for marker in (
+        "item.fact_id is not None and item.fact_id in",
+        "if item.fact_id is not None and item.fact_id in",
+    ):
+        assert marker not in active_entry_source
+
+    rust_scope_source = Path("rust/src/native_core/scope_index/mod.rs").read_text(encoding="utf-8")
+    scope_gate_payload_source = rust_scope_source[
+        rust_scope_source.index("struct ScopeGatePayload"):
+        rust_scope_source.index("struct ScopeIndexDataFileInput")
+    ]
+    assert "translated_fact_ids" not in scope_gate_payload_source
+    for field_name in ("matched_translation_fact_ids", "quality_error_fact_ids"):
+        field_index = scope_gate_payload_source.index(field_name)
+        field_context = scope_gate_payload_source[max(0, field_index - 80):field_index]
+        assert "#[serde(default)]" not in field_context
+
+    success_identity_paths = (
+        Path("app/application/use_cases/translation_run.py"),
+        Path("app/agent_toolkit/services/common.py"),
+        Path("app/agent_toolkit/services/feedback.py"),
+        Path("app/agent_toolkit/services/quality.py"),
+        Path("app/agent_toolkit/services/rule_identity.py"),
+        Path("app/agent_toolkit/services/rule_validation.py"),
+        Path("app/agent_toolkit/services/workspace.py"),
+        Path("app/text_index.py"),
+    )
+    for path in success_identity_paths:
+        source = path.read_text(encoding="utf-8")
+        assert "read_translation_fact_ids()" not in source, path.as_posix()
+        assert "require_translation_fact_ids" not in source, path.as_posix()
+        assert "translated_fact_ids: set[str]" not in source, path.as_posix()
+        assert "item.fact_id not in translated_fact_ids" not in source, path.as_posix()
+        assert "item.fact_id is not None and item.fact_id in translated_fact_ids" not in source, path.as_posix()
+        assert "hit.fact_id is not None and hit.fact_id in translated_fact_ids" not in source, path.as_posix()
+        assert "translated_fact_ids = {item.fact_id" not in source, path.as_posix()
+
+
 def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> None:
     """工作区、MV 虚拟名字框和插件配置导出保持薄适配当前边界。"""
     workspace_source = Path("app/agent_toolkit/services/workspace.py").read_text(encoding="utf-8")

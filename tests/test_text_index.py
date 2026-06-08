@@ -41,6 +41,7 @@ from app.text_index import (
     text_index_source_branch_gates_prechecked,
 )
 from app.text_fact_readers import read_current_text_fact_records_v2
+from app.text_fact_quality import text_fact_record_to_translation_item
 from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 
@@ -1037,6 +1038,35 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_fact_ids_witho
 
     assert result.quality_error_count == 1
     assert result.quality_gate["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_text_index_scope_gate_ignores_saved_translation_with_mismatched_hash(
+    minimal_english_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """同 fact_id 但 hash 不匹配的保存译文不能算作当前 v2 fact 已翻译。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_english_game_dir, source_language="en")
+    service = AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    )
+    report = await service.rebuild_text_index(game_title=record.game_title)
+    assert report.status == "ok"
+
+    async with await registry.open_game(record.game_title) as session:
+        index_items = await session.read_text_index_items()
+        current_facts = await read_current_text_fact_records_v2(session, limit=None)
+        target_fact = next(fact for fact in current_facts if fact.location_path == index_items[0].location_path)
+        stale_item = text_fact_record_to_translation_item(target_fact)
+        stale_item.source_fact_translatable_hash = f"{target_fact.translatable_hash}:stale"
+        stale_item.translation_lines = ["已保存但不匹配当前事实"]
+        await session.write_translation_items([stale_item])
+
+        result = await evaluate_text_index_scope_gate(session=session, records=index_items)
+
+    assert result.translated_count == 0
 
 
 @pytest.mark.asyncio

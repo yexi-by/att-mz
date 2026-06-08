@@ -55,7 +55,10 @@ from app.rule_review_decision import (
     build_rule_review_decision,
 )
 from app.text_fact_core import item_type_from_text_fact, text_fact_lines
-from app.text_fact_counts import read_text_fact_quality_error_fact_ids_v2
+from app.text_fact_counts import (
+    read_current_matching_translation_fact_ids_v2,
+    read_text_fact_quality_error_fact_ids_v2,
+)
 from app.text_fact_readers import read_current_text_fact_records_v2
 from app.text_scope import TextScopeEntry, TextScopeResult, TextSourceType
 
@@ -384,15 +387,16 @@ async def evaluate_text_index_scope_gate(
     records: Iterable[TextIndexItemRecord],
     required_paths: Iterable[str] = (),
 ) -> NativeScopeGateResult:
-    """用当前 v2 fact 和已保存译文 fact_id 调用 Rust 范围门禁摘要。"""
+    """用当前 v2 fact 和已保存译文完整身份调用 Rust 范围门禁摘要。"""
     record_list = list(records)
     current_facts = await read_current_text_fact_records_v2(session, limit=None)
     latest_quality_error_fact_ids = await _read_latest_quality_error_fact_ids(session)
+    matched_translation_fact_ids = await read_current_matching_translation_fact_ids_v2(session)
     return evaluate_native_scope_gate(
         _scope_gate_payload_from_text_fact_records(
             records=record_list,
             facts=current_facts,
-            translated_fact_ids=await session.read_translation_fact_ids(),
+            matched_translation_fact_ids=matched_translation_fact_ids,
             quality_error_fact_ids=latest_quality_error_fact_ids,
             required_paths=required_paths,
         )
@@ -622,7 +626,7 @@ def _scope_gate_payload_from_text_fact_records(
     *,
     records: Iterable[TextIndexItemRecord],
     facts: Iterable[TextFactV2Record],
-    translated_fact_ids: Iterable[str],
+    matched_translation_fact_ids: Iterable[str],
     quality_error_fact_ids: Iterable[str],
     required_paths: Iterable[str],
 ) -> JsonObject:
@@ -651,7 +655,7 @@ def _scope_gate_payload_from_text_fact_records(
             entries.append(_scope_gate_entry_from_text_fact(record=record, fact=fact))
     return {
         "entries": entries,
-        "translated_fact_ids": _string_array(sorted(set(translated_fact_ids))),
+        "matched_translation_fact_ids": _string_array(sorted(set(matched_translation_fact_ids))),
         "quality_error_fact_ids": _string_array(sorted(set(quality_error_fact_ids))),
         "required_paths": _string_array(sorted(set(required_paths))),
     }

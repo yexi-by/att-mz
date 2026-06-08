@@ -16,7 +16,6 @@ from .sql import (
     SELECT_TRANSLATED_ITEMS,
     SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX,
     SELECT_TRANSLATED_ITEMS_BY_PREFIX,
-    SELECT_TRANSLATION_FACT_IDS,
     TRANSLATION_TABLE_NAME,
 )
 
@@ -52,18 +51,6 @@ class TranslationRecordSessionMixin(SessionMixinBase):
                 )
             _ = await self.connection.executemany(INSERT_TRANSLATION, serialized_items)
         await self.commit()
-
-    async def read_translation_fact_ids(self) -> set[str]:
-        """读取主翻译表中的全部已保存 v2 fact_id。"""
-        async with self.connection.execute(SELECT_TRANSLATION_FACT_IDS) as cursor:
-            rows = await cursor.fetchall()
-        fact_ids: set[str] = set()
-        for row in rows:
-            fact_id = row_str(row, "fact_id", self.db_path)
-            if not fact_id:
-                raise RuntimeError("已保存译文缺少 v2 fact_id，无法判断当前事实身份")
-            fact_ids.add(fact_id)
-        return fact_ids
 
     async def count_translated_items(self) -> int:
         """统计主翻译表中的已保存译文数量。"""

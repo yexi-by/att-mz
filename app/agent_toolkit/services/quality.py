@@ -94,6 +94,12 @@ from app.text_facts import (
     read_current_text_fact_translation_items_by_paths,
     read_writable_text_fact_translation_items_v2,
 )
+from app.text_fact_identity import (
+    TranslationFactIdentity,
+    require_translation_fact_identities,
+    text_fact_record_identity,
+    translation_item_fact_identity,
+)
 from app.observability import current_diagnostics
 
 QUALITY_REPORT_FULL_RECHECK_LIMIT = 1000
@@ -1057,37 +1063,34 @@ class QualityAgentMixin:
                         ),
                     },
                     details={},
-                )
+            )
             translated_items = await session.read_translated_items()
             translated_by_path = {item.location_path: item for item in translated_items}
-            translated_fact_ids = {item.fact_id for item in translated_items if item.fact_id}
+            translated_identities = require_translation_fact_identities(translated_items)
             active_translation_items = await read_writable_text_fact_translation_items_v2(session)
             active_items_by_path: dict[str, TranslationItem] = {}
             active_items_by_fact_id: dict[str, TranslationItem] = {}
+            active_identities: set[TranslationFactIdentity] = set()
             for item in active_translation_items:
+                identity = translation_item_fact_identity(item, label="当前可写文本")
+                active_identities.add(identity)
                 if item.location_path not in active_items_by_path:
                     active_items_by_path[item.location_path] = item
                 if item.fact_id:
                     active_items_by_fact_id[item.fact_id] = item
-            active_fact_ids = {
-                item.fact_id
-                for item in active_translation_items
-                if item.fact_id
-            }
             active_paths = set(active_items_by_path)
-            translated_items_in_active_paths = [
+            translated_items_in_active_scope = [
                 item
                 for item in translated_items
-                if item.fact_id in active_fact_ids
+                if translation_item_fact_identity(item, label="已保存译文") in active_identities
             ]
             active_translated_items = [
                 item
                 for item in await read_text_fact_quality_items_for_translations(
                     session,
-                    translated_items_in_active_paths,
+                    translated_items_in_active_scope,
                     source_text="translatable",
                 )
-                if item.location_path in active_paths
             ]
             latest_run = await session.read_latest_translation_run()
             if latest_run is None:
@@ -1131,7 +1134,8 @@ class QualityAgentMixin:
                 },
                 details={"coverage": coverage_report.details},
             )
-        pending_fact_ids = active_fact_ids - translated_fact_ids
+        pending_identities = active_identities - translated_identities
+        pending_fact_ids = {fact_id for fact_id, _raw_hash, _translatable_hash in pending_identities}
         set_status("整理模型检查失败记录")
         quality_error_items = [
             item
@@ -1414,7 +1418,7 @@ class QualityAgentMixin:
         else:
             text_fact_records = await read_current_text_fact_records_v2(session, limit=None)
             active_paths = {record.location_path for record in text_fact_records}
-            active_fact_ids = {record.fact_id for record in text_fact_records}
+            active_identities = {text_fact_record_identity(record) for record in text_fact_records}
             translated_items = await session.read_translated_items()
             writable_paths = {
                 item.location_path
@@ -1423,7 +1427,7 @@ class QualityAgentMixin:
             active_translated_items = [
                 item
                 for item in translated_items
-                if item.fact_id in active_fact_ids
+                if translation_item_fact_identity(item, label="已保存译文") in active_identities
             ]
             stale_source_residual_rule_paths = {
                 rule.location_path

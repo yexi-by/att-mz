@@ -33,11 +33,11 @@ from .common import (
 )
 from .rule_identity import (
     RuleFactProbe,
-    require_translation_fact_ids,
     resolve_current_rule_fact_hits,
     resolve_current_rule_translation_items,
     stale_translation_fact_ids,
 )
+from app.text_fact_identity import require_translation_fact_identities
 from app.event_command_text.native_validation import (
     NativeEventCommandRuleValidationContext,
     build_native_event_command_rule_validation_context,
@@ -131,20 +131,30 @@ async def _resolve_rule_hit_metrics(
     ]
     rule_fact_hits = await resolve_current_rule_fact_hits(session, probes)
     resolved_by_probe = {
-        (hit.location_path, hit.sample_text): hit.fact_id
+        (hit.location_path, hit.sample_text): hit
         for hit in rule_fact_hits
     }
-    return [
-        [
-            _RuleHitMetric(
-                location_path=hit.location_path,
-                sample_text=hit.sample_text,
-                fact_id=resolved_by_probe.get((hit.location_path, hit.sample_text)),
+    resolved_groups: list[list[_RuleHitMetric]] = []
+    for record_hits in grouped_hits:
+        resolved_record_hits: list[_RuleHitMetric] = []
+        for hit in record_hits:
+            resolved_hit = resolved_by_probe.get((hit.location_path, hit.sample_text))
+            if resolved_hit is None:
+                resolved_record_hits.append(
+                    _RuleHitMetric(location_path=hit.location_path, sample_text=hit.sample_text)
+                )
+                continue
+            resolved_record_hits.append(
+                _RuleHitMetric(
+                    location_path=hit.location_path,
+                    sample_text=hit.sample_text,
+                    fact_id=resolved_hit.fact_id,
+                    source_fact_raw_hash=resolved_hit.source_fact_raw_hash,
+                    source_fact_translatable_hash=resolved_hit.source_fact_translatable_hash,
+                )
             )
-            for hit in record_hits
-        ]
-        for record_hits in grouped_hits
-    ]
+        resolved_groups.append(resolved_record_hits)
+    return resolved_groups
 
 
 async def _resolve_plugin_source_hit_metrics(
@@ -495,7 +505,7 @@ class RuleValidationAgentMixin:
                 translated_note_items = await session.read_translated_items_by_prefixes(
                     _note_tag_rule_prefixes(game_data=game_data, rule_records=records)
                 )
-                translated_fact_ids = require_translation_fact_ids(translated_note_items)
+                translated_identities = require_translation_fact_identities(translated_note_items)
                 note_hit_metrics = _note_tag_rule_hits_from_native_details(
                     records=records,
                     hit_details=collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules),
@@ -524,7 +534,7 @@ class RuleValidationAgentMixin:
             records=records,
             game_data=game_data,
             text_rules=text_rules,
-            translated_fact_ids=translated_fact_ids,
+            translated_identities=translated_identities,
             hits_by_record=resolved_note_hit_metrics,
         )
 
@@ -770,7 +780,7 @@ class RuleValidationAgentMixin:
                 translated_plugin_items = await session.read_translated_items_by_prefixes(
                     context.translation_prefixes
                 )
-                translated_fact_ids = require_translation_fact_ids(translated_plugin_items)
+                translated_identities = require_translation_fact_identities(translated_plugin_items)
                 context = await _resolve_plugin_rule_validation_context(
                     session=session,
                     context=context,
@@ -793,7 +803,7 @@ class RuleValidationAgentMixin:
         return build_plugin_rule_validation_report_from_native_context(
             context=context,
             game_data=game_data,
-            translated_fact_ids=translated_fact_ids,
+            translated_identities=translated_identities,
         )
 
     async def validate_plugin_source_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
@@ -830,7 +840,7 @@ class RuleValidationAgentMixin:
                 translated_plugin_source_items = await session.read_translated_items_by_prefixes(
                     _plugin_source_file_prefixes(game_data)
                 )
-                translated_fact_ids = require_translation_fact_ids(translated_plugin_source_items)
+                translated_identities = require_translation_fact_identities(translated_plugin_source_items)
                 scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
                 records = build_plugin_source_rule_records_from_import(
                     game_data=game_data,
@@ -869,7 +879,7 @@ class RuleValidationAgentMixin:
             game_data=game_data,
             text_rules=text_rules,
             scan=scan,
-            translated_fact_ids=translated_fact_ids,
+            translated_identities=translated_identities,
             hits_by_file=resolved_plugin_source_hit_metrics,
         )
 
@@ -1063,7 +1073,7 @@ class RuleValidationAgentMixin:
                     translated_event_items = await session.read_translated_items_by_paths(sorted(extracted_paths))
                 else:
                     translated_event_items = []
-                translated_fact_ids = require_translation_fact_ids(translated_event_items)
+                translated_identities = require_translation_fact_identities(translated_event_items)
                 native_validation_context = await _resolve_event_command_rule_validation_context(
                     session=session,
                     context=native_validation_context,
@@ -1087,7 +1097,7 @@ class RuleValidationAgentMixin:
             records=records,
             game_data=game_data,
             text_rules=text_rules,
-            translated_fact_ids=translated_fact_ids,
+            translated_identities=translated_identities,
             native_validation_context=native_validation_context,
         )
 

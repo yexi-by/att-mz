@@ -44,9 +44,7 @@ struct BuildScopeIndexPayload {
 #[derive(Debug, Deserialize)]
 struct ScopeGatePayload {
     entries: Vec<ScopeEntryInput>,
-    #[serde(default)]
-    translated_fact_ids: Vec<String>,
-    #[serde(default)]
+    matched_translation_fact_ids: Vec<String>,
     quality_error_fact_ids: Vec<String>,
     #[serde(default)]
     required_paths: Vec<String>,
@@ -877,7 +875,8 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
         }
     }
 
-    let translated_fact_ids: BTreeSet<String> = payload.translated_fact_ids.into_iter().collect();
+    let matched_translation_fact_ids: BTreeSet<String> =
+        payload.matched_translation_fact_ids.into_iter().collect();
     let quality_error_fact_ids: BTreeSet<String> =
         payload.quality_error_fact_ids.into_iter().collect();
     let missing_required_paths: Vec<String> = payload
@@ -902,8 +901,12 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
             },
             quality_error_count: quality_error_fact_ids.len(),
         },
-        pending_count: writable_fact_ids.difference(&translated_fact_ids).count(),
-        translated_count: active_fact_ids.intersection(&translated_fact_ids).count(),
+        pending_count: writable_fact_ids
+            .difference(&matched_translation_fact_ids)
+            .count(),
+        translated_count: active_fact_ids
+            .intersection(&matched_translation_fact_ids)
+            .count(),
         quality_error_count: quality_error_fact_ids.len(),
         writable_location_paths,
     };
@@ -1186,7 +1189,7 @@ mod tests {
                     "locator": {"kind": "system"}
                 }
             ],
-            "translated_fact_ids": ["fact:event-command:hello"],
+            "matched_translation_fact_ids": ["fact:event-command:hello"],
             "quality_error_fact_ids": ["fact:system:title"],
             "required_paths": [
                 "Map001.json/events/1/pages/0/list/0",

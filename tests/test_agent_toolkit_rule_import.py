@@ -2435,7 +2435,6 @@ async def test_validate_plugin_rules_reports_json_string_leaf_candidates(
 async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """插件规则校验只读取规则插件前缀内的已保存译文。"""
     registry = GameRegistry(tmp_path / "db")
@@ -2458,11 +2457,6 @@ async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
                 ),
             ]
         )
-
-    async def forbidden_full_fact_id_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("插件规则校验不能全量读取已保存 fact_id")
-
-    monkeypatch.setattr(TargetGameSession, "read_translation_fact_ids", forbidden_full_fact_id_read)
 
     report = await service.validate_plugin_rules(
         game_title="テストゲーム",
@@ -2661,7 +2655,6 @@ async def test_mv_namebox_rule_validation_skips_plugin_source_file_loading(
 async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Note 标签规则校验只读取规则文件前缀内的已保存译文。"""
     items_path = minimal_game_dir / "data" / "Items.json"
@@ -2690,11 +2683,6 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
                 ),
             ]
         )
-
-    async def forbidden_full_fact_id_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("Note 标签规则校验不能全量读取已保存 fact_id")
-
-    monkeypatch.setattr(TargetGameSession, "read_translation_fact_ids", forbidden_full_fact_id_read)
 
     report = await service.validate_note_tag_rules(
         game_title="テストゲーム",

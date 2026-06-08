@@ -21,6 +21,7 @@ from .common import (
 )
 from app.persistence.records import TextFactV2Record, TextIndexItemRecord
 from app.text_index import detect_text_index_invalidations
+from app.text_fact_counts import read_current_matching_translation_fact_ids_v2
 from app.text_facts import TextFactContractError, read_current_text_fact_records_v2
 
 
@@ -160,11 +161,11 @@ class FeedbackAgentMixin:
                         "missing_text_fact_location_paths": missing_fact_path_details,
                     },
                 )
-            translated_fact_ids = await session.read_translation_fact_ids()
+            matched_translation_fact_ids = await read_current_matching_translation_fact_ids_v2(session)
             feedback_entries = _feedback_fact_entries_from_v2(
                 index_records=index_records,
                 facts_by_path=facts_by_path,
-                translated_fact_ids=translated_fact_ids,
+                matched_translation_fact_ids=matched_translation_fact_ids,
             )
         classified_occurrences = _classify_feedback_occurrences(
             occurrences=occurrences,
@@ -200,7 +201,7 @@ def _feedback_fact_entries_from_v2(
     *,
     index_records: list[TextIndexItemRecord],
     facts_by_path: dict[str, list[TextFactV2Record]],
-    translated_fact_ids: set[str],
+    matched_translation_fact_ids: set[str],
 ) -> list[_FeedbackFactEntry]:
     """用 v2 facts 和当前 text index 可写状态构造反馈归类输入。"""
     entries: list[_FeedbackFactEntry] = []
@@ -220,7 +221,7 @@ def _feedback_fact_entries_from_v2(
                         item_type=fact.item_type,
                     ),
                     can_write_back=record.writable,
-                    translated=fact.fact_id in translated_fact_ids,
+                    translated=fact.fact_id in matched_translation_fact_ids,
                 )
             )
     return entries

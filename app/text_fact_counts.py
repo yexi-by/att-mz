@@ -75,6 +75,27 @@ async def count_translated_text_facts_v2(session: TargetGameSession) -> int:
     )
 
 
+async def read_current_matching_translation_fact_ids_v2(session: TargetGameSession) -> set[str]:
+    """读取与当前 v2 fact 完整身份匹配的已保存译文 fact_id。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await assert_current_scope_fact_schema(session=session, scope=scope)
+    async with session.connection.execute(
+        f"""
+--sql
+            SELECT facts.fact_id
+            FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+            INNER JOIN [{TRANSLATION_TABLE_NAME}] AS translations
+                ON {translation_matches_fact_sql()}
+            WHERE facts.scope_key = ?
+            ORDER BY facts.fact_id
+        ;
+        """,
+        (scope.scope_key,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return {row_str(row, "fact_id", session.db_path) for row in rows}
+
+
 async def count_writable_text_facts_v2(session: TargetGameSession) -> int:
     """统计当前 v2 scope 内可写回的文本事实数量。"""
     scope = await read_current_text_fact_scope_v2(session)

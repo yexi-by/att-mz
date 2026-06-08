@@ -12,6 +12,7 @@ from app.native_quality import collect_native_quality_counts, count_native_write
 from app.persistence import TargetGameSession
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import TextRules
+from app.text_fact_identity import TranslationFactIdentity, translation_item_fact_identity
 from app.text_scope import TextScopeResult
 
 
@@ -66,41 +67,42 @@ async def collect_write_back_quality_errors(
         raise RuntimeError("collect_write_back_quality_errors 需要调用者传入 Rust/index 生成的文本范围，不能回退构建 Python 完整文本范围")
     errors: list[WriteBackQualityIssue] = []
     active_items = scope.active_items()
-    active_items_by_fact_id = _translation_items_by_required_fact_id(
+    active_items_by_identity = _translation_items_by_required_identity(
         active_items,
         label="当前文本范围",
     )
-    translated_items_by_fact_id = _translation_items_by_required_fact_id(
+    translated_items_by_identity = _translation_items_by_required_identity(
         translated_items,
         label="已保存译文",
     )
     writable_paths = scope.writable_paths
-    active_fact_ids = set(active_items_by_fact_id)
-    writable_fact_ids: set[str] = set()
+    active_identities = set(active_items_by_identity)
+    writable_identities: set[TranslationFactIdentity] = set()
     for item in active_items:
-        if item.fact_id is not None and item.location_path in writable_paths:
-            writable_fact_ids.add(item.fact_id)
-    translated_fact_ids = set(translated_items_by_fact_id)
-    pending_fact_ids = writable_fact_ids - translated_fact_ids
-    stale_fact_ids = translated_fact_ids - writable_fact_ids
+        if item.location_path in writable_paths:
+            writable_identities.add(translation_item_fact_identity(item, label="当前文本范围"))
+    translated_identities = set(translated_items_by_identity)
+    pending_identities = writable_identities - translated_identities
+    stale_identities = translated_identities - writable_identities
+    pending_fact_ids = {fact_id for fact_id, _raw_hash, _translatable_hash in pending_identities}
     active_translated_items = [
         item
         for item in translated_items
-        if item.fact_id in active_fact_ids
+        if translation_item_fact_identity(item, label="已保存译文") in active_identities
     ]
 
-    if require_complete_translation and pending_fact_ids:
+    if require_complete_translation and pending_identities:
         errors.append(
             WriteBackQualityIssue(
                 code="coverage_missing_translation",
-                message=f"还有 {len(pending_fact_ids)} 条文本没有成功保存译文",
+                message=f"还有 {len(pending_identities)} 条文本没有成功保存译文",
             )
         )
-    if stale_fact_ids:
+    if stale_identities:
         errors.append(
             WriteBackQualityIssue(
                 code="stale_saved_translations",
-                message=f"发现 {len(stale_fact_ids)} 条已保存译文不在当前可写文本范围内",
+                message=f"发现 {len(stale_identities)} 条已保存译文不在当前可写文本范围内",
             )
         )
 
@@ -182,20 +184,19 @@ async def collect_write_back_quality_errors(
     return errors
 
 
-def _translation_items_by_required_fact_id(
+def _translation_items_by_required_identity(
     items: list[TranslationItem],
     *,
     label: str,
-) -> dict[str, TranslationItem]:
-    """按 fact_id 索引译文条目；缺失或重复说明当前事实身份不可判定。"""
-    items_by_fact_id: dict[str, TranslationItem] = {}
+) -> dict[TranslationFactIdentity, TranslationItem]:
+    """按完整 v2 identity 索引译文条目；缺失或重复说明当前事实身份不可判定。"""
+    items_by_identity: dict[TranslationFactIdentity, TranslationItem] = {}
     for item in items:
-        if not item.fact_id:
-            raise ValueError(f"{label}缺少 v2 fact_id，无法判断已翻译事实身份: {item.location_path}")
-        if item.fact_id in items_by_fact_id:
-            raise ValueError(f"{label}包含重复 v2 fact_id，无法判断已翻译事实身份: {item.fact_id}")
-        items_by_fact_id[item.fact_id] = item
-    return items_by_fact_id
+        identity = translation_item_fact_identity(item, label=label)
+        if identity in items_by_identity:
+            raise ValueError(f"{label}包含重复 v2 fact identity，无法判断已翻译事实身份: {identity[0]}")
+        items_by_identity[identity] = item
+    return items_by_identity
 
 
 __all__: list[str] = [

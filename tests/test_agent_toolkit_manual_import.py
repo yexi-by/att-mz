@@ -1182,11 +1182,6 @@ async def test_translation_status_uses_database_fast_path_by_default(
         _ = (args, kwargs)
         raise AssertionError("translation-status 默认不应加载游戏文件")
 
-    async def forbidden_full_translation_fact_id_read(*args: object, **kwargs: object) -> NoReturn:
-        """快速状态查询不应读取全部已保存译文 fact_id。"""
-        _ = (args, kwargs)
-        raise AssertionError("translation-status 默认不应读取全部已保存译文 fact_id")
-
     async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
         """快速状态查询不应读取全部质量错误明细。"""
         _ = (args, kwargs)
@@ -1204,10 +1199,6 @@ async def test_translation_status_uses_database_fast_path_by_default(
     monkeypatch.setattr(
         "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
         forbidden_game_data_load,
-    )
-    monkeypatch.setattr(
-        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_fact_ids",
-        forbidden_full_translation_fact_id_read,
     )
     monkeypatch.setattr(
         "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
@@ -1275,11 +1266,6 @@ async def test_translation_status_refresh_scope_uses_text_index_without_full_sco
         _ = (args, kwargs)
         raise AssertionError("translation-status --refresh-scope 不应读取完整索引路径集合")
 
-    async def forbidden_full_translation_fact_id_read(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 状态刷新不应读取全部已保存译文 fact_id。"""
-        _ = (args, kwargs)
-        raise AssertionError("translation-status --refresh-scope 不应读取全部已保存译文 fact_id")
-
     async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
         """warm index 状态刷新不应读取全部质量错误明细。"""
         _ = (args, kwargs)
@@ -1304,10 +1290,6 @@ async def test_translation_status_refresh_scope_uses_text_index_without_full_sco
     monkeypatch.setattr(
         "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_location_paths",
         forbidden_full_text_index_path_read,
-    )
-    monkeypatch.setattr(
-        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_fact_ids",
-        forbidden_full_translation_fact_id_read,
     )
     monkeypatch.setattr(
         "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",

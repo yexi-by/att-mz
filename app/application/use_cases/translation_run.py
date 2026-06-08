@@ -18,6 +18,7 @@ from app.terminology import TerminologyPromptIndex
 from app.translation import TranslationBatch, TranslationCache, iter_translation_context_batches
 from app.translation.retry import request_with_recoverable_retry
 from app.translation.verify import verify_translation_batch
+from app.text_fact_identity import TranslationFactIdentity, translation_item_fact_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,16 +368,15 @@ async def _drain_translation_error_queue(
 def filter_pending_translation_data(
     *,
     translation_data_map: dict[str, TranslationData],
-    translated_fact_ids: set[str],
+    translated_identities: set[TranslationFactIdentity],
 ) -> dict[str, TranslationData]:
-    """按 v2 fact_id 过滤掉数据库中已经存在译文的条目。"""
+    """按完整 v2 fact identity 过滤掉数据库中已经存在译文的条目。"""
     pending_translation_data_map: dict[str, TranslationData] = {}
     for file_name, translation_data in translation_data_map.items():
         pending_items: list[TranslationItem] = []
         for item in translation_data.translation_items:
-            if not item.fact_id:
-                raise ValueError(f"翻译条目缺少 v2 fact_id，无法判断是否已经保存译文: {item.location_path}")
-            if item.fact_id not in translated_fact_ids:
+            identity = translation_item_fact_identity(item, label="翻译条目")
+            if identity not in translated_identities:
                 pending_items.append(item)
         if not pending_items:
             continue

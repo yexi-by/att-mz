@@ -152,10 +152,10 @@ from app.persistence.records import TextFactScopeV2Record
 from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
 from .rule_identity import (
     RuleFactProbe,
-    require_translation_fact_ids,
     resolve_current_rule_fact_hits,
     resolve_current_rule_translation_items,
 )
+from app.text_fact_identity import require_translation_fact_identities
 
 SOURCE_SNAPSHOT_MISSING_MESSAGE = (
     "尚未创建翻译源快照，请使用干净原始游戏目录重新执行 add-game；"
@@ -210,20 +210,30 @@ async def _resolve_workspace_rule_hit_metrics(
     ]
     rule_fact_hits = await resolve_current_rule_fact_hits(session, probes)
     resolved_by_probe = {
-        (hit.location_path, hit.sample_text): hit.fact_id
+        (hit.location_path, hit.sample_text): hit
         for hit in rule_fact_hits
     }
-    return [
-        [
-            _RuleHitMetric(
-                location_path=hit.location_path,
-                sample_text=hit.sample_text,
-                fact_id=resolved_by_probe.get((hit.location_path, hit.sample_text)),
+    resolved_groups: list[list[_RuleHitMetric]] = []
+    for record_hits in grouped_hits:
+        resolved_record_hits: list[_RuleHitMetric] = []
+        for hit in record_hits:
+            resolved_hit = resolved_by_probe.get((hit.location_path, hit.sample_text))
+            if resolved_hit is None:
+                resolved_record_hits.append(
+                    _RuleHitMetric(location_path=hit.location_path, sample_text=hit.sample_text)
+                )
+                continue
+            resolved_record_hits.append(
+                _RuleHitMetric(
+                    location_path=hit.location_path,
+                    sample_text=hit.sample_text,
+                    fact_id=resolved_hit.fact_id,
+                    source_fact_raw_hash=resolved_hit.source_fact_raw_hash,
+                    source_fact_translatable_hash=resolved_hit.source_fact_translatable_hash,
+                )
             )
-            for hit in record_hits
-        ]
-        for record_hits in grouped_hits
-    ]
+        resolved_groups.append(resolved_record_hits)
+    return resolved_groups
 
 
 async def _resolve_workspace_plugin_source_hit_metrics(
@@ -1707,7 +1717,7 @@ async def _validate_workspace_plugin_rules(
                 session=session,
                 context=context,
             )
-        translated_fact_ids = require_translation_fact_ids(translated_items)
+        translated_identities = require_translation_fact_identities(translated_items)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
@@ -1726,7 +1736,7 @@ async def _validate_workspace_plugin_rules(
     return build_plugin_rule_validation_report_from_native_context(
         context=context,
         game_data=game_data,
-        translated_fact_ids=translated_fact_ids,
+        translated_identities=translated_identities,
     )
 
 
@@ -1757,7 +1767,7 @@ async def _validate_workspace_plugin_source_rules(
                 session=session,
                 grouped_hits=hit_metrics,
             )
-        translated_fact_ids = require_translation_fact_ids(translated_items)
+        translated_identities = require_translation_fact_identities(translated_items)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],
@@ -1781,7 +1791,7 @@ async def _validate_workspace_plugin_source_rules(
         game_data=game_data,
         text_rules=text_rules,
         scan=scan,
-        translated_fact_ids=translated_fact_ids,
+        translated_identities=translated_identities,
         hits_by_file=resolved_hit_metrics,
     )
 
@@ -1815,7 +1825,7 @@ async def _validate_workspace_note_tag_rules(
                 domain="note_tag",
                 grouped_hits=hit_metrics,
             )
-        translated_fact_ids = require_translation_fact_ids(translated_items)
+        translated_identities = require_translation_fact_identities(translated_items)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
@@ -1835,7 +1845,7 @@ async def _validate_workspace_note_tag_rules(
         records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_fact_ids=translated_fact_ids,
+        translated_identities=translated_identities,
         hits_by_record=resolved_hit_metrics,
     )
 
@@ -1868,7 +1878,7 @@ async def _validate_workspace_event_command_rules(
                 session=session,
                 context=native_validation_context,
             )
-        translated_fact_ids = require_translation_fact_ids(translated_items)
+        translated_identities = require_translation_fact_identities(translated_items)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
@@ -1888,7 +1898,7 @@ async def _validate_workspace_event_command_rules(
         records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_fact_ids=translated_fact_ids,
+        translated_identities=translated_identities,
         native_validation_context=native_validation_context,
     )
 

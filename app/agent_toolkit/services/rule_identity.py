@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING
 
 from app.persistence.records import TextFactV2ReadFilter, TextFactV2Record
 from app.rmmz.schema import TranslationItem
+from app.text_fact_identity import (
+    TranslationFactIdentity,
+    require_translation_fact_identities,
+)
 
 if TYPE_CHECKING:
     from app.persistence import TargetGameSession
@@ -27,23 +31,23 @@ class RuleFactHit:
     """已解析到当前 v2 fact 的规则命中。"""
 
     fact_id: str
+    source_fact_raw_hash: str
+    source_fact_translatable_hash: str
     location_path: str
     sample_text: str
 
 
-def require_translation_fact_ids(items: Iterable[TranslationItem]) -> set[str]:
-    """读取已保存译文 fact_id；缺失说明旧形状混入当前流程。"""
-    fact_ids: set[str] = set()
-    for item in items:
-        if not item.fact_id:
-            raise ValueError(f"已保存译文缺少 fact_id，无法判断当前事实身份: {item.location_path}")
-        fact_ids.add(item.fact_id)
-    return fact_ids
+def rule_fact_hit_identity(hit: RuleFactHit) -> TranslationFactIdentity:
+    """读取规则命中对应的当前 v2 fact identity。"""
+    return hit.fact_id, hit.source_fact_raw_hash, hit.source_fact_translatable_hash
 
 
-def count_translated_rule_hits(hits: Iterable[RuleFactHit], translated_fact_ids: set[str]) -> int:
-    """按 fact_id 计算规则命中中已经成功保存译文的数量。"""
-    return sum(1 for hit in hits if hit.fact_id in translated_fact_ids)
+def count_translated_rule_hits(
+    hits: Iterable[RuleFactHit],
+    translated_identities: set[TranslationFactIdentity],
+) -> int:
+    """按完整 identity 计算规则命中中已经成功保存译文的数量。"""
+    return sum(1 for hit in hits if rule_fact_hit_identity(hit) in translated_identities)
 
 
 def stale_translation_fact_ids(
@@ -52,9 +56,9 @@ def stale_translation_fact_ids(
     current_rule_hits: Sequence[RuleFactHit],
 ) -> list[str]:
     """计算规则变更后需要删除的旧译文 fact_id。"""
-    old_fact_ids = require_translation_fact_ids(old_items)
-    current_fact_ids = {hit.fact_id for hit in current_rule_hits}
-    return sorted(old_fact_ids - current_fact_ids)
+    old_identities = require_translation_fact_identities(old_items)
+    current_identities = {rule_fact_hit_identity(hit) for hit in current_rule_hits}
+    return sorted(fact_id for fact_id, _raw_hash, _translatable_hash in old_identities - current_identities)
 
 
 def _translation_item_translatable_text(item: TranslationItem) -> str:
@@ -83,19 +87,25 @@ async def resolve_current_rule_translation_items(
     ]
     rule_fact_hits = await resolve_current_rule_fact_hits(session, probes)
     resolved_by_probe = {
-        (hit.location_path, hit.sample_text): hit.fact_id
+        (hit.location_path, hit.sample_text): hit
         for hit in rule_fact_hits
     }
-    return [
-        item.model_copy(
-            update={
-                "fact_id": resolved_by_probe.get(
-                    (item.location_path, _translation_item_translatable_text(item))
-                )
-            }
+    resolved_items: list[TranslationItem] = []
+    for item in items:
+        hit = resolved_by_probe.get((item.location_path, _translation_item_translatable_text(item)))
+        if hit is None:
+            resolved_items.append(item)
+            continue
+        resolved_items.append(
+            item.model_copy(
+                update={
+                    "fact_id": hit.fact_id,
+                    "source_fact_raw_hash": hit.source_fact_raw_hash,
+                    "source_fact_translatable_hash": hit.source_fact_translatable_hash,
+                }
+            )
         )
-        for item in items
-    ]
+    return resolved_items
 
 
 async def resolve_current_rule_fact_hits(
@@ -124,6 +134,8 @@ async def resolve_current_rule_fact_hits(
             hits.append(
                 RuleFactHit(
                     fact_id=fact.fact_id,
+                    source_fact_raw_hash=fact.raw_hash,
+                    source_fact_translatable_hash=fact.translatable_hash,
                     location_path=fact.location_path,
                     sample_text=fact.translatable_text,
                 )
