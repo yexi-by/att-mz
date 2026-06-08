@@ -19,8 +19,11 @@ from app import (
 )
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
+from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION, current_schema_fingerprint, current_schema_sql
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, ensure_json_object
+from app.text_scope.models import WriteBackProbeError
+from app.text_scope.write_probe import collect_write_back_probe_reasons
 
 
 class _FakeWritePlanModule:
@@ -152,15 +155,34 @@ class _FakeScopeIndexModule:
     """返回固定 Scope/Index JSON 的测试模块。"""
 
     _rule_candidates_payload: dict[str, object]
+    _schema_fingerprint: str
+    _storage_payload: dict[str, object]
     calls: int
 
-    def __init__(self, rule_candidates_payload: dict[str, object], *, include_contract: bool = True) -> None:
+    def __init__(
+        self,
+        rule_candidates_payload: dict[str, object],
+        *,
+        include_contract: bool = True,
+        schema_fingerprint: str | None = None,
+        storage_payload: dict[str, object] | None = None,
+    ) -> None:
         """保存待返回的规则候选 JSON 对象。"""
         self._rule_candidates_payload = dict(rule_candidates_payload)
         if include_contract:
             _ = self._rule_candidates_payload.setdefault("schema_version", 1)
             _ = self._rule_candidates_payload.setdefault("timings_ms", {})
             _ = self._rule_candidates_payload.setdefault("counters", {"candidate_count": 0})
+        self._schema_fingerprint = schema_fingerprint or current_schema_fingerprint()
+        self._storage_payload = storage_payload or {
+            "status": "ok",
+            "written_item_count": 0,
+            "text_fact_count": 0,
+            "render_part_count": 0,
+            "scope_key": "tfv2-scope:fixture",
+            "scope_hash": "0" * 64,
+            "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION,
+        }
         self.calls = 0
 
     def native_contract_version(self) -> int:
@@ -182,6 +204,25 @@ class _FakeScopeIndexModule:
         """本测试不应调用范围门禁。"""
         _ = payload_json
         raise AssertionError("规则候选适配测试不应评估 scope gate")
+
+    def native_schema_fingerprint(self) -> str:
+        """返回测试预置的 schema 指纹。"""
+        return self._schema_fingerprint
+
+    def inspect_scope_index_storage(self, payload_json: str) -> str:
+        """本测试不应检查 storage。"""
+        _ = payload_json
+        raise AssertionError("规则候选适配测试不应检查 storage")
+
+    def write_scope_index_storage(self, payload_json: str) -> str:
+        """返回测试预置的 storage 写入结果。"""
+        _ = payload_json
+        return json.dumps(self._storage_payload, ensure_ascii=False)
+
+    def rebuild_scope_index_storage(self, payload_json: str) -> str:
+        """返回测试预置的 storage 重建结果。"""
+        _ = payload_json
+        return json.dumps(self._storage_payload, ensure_ascii=False)
 
 
 class _FakeRuntimeThreadModule(_FakeQualityModule):
@@ -841,6 +882,139 @@ def test_native_rule_candidates_requires_contract_metrics(
 
     with pytest.raises(KeyError):
         _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
+
+
+def test_shared_schema_fingerprint_requires_text_fact_v2_tables_and_indexes() -> None:
+    """共享 schema 指纹必须覆盖 text fact v2 表和关键索引。"""
+    schema_sql = current_schema_sql()
+    for marker in (
+        "text_facts_v2",
+        "text_fact_render_parts_v2",
+        "text_fact_domain_payloads_v2",
+        "text_fact_scope_v2",
+        "idx_text_facts_v2_domain_location",
+        "idx_text_facts_v2_domain_source_file",
+        "idx_text_facts_v2_selector",
+        "idx_text_facts_v2_visible_hash",
+        "idx_text_facts_v2_translatable_hash",
+        "idx_text_facts_v2_scope_key",
+    ):
+        assert marker in schema_sql
+    assert len(current_schema_fingerprint()) == 64
+
+
+def test_native_schema_fingerprint_rejects_stale_v1_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python adapter 不能接受旧 Rust 扩展编译进来的 v1 schema 指纹。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {},
+        },
+        schema_fingerprint="legacy-v1-fingerprint",
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(RuntimeError, match="rebuild-text-index"):
+        _ = native_scope_index.native_schema_fingerprint()
+
+
+def test_native_storage_contract_error_names_rebuild_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """storage 返回旧 text fact schema 时，错误必须告诉用户重建当前索引。"""
+    fake_module = _FakeScopeIndexModule(
+        {
+            "candidates": [],
+            "candidate_summary": [],
+            "scan_summary": {},
+        },
+        storage_payload={
+            "status": "ok",
+            "written_item_count": 0,
+            "text_fact_count": 0,
+            "render_part_count": 0,
+            "scope_key": "legacy-scope",
+            "scope_hash": "0" * 64,
+            "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION - 1,
+        },
+    )
+
+    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
+        """返回测试用 Scope/Index 模块。"""
+        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
+
+    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
+
+    with pytest.raises(RuntimeError) as error_info:
+        _ = native_scope_index.rebuild_native_scope_index_storage(cast(JsonObject, {}))
+
+    message = str(error_info.value)
+    assert "影响命令: rebuild-text-index" in message
+    assert "重新构建 Rust 原生扩展或更新发行包" in message
+    assert "然后再运行 rebuild-text-index" in message
+
+
+def test_write_probe_requires_precomputed_plugin_source_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码写回探针不能再临时调用旧 Python runtime scanner。"""
+
+    def successful_native_probe(
+        *,
+        game_data: object,
+        plugins_js: list[object],
+        items: list[TranslationItem],
+    ) -> list[object]:
+        """模拟普通写入协议探针通过。"""
+        _ = (game_data, plugins_js, items)
+        return []
+
+    def forbidden_runtime_scan(*args: object, **kwargs: object) -> object:
+        """生产写回探针不应再临时扫描插件源码。"""
+        _ = (args, kwargs)
+        raise AssertionError("旧写回探针不应临时扫描插件源码")
+
+    monkeypatch.setattr(
+        "app.text_scope.write_probe.collect_native_write_protocol_details",
+        successful_native_probe,
+    )
+    monkeypatch.setattr(
+        "app.text_scope.write_probe.scan_plugin_source_runtime_files_text_strict",
+        forbidden_runtime_scan,
+        raising=False,
+    )
+    game_data = cast(
+        GameData,
+        cast(
+            object,
+            SimpleNamespace(
+                data={},
+                plugins_js=[],
+                plugin_source_files={"Task9.js": "Window_Base.prototype.drawText('原文', 0, 0, 320);"},
+            ),
+        ),
+    )
+    item = TranslationItem(
+        location_path="js/plugins/Task9.js/ast:string:1:36:task9",
+        item_type="short_text",
+        original_lines=["原文"],
+        source_line_paths=["js/plugins/Task9.js/ast:string:1:36:task9"],
+    )
+
+    with pytest.raises(WriteBackProbeError, match="rebuild-text-index"):
+        _ = collect_write_back_probe_reasons(
+            game_data=game_data,
+            active_items=[item],
+            plugin_source_scan=None,
+        )
 
 
 def test_native_structured_placeholder_adapter_preserves_contract_fields(

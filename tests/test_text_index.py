@@ -16,6 +16,7 @@ from app.native_scope_index import build_native_plugin_source_candidates_payload
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
 from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
 from app.persistence import GameRegistry
+from app.persistence.records import TextIndexMetadata
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rule_review import EVENT_COMMAND_TEXT_RULE_DOMAIN, PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz import load_game_data
@@ -28,8 +29,11 @@ from app.rmmz.schema import (
 )
 from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_object
 from app.text_index import (
+    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
     TEXT_INDEX_PLACEHOLDER_GATE_PREFIX,
+    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
     TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX,
+    TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
     collect_text_index_external_rule_gate_errors,
     collect_text_index_rules_fingerprint,
     detect_text_index_invalidations,
@@ -1105,3 +1109,60 @@ async def test_plugin_source_rule_file_hash_does_not_change_text_index_rules_fin
 
     assert second == first
     assert changed_selector != first
+
+
+def test_text_index_source_branch_precheck_rejects_legacy_v1_gate_hashes() -> None:
+    """旧 passed_v1 scope hash 不能继续代表当前索引源分支已预检。"""
+    legacy_metadata = TextIndexMetadata(
+        source_snapshot_fingerprint="snapshot",
+        rules_fingerprint="rules",
+        item_count=0,
+        created_at="2026-06-08T00:00:00",
+        workflow_gate_scope_hashes={
+            TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "passed_v1",
+            TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "passed_v1",
+        },
+    )
+    current_metadata = replace(
+        legacy_metadata,
+        workflow_gate_scope_hashes={
+            TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
+            TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
+        },
+    )
+
+    assert not text_index_source_branch_gates_prechecked(legacy_metadata)
+    assert text_index_source_branch_gates_prechecked(current_metadata)
+
+
+@pytest.mark.asyncio
+async def test_read_text_index_metadata_rejects_legacy_v1_gate_hashes(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧 workflow gate 元数据必须显式要求重建当前文本范围索引。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_text_index(
+            metadata=TextIndexMetadata(
+                source_snapshot_fingerprint="snapshot",
+                rules_fingerprint="rules",
+                item_count=0,
+                created_at="2026-06-08T00:00:00",
+                workflow_gate_scope_hashes={
+                    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "passed_v1",
+                    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "passed_v1",
+                },
+            ),
+            items=[],
+        )
+
+        with pytest.raises(RuntimeError) as error_info:
+            _ = await session.read_text_index_metadata()
+
+        message = str(error_info.value)
+        assert "rebuild-text-index / workflow gate" in message
+        assert "passed_v1" in message
+        assert "请运行 rebuild-text-index" in message

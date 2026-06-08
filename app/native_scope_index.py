@@ -184,7 +184,17 @@ def evaluate_native_scope_gate(payload: JsonObject) -> NativeScopeGateResult:
 def native_schema_fingerprint() -> str:
     """读取 Rust 编译期包含的共享 SQLite schema SQL 指纹。"""
     native_module = _load_native_scope_index_module()
-    return native_module.native_schema_fingerprint()
+    rust_fingerprint = native_module.native_schema_fingerprint()
+    from app.persistence.sql import current_schema_fingerprint
+
+    python_fingerprint = current_schema_fingerprint()
+    if rust_fingerprint != python_fingerprint:
+        raise RuntimeError(
+            "Rust 原生扩展内置的 SQLite schema 指纹与 Python 当前 schema 不一致，"
+            + f"影响命令: rebuild-text-index。Rust={rust_fingerprint}，Python={python_fingerprint}。"
+            + "下一步：请执行 uv run maturin develop 重新构建原生扩展，然后运行 rebuild-text-index。"
+        )
+    return rust_fingerprint
 
 
 def inspect_native_scope_index_storage(payload: JsonObject) -> JsonObject:
@@ -541,7 +551,9 @@ def _validate_text_fact_storage_contract(result: JsonObject, label: str) -> None
     if schema_version != text_fact_schema_version:
         raise RuntimeError(
             "text fact v2 schema_version 不受支持: "
-            + f"Rust 返回 {schema_version}，Python 支持 {text_fact_schema_version}"
+            + f"Rust 返回 {schema_version}，Python 支持 {text_fact_schema_version}。"
+            + "影响命令: rebuild-text-index。"
+            + "下一步：请重新构建 Rust 原生扩展或更新发行包，然后再运行 rebuild-text-index。"
         )
     text_fact_count = _read_int(result, "text_fact_count", label)
     render_part_count = _read_int(result, "render_part_count", label)

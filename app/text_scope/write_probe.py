@@ -5,7 +5,6 @@ from __future__ import annotations
 from app.native_quality import collect_native_write_protocol_details
 from app.plugin_source_text.extraction import parse_plugin_source_location_path
 from app.plugin_source_text.models import PluginSourceScan
-from app.plugin_source_text.scanner import scan_plugin_source_runtime_files_text_strict
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import JsonArray
 
@@ -75,43 +74,12 @@ def _collect_plugin_source_write_back_probe_reasons(
             plugin_source_scan=plugin_source_scan,
             reasons=reasons,
         )
-    try:
-        batch_scan = scan_plugin_source_runtime_files_text_strict(
-            files=source_files,
-            active_file_names=frozenset(source_files),
-        )
-    except Exception as error:
-        for file_name, file_items in sorted(items_by_file.items()):
-            if file_name not in source_files:
-                continue
-            for _selector, item in file_items:
-                reasons[item.location_path] = f"插件源码 AST 检查失败: {error}"
-        return reasons
-    for file_name, file_items in sorted(items_by_file.items()):
-        if file_name not in source_files:
-            continue
-        syntax_error = batch_scan.syntax_errors.get(file_name)
-        if syntax_error is not None:
-            for _selector, item in file_items:
-                reasons[item.location_path] = f"插件源码 AST 检查失败: {syntax_error}"
-            continue
-        scan = batch_scan.file_scans.get(file_name)
-        if scan is None:
-            for _selector, item in file_items:
-                reasons[item.location_path] = f"插件源码 AST 检查失败: 批量 AST 结果缺少文件: {file_name}"
-            continue
-        literals_by_selector = {literal.selector: literal for literal in scan.literals}
-        for selector, item in file_items:
-            literal = literals_by_selector.get(selector)
-            if literal is None:
-                reasons[item.location_path] = f"插件源码 selector 已失效: {item.location_path}"
-                continue
-            if item.original_lines != [literal.text]:
-                reasons[item.location_path] = f"插件源码原文已变化，请重新导出 AST 地图: {item.location_path}"
-                continue
-            if len(item.translation_lines) != 1:
-                reasons[item.location_path] = f"插件源码短文本只能写入 1 行译文: {item.location_path}"
-    return reasons
+    affected = ", ".join(sorted(source_files))
+    raise WriteBackProbeError(
+        "插件源码写入探针缺少当前 text fact v2 生成的源码扫描结果，"
+        + f"当前命令不能临时回退扫描插件源码: {affected}。"
+        + "下一步：请运行 rebuild-text-index；如果插件源码规则来自导出文件，请重新导出并导入插件源码规则。"
+    )
 
 
 def _collect_plugin_source_write_back_probe_reasons_from_scan(

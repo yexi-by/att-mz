@@ -2,7 +2,7 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
-from dataclasses import replace
+from dataclasses import dataclass
 
 from .common import (
     AgentIssue,
@@ -12,7 +12,6 @@ from .common import (
     JsonObject,
     Path,
     TextRules,
-    _classify_feedback_occurrences,
     _collect_feedback_text_occurrences,
     _count_feedback_gap_types,
     _read_feedback_texts,
@@ -20,8 +19,19 @@ from .common import (
     issue,
     load_setting,
 )
-from app.text_index import detect_text_index_invalidations, text_index_items_to_scope
-from app.text_facts import read_current_text_fact_records_v2
+from app.persistence.records import TextFactV2Record, TextIndexItemRecord
+from app.text_index import detect_text_index_invalidations
+from app.text_facts import TextFactContractError, read_current_text_fact_records_v2
+
+
+@dataclass(frozen=True, slots=True)
+class _FeedbackFactEntry:
+    """反馈归类所需的 v2 文本事实投影。"""
+
+    location_path: str
+    original_lines: list[str]
+    can_write_back: bool
+    translated: bool
 
 
 class FeedbackAgentMixin:
@@ -98,7 +108,24 @@ class FeedbackAgentMixin:
                         },
                     )
             index_records = await session.read_text_index_items()
-            current_facts = await read_current_text_fact_records_v2(session, limit=None)
+            try:
+                current_facts = await read_current_text_fact_records_v2(session, limit=None)
+            except TextFactContractError as error:
+                return AgentReport.from_parts(
+                    errors=[issue("text_fact_contract", str(error))],
+                    warnings=[],
+                    summary={
+                        "input": str(input_path),
+                        "feedback_text_count": len(feedback_texts),
+                        "occurrence_count": len(occurrences),
+                        "text_index_status": text_index_status,
+                        "text_index_rebuild_summary": text_index_rebuild_summary,
+                    },
+                    details={
+                        "occurrences": occurrences,
+                        "text_fact_contract_error": str(error),
+                    },
+                )
             facts_by_path = {fact.location_path: fact for fact in current_facts}
             missing_fact_paths = sorted(
                 record.location_path
@@ -131,32 +158,20 @@ class FeedbackAgentMixin:
                         "missing_text_fact_location_paths": missing_fact_path_details,
                     },
                 )
-            index_records = [
-                replace(
-                    record,
-                    original_lines=_feedback_fact_lines(
-                        facts_by_path[record.location_path].translatable_text,
-                        item_type=facts_by_path[record.location_path].item_type,
-                    ),
-                )
-                if record.location_path in facts_by_path
-                else record
-                for record in index_records
-            ]
             translated_paths = await session.read_translation_location_paths()
-            scope = text_index_items_to_scope(index_records, translated_paths=translated_paths)
+            feedback_entries = _feedback_fact_entries_from_v2(
+                index_records=index_records,
+                facts_by_path=facts_by_path,
+                translated_paths=translated_paths,
+            )
         classified_occurrences = _classify_feedback_occurrences(
             occurrences=occurrences,
-            scope=scope,
+            entries=feedback_entries,
         )
         gap_counts = _count_feedback_gap_types(classified_occurrences)
         errors: list[AgentIssue] = []
         if occurrences:
             errors.append(issue("feedback_text_still_exists", f"真实游戏文件中仍存在 {len(occurrences)} 处反馈原文"))
-        if scope.stale_plugin_rules:
-            errors.append(issue("stale_plugin_rules", f"发现 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导出并导入插件规则"))
-        if scope.write_back_probe_error:
-            errors.append(issue("write_probe_failed", scope.write_back_probe_error))
         return AgentReport.from_parts(
             errors=errors,
             warnings=[],
@@ -173,10 +188,100 @@ class FeedbackAgentMixin:
             },
             details={
                 "occurrences": classified_occurrences,
-                "stale_plugin_rules": scope.stale_plugin_rules_json(),
-                "write_back_probe_error": scope.write_back_probe_error,
+                "stale_plugin_rules": [],
+                "write_back_probe_error": "",
             },
         )
+
+
+def _feedback_fact_entries_from_v2(
+    *,
+    index_records: list[TextIndexItemRecord],
+    facts_by_path: dict[str, TextFactV2Record],
+    translated_paths: set[str],
+) -> list[_FeedbackFactEntry]:
+    """用 v2 facts 和当前 text index 可写状态构造反馈归类输入。"""
+    entries: list[_FeedbackFactEntry] = []
+    for record in index_records:
+        fact = facts_by_path.get(record.location_path)
+        if fact is None:
+            raise RuntimeError(
+                "当前文本索引记录缺少 text fact v2，不能继续使用旧索引正文。"
+                + "下一步：请运行 rebuild-text-index 重新生成当前文本索引。"
+            )
+        entries.append(
+            _FeedbackFactEntry(
+                location_path=record.location_path,
+                original_lines=_feedback_fact_lines(
+                    fact.translatable_text,
+                    item_type=fact.item_type,
+                ),
+                can_write_back=record.writable,
+                translated=record.location_path in translated_paths,
+            )
+        )
+    return entries
+
+
+def _classify_feedback_occurrences(
+    *,
+    occurrences: JsonArray,
+    entries: list[_FeedbackFactEntry],
+) -> JsonArray:
+    """按 v2 文本事实把反馈反查结果归类为结构性缺口。"""
+    classified: JsonArray = []
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict):
+            continue
+        occurrence_object = {key: value for key, value in occurrence.items()}
+        feedback_text = occurrence_object.get("text")
+        category = occurrence_object.get("category")
+        if not isinstance(feedback_text, str):
+            occurrence_object["gap_type"] = "rule_gap"
+            occurrence_object["gap_label"] = "规则缺口"
+            occurrence_object["matching_location_paths"] = []
+            classified.append(occurrence_object)
+            continue
+        if category == "插件源码硬编码文本候选":
+            occurrence_object["gap_type"] = "plugin_source_hardcoded"
+            occurrence_object["gap_label"] = "插件源码硬编码"
+            occurrence_object["matching_location_paths"] = []
+            classified.append(occurrence_object)
+            continue
+        matched_entries = _feedback_entries_containing_text(entries=entries, text=feedback_text)
+        gap_type, gap_label = _feedback_gap_from_entries(matched_entries)
+        occurrence_object["gap_type"] = gap_type
+        occurrence_object["gap_label"] = gap_label
+        occurrence_object["matching_location_paths"] = [
+            entry.location_path
+            for entry in matched_entries[:10]
+        ]
+        classified.append(occurrence_object)
+    return classified
+
+
+def _feedback_entries_containing_text(
+    *,
+    entries: list[_FeedbackFactEntry],
+    text: str,
+) -> list[_FeedbackFactEntry]:
+    """查找 v2 文本事实中包含反馈原文的位置。"""
+    return [
+        entry
+        for entry in entries
+        if any(text in line for line in entry.original_lines)
+    ]
+
+
+def _feedback_gap_from_entries(entries: list[_FeedbackFactEntry]) -> tuple[str, str]:
+    """根据 v2 事实命中情况判断反馈原文残留的结构性原因。"""
+    if not entries:
+        return "rule_gap", "规则缺口"
+    if any(not entry.can_write_back for entry in entries):
+        return "write_gap", "写入缺口"
+    if any(not entry.translated for entry in entries):
+        return "translation_gap", "译文缺口"
+    return "write_gap", "写入缺口"
 
 
 def _feedback_fact_lines(text: str, *, item_type: str) -> list[str]:

@@ -53,7 +53,7 @@ const TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: &str =
     "workflow_gate_prechecked:plugin_source_text";
 const TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: &str =
     "workflow_gate_prechecked:nonstandard_data";
-const TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE: &str = "passed_v1";
+const TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE: &str = "passed_v2";
 const TEXT_INDEX_PLACEHOLDER_GATE_PREFIX: &str = "workflow_gate:placeholder_rules";
 const TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX: &str =
     "workflow_gate:structured_placeholder_rules";

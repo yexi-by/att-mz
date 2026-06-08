@@ -273,13 +273,17 @@ fn validate_schema_version(connection: &Connection) -> Result<(), String> {
         .map_err(|error| {
             structured_error(
                 "scope_index_storage_schema_version_unreadable",
-                format!("数据库 schema_version 不可读取: {error}"),
+                format!(
+                    "数据库 schema_version 不可读取: {error}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册或迁移数据库后运行 rebuild-text-index"
+                ),
             )
         })?;
     if version != CURRENT_SCHEMA_VERSION {
         return Err(structured_error(
             "scope_index_storage_schema_version_mismatch",
-            format!("数据库 schema_version={version}，当前要求 {CURRENT_SCHEMA_VERSION}"),
+            format!(
+                "数据库 schema_version={version}，当前要求 {CURRENT_SCHEMA_VERSION}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册或迁移数据库后运行 rebuild-text-index"
+            ),
         ));
     }
     Ok(())

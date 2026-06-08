@@ -54,6 +54,7 @@ from .sql import (
 
 type SqlParameter = str | int | None
 PATH_QUERY_BATCH_SIZE = 500
+LEGACY_TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed_v1"
 
 
 class TextIndexRecordSessionMixin(SessionMixinBase):
@@ -437,7 +438,7 @@ def _encode_workflow_gate_scope_hashes(scope_hashes: dict[str, str]) -> str:
 
 
 def _decode_workflow_gate_scope_hashes(raw_value: str) -> dict[str, str]:
-    """读取索引门禁 scope hash 元数据，并拒绝非字符串键值。"""
+    """读取索引门禁 scope hash 元数据，并拒绝旧 v1 预检契约。"""
     value = cast(object, json.loads(raw_value))
     if not isinstance(value, dict):
         raise TypeError("workflow_gate_scope_hashes 必须是 JSON 对象")
@@ -446,6 +447,12 @@ def _decode_workflow_gate_scope_hashes(raw_value: str) -> dict[str, str]:
     for key, raw_hash in items.items():
         if not isinstance(key, str) or not isinstance(raw_hash, str):
             raise TypeError("workflow_gate_scope_hashes 只能包含字符串键值")
+        if raw_hash == LEGACY_TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE:
+            raise RuntimeError(
+                "rebuild-text-index / workflow gate 读取到旧版文本范围索引 metadata: "
+                + f"{key} 仍是 passed_v1，不能作为当前 text fact v2 范围索引继续使用。"
+                + "下一步：请运行 rebuild-text-index 重新生成当前文本范围索引。"
+            )
         result[key] = raw_hash
     return result
 

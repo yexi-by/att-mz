@@ -57,7 +57,7 @@ from app.text_scope import TextScopeEntry, TextScopeResult, TextSourceType
 
 TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY = "workflow_gate_prechecked:plugin_source_text"
 TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY = "workflow_gate_prechecked:nonstandard_data"
-TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed_v1"
+TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed_v2"
 TEXT_INDEX_PLACEHOLDER_GATE_PREFIX = "workflow_gate:placeholder_rules"
 TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX = "workflow_gate:structured_placeholder_rules"
 TEXT_INDEX_PROMPT_CONTEXT_VERSION = "display_name_owner_system_terms_v3"
@@ -725,7 +725,11 @@ def text_index_items_to_scope(
     *,
     translated_paths: set[str] | None = None,
 ) -> TextScopeResult:
-    """把持久索引项还原为 workflow gate 可消费的最小文本范围。"""
+    """把持久索引项还原为 legacy 测试可消费的最小文本范围。
+
+    remaining owner: 旧 workflow gate / 写回契约测试仍用它构造历史 scope 断言；
+    已迁移生产命令不得调用此 helper，应直接读取 text fact v2。
+    """
     record_list = list(records)
     effective_translated_paths = translated_paths or set()
     translation_data_map = text_index_items_to_translation_data_map(record_list)
@@ -920,7 +924,6 @@ __all__ = [
     "source_snapshot_records_fingerprint",
     "stable_json_fingerprint",
     "text_index_item_to_translation_item",
-    "text_index_items_to_scope",
     "text_index_items_to_translation_data_map",
     "text_index_source_branch_gates_prechecked",
     "text_fact_rebuild_report_fields",

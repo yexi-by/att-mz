@@ -273,7 +273,7 @@ def test_current_runtime_and_p1c_commands_do_not_rebuild_text_scope_by_default()
 
     verify_source = _source_for_function(feedback_source, "verify_feedback_text")
     assert "TextScopeService" not in verify_source
-    assert "text_index_items_to_scope" in verify_source
+    assert "text_index_items_to_scope" not in verify_source
 
     collect_calls = _call_names_for_function(common_source, "_collect_feedback_text_occurrences")
     assert "scan_plugin_source_runtime_files_text_strict" in collect_calls
@@ -352,6 +352,27 @@ def test_batch7_production_paths_do_not_keep_python_text_scope_fallbacks() -> No
         "_rule_hit_summary_records_from_native",
     ):
         assert old_bridge_marker not in text_index_source
+
+
+def test_task9_agent_common_does_not_reconstruct_scope_from_v1_index_rows() -> None:
+    """Agent 公共层不能再把 v1 text_index_items 还原成旧 TextScopeResult。"""
+    common_source = Path("app/agent_toolkit/services/common.py").read_text(encoding="utf-8")
+    common_exports = _exported_names(Path("app/agent_toolkit/services/common.py"))
+
+    for old_scope_marker in (
+        "text_index_records_to_scope",
+        "build_text_index_text_scope_report",
+        "_text_scope_blocking_errors",
+    ):
+        assert old_scope_marker not in common_source
+        assert old_scope_marker not in common_exports
+
+    for old_model_marker in (
+        "TextScopeResult(",
+        "TextScopeEntry(",
+        "TranslationData(display_name=None, translation_items=[])",
+    ):
+        assert old_model_marker not in common_source
 
 
 def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> None:

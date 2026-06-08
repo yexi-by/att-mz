@@ -243,6 +243,36 @@ async def test_verify_feedback_text_fails_when_current_index_record_lacks_v2_fac
 
 
 @pytest.mark.asyncio
+async def test_verify_feedback_text_returns_report_when_text_fact_scope_is_missing(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """反馈归类遇到损坏的 v2 scope 时返回结构化报告，而不是抛出异常。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute("DELETE FROM text_fact_scope_v2")
+        await session.connection.commit()
+    feedback_path = tmp_path / "feedback-texts.json"
+    _ = feedback_path.write_text(json.dumps(["こんにちは"], ensure_ascii=False), encoding="utf-8")
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
+
+    assert report.status == "error"
+    assert report.errors[0].code == "text_fact_contract"
+    assert "rebuild-text-index" in report.errors[0].message
+    assert report.summary["input"] == str(feedback_path)
+    assert report.summary["feedback_text_count"] == 1
+    assert isinstance(report.summary["occurrence_count"], int)
+    assert report.summary["text_index_status"] == "used"
+    assert "occurrences" in report.details
+    assert "text_fact_contract_error" in report.details
+
+
+@pytest.mark.asyncio
 async def test_verify_feedback_text_uses_runtime_literal_scan_for_plugin_source(
     minimal_game_dir: Path,
     tmp_path: Path,

@@ -165,7 +165,6 @@ from app.source_residual import (
 from app.text_scope import (
     TextScopeEntry,
     TextScopeResult,
-    TextSourceType,
     collect_translation_data_paths,
     read_fresh_plugin_text_rules,
 )
@@ -1131,7 +1130,11 @@ def _build_coverage_report(
     translated_items: list[TranslationItem],
     text_rules: TextRules,
 ) -> AgentReport:
-    """根据统一文本清单生成覆盖审计报告。"""
+    """根据 legacy Python 统一文本清单生成覆盖审计报告。
+
+    remaining owner: legacy/test/non-migrated coverage utility。已迁移生产命令
+    不得通过本 helper 消费 `TextScopeResult`，应读取 text fact v2 覆盖事实。
+    """
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     translated_paths = {item.location_path for item in translated_items}
@@ -1206,54 +1209,6 @@ def _build_coverage_report(
     )
 
 
-def text_index_records_to_scope(
-    *,
-    index_records: list[TextIndexItemRecord],
-    translated_paths: set[str],
-) -> TextScopeResult:
-    """从持久索引恢复报告所需的最小文本范围，不读取游戏文件。"""
-    translation_data_map: dict[str, TranslationData] = {}
-    entries: list[TextScopeEntry] = []
-    allowed_source_types = {
-        "standard_data",
-        "plugin_parameter",
-        "plugin_source",
-        "event_command",
-        "note_tag",
-        "nonstandard_data",
-    }
-    for record in index_records:
-        if record.source_type not in allowed_source_types:
-            raise RuntimeError(f"文本范围索引包含未知来源类型: {record.source_type}")
-        item = TranslationItem(
-            location_path=record.location_path,
-            item_type=record.item_type,
-            role=record.role,
-            original_lines=list(record.original_lines),
-            source_line_paths=list(record.source_line_paths),
-        )
-        source_file = record.source_file
-        if source_file not in translation_data_map:
-            translation_data_map[source_file] = TranslationData(display_name=None, translation_items=[])
-        translation_data_map[source_file].translation_items.append(item)
-        entries.append(
-            TextScopeEntry(
-                location_path=record.location_path,
-                source_type=cast(TextSourceType, record.source_type),
-                rule_source="text_index",
-                item_type=record.item_type,
-                original_lines=list(record.original_lines),
-                role=record.role,
-                enters_translation=True,
-                can_save_translation=True,
-                can_write_back=record.writable,
-                translated=record.location_path in translated_paths,
-                cannot_process_reason="" if record.writable else "索引项不可写回",
-            )
-        )
-    return TextScopeResult(translation_data_map=translation_data_map, entries=entries)
-
-
 def write_back_probe_report_fields(
     *,
     requested: bool,
@@ -1267,54 +1222,6 @@ def write_back_probe_report_fields(
         "write_back_probe_mode": mode,
         "write_back_probe_enabled": executed,
     }
-
-
-def build_text_index_text_scope_report(
-    *,
-    index_records: list[TextIndexItemRecord],
-    translated_items: list[TranslationItem],
-    include_write_probe: bool = False,
-) -> AgentReport:
-    """用持久索引生成默认文本清单报告，不读取游戏文件。"""
-    translated_paths = {item.location_path for item in translated_items}
-    scope = text_index_records_to_scope(
-        index_records=index_records,
-        translated_paths=translated_paths,
-    )
-    inactive_entries = [
-        entry
-        for entry in scope.entries
-        if not entry.enters_translation
-    ]
-    unwritable_entries = scope.unwritable_entries
-    probe_fields = write_back_probe_report_fields(
-        requested=include_write_probe,
-        executed=False,
-        mode="index_writable" if include_write_probe else "disabled",
-    )
-    return AgentReport.from_parts(
-        errors=_text_scope_blocking_errors(scope),
-        warnings=[],
-        summary={
-            "entry_count": len(scope.entries),
-            "extractable_count": len(scope.active_paths),
-            "translated_count": len(translated_paths & scope.active_paths),
-            "writable_count": len(scope.writable_paths),
-            "unwritable_count": len(unwritable_entries),
-            "inactive_rule_hit_count": len(inactive_entries),
-            "stale_plugin_rule_count": len(scope.stale_plugin_rules),
-            "write_back_probe_failed": bool(scope.write_back_probe_error),
-            **probe_fields,
-            "text_index_status": "used",
-        },
-        details={
-            "entries": scope.entries_json(),
-            "unwritable_items": [entry.to_json_object() for entry in unwritable_entries],
-            "stale_plugin_rules": scope.stale_plugin_rules_json(),
-            "write_back_probe_error": scope.write_back_probe_error,
-            **probe_fields,
-        },
-    )
 
 
 TEXT_INDEX_COVERAGE_DETAIL_SAMPLE_LIMIT = 20
@@ -1474,18 +1381,6 @@ def _coverage_hard_stop_errors(report: AgentReport) -> list[AgentIssue]:
         "stale_saved_translations",
     }
     return [error for error in report.errors if error.code in hard_stop_codes]
-
-
-def _text_scope_blocking_errors(scope: TextScopeResult) -> list[AgentIssue]:
-    """把统一文本范围中的执行阻断项转换成稳定业务错误。"""
-    errors: list[AgentIssue] = []
-    if scope.write_back_probe_error:
-        errors.append(issue("write_probe_failed", scope.write_back_probe_error))
-    if scope.stale_plugin_rules:
-        errors.append(issue("stale_plugin_rules", f"发现 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导出并导入插件规则"))
-    if scope.unwritable_entries:
-        errors.append(issue("coverage_unwritable", f"发现 {len(scope.unwritable_entries)} 条当前文本无法写进游戏文件，请先运行 audit-coverage 查看明细"))
-    return errors
 
 
 async def _read_feedback_texts(input_path: Path) -> list[str]:
@@ -1665,43 +1560,6 @@ def _format_json_path(path_parts: Sequence[str | int]) -> str:
     return path_text
 
 
-def _classify_feedback_occurrences(
-    *,
-    occurrences: JsonArray,
-    scope: TextScopeResult,
-) -> JsonArray:
-    """按统一文本清单把反馈反查结果归类为结构性缺口。"""
-    classified: JsonArray = []
-    for occurrence in occurrences:
-        if not isinstance(occurrence, dict):
-            continue
-        occurrence_object = {key: value for key, value in occurrence.items()}
-        feedback_text = occurrence_object.get("text")
-        category = occurrence_object.get("category")
-        if not isinstance(feedback_text, str):
-            occurrence_object["gap_type"] = "rule_gap"
-            occurrence_object["gap_label"] = "规则缺口"
-            occurrence_object["matching_location_paths"] = []
-            classified.append(occurrence_object)
-            continue
-        if category == "插件源码硬编码文本候选":
-            occurrence_object["gap_type"] = "plugin_source_hardcoded"
-            occurrence_object["gap_label"] = "插件源码硬编码"
-            occurrence_object["matching_location_paths"] = []
-            classified.append(occurrence_object)
-            continue
-        matched_entries = _scope_entries_containing_text(scope=scope, text=feedback_text)
-        gap_type, gap_label = _feedback_gap_from_scope_entries(matched_entries)
-        occurrence_object["gap_type"] = gap_type
-        occurrence_object["gap_label"] = gap_label
-        occurrence_object["matching_location_paths"] = [
-            entry.location_path
-            for entry in matched_entries[:10]
-        ]
-        classified.append(occurrence_object)
-    return classified
-
-
 def _count_feedback_gap_types(occurrences: JsonArray) -> Counter[str]:
     """统计反馈反查结果中的结构性缺口类型。"""
     counter: Counter[str] = Counter()
@@ -1712,29 +1570,6 @@ def _count_feedback_gap_types(occurrences: JsonArray) -> Counter[str]:
         if isinstance(gap_type, str):
             counter[gap_type] += 1
     return counter
-
-
-def _scope_entries_containing_text(*, scope: TextScopeResult, text: str) -> list[TextScopeEntry]:
-    """查找统一文本清单中包含反馈原文的结构位置。"""
-    return [
-        entry
-        for entry in scope.entries
-        if any(text in line for line in entry.original_lines)
-    ]
-
-
-def _feedback_gap_from_scope_entries(entries: list[TextScopeEntry]) -> tuple[str, str]:
-    """根据文本清单命中情况判断反馈原文残留的结构性原因。"""
-    if not entries:
-        return "rule_gap", "规则缺口"
-    active_entries = [entry for entry in entries if entry.enters_translation]
-    if not active_entries:
-        return "rule_gap", "规则缺口"
-    if any(not entry.can_write_back for entry in active_entries):
-        return "write_gap", "写入缺口"
-    if any(not entry.translated for entry in active_entries):
-        return "translation_gap", "译文缺口"
-    return "write_gap", "写入缺口"
 
 
 def _plugin_source_text_structural_flags(text: str) -> JsonArray:
@@ -3412,25 +3247,19 @@ __all__: list[str] = [
     '_preview_placeholder_sample',
     '_placeholder_preview_loses_visible_source_text',
     '_build_coverage_report',
-    'build_text_index_text_scope_report',
     'build_text_index_coverage_report',
     '_nonstandard_data_skipped_file_names',
     '_nonstandard_data_skipped_warnings',
     '_validate_source_residual_rule_records',
     'rule_contract_issues_to_agent_issues',
     '_coverage_hard_stop_errors',
-    'text_index_records_to_scope',
-    '_text_scope_blocking_errors',
     '_read_feedback_texts',
     '_collect_feedback_text_occurrences',
     '_read_text_for_line_lookup',
     '_iter_json_string_leaves',
     '_line_number_for_structured_text',
     '_format_json_path',
-    '_classify_feedback_occurrences',
     '_count_feedback_gap_types',
-    '_scope_entries_containing_text',
-    '_feedback_gap_from_scope_entries',
     '_plugin_source_text_structural_flags',
     '_current_python_major_minor',
     'CUSTOM_MARKER_WITH_PARAMS_PATTERN',

@@ -1,4 +1,9 @@
-"""统一文本范围构建服务。"""
+"""统一文本范围构建服务。
+
+remaining owner: legacy 测试、写回契约测试和少量未迁移诊断工具仍会直接构造
+Python `TextScopeResult`；已迁移生产命令不得调用本模块重建完整 Python scope，
+应读取 text fact v2 或 Rust native storage。
+"""
 
 from __future__ import annotations
 
@@ -45,7 +50,11 @@ from .write_probe import collect_write_back_probe_reasons
 
 
 class TextScopeService:
-    """构建当前游戏统一文本范围。"""
+    """构建 legacy Python 统一文本范围。
+
+    remaining owner: legacy/test/non-migrated utility。已迁移生产命令不得依赖
+    本服务做 full-scope builder，应走 text fact v2 / native scope index。
+    """
 
     async def build(
         self,

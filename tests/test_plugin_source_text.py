@@ -28,6 +28,7 @@ from app.native_scope_index import (
 )
 from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_source_text import (
+    PluginSourceCandidate,
     PluginSourceScan,
     PluginSourceTextExtraction,
     audit_active_runtime_plugin_source,
@@ -2924,11 +2925,11 @@ async def test_text_scope_build_uses_native_plugin_source_scan_when_caller_omits
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_write_probe_uses_batch_preview(
+async def test_plugin_source_write_probe_reuses_precomputed_scan(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件源码写回预演成功路径必须按文件批量扫描，避免逐条重复解析 JS。"""
+    """插件源码写回预演成功路径必须复用已生成的 AST 扫描事实。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.extend(
@@ -2949,33 +2950,28 @@ async def test_plugin_source_write_probe_uses_batch_preview(
     }
     for file_name, source in sources.items():
         _ = (plugin_source_dir / file_name).write_text(source, encoding="utf-8")
-    loaded_sources = {
-        file_name: (plugin_source_dir / file_name).read_bytes().decode("utf-8")
-        for file_name in sources
-    }
     game_data = await load_game_data(minimal_game_dir)
-    from app.plugin_source_text.scanner import (
-        scan_plugin_source_runtime_files_text_strict as real_runtime_batch_scan,
-    )
+    text_rules = TextRules.from_setting(TextRulesSetting())
+    source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
 
     items: list[TranslationItem] = []
-    setup_batch_scan = real_runtime_batch_scan(
-        files=loaded_sources,
-        active_file_names=frozenset(loaded_sources),
-    )
-    for file_name in sorted(loaded_sources):
-        literals = list(setup_batch_scan.file_scans[file_name].literals)
+    candidates_by_file: dict[str, list[PluginSourceCandidate]] = {}
+    for candidate in source_scan.candidates:
+        if candidate.file_name in sources:
+            candidates_by_file.setdefault(candidate.file_name, []).append(candidate)
+    for file_name in sorted(candidates_by_file):
+        candidates = candidates_by_file[file_name]
         items.extend(
             TranslationItem(
-                location_path=f"js/plugins/{file_name}/{literal.selector}",
+                location_path=f"js/plugins/{file_name}/{candidate.selector}",
                 item_type="short_text",
-                original_lines=[literal.text],
-                source_line_paths=[f"js/plugins/{file_name}/{literal.selector}"],
+                original_lines=[candidate.text],
+                source_line_paths=[f"js/plugins/{file_name}/{candidate.selector}"],
                 translation_lines=[f"探针译文{index}"],
             )
-            for index, literal in enumerate(literals)
+            for index, candidate in enumerate(candidates)
         )
-    scanned_batches: list[tuple[str, ...]] = []
+    assert items
 
     def successful_native_probe(
         *,
@@ -2987,41 +2983,27 @@ async def test_plugin_source_write_probe_uses_batch_preview(
         _ = (game_data, plugins_js, items)
         return []
 
-    def counting_plugin_source_runtime_batch_scan(
-        *,
-        files: dict[str, str],
-        active_file_names: frozenset[str],
-    ) -> PluginSourceBatchTextScan:
-        """记录插件源码写回预演扫描过的文件。"""
-        scanned_batches.append(tuple(sorted(files)))
-        return real_runtime_batch_scan(
-            files=files,
-            active_file_names=active_file_names,
-        )
-
-    def forbidden_legacy_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
+    def forbidden_runtime_scan(*args: object, **kwargs: object) -> object:
         _ = (args, kwargs)
-        raise AssertionError("写回探针 fallback 不应调用翻译源 strict scan")
+        raise AssertionError("写回探针不应临时调用旧 runtime scanner")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
         successful_native_probe,
     )
     monkeypatch.setattr(
-        "app.text_scope.write_probe.scan_plugin_source_files_text_strict",
-        forbidden_legacy_strict_scan,
-        raising=False,
-    )
-    monkeypatch.setattr(
         "app.text_scope.write_probe.scan_plugin_source_runtime_files_text_strict",
-        counting_plugin_source_runtime_batch_scan,
+        forbidden_runtime_scan,
         raising=False,
     )
 
-    reasons = collect_write_back_probe_reasons(game_data=game_data, active_items=items)
+    reasons = collect_write_back_probe_reasons(
+        game_data=game_data,
+        active_items=items,
+        plugin_source_scan=source_scan,
+    )
 
     assert reasons == {}
-    assert scanned_batches == [("HardcodedText.js", "HardcodedTextExtra.js")]
 
 
 def _read_test_json_from_plugins_js(path: Path) -> JsonValue:
