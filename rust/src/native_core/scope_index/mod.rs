@@ -45,9 +45,9 @@ struct BuildScopeIndexPayload {
 struct ScopeGatePayload {
     entries: Vec<ScopeEntryInput>,
     #[serde(default)]
-    translated_paths: Vec<String>,
+    translated_fact_ids: Vec<String>,
     #[serde(default)]
-    quality_error_paths: Vec<String>,
+    quality_error_fact_ids: Vec<String>,
     #[serde(default)]
     required_paths: Vec<String>,
 }
@@ -109,6 +109,8 @@ struct RuleCandidateTextRules {
 
 #[derive(Debug, Deserialize)]
 struct ScopeEntryInput {
+    #[serde(default)]
+    fact_id: Option<String>,
     location_path: String,
     item_type: String,
     role: Option<String>,
@@ -468,6 +470,7 @@ fn scan_standard_data_file(
     }
 
     entries.push(ScopeEntryInput {
+        fact_id: None,
         location_path: "System.json/gameTitle".to_owned(),
         item_type: "short_text".to_owned(),
         role: None,
@@ -546,6 +549,7 @@ fn append_event_command_entry(
 
     let location_path = command_parameter_location_path(file_name, path_parts, 0);
     entries.push(ScopeEntryInput {
+        fact_id: None,
         location_path: location_path.clone(),
         item_type: "long_text".to_owned(),
         role: None,
@@ -851,6 +855,8 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
         .filter(|entry| entry.enters_translation)
         .map(|entry| entry.location_path.clone())
         .collect();
+    let mut active_fact_ids: BTreeSet<String> = BTreeSet::new();
+    let mut writable_fact_ids: BTreeSet<String> = BTreeSet::new();
     let mut writable_location_paths: Vec<String> = payload
         .entries
         .iter()
@@ -858,10 +864,22 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
         .map(|entry| entry.location_path.clone())
         .collect();
     writable_location_paths.sort();
+    writable_location_paths.dedup();
+    for entry in payload
+        .entries
+        .iter()
+        .filter(|entry| entry.enters_translation)
+    {
+        let fact_id = scope_gate_entry_fact_id(entry)?;
+        active_fact_ids.insert(fact_id.clone());
+        if entry.can_write_back {
+            writable_fact_ids.insert(fact_id);
+        }
+    }
 
-    let translated_paths: BTreeSet<String> = payload.translated_paths.into_iter().collect();
-    let quality_error_paths: BTreeSet<String> = payload.quality_error_paths.into_iter().collect();
-    let writable_path_set: BTreeSet<String> = writable_location_paths.iter().cloned().collect();
+    let translated_fact_ids: BTreeSet<String> = payload.translated_fact_ids.into_iter().collect();
+    let quality_error_fact_ids: BTreeSet<String> =
+        payload.quality_error_fact_ids.into_iter().collect();
     let missing_required_paths: Vec<String> = payload
         .required_paths
         .into_iter()
@@ -877,19 +895,35 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
             missing_required_paths,
         },
         quality_gate: QualityGateOutput {
-            status: if quality_error_paths.is_empty() {
+            status: if quality_error_fact_ids.is_empty() {
                 "ok"
             } else {
                 "error"
             },
-            quality_error_count: quality_error_paths.len(),
+            quality_error_count: quality_error_fact_ids.len(),
         },
-        pending_count: writable_path_set.difference(&translated_paths).count(),
-        translated_count: active_paths.intersection(&translated_paths).count(),
-        quality_error_count: quality_error_paths.len(),
+        pending_count: writable_fact_ids.difference(&translated_fact_ids).count(),
+        translated_count: active_fact_ids.intersection(&translated_fact_ids).count(),
+        quality_error_count: quality_error_fact_ids.len(),
         writable_location_paths,
     };
     serde_json::to_string(&output).map_err(|error| format!("范围门禁输出 JSON 序列化失败: {error}"))
+}
+
+fn scope_gate_entry_fact_id(entry: &ScopeEntryInput) -> Result<String, String> {
+    let Some(fact_id) = &entry.fact_id else {
+        return Err(format!(
+            "范围门禁 entry 缺少 v2 fact_id，无法判断当前事实身份: {}",
+            entry.location_path
+        ));
+    };
+    if fact_id.trim().is_empty() {
+        return Err(format!(
+            "范围门禁 entry 的 v2 fact_id 不能为空，无法判断当前事实身份: {}",
+            entry.location_path
+        ));
+    }
+    Ok(fact_id.clone())
 }
 
 fn update_domain_counter(
@@ -1001,6 +1035,7 @@ mod tests {
             "rules_fingerprint": "rules-v1",
             "entries": [
                 {
+                    "fact_id": "fact:event-command:hello",
                     "location_path": "Map001.json/events/1/pages/0/list/0",
                     "item_type": "long_text",
                     "role": "Alice",
@@ -1121,6 +1156,7 @@ mod tests {
         let payload = json!({
             "entries": [
                 {
+                    "fact_id": "fact:event-command:hello",
                     "location_path": "Map001.json/events/1/pages/0/list/0",
                     "item_type": "long_text",
                     "role": null,
@@ -1135,6 +1171,7 @@ mod tests {
                     "locator": {"kind": "event_command"}
                 },
                 {
+                    "fact_id": "fact:system:title",
                     "location_path": "System.json/gameTitle",
                     "item_type": "short_text",
                     "role": null,
@@ -1149,8 +1186,8 @@ mod tests {
                     "locator": {"kind": "system"}
                 }
             ],
-            "translated_paths": ["Map001.json/events/1/pages/0/list/0"],
-            "quality_error_paths": ["System.json/gameTitle"],
+            "translated_fact_ids": ["fact:event-command:hello"],
+            "quality_error_fact_ids": ["fact:system:title"],
             "required_paths": [
                 "Map001.json/events/1/pages/0/list/0",
                 "missing/path"

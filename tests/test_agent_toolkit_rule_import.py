@@ -584,14 +584,14 @@ async def test_import_event_command_rules_uses_native_hit_details_for_stale_clea
         await handler.close()
 
     async with await registry.open_game("テストゲーム") as session:
-        translated_paths = await session.read_translation_location_paths()
+        remaining_paths = {item.location_path for item in await session.read_translated_items()}
         imported_rules = await session.read_event_command_text_rules()
 
     assert summary.imported_rule_group_count == 1
     assert summary.imported_path_rule_count == 2
     assert summary.deleted_translation_items == 1
     assert summary.deleted_translation_backup_path
-    assert stale_item.location_path not in translated_paths
+    assert stale_item.location_path not in remaining_paths
     assert imported_rules[0].command_code == 357
     assert set(imported_rules[0].path_templates) == {
         "$['parameters'][3]['window']['title']",
@@ -747,7 +747,7 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     )
 
     async with await registry.open_game("テストゲーム") as session:
-        translated_paths = await session.read_translation_location_paths()
+        remaining_paths = {item.location_path for item in await session.read_translated_items()}
         state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
 
     game_data = await load_game_data(minimal_game_dir)
@@ -755,7 +755,7 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     assert summary.imported_file_count == 0
     assert summary.imported_tag_count == 0
     assert summary.deleted_translation_items == 1
-    assert stale_item.location_path not in translated_paths
+    assert stale_item.location_path not in remaining_paths
     assert state is not None
     assert state.scope_hash == note_tag_rule_scope_hash_for_text_rules(
         game_data=game_data,
@@ -2459,10 +2459,10 @@ async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
             ]
         )
 
-    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("插件规则校验不能全量读取已保存路径")
+    async def forbidden_full_fact_id_read(_self: TargetGameSession) -> set[str]:
+        raise AssertionError("插件规则校验不能全量读取已保存 fact_id")
 
-    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+    monkeypatch.setattr(TargetGameSession, "read_translation_fact_ids", forbidden_full_fact_id_read)
 
     report = await service.validate_plugin_rules(
         game_title="テストゲーム",
@@ -2691,10 +2691,10 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
             ]
         )
 
-    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("Note 标签规则校验不能全量读取已保存路径")
+    async def forbidden_full_fact_id_read(_self: TargetGameSession) -> set[str]:
+        raise AssertionError("Note 标签规则校验不能全量读取已保存 fact_id")
 
-    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+    monkeypatch.setattr(TargetGameSession, "read_translation_fact_ids", forbidden_full_fact_id_read)
 
     report = await service.validate_note_tag_rules(
         game_title="テストゲーム",
@@ -3323,7 +3323,7 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
 
     async with await registry.open_game("テストゲーム") as session:
         rules = await session.read_note_tag_text_rules()
-        paths = await session.read_translation_location_paths()
+        paths = {item.location_path for item in await session.read_translated_items()}
 
     assert report.status == "warning"
     assert report.summary["deleted_translation_items"] == 1

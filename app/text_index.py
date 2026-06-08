@@ -16,6 +16,7 @@ from app.native_scope_index import (
 )
 from app.persistence import TargetGameSession
 from app.persistence.records import (
+    TextFactV2Record,
     TextIndexInvalidationRecord,
     TextIndexItemRecord,
     TextIndexMetadata,
@@ -53,6 +54,9 @@ from app.rule_review_decision import (
     build_empty_rule_review_decision,
     build_rule_review_decision,
 )
+from app.text_fact_core import item_type_from_text_fact, text_fact_lines
+from app.text_fact_counts import read_text_fact_quality_error_fact_ids_v2
+from app.text_fact_readers import read_current_text_fact_records_v2
 from app.text_scope import TextScopeEntry, TextScopeResult, TextSourceType
 
 TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY = "workflow_gate_prechecked:plugin_source_text"
@@ -380,13 +384,16 @@ async def evaluate_text_index_scope_gate(
     records: Iterable[TextIndexItemRecord],
     required_paths: Iterable[str] = (),
 ) -> NativeScopeGateResult:
-    """用持久索引项和已保存译文状态调用 Rust 范围门禁摘要。"""
-    latest_quality_error_paths = await _read_latest_quality_error_paths(session)
+    """用当前 v2 fact 和已保存译文 fact_id 调用 Rust 范围门禁摘要。"""
+    record_list = list(records)
+    current_facts = await read_current_text_fact_records_v2(session, limit=None)
+    latest_quality_error_fact_ids = await _read_latest_quality_error_fact_ids(session)
     return evaluate_native_scope_gate(
-        _scope_gate_payload_from_text_index_items(
-            records=records,
-            translated_paths=await session.read_translation_location_paths(),
-            quality_error_paths=latest_quality_error_paths,
+        _scope_gate_payload_from_text_fact_records(
+            records=record_list,
+            facts=current_facts,
+            translated_fact_ids=await session.read_translation_fact_ids(),
+            quality_error_fact_ids=latest_quality_error_fact_ids,
             required_paths=required_paths,
         )
     )
@@ -603,41 +610,70 @@ async def collect_text_index_rules_fingerprint(
     return stable_json_fingerprint(payload)
 
 
-async def _read_latest_quality_error_paths(session: TargetGameSession) -> set[str]:
-    """读取最新翻译运行中没通过项目检查的路径，用于 Rust quality gate 摘要。"""
+async def _read_latest_quality_error_fact_ids(session: TargetGameSession) -> set[str]:
+    """读取最新翻译运行中没通过项目检查的 fact_id，用于 Rust quality gate 摘要。"""
     latest_run = await session.read_latest_translation_run()
     if latest_run is None:
         return set()
-    return await session.read_text_index_quality_error_paths(latest_run.run_id)
+    return await read_text_fact_quality_error_fact_ids_v2(session, latest_run.run_id)
 
 
-def _scope_gate_payload_from_text_index_items(
+def _scope_gate_payload_from_text_fact_records(
     *,
     records: Iterable[TextIndexItemRecord],
-    translated_paths: Iterable[str],
-    quality_error_paths: Iterable[str],
+    facts: Iterable[TextFactV2Record],
+    translated_fact_ids: Iterable[str],
+    quality_error_fact_ids: Iterable[str],
     required_paths: Iterable[str],
 ) -> JsonObject:
-    """把持久索引项转换为 Rust evaluate_scope_gate 输入。"""
+    """把当前 v2 facts 转换为 Rust evaluate_scope_gate 输入。"""
+    record_list = list(records)
+    index_by_path = {record.location_path: record for record in record_list}
+    facts_by_path: dict[str, list[TextFactV2Record]] = {}
+    for fact in facts:
+        if fact.location_path in index_by_path:
+            facts_by_path.setdefault(fact.location_path, []).append(fact)
+    missing_fact_paths = sorted(
+        record.location_path
+        for record in record_list
+        if record.location_path not in facts_by_path
+    )
+    if missing_fact_paths:
+        samples = "、".join(missing_fact_paths[:5])
+        suffix = f" 等 {len(missing_fact_paths)} 条" if len(missing_fact_paths) > 5 else ""
+        raise RuntimeError(
+            f"当前文本索引记录缺少 text fact v2，不能继续评估范围门禁: {samples}{suffix}。"
+            + "下一步：请运行 rebuild-text-index 重新生成当前文本索引。"
+        )
+    entries: JsonArray = []
+    for record in record_list:
+        for fact in facts_by_path[record.location_path]:
+            entries.append(_scope_gate_entry_from_text_fact(record=record, fact=fact))
     return {
-        "entries": coerce_json_value([_scope_gate_entry_from_text_index_item(record) for record in records]),
-        "translated_paths": _string_array(sorted(set(translated_paths))),
-        "quality_error_paths": _string_array(sorted(set(quality_error_paths))),
+        "entries": entries,
+        "translated_fact_ids": _string_array(sorted(set(translated_fact_ids))),
+        "quality_error_fact_ids": _string_array(sorted(set(quality_error_fact_ids))),
         "required_paths": _string_array(sorted(set(required_paths))),
     }
 
 
-def _scope_gate_entry_from_text_index_item(record: TextIndexItemRecord) -> JsonObject:
-    """把单条索引项还原为 Rust 范围门禁 entry。"""
+def _scope_gate_entry_from_text_fact(
+    *,
+    record: TextIndexItemRecord,
+    fact: TextFactV2Record,
+) -> JsonObject:
+    """把单条 v2 fact 和索引定位元信息还原为 Rust 范围门禁 entry。"""
     locator = coerce_json_value(cast(object, json.loads(record.locator_json)))
+    item_type = item_type_from_text_fact(fact)
     return {
+        "fact_id": fact.fact_id,
         "location_path": record.location_path,
-        "item_type": record.item_type,
-        "role": record.role,
-        "original_lines": _string_array(record.original_lines),
+        "item_type": item_type,
+        "role": fact.role or None,
+        "original_lines": _string_array(text_fact_lines(fact.translatable_text, item_type=item_type)),
         "source_line_paths": _string_array(record.source_line_paths),
-        "source_type": record.source_type,
-        "source_file": record.source_file,
+        "source_type": fact.source_type,
+        "source_file": fact.source_file,
         "rule_source": "text_index",
         "enters_translation": True,
         "can_write_back": record.writable,
@@ -722,8 +758,6 @@ def _terminology_owner_terms_from_locator(locator: JsonObject) -> list[str]:
 
 def text_index_items_to_scope(
     records: Iterable[TextIndexItemRecord],
-    *,
-    translated_paths: set[str] | None = None,
 ) -> TextScopeResult:
     """把持久索引项还原为 legacy 测试可消费的最小文本范围。
 
@@ -731,7 +765,6 @@ def text_index_items_to_scope(
     已迁移生产命令不得调用此 helper，应直接读取 text fact v2。
     """
     record_list = list(records)
-    effective_translated_paths = translated_paths or set()
     translation_data_map = text_index_items_to_translation_data_map(record_list)
     entries: list[TextScopeEntry] = []
     for record in record_list:
@@ -755,7 +788,7 @@ def text_index_items_to_scope(
                 enters_translation=True,
                 can_save_translation=True,
                 can_write_back=record.writable,
-                translated=record.location_path in effective_translated_paths,
+                translated=False,
                 cannot_process_reason="" if record.writable else "索引项不可写回",
             )
         )

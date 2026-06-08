@@ -126,7 +126,9 @@ class FeedbackAgentMixin:
                         "text_fact_contract_error": str(error),
                     },
                 )
-            facts_by_path = {fact.location_path: fact for fact in current_facts}
+            facts_by_path: dict[str, list[TextFactV2Record]] = {}
+            for fact in current_facts:
+                facts_by_path.setdefault(fact.location_path, []).append(fact)
             missing_fact_paths = sorted(
                 record.location_path
                 for record in index_records
@@ -158,11 +160,11 @@ class FeedbackAgentMixin:
                         "missing_text_fact_location_paths": missing_fact_path_details,
                     },
                 )
-            translated_paths = await session.read_translation_location_paths()
+            translated_fact_ids = await session.read_translation_fact_ids()
             feedback_entries = _feedback_fact_entries_from_v2(
                 index_records=index_records,
                 facts_by_path=facts_by_path,
-                translated_paths=translated_paths,
+                translated_fact_ids=translated_fact_ids,
             )
         classified_occurrences = _classify_feedback_occurrences(
             occurrences=occurrences,
@@ -197,29 +199,30 @@ class FeedbackAgentMixin:
 def _feedback_fact_entries_from_v2(
     *,
     index_records: list[TextIndexItemRecord],
-    facts_by_path: dict[str, TextFactV2Record],
-    translated_paths: set[str],
+    facts_by_path: dict[str, list[TextFactV2Record]],
+    translated_fact_ids: set[str],
 ) -> list[_FeedbackFactEntry]:
     """用 v2 facts 和当前 text index 可写状态构造反馈归类输入。"""
     entries: list[_FeedbackFactEntry] = []
     for record in index_records:
-        fact = facts_by_path.get(record.location_path)
-        if fact is None:
+        facts = facts_by_path.get(record.location_path, [])
+        if not facts:
             raise RuntimeError(
                 "当前文本索引记录缺少 text fact v2，不能继续使用旧索引正文。"
                 + "下一步：请运行 rebuild-text-index 重新生成当前文本索引。"
             )
-        entries.append(
-            _FeedbackFactEntry(
-                location_path=record.location_path,
-                original_lines=_feedback_fact_lines(
-                    fact.translatable_text,
-                    item_type=fact.item_type,
-                ),
-                can_write_back=record.writable,
-                translated=record.location_path in translated_paths,
+        for fact in facts:
+            entries.append(
+                _FeedbackFactEntry(
+                    location_path=record.location_path,
+                    original_lines=_feedback_fact_lines(
+                        fact.translatable_text,
+                        item_type=fact.item_type,
+                    ),
+                    can_write_back=record.writable,
+                    translated=fact.fact_id in translated_fact_ids,
+                )
             )
-        )
     return entries
 
 

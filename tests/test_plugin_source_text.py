@@ -2448,10 +2448,10 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
             ]
         )
 
-    async def forbidden_full_path_read(_self: TargetGameSession) -> set[str]:
-        raise AssertionError("插件源码规则校验不能全量读取已保存路径")
+    async def forbidden_full_fact_id_read(_self: TargetGameSession) -> set[str]:
+        raise AssertionError("插件源码规则校验不能全量读取已保存 fact_id")
 
-    monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
+    monkeypatch.setattr(TargetGameSession, "read_translation_fact_ids", forbidden_full_fact_id_read)
 
     report = await service.validate_plugin_source_rules(
         game_title="テストゲーム",
@@ -2714,7 +2714,7 @@ async def test_import_plugin_source_rules_replaces_stale_existing_rule(
 
     async with await registry.open_game("テストゲーム") as session:
         rules = await session.read_plugin_source_text_rules()
-        paths = await session.read_translation_location_paths()
+        paths = {item.location_path for item in await session.read_translated_items()}
 
     assert report.status == "warning"
     assert report.summary["deleted_translation_items"] == 1

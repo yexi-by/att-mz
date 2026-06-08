@@ -10,15 +10,13 @@ from app.rmmz.schema import TranslationItem
 from .rows import decode_string_list, row_int, row_item_type, row_optional_str, row_str
 from .session_base import SessionMixinBase
 from .sql import (
-    COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX,
-    DELETE_TRANSLATION_ITEM_BY_PATH,
     DELETE_TRANSLATION_ITEMS_BY_PREFIX,
     INSERT_TRANSLATION,
     COUNT_TRANSLATED_ITEMS,
     SELECT_TRANSLATED_ITEMS,
     SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX,
     SELECT_TRANSLATED_ITEMS_BY_PREFIX,
-    SELECT_TRANSLATION_PATHS,
+    SELECT_TRANSLATION_FACT_IDS,
     TRANSLATION_TABLE_NAME,
 )
 
@@ -55,11 +53,17 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             _ = await self.connection.executemany(INSERT_TRANSLATION, serialized_items)
         await self.commit()
 
-    async def read_translation_location_paths(self) -> set[str]:
-        """读取主翻译表中的全部已完成路径。"""
-        async with self.connection.execute(SELECT_TRANSLATION_PATHS) as cursor:
+    async def read_translation_fact_ids(self) -> set[str]:
+        """读取主翻译表中的全部已保存 v2 fact_id。"""
+        async with self.connection.execute(SELECT_TRANSLATION_FACT_IDS) as cursor:
             rows = await cursor.fetchall()
-        return {row_str(row, "location_path", self.db_path) for row in rows}
+        fact_ids: set[str] = set()
+        for row in rows:
+            fact_id = row_str(row, "fact_id", self.db_path)
+            if not fact_id:
+                raise RuntimeError("已保存译文缺少 v2 fact_id，无法判断当前事实身份")
+            fact_ids.add(fact_id)
+        return fact_ids
 
     async def count_translated_items(self) -> int:
         """统计主翻译表中的已保存译文数量。"""
@@ -75,14 +79,6 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             rows = await cursor.fetchall()
 
         return [self._translation_item_from_row(row) for row in rows]
-
-    async def count_translations_outside_writable_text_index(self) -> int:
-        """统计已保存译文中不属于当前可写索引范围的数量。"""
-        async with self.connection.execute(COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            return 0
-        return row_int(row, "stale_translation_count", self.db_path)
 
     async def read_translated_items_for_writable_text_index(self) -> list[TranslationItem]:
         """读取当前可写索引范围内已经保存的译文。"""
@@ -188,26 +184,6 @@ class TranslationRecordSessionMixin(SessionMixinBase):
                 deleted_rows += cursor.rowcount
         await self.commit()
         return deleted_rows
-
-    async def delete_translation_items_except_paths(
-        self,
-        allowed_paths: set[str],
-    ) -> int:
-        """删除当前提取规则之外的主翻译表记录。"""
-        async with self.connection.execute(SELECT_TRANSLATION_PATHS) as cursor:
-            rows = await cursor.fetchall()
-
-        stored_paths = {row_str(row, "location_path", self.db_path) for row in rows}
-        stale_paths = sorted(stored_paths - allowed_paths)
-        if not stale_paths:
-            return 0
-
-        _ = await self.connection.executemany(
-            DELETE_TRANSLATION_ITEM_BY_PATH,
-            [(path,) for path in stale_paths],
-        )
-        await self.commit()
-        return len(stale_paths)
 
     async def delete_translation_items_by_paths(
         self,

@@ -40,6 +40,7 @@ from app.text_index import (
     evaluate_text_index_scope_gate,
     text_index_source_branch_gates_prechecked,
 )
+from app.text_fact_readers import read_current_text_fact_records_v2
 from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 
@@ -964,17 +965,17 @@ async def test_external_rule_gate_rejects_missing_current_scope_hash_even_with_o
 
 
 @pytest.mark.asyncio
-async def test_evaluate_text_index_scope_gate_reads_quality_error_paths_from_index_fast_path(
+async def test_evaluate_text_index_scope_gate_reads_quality_error_fact_ids_without_full_error_objects(
     minimal_english_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Rust scope gate 的质量错误输入只读取当前索引内路径，不加载完整错误对象。"""
+    """Rust scope gate 的质量错误输入按当前 v2 fact_id 读取，不加载完整错误对象。"""
 
     async def forbidden_quality_error_records(*args: object, **kwargs: object) -> NoReturn:
         """scope gate 不应读取完整质量错误对象。"""
         _ = (args, kwargs)
-        raise AssertionError("evaluate_text_index_scope_gate 应使用 text index 质量错误路径快路径")
+        raise AssertionError("evaluate_text_index_scope_gate 不应读取完整质量错误对象")
 
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -988,12 +989,12 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_paths_from_ind
     async with await registry.open_game(record.game_title) as session:
         index_items = await session.read_text_index_items()
         indexed_error_path = index_items[0].location_path
-        async with session.connection.execute(
-            "SELECT fact_id FROM text_facts_v2 WHERE location_path = ? ORDER BY fact_id LIMIT 1",
-            (indexed_error_path,),
-        ) as cursor:
-            indexed_error_fact_row = await cursor.fetchone()
-        assert indexed_error_fact_row is not None
+        current_facts = await read_current_text_fact_records_v2(session, limit=None)
+        indexed_error_fact = next(
+            fact
+            for fact in current_facts
+            if fact.location_path == indexed_error_path
+        )
         run_record = await session.start_translation_run(
             total_extracted=len(index_items),
             pending_count=len(index_items),
@@ -1002,9 +1003,9 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_paths_from_ind
         )
         await session.write_translation_quality_errors(
             run_record.run_id,
-            [
-                TranslationErrorItem(
-                    fact_id=cast(str, indexed_error_fact_row["fact_id"]),
+                [
+                    TranslationErrorItem(
+                        fact_id=indexed_error_fact.fact_id,
                     location_path=indexed_error_path,
                     item_type="long_text",
                     role=None,

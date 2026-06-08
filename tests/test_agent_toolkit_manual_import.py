@@ -1182,10 +1182,10 @@ async def test_translation_status_uses_database_fast_path_by_default(
         _ = (args, kwargs)
         raise AssertionError("translation-status 默认不应加载游戏文件")
 
-    async def forbidden_full_translation_path_read(*args: object, **kwargs: object) -> NoReturn:
-        """快速状态查询不应读取全部已保存译文路径。"""
+    async def forbidden_full_translation_fact_id_read(*args: object, **kwargs: object) -> NoReturn:
+        """快速状态查询不应读取全部已保存译文 fact_id。"""
         _ = (args, kwargs)
-        raise AssertionError("translation-status 默认不应读取全部已保存译文路径")
+        raise AssertionError("translation-status 默认不应读取全部已保存译文 fact_id")
 
     async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
         """快速状态查询不应读取全部质量错误明细。"""
@@ -1206,8 +1206,8 @@ async def test_translation_status_uses_database_fast_path_by_default(
         forbidden_game_data_load,
     )
     monkeypatch.setattr(
-        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_location_paths",
-        forbidden_full_translation_path_read,
+        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_fact_ids",
+        forbidden_full_translation_fact_id_read,
     )
     monkeypatch.setattr(
         "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
@@ -1275,10 +1275,10 @@ async def test_translation_status_refresh_scope_uses_text_index_without_full_sco
         _ = (args, kwargs)
         raise AssertionError("translation-status --refresh-scope 不应读取完整索引路径集合")
 
-    async def forbidden_full_translation_path_read(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 状态刷新不应读取全部已保存译文路径。"""
+    async def forbidden_full_translation_fact_id_read(*args: object, **kwargs: object) -> NoReturn:
+        """warm index 状态刷新不应读取全部已保存译文 fact_id。"""
         _ = (args, kwargs)
-        raise AssertionError("translation-status --refresh-scope 不应读取全部已保存译文路径")
+        raise AssertionError("translation-status --refresh-scope 不应读取全部已保存译文 fact_id")
 
     async def forbidden_full_quality_error_read(*args: object, **kwargs: object) -> NoReturn:
         """warm index 状态刷新不应读取全部质量错误明细。"""
@@ -1306,8 +1306,8 @@ async def test_translation_status_refresh_scope_uses_text_index_without_full_sco
         forbidden_full_text_index_path_read,
     )
     monkeypatch.setattr(
-        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_location_paths",
-        forbidden_full_translation_path_read,
+        "app.persistence.translation_records.TranslationRecordSessionMixin.read_translation_fact_ids",
+        forbidden_full_translation_fact_id_read,
     )
     monkeypatch.setattr(
         "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors",
@@ -2629,7 +2629,7 @@ async def test_reset_translations_input_deletes_known_paths_and_warns_missing_sa
         input_path=reset_path,
     )
     async with await registry.open_game("テストゲーム") as session:
-        paths_after_reset = await session.read_translation_location_paths()
+        paths_after_reset = {item.location_path for item in await session.read_translated_items()}
     quality_report = await service.quality_report(game_title="テストゲーム")
 
     assert report.status == "warning"
@@ -2671,7 +2671,7 @@ async def test_reset_translations_all_deletes_current_active_translation_cache(
     report = await service.reset_translations(game_title="テストゲーム", reset_all=True)
     quality_report = await service.quality_report(game_title="テストゲーム")
     async with await registry.open_game("テストゲーム") as session:
-        remaining_paths = await session.read_translation_location_paths()
+        remaining_paths = {item.location_path for item in await session.read_translated_items()}
 
     assert report.status == "warning"
     assert report.summary["mode"] == "all"

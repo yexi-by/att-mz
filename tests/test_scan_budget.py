@@ -418,19 +418,32 @@ def test_task9_agent_common_does_not_reconstruct_scope_from_v1_index_rows() -> N
 
 
 def test_text_fact_v2_migrated_flows_do_not_use_translated_paths_sets() -> None:
-    """迁移后的 Agent 主流程不得用 location_path 集合作为已翻译事实身份。"""
+    """迁移后的生产主流程不得用 location_path 集合作为已翻译事实身份。"""
     checked_files = [
+        Path("app/application/write_back_gate.py"),
+        Path("app/application/use_cases/translation_run.py"),
         Path("app/agent_toolkit/services/common.py"),
+        Path("app/agent_toolkit/services/feedback.py"),
         Path("app/agent_toolkit/services/rule_validation.py"),
         Path("app/agent_toolkit/services/workspace.py"),
+        Path("app/text_index.py"),
+        Path("app/text_scope/builder.py"),
+        Path("rust/src/native_core/scope_index/mod.rs"),
+    ]
+    forbidden_markers = [
+        "translated_paths",
+        "read_translation_location_paths()",
+        "read_translation_location_paths(",
+        "location_path in translated_paths",
+        "location_path in effective_translated_paths",
+        "translated=record.location_path in",
+        "translated=item.location_path in",
+        "translated=hit.location_path in",
     ]
     for path in checked_files:
         source = path.read_text(encoding="utf-8")
-        assert "translated_paths: set[str]" not in source
-        assert "translated_paths =" not in source
-        assert "read_translation_location_paths()" not in source
-        assert "if hit.location_path in translated_paths" not in source
-        assert "if item.location_path in translated_paths" not in source
+        for marker in forbidden_markers:
+            assert marker not in source, f"{path.as_posix()} still contains {marker}"
 
 
 def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> None:

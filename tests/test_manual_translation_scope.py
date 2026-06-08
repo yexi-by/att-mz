@@ -74,5 +74,5 @@ async def test_manual_import_rejects_latest_quality_error_outside_current_scope(
     assert report.summary["scope_mode"] == "text_index"
     assert "manual_translation_location" in {error.code for error in report.errors}
     async with await registry.open_game("テストゲーム") as session:
-        translated_paths = await session.read_translation_location_paths()
-    assert stale_path not in translated_paths
+        remaining_paths = {item.location_path for item in await session.read_translated_items()}
+    assert stale_path not in remaining_paths

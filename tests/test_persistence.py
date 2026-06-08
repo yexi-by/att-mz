@@ -482,11 +482,10 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             ["plugins.js/0/Title", "missing/path", "plugins.js/0/Title"]
         )
         assert deleted_by_paths_count == 1
-        deleted_count = await session.delete_translation_items_except_paths(
-            {"System.json/gameTitle"},
-        )
+        deleted_count = await session.delete_translation_items_by_paths(["CommonEvents.json/1/0"])
         assert deleted_count == 1
-        assert await session.read_translation_location_paths() == {
+        remaining_paths = {item.location_path for item in await session.read_translated_items()}
+        assert remaining_paths == {
             "System.json/gameTitle"
         }
         assert session.engine_kind == "mz"
@@ -1251,7 +1250,6 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
             ]
         )
         assert await session.count_pending_text_index_items() == 1
-        assert await session.count_translations_outside_writable_text_index() == 0
         assert [
             item.location_path for item in await session.read_translated_items_for_writable_text_index()
         ] == [first_item.location_path]
@@ -1283,7 +1281,6 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
                 ),
             ]
         )
-        assert await session.count_translations_outside_writable_text_index() == 2
         assert [
             item.location_path for item in await session.read_translated_items_for_writable_text_index()
         ] == [first_item.location_path]

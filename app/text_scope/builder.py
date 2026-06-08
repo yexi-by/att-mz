@@ -98,7 +98,7 @@ class TextScopeService:
         mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
         if translated_items is None:
             translated_items = await session.read_translated_items()
-        translated_paths = {item.location_path for item in translated_items}
+        translated_fact_ids = _require_translation_fact_ids(translated_items)
 
         translation_data_map = build_translation_data_map(
             game_data=game_data,
@@ -132,7 +132,7 @@ class TextScopeService:
         entries = [
             _active_item_to_scope_entry(
                 item=item,
-                translated_paths=translated_paths,
+                translated_fact_ids=translated_fact_ids,
                 write_back_reason=write_back_reasons.get(item.location_path, ""),
             )
             for item in active_items.values()
@@ -166,7 +166,6 @@ class TextScopeService:
             entries.append(
                 _rule_hit_to_inactive_scope_entry(
                     hit=hit,
-                    translated_paths=translated_paths,
                     text_rules=text_rules,
                 )
             )
@@ -258,7 +257,7 @@ def collect_translation_data_paths(translation_data_map: dict[str, TranslationDa
 def _active_item_to_scope_entry(
     *,
     item: TranslationItem,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
     write_back_reason: str,
 ) -> TextScopeEntry:
     """把当前可翻译条目转换成文本清单记录。"""
@@ -274,7 +273,7 @@ def _active_item_to_scope_entry(
         enters_translation=True,
         can_save_translation=True,
         can_write_back=can_write_back,
-        translated=item.location_path in translated_paths,
+        translated=item.fact_id is not None and item.fact_id in translated_fact_ids,
         cannot_process_reason=write_back_reason,
     )
 
@@ -282,7 +281,6 @@ def _active_item_to_scope_entry(
 def _rule_hit_to_inactive_scope_entry(
     *,
     hit: TextScopeRuleHit,
-    translated_paths: set[str],
     text_rules: TextRules,
 ) -> TextScopeEntry:
     """把未进入翻译集合的规则命中项转换成文本清单记录。"""
@@ -303,7 +301,7 @@ def _rule_hit_to_inactive_scope_entry(
         enters_translation=False,
         can_save_translation=False,
         can_write_back=False,
-        translated=hit.location_path in translated_paths,
+        translated=False,
         cannot_process_reason=reason,
     )
 
@@ -336,6 +334,16 @@ def _rule_source_label(source_type: TextSourceType) -> str:
     if source_type == "nonstandard_data":
         return "非标准 data 文件文本规则"
     return "RPG Maker 标准数据结构"
+
+
+def _require_translation_fact_ids(items: list[TranslationItem]) -> set[str]:
+    """读取已保存译文 fact_id；缺失说明旧形状混入当前流程。"""
+    fact_ids: set[str] = set()
+    for item in items:
+        if not item.fact_id:
+            raise ValueError(f"已保存译文缺少 fact_id，无法判断当前事实身份: {item.location_path}")
+        fact_ids.add(item.fact_id)
+    return fact_ids
 
 
 def _fresh_nonstandard_data_rules_for_scope(

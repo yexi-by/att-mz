@@ -367,16 +367,17 @@ async def _drain_translation_error_queue(
 def filter_pending_translation_data(
     *,
     translation_data_map: dict[str, TranslationData],
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
 ) -> dict[str, TranslationData]:
-    """过滤掉数据库中已经存在译文的条目。"""
+    """按 v2 fact_id 过滤掉数据库中已经存在译文的条目。"""
     pending_translation_data_map: dict[str, TranslationData] = {}
     for file_name, translation_data in translation_data_map.items():
-        pending_items = [
-            item
-            for item in translation_data.translation_items
-            if item.location_path not in translated_paths
-        ]
+        pending_items: list[TranslationItem] = []
+        for item in translation_data.translation_items:
+            if not item.fact_id:
+                raise ValueError(f"翻译条目缺少 v2 fact_id，无法判断是否已经保存译文: {item.location_path}")
+            if item.fact_id not in translated_fact_ids:
+                pending_items.append(item)
         if not pending_items:
             continue
         pending_translation_data_map[file_name] = TranslationData(
