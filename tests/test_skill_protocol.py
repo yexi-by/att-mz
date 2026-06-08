@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tomllib
-import re
 from pathlib import Path
 from typing import cast
 
@@ -56,9 +56,26 @@ REQUIRED_AGENT_REVIEW_AGENT_IDS = frozenset(
     }
 )
 REQUIRED_SUBTASK_PACKAGE_STAGE_IDS = frozenset({"workspace", "terminology", "external_rules"})
+PUBLIC_DOC_PATHS = (
+    ROOT / "README.md",
+    ROOT / "CHANGELOG.md",
+    ROOT / "docs" / "superpowers" / "specs" / "2026-06-07-text-fact-contract-v2-design.md",
+    PROTOCOL_DIR / "templates" / "SKILL.md.in",
+    *sorted((PROTOCOL_DIR / "templates" / "references").glob("*.md.in")),
+    DEV_SKILL_DIR / "SKILL.md",
+    RELEASE_SKILL_DIR / "SKILL.md",
+    *sorted((DEV_SKILL_DIR / "references").glob("*.md")),
+    *sorted((RELEASE_SKILL_DIR / "references").glob("*.md")),
+)
 COMMAND_LINE_PATTERNS = (
     re.compile(r"uv\s+run\s+python\s+main\.py\s+([a-z][a-z0-9-]+)"),
     re.compile(r"(?:\.\\att-mz\.exe|att-mz\.exe)\s+([a-z][a-z0-9-]+)"),
+)
+REAL_LOCAL_PATH_PATTERNS = (
+    re.compile(r"\b[A-Za-z]:[\\/][^\s`>)]*"),
+    re.compile(r"(?i)(?:^|[\\/])Users[\\/][^\s`>)]*"),
+    re.compile(r"(?i)(?:^|[\\/])Documents and Settings[\\/][^\s`>)]*"),
+    re.compile(r"(?i)/(?:Users|home)/[^\s`>)]*"),
 )
 
 
@@ -88,6 +105,16 @@ def _read_toml(path: Path) -> dict[str, object]:
     return cast(dict[str, object], tomllib.loads(_read_text(path)))
 
 
+def _readme_recovery_block(start_marker: str) -> str:
+    """读取 README 中指定恢复说明到下一个二级标题前的文本。"""
+    readme = _read_text(ROOT / "README.md")
+    start = readme.index(start_marker)
+    end = readme.find("\n## ", start)
+    if end == -1:
+        end = len(readme)
+    return readme[start:end]
+
+
 def test_generated_skill_protocol_outputs_are_current() -> None:
     """Skill 和 references 必须由 canonical 协议源生成。"""
     completed = subprocess.run(
@@ -101,6 +128,47 @@ def test_generated_skill_protocol_outputs_are_current() -> None:
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_public_docs_examples_do_not_expose_real_local_paths() -> None:
+    """公开文档和 Skill 示例只能使用占位符路径，不暴露真实本机路径。"""
+    for path in PUBLIC_DOC_PATHS:
+        text = _read_text(path)
+        matches = [
+            match.group(0)
+            for pattern in REAL_LOCAL_PATH_PATTERNS
+            for match in pattern.finditer(text)
+            if not match.group(0).startswith("<")
+        ]
+        assert not matches, f"{path.relative_to(ROOT)} 含真实本机路径示例: {matches}"
+
+
+def test_v2_fact_recovery_entries_are_documented_for_users_and_agents() -> None:
+    """README 与 Skill CLI 契约必须说明 v2 事实失败后的用户可执行恢复入口。"""
+    required_terms = {
+        "Text Fact Contract v2",
+        "v2 facts",
+        "旧数据库",
+        "旧工作区",
+        "旧 runtime map",
+        "rebuild-text-index --game <游戏标题>",
+        "prepare-agent-workspace --game <游戏标题> --output-dir <工作区>",
+        "rebuild-active-runtime --game <游戏标题>",
+    }
+    protocol_paths = [
+        ROOT / "README.md",
+        DEV_SKILL_DIR / "references" / "cli-command-contract.md",
+        RELEASE_SKILL_DIR / "references" / "cli-command-contract.md",
+    ]
+
+    for path in protocol_paths:
+        text = _read_text(path)
+        missing_terms = sorted(term for term in required_terms if term not in text)
+        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少 v2 恢复说明: {missing_terms}"
+
+    runtime_map_block = _readme_recovery_block("旧 runtime map")
+    assert "rebuild-text-index --game <游戏标题>" in runtime_map_block
+    assert "rebuild-active-runtime --game <游戏标题>" in runtime_map_block
 
 
 def test_skill_protocol_workflow_manifest_commands_and_references_are_valid() -> None:

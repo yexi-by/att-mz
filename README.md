@@ -105,6 +105,29 @@ Agent 收到任务后，会自己完成整个流程：
 
 过程中 Agent 会一步步向你报告进度。遇到需要确认的事情（比如要不要换游戏字体），它会主动问你。你只需要回答"可以"或"不行"。
 
+### 当前文本事实契约
+
+A.T.T MZ 当前使用 **Text Fact Contract v2**。工具会把游戏文本拆成 v2 facts：原始片段、玩家可见文本、真正送模型翻译的正文、写进游戏文件时要保留的结构片段和对应 hash。大型游戏或源文件、规则变化后，Agent 会先建立当前文本索引：
+
+```powershell
+rebuild-text-index --game <游戏标题>
+```
+
+旧数据库没有 v2 facts、索引缺失或范围不一致时，后续翻译、质量检查和写进游戏文件会失败并要求重建索引，不会继续使用旧文本范围。
+
+旧工作区缺少当前 v2 范围信息时，工作区验收会失败。让 Agent 重新准备工作区即可：
+
+```powershell
+prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
+```
+
+旧 runtime map 缺少 v2 hash 时，当前运行文件审计或反馈定位会提示无法继续信任旧映射。先重建文本索引，再按需要重建当前运行文件：
+
+```powershell
+uv run python main.py rebuild-text-index --game <游戏标题>
+uv run python main.py rebuild-active-runtime --game <游戏标题>
+```
+
 ## 🎯 第五步：试玩 + 反馈
 
 AI 把译文写进游戏文件后，打开游戏实际玩一遍。如果发现：

@@ -30,6 +30,14 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 - Rust 热路径线程数由 `ATT_MZ_RUST_THREADS` 控制；不设置或设为 `0` 时使用默认线程池。不要把性能基线里的 `4` 当运行上限。
 - 需要解释重建索引或翻译阶段耗时时，使用 `--debug --debug-timings`，读取 `summary.diagnostics` 或完整诊断 JSON 中的 `text_index.rebuild.*` 计时与 `runtime.native_thread_count` 计数。普通 summary 只作为业务结果。
 
+## Text Fact Contract v2
+
+- 当前文本事实契约是 Text Fact Contract v2。`rebuild-text-index --game <游戏标题>` 会生成 v2 facts，后续翻译、质量检查、手动补译、覆盖审计、反馈定位和写进游戏文件都读取当前 v2 facts。
+- v2 facts 区分原始片段、玩家可见文本、模型翻译正文、写回结构片段和 hash；不要从旧索引、旧工作区或旧 runtime map 反推当前文本范围。
+- 旧数据库缺少 v2 facts、v2 scope 或当前 schema version 时，命令必须按错误提示回到 `rebuild-text-index --game <游戏标题>`，不能继续按旧文本范围运行。
+- 旧工作区缺少 Text Fact Contract v2 范围信息时，重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`；不要手补 manifest 或复用旧候选文件。
+- 旧 runtime map 缺少 v2 hash 时，先运行 `rebuild-text-index --game <游戏标题>`，再按需要运行 `rebuild-active-runtime --game <游戏标题>` 重建当前运行文件；不要把旧映射当作反馈定位或当前运行审计依据。
+
 ## 阶段命令
 
 ### 0. 启动、注册与危险回溯

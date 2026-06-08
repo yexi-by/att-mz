@@ -1,5 +1,6 @@
 """Release 正文提取脚本测试。"""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,41 @@ from scripts.extract_release_notes import (
     extract_release_notes_section,
     write_release_notes,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _changelog_section_by_title(changelog_text: str, title: str) -> str:
+    """按版本标题返回 CHANGELOG 段落。"""
+    pattern = rf"^## {re.escape(title)}\n.+?(?=^## |\Z)"
+    match = re.search(pattern, changelog_text, flags=re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(f"CHANGELOG.md 缺少版本段落: {title}")
+    return match.group(0)
+
+
+def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
+    """Text Fact Contract v2 发布说明必须写明具体契约变化。"""
+    changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    current_section = _changelog_section_by_title(
+        changelog_text,
+        "未发布 - Text Fact Contract v2 契约冻结",
+    )
+    required_terms = {
+        "Text Fact Contract v2",
+        "v2 facts",
+        "rebuild-text-index",
+        "旧数据库",
+        "旧工作区",
+        "旧 runtime map",
+        "prepare-agent-workspace",
+        "rebuild-active-runtime",
+    }
+
+    missing_terms = sorted(term for term in required_terms if term not in current_section)
+
+    assert not missing_terms, f"最新 CHANGELOG 段落缺少 v2 契约变化: {missing_terms}"
 
 
 def test_extract_release_notes_section_reads_matching_tag() -> None:
