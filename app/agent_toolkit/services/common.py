@@ -1172,9 +1172,32 @@ def _build_coverage_report(
     """
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
-    translated_paths = {item.location_path for item in translated_items}
+    active_items = scope.active_items()
+    saved_translation_fact_ids = {item.fact_id for item in translated_items if item.fact_id}
+    active_items_by_fact_id = {
+        item.fact_id: item
+        for item in active_items
+        if item.fact_id
+    }
+    translated_items_by_fact_id = {
+        item.fact_id: item
+        for item in translated_items
+        if item.fact_id
+    }
     active_paths = scope.active_paths
     writable_paths = scope.writable_paths
+    writable_fact_ids = {
+        fact_id
+        for fact_id, item in active_items_by_fact_id.items()
+        if item.location_path in writable_paths
+    }
+    missing_fact_identity_paths = sorted(
+        {
+            item.location_path
+            for item in [*active_items, *translated_items]
+            if not item.fact_id
+        }
+    )
 
     if scope.write_back_probe_error:
         errors.append(issue("write_probe_failed", scope.write_back_probe_error))
@@ -1202,11 +1225,27 @@ def _build_coverage_report(
     if unwritable_rule_items:
         errors.append(issue("rule_hits_unwritable", f"发现 {len(unwritable_rule_items)} 条规则命中文本没有进入当前可写范围"))
 
-    missing_translation_paths = sorted(writable_paths - translated_paths)
+    if missing_fact_identity_paths:
+        errors.append(
+            issue(
+                "coverage_missing_fact_identity",
+                f"发现 {len(missing_fact_identity_paths)} 条文本缺少当前 v2 fact_id，无法判断译文是否属于当前事实",
+            )
+        )
+
+    missing_translation_fact_ids = sorted(writable_fact_ids - saved_translation_fact_ids)
+    missing_translation_paths = [
+        active_items_by_fact_id[fact_id].location_path
+        for fact_id in missing_translation_fact_ids
+    ]
     if missing_translation_paths:
         errors.append(issue("coverage_missing_translation", f"存在 {len(missing_translation_paths)} 条当前可写文本还没成功保存译文"))
 
-    stale_translation_paths = sorted(translated_paths - writable_paths)
+    stale_translation_fact_ids = sorted(saved_translation_fact_ids - writable_fact_ids)
+    stale_translation_paths = [
+        translated_items_by_fact_id[fact_id].location_path
+        for fact_id in stale_translation_fact_ids
+    ]
     if stale_translation_paths:
         errors.append(issue("stale_saved_translations", f"发现 {len(stale_translation_paths)} 条已保存译文不在当前可写范围内"))
 
@@ -1221,7 +1260,7 @@ def _build_coverage_report(
         summary={
             "rule_hit_count": sum(1 for entry in scope.entries if entry.source_type != "standard_data"),
             "extractable_count": len(active_paths),
-            "translated_count": len(translated_paths & active_paths),
+            "translated_count": len(saved_translation_fact_ids & set(active_items_by_fact_id)),
             "writable_count": len(writable_paths),
             "pending_count": len(missing_translation_paths),
             "unwritable_count": len(active_unwritable_items),

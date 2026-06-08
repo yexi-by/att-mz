@@ -417,6 +417,22 @@ def test_task9_agent_common_does_not_reconstruct_scope_from_v1_index_rows() -> N
         assert old_model_marker not in common_source
 
 
+def test_text_fact_v2_migrated_flows_do_not_use_translated_paths_sets() -> None:
+    """迁移后的 Agent 主流程不得用 location_path 集合作为已翻译事实身份。"""
+    checked_files = [
+        Path("app/agent_toolkit/services/common.py"),
+        Path("app/agent_toolkit/services/rule_validation.py"),
+        Path("app/agent_toolkit/services/workspace.py"),
+    ]
+    for path in checked_files:
+        source = path.read_text(encoding="utf-8")
+        assert "translated_paths: set[str]" not in source
+        assert "translated_paths =" not in source
+        assert "read_translation_location_paths()" not in source
+        assert "if hit.location_path in translated_paths" not in source
+        assert "if item.location_path in translated_paths" not in source
+
+
 def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> None:
     """工作区、MV 虚拟名字框和插件配置导出保持薄适配当前边界。"""
     workspace_source = Path("app/agent_toolkit/services/workspace.py").read_text(encoding="utf-8")
@@ -475,7 +491,11 @@ def test_task7_text_fact_v2_identity_paths_do_not_fallback_to_location_or_python
     """Text Fact v2 译文身份路径不能退回 location_path join 或 Python 全量范围。"""
     identity_paths = (
         Path("app/text_facts.py"),
+        Path("app/text_fact_counts.py"),
+        Path("app/text_fact_readers.py"),
+        Path("app/text_fact_quality.py"),
         Path("app/persistence/translation_records.py"),
+        Path("app/agent_toolkit/services/rule_identity.py"),
         Path("rust/src/native_core/write_back_plan/repository.rs"),
     )
     identity_forbidden_markers = (
