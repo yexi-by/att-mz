@@ -769,7 +769,7 @@ async def test_rebuild_native_scope_index_storage_keeps_same_path_note_tag_facts
     items_path = minimal_mv_game_dir / "www" / "data" / "Items.json"
     items = cast(list[object], json.loads(items_path.read_text(encoding="utf-8")))
     item = ensure_json_object(coerce_json_value(items[1]), "Items.json[1]")
-    item["note"] = "<desc:回復薬>\n<desc:重複>"
+    item["note"] = "<desc:回復薬>\n<desc:「重複」>"
     _ = items_path.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
 
     registry = GameRegistry(tmp_path / "db")
@@ -818,6 +818,7 @@ async def test_rebuild_native_scope_index_storage_keeps_same_path_note_tag_facts
         )
     assert len(rows) == 2
     assert {_sqlite_row_str(row, "translatable_text") for row in rows} == {"回復薬", "重複"}
+    assert {_sqlite_row_str(row, "raw_text") for row in rows} == {"回復薬", "「重複」"}
     assert len({_sqlite_row_str(row, "fact_id") for row in rows}) == 2
 
 

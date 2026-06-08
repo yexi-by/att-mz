@@ -179,7 +179,6 @@ struct DirectTextFactStoragePayload {
     text_facts: Vec<TextFact>,
     render_parts: Vec<TextFactRenderPart>,
     domain_payloads: Vec<TextFactDomainPayload>,
-    text_fact_raw_text_by_location_path: BTreeMap<String, String>,
     domain_fact_counts: BTreeMap<String, usize>,
 }
 
@@ -473,9 +472,6 @@ fn rebuild_with_context(
         &data_files,
         Some(&context),
     )?;
-    let text_fact_raw_text_by_location_path = text_fact_payload
-        .text_fact_raw_text_by_location_path
-        .clone();
     let write_payload = storage::WriteStoragePayload {
         db_path: payload.db_path,
         metadata: storage::TextIndexMetadataInput {
@@ -489,10 +485,9 @@ fn rebuild_with_context(
         text_index_rows: warm_index_rows
             .into_iter()
             .map(|row| {
-                let text_fact_raw_text = text_fact_raw_text_by_location_path
-                    .get(&row.location_path)
-                    .cloned();
-                storage::TextIndexRowInput {
+                let text_fact_raw_text =
+                    text_index_row_raw_identity_override(&row, &data_files, Some(&context))?;
+                Ok(storage::TextIndexRowInput {
                     location_path: row.location_path,
                     item_type: row.item_type,
                     role: row.role,
@@ -505,9 +500,9 @@ fn rebuild_with_context(
                     source_snapshot_fingerprint: row.source_snapshot_fingerprint,
                     rules_fingerprint: row.rules_fingerprint,
                     locator_json: row.locator_json,
-                }
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, String>>()?,
         scope_summary: storage::ScopeSummaryInput {
             total_count: scope_summary.total_count,
             active_count: scope_summary.active_count,
@@ -3409,19 +3404,9 @@ fn build_text_fact_storage_payload_with_context(
     let mut text_facts = Vec::with_capacity(rows.len());
     let mut render_parts = Vec::new();
     let mut domain_payloads = Vec::new();
-    let mut text_fact_raw_text_by_location_path = BTreeMap::new();
     let mut domain_fact_counts = BTreeMap::new();
     for row in rows {
-        let fact_content = match context {
-            Some(context) => mv_virtual_namebox_fact_content(row, data_files, context)?,
-            None => None,
-        }
-        .unwrap_or_else(|| default_text_fact_content(row));
-        let row_raw_identity = row.original_lines.join("\n");
-        if fact_content.raw_text != row_raw_identity {
-            text_fact_raw_text_by_location_path
-                .insert(row.location_path.clone(), fact_content.raw_text.clone());
-        }
+        let fact_content = direct_text_fact_content(row, data_files, context)?;
         let fact = build_text_fact_from_content(row, scope, &fact_content)?;
         for (part_order, part) in fact_content.render_parts.iter().enumerate() {
             render_parts.push(TextFactRenderPart {
@@ -3448,9 +3433,33 @@ fn build_text_fact_storage_payload_with_context(
         text_facts,
         render_parts,
         domain_payloads,
-        text_fact_raw_text_by_location_path,
         domain_fact_counts,
     })
+}
+
+fn text_index_row_raw_identity_override(
+    row: &DirectTextIndexRow,
+    data_files: &[ParsedDataFile],
+    context: Option<&RebuildContext>,
+) -> Result<Option<String>, String> {
+    let fact_content = direct_text_fact_content(row, data_files, context)?;
+    let row_raw_identity = row.original_lines.join("\n");
+    if fact_content.raw_text == row_raw_identity {
+        return Ok(None);
+    }
+    Ok(Some(fact_content.raw_text))
+}
+
+fn direct_text_fact_content(
+    row: &DirectTextIndexRow,
+    data_files: &[ParsedDataFile],
+    context: Option<&RebuildContext>,
+) -> Result<DirectTextFactContent, String> {
+    Ok(match context {
+        Some(context) => mv_virtual_namebox_fact_content(row, data_files, context)?,
+        None => None,
+    }
+    .unwrap_or_else(|| default_text_fact_content(row)))
 }
 
 struct DirectTextFactContent {
@@ -4092,7 +4101,6 @@ mod tests {
         assert_eq!(fact_payload.render_parts.len(), 2);
         assert_eq!(fact_payload.domain_fact_counts[domains::STANDARD_DATA], 1);
         assert_eq!(fact_payload.domain_fact_counts[domains::EVENT_COMMAND], 1);
-        assert!(fact_payload.text_fact_raw_text_by_location_path.is_empty());
         assert!(fact_payload.domain_payloads.is_empty());
         assert!(fact_payload.text_facts.iter().all(|fact| {
             fact.raw_text == fact.visible_text && fact.visible_text == fact.translatable_text

@@ -20,6 +20,7 @@ const CURRENT_SCHEMA_VERSION: i64 = 17;
 const SCHEMA_VERSION_KEY: &str = "current";
 const TEXT_INDEX_META_KEY: &str = "current";
 type TextFactIdentity = (String, String, String, String, String, String);
+type TextFactLocatorIdentity = (String, String, String, String, String);
 
 #[derive(Debug, Deserialize)]
 struct InspectStoragePayload {
@@ -660,13 +661,13 @@ fn validate_warm_rows_have_matching_facts(payload: &WriteStoragePayload) -> Resu
 }
 
 fn validate_facts_have_warm_locator_rows(payload: &WriteStoragePayload) -> Result<(), String> {
-    let warm_locations = payload
+    let warm_locators = payload
         .text_index_rows
         .iter()
-        .map(|row| row.location_path.as_str())
+        .map(text_index_locator_identity)
         .collect::<BTreeSet<_>>();
     for fact in &payload.text_facts {
-        if !warm_locations.contains(fact.location_path.as_str()) {
+        if !warm_locators.contains(&text_fact_locator_identity(fact)) {
             return Err(text_fact_identity_mismatch_error());
         }
     }
@@ -722,6 +723,16 @@ fn text_index_identity(row: &TextIndexRowInput, raw_text: String) -> TextFactIde
     )
 }
 
+fn text_index_locator_identity(row: &TextIndexRowInput) -> TextFactLocatorIdentity {
+    (
+        row.location_path.clone(),
+        row.source_file.clone(),
+        row.source_type.clone(),
+        row.item_type.clone(),
+        row.role.clone().unwrap_or_default(),
+    )
+}
+
 fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, usize> {
     let mut counts = BTreeMap::new();
     for fact in facts {
@@ -729,6 +740,16 @@ fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, u
         *counts.entry(identity).or_insert(0) += 1;
     }
     counts
+}
+
+fn text_fact_locator_identity(fact: &TextFact) -> TextFactLocatorIdentity {
+    (
+        fact.location_path.clone(),
+        fact.source_file.clone(),
+        fact.source_type.clone(),
+        fact.item_type.clone(),
+        fact.role.clone(),
+    )
 }
 
 fn facts_by_identity(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, Vec<&TextFact>> {
@@ -1440,6 +1461,65 @@ mod tests {
             .expect("同一路径存在更多 v2 facts 时 warm index 子集应可写入");
         assert_eq!(output.written_item_count, 1);
         assert_eq!(output.text_fact_count, 2);
+
+        fs::remove_dir_all(fixture).expect("测试目录应可清理");
+    }
+
+    #[test]
+    fn write_scope_index_storage_rejects_extra_fact_with_same_path_but_different_locator() {
+        let fixture = std::env::temp_dir().join(format!(
+            "att_mz_text_fact_locator_mismatch_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX_EPOCH")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture).expect("测试目录应可创建");
+        let db_path = fixture.join("game.db");
+        {
+            let connection = Connection::open(&db_path).expect("测试数据库应可创建");
+            connection
+                .execute_batch(CURRENT_SCHEMA_SQL)
+                .expect("共享 schema SQL 应可执行");
+        }
+
+        let scope = TextFactScope::from_hashes(
+            "snapshot-v1".to_string(),
+            "rules-v1".to_string(),
+            "text-rules-v1".to_string(),
+            "2026-06-05T00:00:00".to_string(),
+        );
+        let matched_fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture");
+        let extra_fact = TextFact::from_input(
+            TextFactInput {
+                domain: domains::EVENT_COMMAND.to_string(),
+                location_path: "System.json/gameTitle".to_string(),
+                source_file: "CommonEvents.json".to_string(),
+                source_type: "event_command".to_string(),
+                item_type: "long_text".to_string(),
+                role: "Narrator".to_string(),
+                selector: "event:1/page:0/list:0".to_string(),
+                raw_text: "Extra".to_string(),
+                visible_text: "Extra".to_string(),
+                translatable_text: "Extra".to_string(),
+            },
+            scope.scope_key.clone(),
+        )
+        .expect("额外 fact 应可创建");
+        let mut payload = text_fact_payload(
+            db_path.to_string_lossy().to_string(),
+            scope,
+            vec![matched_fact, extra_fact],
+            Vec::new(),
+            Vec::new(),
+        );
+        payload.metadata.item_count = 1;
+        payload.text_index_rows.clear();
+        payload.text_index_rows.push(dummy_text_index_row());
+
+        let error = write_scope_index_storage_direct(&payload)
+            .expect_err("同路径但 locator 身份不匹配的额外 fact 必须拒绝");
+        assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
 
         fs::remove_dir_all(fixture).expect("测试目录应可清理");
     }
