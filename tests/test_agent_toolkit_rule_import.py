@@ -11,7 +11,11 @@ from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.schema import ItemType
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
-from app.text_facts import read_current_text_fact_records_v2, text_fact_record_to_translation_item
+from app.text_facts import (
+    read_current_text_fact_records_v2,
+    read_current_text_fact_scope_v2,
+    text_fact_record_to_translation_item,
+)
 
 
 def _json_int_for_assert(value: object, label: str) -> int:
@@ -2413,10 +2417,12 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await write_v2_test_translation_items(
+            session,
             [
-                _rule_test_translation_item(
+                TranslationItem(
                     location_path="Items.json/1/note/拡張説明",
+                    item_type="short_text",
                     original_lines=["一行目"],
                     translation_lines=["第一行"],
                 ),
@@ -2444,6 +2450,69 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     rule_details = ensure_json_array(coerce_json_value(report.details["rules"]), "rules")
     first_rule_detail = ensure_json_object(rule_details[0], "rules[0]")
     assert first_rule_detail["translated_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_note_tag_rules_does_not_count_same_path_stale_fact_as_translated(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Note 标签规则校验按当前 fact_id 统计译文，不能把同路径旧正文算作已翻译。"""
+    items_path = minimal_mv_game_dir / "www" / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:現在の説明>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
+        )
+    _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
+    async with await registry.open_game("MVテストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "note_tag"
+            and fact.location_path == "Items.json/1/note/拡張説明"
+            and fact.translatable_text == "現在の説明"
+        )
+        stale_fact = type(current_fact)(
+            fact_id=f"{current_fact.fact_id}:stale",
+            schema_version=current_fact.schema_version,
+            domain=current_fact.domain,
+            location_path=current_fact.location_path,
+            source_file=current_fact.source_file,
+            source_type=current_fact.source_type,
+            item_type=current_fact.item_type,
+            role=current_fact.role,
+            selector=current_fact.selector,
+            raw_text="古い説明",
+            visible_text="古い説明",
+            translatable_text="古い説明",
+            raw_hash=f"{current_fact.raw_hash}:stale",
+            visible_hash=f"{current_fact.visible_hash}:stale",
+            translatable_hash=f"{current_fact.translatable_hash}:stale",
+            scope_key=current_fact.scope_key,
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
+        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item.translation_lines = ["旧说明"]
+        await session.write_translation_items([stale_item])
+
+    report = await service.validate_note_tag_rules(
+        game_title="MVテストゲーム",
+        rules_text=json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+    )
+
+    assert report.status == "ok"
+    assert report.summary["hit_count"] == 1
+    assert report.summary["translated_count"] == 0
 
 
 @pytest.mark.asyncio

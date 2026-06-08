@@ -61,6 +61,7 @@ from app.rule_review import (
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeService
 from app.text_scope.write_probe import collect_write_back_probe_reasons
+from app.text_facts import read_current_text_fact_records_v2, text_fact_record_to_translation_item
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import (
     _write_temp_db,
@@ -2419,17 +2420,23 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
+        await session.replace_plugin_source_text_rules(records)
+    _ = await service.rebuild_text_index(game_title="テストゲーム")
+    async with await registry.open_game("テストゲーム") as session:
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        target_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "plugin_source"
+            and fact.location_path == target_item.location_path
+        )
+        current_item = text_fact_record_to_translation_item(target_fact)
+        current_item.translation_lines = ["候选一"]
         await session.write_translation_items(
             [
-                _stale_v2_translation_item_for_test(
-                    TranslationItem(
-                        location_path=target_item.location_path,
-                        item_type=target_item.item_type,
-                        original_lines=target_item.original_lines,
-                        translation_lines=["候选一"],
-                    )
-                ),
+                current_item,
                 _stale_v2_translation_item_for_test(
                     TranslationItem(
                         location_path="Actors.json/1/name",
@@ -2446,10 +2453,7 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
 
     monkeypatch.setattr(TargetGameSession, "read_translation_location_paths", forbidden_full_path_read)
 
-    report = await AgentToolkitService(
-        game_registry=registry,
-        setting_path=EXAMPLE_SETTING_PATH,
-    ).validate_plugin_source_rules(
+    report = await service.validate_plugin_source_rules(
         game_title="テストゲーム",
         rules_text=json.dumps(rules_payload, ensure_ascii=False),
     )

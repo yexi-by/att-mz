@@ -12,7 +12,10 @@ from .common import (
     TextRules,
     TranslationItem,
     _format_mv_namebox_rule_error,
+    _note_tag_rule_hits_from_native_details,
     _note_tag_item_matches_rule,
+    _plugin_source_rule_hits_from_scan,
+    _RuleHitMetric,
     _validate_event_command_rule_records_with_context,
     _validate_mv_virtual_namebox_rules_with_context,
     _validate_note_tag_rule_records_with_context,
@@ -28,7 +31,16 @@ from .common import (
     parse_note_tag_rule_import_text,
     parse_plugin_rule_import_text,
 )
-from app.event_command_text.native_validation import build_native_event_command_rule_validation_context
+from .rule_identity import (
+    RuleFactProbe,
+    require_translation_fact_ids,
+    resolve_current_rule_fact_hits,
+    resolve_current_rule_translation_items,
+)
+from app.event_command_text.native_validation import (
+    NativeEventCommandRuleValidationContext,
+    build_native_event_command_rule_validation_context,
+)
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.flow_gate import (
     ensure_empty_rule_confirmed,
@@ -38,7 +50,8 @@ from app.native_note_tag_scan import (
     build_note_tag_rule_records_from_native_candidates,
     collect_native_note_tag_hit_details,
 )
-from app.persistence import RuleImportUnitOfWork
+from app.persistence import RuleImportUnitOfWork, TargetGameSession
+from app.plugin_text import NativePluginRuleValidationContext
 from app.plugin_source_text import (
     PluginSourceRuleImportFile,
     build_plugin_source_rule_records_from_import,
@@ -89,6 +102,109 @@ def _plugin_source_rule_prefixes(rule_records: list[PluginSourceTextRuleRecord])
 def _plugin_source_file_prefixes(game_data: GameData) -> list[str]:
     """返回当前启用插件源码文件对应的已保存译文路径前缀。"""
     return sorted({f"js/plugins/{file_name}/" for file_name in game_data.plugin_source_files})
+
+
+async def _resolve_rule_hit_metrics(
+    *,
+    session: TargetGameSession,
+    domain: str,
+    grouped_hits: list[list[_RuleHitMetric]],
+) -> list[list[_RuleHitMetric]]:
+    """把 native 规则命中补齐当前 v2 fact_id，保留未解析命中供报告展示。"""
+    probes = [
+        RuleFactProbe(
+            domain=domain,
+            location_path=hit.location_path,
+            translatable_text=hit.sample_text,
+        )
+        for record_hits in grouped_hits
+        for hit in record_hits
+    ]
+    rule_fact_hits = await resolve_current_rule_fact_hits(session, probes)
+    resolved_by_probe = {
+        (hit.location_path, hit.sample_text): hit.fact_id
+        for hit in rule_fact_hits
+    }
+    return [
+        [
+            _RuleHitMetric(
+                location_path=hit.location_path,
+                sample_text=hit.sample_text,
+                fact_id=resolved_by_probe.get((hit.location_path, hit.sample_text)),
+            )
+            for hit in record_hits
+        ]
+        for record_hits in grouped_hits
+    ]
+
+
+async def _resolve_plugin_source_hit_metrics(
+    *,
+    session: TargetGameSession,
+    grouped_hits: dict[str, list[_RuleHitMetric]],
+) -> dict[str, list[_RuleHitMetric]]:
+    """把插件源码命中补齐当前 v2 fact_id。"""
+    resolved_groups = await _resolve_rule_hit_metrics(
+        session=session,
+        domain="plugin_source",
+        grouped_hits=list(grouped_hits.values()),
+    )
+    return {
+        file_name: resolved_hits
+        for file_name, resolved_hits in zip(grouped_hits, resolved_groups, strict=True)
+    }
+
+
+async def _resolve_plugin_rule_validation_context(
+    *,
+    session: TargetGameSession,
+    context: NativePluginRuleValidationContext,
+) -> NativePluginRuleValidationContext:
+    """把插件参数 native 命中回填当前 v2 fact_id。"""
+    resolved_items = await resolve_current_rule_translation_items(
+        session,
+        domain="plugin_config",
+        items=context.extracted_items,
+    )
+    resolved_by_path = {item.location_path: item for item in resolved_items}
+    return NativePluginRuleValidationContext(
+        records=context.records,
+        extracted_items=resolved_items,
+        record_items_by_index={
+            plugin_index: [
+                resolved_by_path.get(item.location_path, item)
+                for item in record_items
+            ]
+            for plugin_index, record_items in context.record_items_by_index.items()
+        },
+        translation_prefixes=context.translation_prefixes,
+    )
+
+
+async def _resolve_event_command_rule_validation_context(
+    *,
+    session: TargetGameSession,
+    context: NativeEventCommandRuleValidationContext,
+) -> NativeEventCommandRuleValidationContext:
+    """把事件指令 native 命中回填当前 v2 fact_id。"""
+    resolved_items = await resolve_current_rule_translation_items(
+        session,
+        domain="event_command",
+        items=context.extracted_items,
+    )
+    resolved_by_path = {item.location_path: item for item in resolved_items}
+    return NativeEventCommandRuleValidationContext(
+        extracted_items=resolved_items,
+        record_items_by_index=[
+            [
+                resolved_by_path.get(item.location_path, item)
+                for item in record_items
+            ]
+            for record_items in context.record_items_by_index
+        ],
+        translation_prefixes=context.translation_prefixes,
+        translation_prefixes_by_index=context.translation_prefixes_by_index,
+    )
 
 
 def _note_tag_paths_from_native_hits(
@@ -402,7 +518,16 @@ class RuleValidationAgentMixin:
                 translated_note_items = await session.read_translated_items_by_prefixes(
                     _note_tag_rule_prefixes(records)
                 )
-                translated_paths = {item.location_path for item in translated_note_items}
+                translated_fact_ids = require_translation_fact_ids(translated_note_items)
+                note_hit_metrics = _note_tag_rule_hits_from_native_details(
+                    records=records,
+                    hit_details=collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules),
+                )
+                resolved_note_hit_metrics = await _resolve_rule_hit_metrics(
+                    session=session,
+                    domain="note_tag",
+                    grouped_hits=note_hit_metrics,
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
@@ -422,7 +547,8 @@ class RuleValidationAgentMixin:
             records=records,
             game_data=game_data,
             text_rules=text_rules,
-            translated_paths=translated_paths,
+            translated_fact_ids=translated_fact_ids,
+            hits_by_record=resolved_note_hit_metrics,
         )
 
     async def import_note_tag_rules(
@@ -655,7 +781,11 @@ class RuleValidationAgentMixin:
                 translated_plugin_items = await session.read_translated_items_by_prefixes(
                     context.translation_prefixes
                 )
-                translated_paths = {item.location_path for item in translated_plugin_items}
+                translated_fact_ids = require_translation_fact_ids(translated_plugin_items)
+                context = await _resolve_plugin_rule_validation_context(
+                    session=session,
+                    context=context,
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
@@ -674,7 +804,7 @@ class RuleValidationAgentMixin:
         return build_plugin_rule_validation_report_from_native_context(
             context=context,
             game_data=game_data,
-            translated_paths=translated_paths,
+            translated_fact_ids=translated_fact_ids,
         )
 
     async def validate_plugin_source_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
@@ -711,8 +841,22 @@ class RuleValidationAgentMixin:
                 translated_plugin_source_items = await session.read_translated_items_by_prefixes(
                     _plugin_source_file_prefixes(game_data)
                 )
-                translated_paths = {item.location_path for item in translated_plugin_source_items}
-            scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+                translated_fact_ids = require_translation_fact_ids(translated_plugin_source_items)
+                scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+                records = build_plugin_source_rule_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                    text_rules=text_rules,
+                    scan=scan,
+                )
+                plugin_source_hit_metrics = _plugin_source_rule_hits_from_scan(
+                    records=records,
+                    scan=scan,
+                )
+                resolved_plugin_source_hit_metrics = await _resolve_plugin_source_hit_metrics(
+                    session=session,
+                    grouped_hits=plugin_source_hit_metrics,
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],
@@ -736,7 +880,8 @@ class RuleValidationAgentMixin:
             game_data=game_data,
             text_rules=text_rules,
             scan=scan,
-            translated_paths=translated_paths,
+            translated_fact_ids=translated_fact_ids,
+            hits_by_file=resolved_plugin_source_hit_metrics,
         )
 
     async def import_plugin_source_rules(
@@ -915,12 +1060,15 @@ class RuleValidationAgentMixin:
                     text_rules=text_rules,
                 )
                 extracted_paths = {item.location_path for item in native_validation_context.extracted_items}
-                translated_paths: set[str]
                 if extracted_paths:
-                    translated_paths = await session.read_translation_location_paths()
-                    translated_paths &= extracted_paths
+                    translated_event_items = await session.read_translated_items_by_paths(sorted(extracted_paths))
                 else:
-                    translated_paths = set()
+                    translated_event_items = []
+                translated_fact_ids = require_translation_fact_ids(translated_event_items)
+                native_validation_context = await _resolve_event_command_rule_validation_context(
+                    session=session,
+                    context=native_validation_context,
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
@@ -940,7 +1088,7 @@ class RuleValidationAgentMixin:
             records=records,
             game_data=game_data,
             text_rules=text_rules,
-            translated_paths=translated_paths,
+            translated_fact_ids=translated_fact_ids,
             native_validation_context=native_validation_context,
         )
 

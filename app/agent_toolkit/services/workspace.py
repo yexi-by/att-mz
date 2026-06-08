@@ -7,6 +7,7 @@ from .common import (
     AgentReport,
     AgentServiceContext,
     GameData,
+    GameRegistry,
     JsonArray,
     JsonObject,
     JsonValue,
@@ -31,19 +32,24 @@ from .common import (
     _format_mv_namebox_rule_error,
     _mv_namebox_match_key,
     _mv_namebox_match_keys,
+    _note_tag_rule_hits_from_native_details,
     _note_tag_rule_records_to_import_json,
     _nonstandard_data_skipped_warnings,
     _placeholder_rule_records_to_import_json,
     _plugin_rule_records_to_import_json,
+    _plugin_source_rule_hits_from_scan,
+    _RuleHitMetric,
     _structured_placeholder_rule_records_to_import_json,
-    _validate_event_command_rules_with_context,
-    _validate_note_tag_rules_with_context,
+    _validate_event_command_rule_records_with_context,
+    _validate_note_tag_rule_records_with_context,
     _validate_placeholder_rules_with_context,
     _validate_plugin_source_rules_with_context,
-    _validate_plugin_rules_with_context,
     _validate_structured_placeholder_rules_with_context,
     _validate_terminology_registry,
     _validate_terminology_registry_shape,
+    build_event_command_rule_records_from_import_shape,
+    build_native_plugin_rule_validation_context_from_import,
+    build_plugin_rule_validation_report_from_native_context,
     _noop_quality_progress_callbacks,
     _write_json_object,
     _write_json_value,
@@ -64,6 +70,9 @@ from .common import (
     load_setting,
     load_terminology_glossary,
     load_terminology_registry,
+    parse_event_command_rule_import_text,
+    parse_note_tag_rule_import_text,
+    parse_plugin_rule_import_text,
     resolve_event_command_codes,
     shutil,
     write_field_terms_json,
@@ -84,9 +93,20 @@ from app.native_structured_placeholder_scan import (
     collect_native_structured_placeholder_candidate_details_from_entries,
     count_uncovered_structured_placeholder_candidate_details,
 )
+from app.native_note_tag_scan import (
+    build_note_tag_rule_records_from_native_candidates,
+    collect_native_note_tag_hit_details,
+)
+from app.event_command_text.native_validation import (
+    NativeEventCommandRuleValidationContext,
+    build_native_event_command_rule_validation_context,
+)
+from app.plugin_text import NativePluginRuleValidationContext
 from app.plugin_source_text import (
     PluginSourceScan,
+    build_plugin_source_rule_records_from_import,
     collect_plugin_source_review_coverage,
+    parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
 from app.plugin_source_text.native_scan import (
@@ -107,7 +127,7 @@ from app.rmmz.mv_namebox_native import (
 )
 from app.rmmz.game_file_view import GameFileView, parse_game_file_view
 from app.rmmz.loader import load_plugin_source_files_for_view
-from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.schema import MvVirtualNameboxRuleRecord, NoteTagTextRuleRecord
 from app.rmmz.source_snapshot import validate_plugin_source_snapshot_manifest
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
@@ -129,6 +149,12 @@ from app.text_facts import (
 )
 from app.persistence.records import TextFactScopeV2Record
 from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+from .rule_identity import (
+    RuleFactProbe,
+    require_translation_fact_ids,
+    resolve_current_rule_fact_hits,
+    resolve_current_rule_translation_items,
+)
 
 SOURCE_SNAPSHOT_MISSING_MESSAGE = (
     "尚未创建翻译源快照，请使用干净原始游戏目录重新执行 add-game；"
@@ -163,6 +189,109 @@ def _json_bool(payload: JsonObject, key: str, label: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{label}.{key} 必须是布尔值")
     return value
+
+
+async def _resolve_workspace_rule_hit_metrics(
+    *,
+    session: TargetGameSession,
+    domain: str,
+    grouped_hits: list[list[_RuleHitMetric]],
+) -> list[list[_RuleHitMetric]]:
+    """把 workspace 规则命中解析到当前 v2 fact_id。"""
+    probes = [
+        RuleFactProbe(
+            domain=domain,
+            location_path=hit.location_path,
+            translatable_text=hit.sample_text,
+        )
+        for record_hits in grouped_hits
+        for hit in record_hits
+    ]
+    rule_fact_hits = await resolve_current_rule_fact_hits(session, probes)
+    resolved_by_probe = {
+        (hit.location_path, hit.sample_text): hit.fact_id
+        for hit in rule_fact_hits
+    }
+    return [
+        [
+            _RuleHitMetric(
+                location_path=hit.location_path,
+                sample_text=hit.sample_text,
+                fact_id=resolved_by_probe.get((hit.location_path, hit.sample_text)),
+            )
+            for hit in record_hits
+        ]
+        for record_hits in grouped_hits
+    ]
+
+
+async def _resolve_workspace_plugin_source_hit_metrics(
+    *,
+    session: TargetGameSession,
+    grouped_hits: dict[str, list[_RuleHitMetric]],
+) -> dict[str, list[_RuleHitMetric]]:
+    """把 workspace 插件源码命中解析到当前 v2 fact_id。"""
+    resolved_groups = await _resolve_workspace_rule_hit_metrics(
+        session=session,
+        domain="plugin_source",
+        grouped_hits=list(grouped_hits.values()),
+    )
+    return {
+        file_name: resolved_hits
+        for file_name, resolved_hits in zip(grouped_hits, resolved_groups, strict=True)
+    }
+
+
+async def _resolve_workspace_plugin_rule_validation_context(
+    *,
+    session: TargetGameSession,
+    context: NativePluginRuleValidationContext,
+) -> NativePluginRuleValidationContext:
+    """把 workspace 插件参数命中回填当前 v2 fact_id。"""
+    resolved_items = await resolve_current_rule_translation_items(
+        session,
+        domain="plugin_config",
+        items=context.extracted_items,
+    )
+    resolved_by_path = {item.location_path: item for item in resolved_items}
+    return NativePluginRuleValidationContext(
+        records=context.records,
+        extracted_items=resolved_items,
+        record_items_by_index={
+            plugin_index: [
+                resolved_by_path.get(item.location_path, item)
+                for item in record_items
+            ]
+            for plugin_index, record_items in context.record_items_by_index.items()
+        },
+        translation_prefixes=context.translation_prefixes,
+    )
+
+
+async def _resolve_workspace_event_command_rule_validation_context(
+    *,
+    session: TargetGameSession,
+    context: NativeEventCommandRuleValidationContext,
+) -> NativeEventCommandRuleValidationContext:
+    """把 workspace 事件指令命中回填当前 v2 fact_id。"""
+    resolved_items = await resolve_current_rule_translation_items(
+        session,
+        domain="event_command",
+        items=context.extracted_items,
+    )
+    resolved_by_path = {item.location_path: item for item in resolved_items}
+    return NativeEventCommandRuleValidationContext(
+        extracted_items=resolved_items,
+        record_items_by_index=[
+            [
+                resolved_by_path.get(item.location_path, item)
+                for item in record_items
+            ]
+            for record_items in context.record_items_by_index
+        ],
+        translation_prefixes=context.translation_prefixes,
+        translation_prefixes_by_index=context.translation_prefixes_by_index,
+    )
 
 
 async def _write_compact_json_value(path: Path, payload: JsonValue) -> None:
@@ -289,6 +418,16 @@ def _workspace_preview_sample_texts(
             if len(samples) >= limit:
                 return samples
     return samples
+
+
+def _workspace_note_tag_rule_prefixes(records: list[NoteTagTextRuleRecord]) -> list[str]:
+    """返回 workspace Note 标签规则影响的已保存译文路径前缀。"""
+    return sorted({f"{record.file_name}/" for record in records})
+
+
+def _workspace_plugin_source_file_prefixes(game_data: GameData) -> list[str]:
+    """返回 workspace 当前插件源码文件对应的已保存译文路径前缀。"""
+    return sorted({f"js/plugins/{file_name}/" for file_name in game_data.plugin_source_files})
 
 
 def _workspace_placeholder_preview_sample_texts(
@@ -893,7 +1032,6 @@ class WorkspaceAgentMixin:
             set_status("读取已保存译文和支线状态")
             plugin_source_started = bool(stored_plugin_source_rules)
             nonstandard_data_started = bool(stored_nonstandard_data_rules)
-            translated_paths = await session.read_translation_location_paths()
             empty_rule_issues = _workspace_empty_rule_warnings(game_data=game_data)
             advance_progress(1)
         set_status("校验术语文件")
@@ -949,11 +1087,12 @@ class WorkspaceAgentMixin:
         set_status("校验插件规则")
         if plugin_rules_path.exists():
             async with aiofiles.open(plugin_rules_path, "r", encoding="utf-8") as file:
-                plugin_report = _validate_workspace_plugin_rules(
+                plugin_report = await _validate_workspace_plugin_rules(
                     rules_text=await file.read(),
+                    game_registry=self.game_registry,
+                    game_title=game_title,
                     game_data=game_data,
                     text_rules=text_rules,
-                    translated_paths=translated_paths,
                 )
             errors.extend(plugin_report.errors)
             warnings.extend(plugin_report.warnings)
@@ -971,12 +1110,13 @@ class WorkspaceAgentMixin:
                 raise RuntimeError("插件源码规则文件存在，但工作区验收没有执行插件源码扫描")
             else:
                 async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
-                    plugin_source_report = _validate_workspace_plugin_source_rules(
+                    plugin_source_report = await _validate_workspace_plugin_source_rules(
                         rules_text=await file.read(),
+                        game_registry=self.game_registry,
+                        game_title=game_title,
                         game_data=game_data,
                         text_rules=text_rules,
                         scan=plugin_source_scan,
-                        translated_paths=translated_paths,
                     )
                 errors.extend(plugin_source_report.errors)
                 plugin_source_warnings = plugin_source_report.warnings
@@ -1068,11 +1208,12 @@ class WorkspaceAgentMixin:
         set_status("校验 Note 和事件规则")
         if note_tag_rules_path.exists():
             async with aiofiles.open(note_tag_rules_path, "r", encoding="utf-8") as file:
-                note_tag_report = _validate_workspace_note_tag_rules(
+                note_tag_report = await _validate_workspace_note_tag_rules(
                     rules_text=await file.read(),
+                    game_registry=self.game_registry,
+                    game_title=game_title,
                     game_data=game_data,
                     text_rules=text_rules,
-                    translated_paths=translated_paths,
                 )
             errors.extend(note_tag_report.errors)
             warnings.extend(note_tag_report.warnings)
@@ -1085,11 +1226,12 @@ class WorkspaceAgentMixin:
             errors.append(issue("note_tag_rules_missing", "工作区缺少 note-tag-rules.json"))
         if event_rules_path.exists():
             async with aiofiles.open(event_rules_path, "r", encoding="utf-8") as file:
-                event_report = _validate_workspace_event_command_rules(
+                event_report = await _validate_workspace_event_command_rules(
                     rules_text=await file.read(),
+                    game_registry=self.game_registry,
+                    game_title=game_title,
                     game_data=game_data,
                     text_rules=text_rules,
-                    translated_paths=translated_paths,
                 )
             errors.extend(event_report.errors)
             warnings.extend(event_report.warnings)
@@ -1526,69 +1668,211 @@ def _validate_workspace_mv_virtual_namebox_rules(
         )
 
 
-def _validate_workspace_plugin_rules(
+async def _validate_workspace_plugin_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验插件参数规则。"""
-    return _validate_plugin_rules_with_context(
-        rules_text=rules_text,
+    try:
+        import_file = parse_plugin_rule_import_text(rules_text)
+        context = build_native_plugin_rule_validation_context_from_import(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+        )
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = await session.read_translated_items_by_prefixes(context.translation_prefixes)
+            context = await _resolve_workspace_plugin_rule_validation_context(
+                session=session,
+                context=context,
+            )
+        translated_fact_ids = require_translation_fact_ids(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "plugin_count": 0,
+                "rule_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return build_plugin_rule_validation_report_from_native_context(
+        context=context,
         game_data=game_data,
-        text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
     )
 
 
-def _validate_workspace_plugin_source_rules(
+async def _validate_workspace_plugin_source_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
     scan: PluginSourceScan,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验插件源码规则，避免重新加载游戏并重扫 AST。"""
+    try:
+        import_file = parse_plugin_source_rule_import_text(rules_text)
+        records = build_plugin_source_rule_records_from_import(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+            scan=scan,
+        )
+        hit_metrics = _plugin_source_rule_hits_from_scan(records=records, scan=scan)
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = await session.read_translated_items_by_prefixes(
+                _workspace_plugin_source_file_prefixes(game_data)
+            )
+            resolved_hit_metrics = await _resolve_workspace_plugin_source_hit_metrics(
+                session=session,
+                grouped_hits=hit_metrics,
+            )
+        translated_fact_ids = require_translation_fact_ids(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "file_count": 0,
+                "selector_count": 0,
+                "excluded_selector_count": 0,
+                "reviewed_selector_count": 0,
+                "unreviewed_selector_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
     return _validate_plugin_source_rules_with_context(
         rules_text=rules_text,
         game_data=game_data,
         text_rules=text_rules,
         scan=scan,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
+        hits_by_file=resolved_hit_metrics,
     )
 
 
-def _validate_workspace_note_tag_rules(
+async def _validate_workspace_note_tag_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验 Note 标签规则。"""
-    return _validate_note_tag_rules_with_context(
-        rules_text=rules_text,
+    try:
+        import_file = parse_note_tag_rule_import_text(rules_text)
+        records = build_note_tag_rule_records_from_native_candidates(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+        )
+        hit_metrics = _note_tag_rule_hits_from_native_details(
+            records=records,
+            hit_details=collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules),
+        )
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = await session.read_translated_items_by_prefixes(
+                _workspace_note_tag_rule_prefixes(records)
+            )
+            resolved_hit_metrics = await _resolve_workspace_rule_hit_metrics(
+                session=session,
+                domain="note_tag",
+                grouped_hits=hit_metrics,
+            )
+        translated_fact_ids = require_translation_fact_ids(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "file_count": 0,
+                "tag_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_note_tag_rule_records_with_context(
+        records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
+        hits_by_record=resolved_hit_metrics,
     )
 
 
-def _validate_workspace_event_command_rules(
+async def _validate_workspace_event_command_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验事件指令规则。"""
-    return _validate_event_command_rules_with_context(
-        rules_text=rules_text,
+    try:
+        import_file = parse_event_command_rule_import_text(rules_text)
+        records = build_event_command_rule_records_from_import_shape(import_file=import_file)
+        native_validation_context = build_native_event_command_rule_validation_context(
+            records=records,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        extracted_paths = {item.location_path for item in native_validation_context.extracted_items}
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = (
+                await session.read_translated_items_by_paths(sorted(extracted_paths))
+                if extracted_paths
+                else []
+            )
+            native_validation_context = await _resolve_workspace_event_command_rule_validation_context(
+                session=session,
+                context=native_validation_context,
+            )
+        translated_fact_ids = require_translation_fact_ids(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "rule_group_count": 0,
+                "path_rule_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_event_command_rule_records_with_context(
+        records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
+        native_validation_context=native_validation_context,
     )
 
 

@@ -1784,6 +1784,7 @@ class _RuleHitMetric:
 
     location_path: str
     sample_text: str
+    fact_id: str | None = None
 
 
 def _sample_texts_from_rule_hits(hits: Iterable[_RuleHitMetric], limit: int = 5) -> JsonArray:
@@ -1801,14 +1802,18 @@ def _sample_texts_from_rule_hits(hits: Iterable[_RuleHitMetric], limit: int = 5)
 def _build_rule_metric_detail(
     *,
     record_items: Sequence[TranslationItem],
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
     unwritable_items_by_path: dict[str, JsonArray],
 ) -> JsonObject:
     """生成单条外部规则的命中、保存和可写统计。"""
     return {
         "hit_count": len(record_items),
         "extractable_count": len(record_items),
-        "translated_count": sum(1 for item in record_items if item.location_path in translated_paths),
+        "translated_count": sum(
+            1
+            for item in record_items
+            if item.fact_id is not None and item.fact_id in translated_fact_ids
+        ),
         "writable_count": sum(1 for item in record_items if item.location_path not in unwritable_items_by_path),
         "unwritable_items": [
             item
@@ -1822,14 +1827,18 @@ def _build_rule_metric_detail(
 def _build_rule_hit_metric_detail(
     *,
     record_hits: Sequence[_RuleHitMetric],
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
     unwritable_items_by_path: dict[str, JsonArray],
 ) -> JsonObject:
     """生成单条外部规则的 native/v2 命中、保存和可写统计。"""
     return {
         "hit_count": len(record_hits),
         "extractable_count": len(record_hits),
-        "translated_count": sum(1 for hit in record_hits if hit.location_path in translated_paths),
+        "translated_count": sum(
+            1
+            for hit in record_hits
+            if hit.fact_id is not None and hit.fact_id in translated_fact_ids
+        ),
         "writable_count": sum(1 for hit in record_hits if hit.location_path not in unwritable_items_by_path),
         "unwritable_items": [
             item
@@ -1962,7 +1971,7 @@ def _validate_plugin_rules_with_context(
     rules_text: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
 ) -> AgentReport:
     """使用已加载游戏上下文校验插件参数规则。"""
     try:
@@ -1990,7 +1999,7 @@ def _validate_plugin_rules_with_context(
     return build_plugin_rule_validation_report_from_native_context(
         context=context,
         game_data=game_data,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
     )
 
 
@@ -1998,7 +2007,7 @@ def build_plugin_rule_validation_report_from_native_context(
     *,
     context: NativePluginRuleValidationContext,
     game_data: GameData,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
 ) -> AgentReport:
     """把插件参数 native 命中上下文渲染为 Agent 校验报告。"""
     errors: list[AgentIssue] = []
@@ -2022,7 +2031,7 @@ def build_plugin_rule_validation_report_from_native_context(
             "paths": list(record.path_templates),
             **_build_rule_metric_detail(
                 record_items=context.record_items_by_index.get(record.plugin_index, []),
-                translated_paths=translated_paths,
+                translated_fact_ids=translated_fact_ids,
                 unwritable_items_by_path=unwritable_items_by_path,
             ),
         }
@@ -2040,7 +2049,11 @@ def build_plugin_rule_validation_report_from_native_context(
             "rule_count": sum(len(record.path_templates) for record in records),
             "hit_count": len(extracted_items),
             "extractable_count": len(extracted_items),
-            "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
+            "translated_count": sum(
+                1
+                for item in extracted_items
+                if item.fact_id is not None and item.fact_id in translated_fact_ids
+            ),
             "writable_count": len(extracted_items) - len(unwritable_items),
             "unwritable_count": len(unwritable_items),
         },
@@ -2124,14 +2137,15 @@ def _validate_plugin_source_rules_with_context(
     game_data: GameData,
     text_rules: TextRules,
     scan: PluginSourceScan,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
+    hits_by_file: dict[str, list[_RuleHitMetric]] | None = None,
 ) -> AgentReport:
     """使用已加载游戏上下文校验插件源码规则。"""
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
     records: list[PluginSourceTextRuleRecord] = []
-    hits_by_file: dict[str, list[_RuleHitMetric]] = {}
+    resolved_hits_by_file: dict[str, list[_RuleHitMetric]] = {}
     unwritable_items: JsonArray = []
     unreviewed_count = 0
     try:
@@ -2144,8 +2158,12 @@ def _validate_plugin_source_rules_with_context(
         )
         review = collect_plugin_source_review_coverage(scan=scan, rule_records=records)
         unreviewed_count = len(review.unreviewed_candidates)
-        hits_by_file = _plugin_source_rule_hits_from_scan(records=records, scan=scan)
-        probe_items = _plugin_source_probe_items_from_hits(hits_by_file)
+        resolved_hits_by_file = (
+            hits_by_file
+            if hits_by_file is not None
+            else _plugin_source_rule_hits_from_scan(records=records, scan=scan)
+        )
+        probe_items = _plugin_source_probe_items_from_hits(resolved_hits_by_file)
         unwritable_items = _collect_plugin_source_unwritable_items(
             game_data=game_data,
             extracted_items=probe_items,
@@ -2170,17 +2188,17 @@ def _validate_plugin_source_rules_with_context(
                 "excluded_selectors": list(record.excluded_selectors),
                 **_build_rule_hit_metric_detail(
                     record_hits=record_hits,
-                    translated_paths=translated_paths,
+                    translated_fact_ids=translated_fact_ids,
                     unwritable_items_by_path=unwritable_items_by_path,
                 ),
             }
             for record in records
-            for record_hits in [hits_by_file.get(record.file_name, [])]
+            for record_hits in [resolved_hits_by_file.get(record.file_name, [])]
         ]
         if not records:
             warnings.append(issue("plugin_source_rules_empty", "插件源码规则为空"))
         excluded_selector_count = sum(len(record.excluded_selectors) for record in records)
-        hit_count = sum(len(record_hits) for record_hits in hits_by_file.values())
+        hit_count = sum(len(record_hits) for record_hits in resolved_hits_by_file.values())
         if records and hit_count == 0 and excluded_selector_count == 0:
             warnings.append(issue("plugin_source_rules_no_hits", "插件源码规则没有提取到任何可翻译文本"))
         if unreviewed_count:
@@ -2195,10 +2213,10 @@ def _validate_plugin_source_rules_with_context(
     except Exception as error:
         errors.append(issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}"))
         records = []
-        hits_by_file = {}
+        resolved_hits_by_file = {}
         unwritable_items = []
         unreviewed_count = 0
-    hit_count = sum(len(record_hits) for record_hits in hits_by_file.values())
+    hit_count = sum(len(record_hits) for record_hits in resolved_hits_by_file.values())
     return AgentReport.from_parts(
         errors=errors,
         warnings=warnings,
@@ -2215,9 +2233,9 @@ def _validate_plugin_source_rules_with_context(
             "extractable_count": hit_count,
             "translated_count": sum(
                 1
-                for record_hits in hits_by_file.values()
+                for record_hits in resolved_hits_by_file.values()
                 for hit in record_hits
-                if hit.location_path in translated_paths
+                if hit.fact_id is not None and hit.fact_id in translated_fact_ids
             ),
             "writable_count": hit_count - len(unwritable_items),
             "unwritable_count": len(unwritable_items),
@@ -2678,7 +2696,8 @@ def _validate_note_tag_rules_with_context(
     rules_text: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
+    hits_by_record: list[list[_RuleHitMetric]] | None = None,
 ) -> AgentReport:
     """使用已加载游戏上下文校验 Note 标签规则。"""
     try:
@@ -2707,7 +2726,8 @@ def _validate_note_tag_rules_with_context(
         records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
+        hits_by_record=hits_by_record,
     )
 
 
@@ -2716,17 +2736,22 @@ def _validate_note_tag_rule_records_with_context(
     records: list[NoteTagTextRuleRecord],
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
+    hits_by_record: list[list[_RuleHitMetric]] | None = None,
 ) -> AgentReport:
     """使用已构建的 Note 标签规则校验命中与写回可行性。"""
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
-    hits_by_record: list[list[_RuleHitMetric]] = []
+    resolved_hits_by_record: list[list[_RuleHitMetric]] = []
     try:
         hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
-        hits_by_record = _note_tag_rule_hits_from_native_details(records=records, hit_details=hit_details)
-        extracted_items = _note_tag_probe_items_from_hits(hits_by_record)
+        resolved_hits_by_record = (
+            hits_by_record
+            if hits_by_record is not None
+            else _note_tag_rule_hits_from_native_details(records=records, hit_details=hit_details)
+        )
+        extracted_items = _note_tag_probe_items_from_hits(resolved_hits_by_record)
         unwritable_items = _collect_write_protocol_unwritable_items(
             game_data=game_data,
             extracted_items=extracted_items,
@@ -2754,20 +2779,20 @@ def _validate_note_tag_rule_records_with_context(
                 "tag_names": list(record.tag_names),
                 **_build_rule_hit_metric_detail(
                     record_hits=record_hits,
-                    translated_paths=translated_paths,
+                    translated_fact_ids=translated_fact_ids,
                     unwritable_items_by_path=unwritable_items_by_path,
                 ),
             }
-            for record, record_hits in zip(records, hits_by_record, strict=True)
+            for record, record_hits in zip(records, resolved_hits_by_record, strict=True)
         ]
         if not records:
             warnings.append(issue("note_tag_rules_empty", "Note 标签规则为空"))
     except Exception as error:
         errors.append(issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}"))
         records = []
-        hits_by_record = []
+        resolved_hits_by_record = []
         unwritable_items = []
-    hit_count = sum(len(record_hits) for record_hits in hits_by_record)
+    hit_count = sum(len(record_hits) for record_hits in resolved_hits_by_record)
     return AgentReport.from_parts(
         errors=errors,
         warnings=warnings,
@@ -2778,9 +2803,9 @@ def _validate_note_tag_rule_records_with_context(
             "extractable_count": hit_count,
             "translated_count": sum(
                 1
-                for record_hits in hits_by_record
+                for record_hits in resolved_hits_by_record
                 for hit in record_hits
-                if hit.location_path in translated_paths
+                if hit.fact_id is not None and hit.fact_id in translated_fact_ids
             ),
             "writable_count": hit_count - len(unwritable_items),
             "unwritable_count": len(unwritable_items),
@@ -2794,7 +2819,7 @@ def _validate_event_command_rules_with_context(
     rules_text: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
 ) -> AgentReport:
     """使用已加载游戏上下文校验事件指令规则。"""
     try:
@@ -2819,7 +2844,7 @@ def _validate_event_command_rules_with_context(
         records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_fact_ids=translated_fact_ids,
     )
 
 
@@ -2828,7 +2853,7 @@ def _validate_event_command_rule_records_with_context(
     records: list[EventCommandTextRuleRecord],
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
+    translated_fact_ids: set[str],
     native_validation_context: _NativeEventCommandRuleValidationContext | None = None,
 ) -> AgentReport:
     """使用已构建的事件指令规则校验命中与写回可行性。"""
@@ -2886,7 +2911,7 @@ def _validate_event_command_rule_records_with_context(
                     "paths": list(record.path_templates),
                     **_build_rule_metric_detail(
                         record_items=record_items,
-                        translated_paths=translated_paths,
+                        translated_fact_ids=translated_fact_ids,
                         unwritable_items_by_path=unwritable_items_by_path,
                     ),
                 }
@@ -2909,7 +2934,11 @@ def _validate_event_command_rule_records_with_context(
             "path_rule_count": sum(len(record.path_templates) for record in records),
             "hit_count": len(extracted_items),
             "extractable_count": len(extracted_items),
-            "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
+            "translated_count": sum(
+                1
+                for item in extracted_items
+                if item.fact_id is not None and item.fact_id in translated_fact_ids
+            ),
             "writable_count": len(extracted_items) - len(unwritable_items),
             "unwritable_count": len(unwritable_items),
         },
