@@ -178,6 +178,49 @@ fn build_plan_with_omitted_allowed_paths_rejects_unrelated_stale_translation() {
 }
 
 #[test]
+fn build_plan_with_empty_writable_index_rejects_saved_translation() {
+    let fixture = create_fixture_dir("att_mz_write_plan_empty_writable_index_stale_translation");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_empty_database(&db_path);
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    insert_stale_translation_item(
+        &connection,
+        "tfv2:stale-with-empty-index",
+        "System.json/staleTranslation",
+        "short_text",
+        "[\"古いテキスト\"]",
+        "[]",
+        "[\"索引为空时也不能静默跳过\"]",
+        "stale-raw-hash",
+        "stale-translatable-hash",
+    );
+    drop(connection);
+    let mut payload = minimal_setting_payload();
+    payload
+        .as_object_mut()
+        .expect("测试配置载荷应为对象")
+        .remove("allowed_translation_paths");
+
+    let error = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &payload.to_string(),
+        "write_back",
+        false,
+    )
+    .expect_err("完整写回即便当前可写范围为空，也必须检查全部已保存译文");
+
+    assert!(
+        error.contains("已保存译文不再匹配当前 v2 文本事实身份")
+            && error.contains("System.json/staleTranslation"),
+        "错误文案应说明完整写回空范围仍发现 stale 译文，实际为 {error}",
+    );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
 fn write_back_reads_saved_translation_by_fact_id_without_duplicate_location_gate() {
     let fixture = create_fixture_dir("att_mz_write_plan_fact_id_join");
     let db_path = fixture.join("game.db");

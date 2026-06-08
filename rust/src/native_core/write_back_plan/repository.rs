@@ -90,7 +90,7 @@ fn read_translation_items_for_paths(
     read_scope: TranslationReadScope,
 ) -> Result<Vec<TranslationItem>, String> {
     assert_no_disallowed_translation_items(connection, scope_key, allowed_paths, read_scope)?;
-    if allowed_paths.is_empty() {
+    if allowed_paths.is_empty() && matches!(read_scope, TranslationReadScope::AllowedPaths) {
         return Ok(Vec::new());
     }
     let mut fact_rows: Vec<TranslationFactRow> = Vec::new();
@@ -301,7 +301,7 @@ fn assert_no_disallowed_translation_items(
     allowed_paths: &[String],
     read_scope: TranslationReadScope,
 ) -> Result<(), String> {
-    if allowed_paths.is_empty() {
+    if allowed_paths.is_empty() && matches!(read_scope, TranslationReadScope::AllowedPaths) {
         return Ok(());
     }
     let allowed: HashSet<&str> = allowed_paths.iter().map(String::as_str).collect();
