@@ -51,6 +51,7 @@ from app.native_note_tag_scan import (
     build_note_tag_rule_records_from_native_candidates,
     collect_native_note_tag_hit_details,
 )
+from app.note_tag_text.sources import matched_note_file_names
 from app.persistence import RuleImportUnitOfWork, TargetGameSession
 from app.plugin_text import NativePluginRuleValidationContext
 from app.plugin_source_text import (
@@ -74,9 +75,19 @@ from app.text_index import text_index_source_branch_gates_prechecked
 from app.plugin_source_text import build_native_plugin_source_scan
 
 
-def _note_tag_rule_prefixes(rule_records: list[NoteTagTextRuleRecord]) -> list[str]:
+def _note_tag_rule_prefixes(
+    *,
+    game_data: GameData,
+    rule_records: list[NoteTagTextRuleRecord],
+) -> list[str]:
     """返回 Note 标签规则影响的已保存译文路径前缀。"""
-    return sorted({f"{record.file_name}/" for record in rule_records})
+    return sorted(
+        {
+            f"{file_name}/"
+            for record in rule_records
+            for file_name in matched_note_file_names(game_data=game_data, file_pattern=record.file_name)
+        }
+    )
 
 
 def _translation_items_matching_note_rules(
@@ -482,7 +493,7 @@ class RuleValidationAgentMixin:
                     text_rules=text_rules,
                 )
                 translated_note_items = await session.read_translated_items_by_prefixes(
-                    _note_tag_rule_prefixes(records)
+                    _note_tag_rule_prefixes(game_data=game_data, rule_records=records)
                 )
                 translated_fact_ids = require_translation_fact_ids(translated_note_items)
                 note_hit_metrics = _note_tag_rule_hits_from_native_details(
@@ -552,7 +563,7 @@ class RuleValidationAgentMixin:
                     )
                 old_records = await session.read_note_tag_text_rules()
                 old_note_items = await session.read_translated_items_by_prefixes(
-                    _note_tag_rule_prefixes(old_records)
+                    _note_tag_rule_prefixes(game_data=game_data, rule_records=old_records)
                 )
                 old_note_rule_items = _translation_items_matching_note_rules(
                     translated_items=old_note_items,

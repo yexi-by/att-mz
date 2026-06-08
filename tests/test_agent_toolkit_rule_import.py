@@ -2636,6 +2636,76 @@ async def test_import_note_tag_rules_deletes_only_stale_fact_id_for_same_path(
 
 
 @pytest.mark.asyncio
+async def test_import_note_tag_rules_expands_map_file_pattern_for_stale_fact_cleanup(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧 Note 规则使用 Map*.json 时，也要读取具体地图路径并按 fact_id 清理 stale 译文。"""
+    map001_path = minimal_game_dir / "data" / "Map001.json"
+    raw_map001 = cast(object, json.loads(map001_path.read_text(encoding="utf-8")))
+    map001 = ensure_json_object(coerce_json_value(raw_map001), "Map001.json")
+    map001_events = ensure_json_array(map001["events"], "Map001.json.events")
+    map001_event = ensure_json_object(map001_events[2], "Map001.json.events[2]")
+    map001_event["note"] = "<namePop:導き手>"
+    _ = map001_path.write_text(json.dumps(map001, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"])]
+        )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "note_tag"
+            and fact.location_path.startswith("Map001.json/")
+            and fact.location_path.endswith("/note/namePop")
+            and fact.translatable_text == "導き手"
+        )
+        current_fact_id = current_fact.fact_id
+        stale_fact = type(current_fact)(
+            fact_id=f"{current_fact.fact_id}:stale",
+            schema_version=current_fact.schema_version,
+            domain=current_fact.domain,
+            location_path=current_fact.location_path,
+            source_file=current_fact.source_file,
+            source_type=current_fact.source_type,
+            item_type=current_fact.item_type,
+            role=current_fact.role,
+            selector=current_fact.selector,
+            raw_text="古い導き手",
+            visible_text="古い導き手",
+            translatable_text="古い導き手",
+            raw_hash=f"{current_fact.raw_hash}:stale",
+            visible_hash=f"{current_fact.visible_hash}:stale",
+            translatable_hash=f"{current_fact.translatable_hash}:stale",
+            scope_key=current_fact.scope_key,
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
+        current_item = text_fact_record_to_translation_item(current_fact)
+        current_item.translation_lines = ["向导"]
+        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item.translation_lines = ["旧向导"]
+        await session.write_translation_items([current_item, stale_item])
+
+    report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"Map*.json": ["namePop"]}, ensure_ascii=False),
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        remaining_items = await session.read_translated_items()
+
+    assert report.summary["deleted_translation_items"] == 1
+    assert {item.fact_id for item in remaining_items} == {current_fact_id}
+
+
+@pytest.mark.asyncio
 async def test_import_plugin_source_rules_deletes_only_stale_fact_id_for_same_path(
     minimal_mv_game_dir: Path,
     tmp_path: Path,

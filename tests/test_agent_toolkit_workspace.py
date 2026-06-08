@@ -9,7 +9,11 @@ from app.native_scope_index import (
     scan_native_rule_candidates as real_scan_native_rule_candidates,
 )
 from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
-from app.text_facts import read_current_text_fact_scope_v2
+from app.text_facts import (
+    read_current_text_fact_records_v2,
+    read_current_text_fact_scope_v2,
+    text_fact_record_to_translation_item,
+)
 
 @pytest.mark.asyncio
 async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
@@ -642,6 +646,60 @@ async def test_validate_agent_workspace_skips_plugin_source_note_tag_python_extr
     assert "plugin_source_rules" in report.details
     assert "note_tag_rules" in report.details
     assert not any(error.code.startswith("plugin_source_") for error in report.errors)
+    assert not any(error.code.startswith("note_tag_") for error in report.errors)
+
+
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_note_tag_rules_counts_translations_for_map_file_pattern(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """工作区 Note 规则校验要把 Map*.json 展开到具体地图路径统计已保存译文。"""
+    map001_path = minimal_game_dir / "data" / "Map001.json"
+    raw_map001 = cast(object, json.loads(map001_path.read_text(encoding="utf-8")))
+    map001 = ensure_json_object(coerce_json_value(raw_map001), "Map001.json")
+    map001_events = ensure_json_array(map001["events"], "Map001.json.events")
+    map001_event = ensure_json_object(map001_events[2], "Map001.json.events[2]")
+    map001_event["note"] = "<namePop:導き手>"
+    _ = map001_path.write_text(json.dumps(map001, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"])]
+        )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "note_tag"
+            and fact.location_path.startswith("Map001.json/")
+            and fact.location_path.endswith("/note/namePop")
+            and fact.translatable_text == "導き手"
+        )
+        current_item = text_fact_record_to_translation_item(current_fact)
+        current_item.translation_lines = ["向导"]
+        await session.write_translation_items([current_item])
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    note_details = ensure_json_object(
+        coerce_json_value(report.details["note_tag_rules"]),
+        "workspace note tag rules details",
+    )
+    note_rule_details = ensure_json_array(coerce_json_value(note_details["rules"]), "note_tag_rules.rules")
+    first_rule_detail = ensure_json_object(note_rule_details[0], "note_tag_rules.rules[0]")
+    assert first_rule_detail["file_name"] == "Map*.json"
+    assert first_rule_detail["translated_count"] == 1
     assert not any(error.code.startswith("note_tag_") for error in report.errors)
 
 

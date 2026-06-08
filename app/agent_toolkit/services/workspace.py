@@ -97,6 +97,7 @@ from app.native_note_tag_scan import (
     build_note_tag_rule_records_from_native_candidates,
     collect_native_note_tag_hit_details,
 )
+from app.note_tag_text.sources import matched_note_file_names
 from app.event_command_text.native_validation import (
     NativeEventCommandRuleValidationContext,
     build_native_event_command_rule_validation_context,
@@ -426,9 +427,19 @@ def _workspace_preview_sample_texts(
     return samples
 
 
-def _workspace_note_tag_rule_prefixes(records: list[NoteTagTextRuleRecord]) -> list[str]:
+def _workspace_note_tag_rule_prefixes(
+    *,
+    game_data: GameData,
+    records: list[NoteTagTextRuleRecord],
+) -> list[str]:
     """返回 workspace Note 标签规则影响的已保存译文路径前缀。"""
-    return sorted({f"{record.file_name}/" for record in records})
+    return sorted(
+        {
+            f"{file_name}/"
+            for record in records
+            for file_name in matched_note_file_names(game_data=game_data, file_pattern=record.file_name)
+        }
+    )
 
 
 def _workspace_plugin_source_file_prefixes(game_data: GameData) -> list[str]:
@@ -1797,7 +1808,7 @@ async def _validate_workspace_note_tag_rules(
         )
         async with await game_registry.open_game(game_title) as session:
             translated_items = await session.read_translated_items_by_prefixes(
-                _workspace_note_tag_rule_prefixes(records)
+                _workspace_note_tag_rule_prefixes(game_data=game_data, records=records)
             )
             resolved_hit_metrics = await _resolve_workspace_rule_hit_metrics(
                 session=session,
