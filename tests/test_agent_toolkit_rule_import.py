@@ -295,6 +295,106 @@ async def test_import_plugin_rules_uses_native_plugin_config_context(
     assert summary.deleted_translation_backup_path
     assert translated_items == []
     assert [rule.path_templates for rule in saved_rules] == [["$['parameters']['Nested']['text']"]]
+
+
+@pytest.mark.asyncio
+async def test_import_plugin_rules_deletes_only_stale_fact_id_for_same_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """公开插件规则导入按 fact_id 删除同路径旧译文，不能按 prefix 删除。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = example_setting_text_with_absolute_prompt_files()
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    game_data = await load_game_data(minimal_game_dir)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
+                    path_templates=[
+                        "$['parameters']['Message']",
+                        "$['parameters']['Nested']['text']",
+                    ],
+                )
+            ]
+        )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "plugin_config"
+            and fact.location_path == "plugins.js/0/Message"
+            and fact.translatable_text == "プラグイン本文"
+        )
+        current_fact_id = current_fact.fact_id
+        stale_fact = type(current_fact)(
+            fact_id=f"{current_fact.fact_id}:stale",
+            schema_version=current_fact.schema_version,
+            domain=current_fact.domain,
+            location_path=current_fact.location_path,
+            source_file=current_fact.source_file,
+            source_type=current_fact.source_type,
+            item_type=current_fact.item_type,
+            role=current_fact.role,
+            selector=current_fact.selector,
+            raw_text="古いプラグイン本文",
+            visible_text="古いプラグイン本文",
+            translatable_text="古いプラグイン本文",
+            raw_hash=f"{current_fact.raw_hash}:stale",
+            visible_hash=f"{current_fact.visible_hash}:stale",
+            translatable_hash=f"{current_fact.translatable_hash}:stale",
+            scope_key=current_fact.scope_key,
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
+        current_item = text_fact_record_to_translation_item(current_fact)
+        current_item.translation_lines = ["当前插件正文"]
+        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item.translation_lines = ["旧插件正文"]
+        await session.write_translation_items([current_item, stale_item])
+
+    async def forbidden_prefix_delete(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("规则导入不得按 location_path prefix 删除译文")
+
+    monkeypatch.setattr(TargetGameSession, "delete_translation_items_by_prefixes", forbidden_prefix_delete)
+    rules_path = tmp_path / "plugin-rules.json"
+    _ = rules_path.write_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Message']"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+
+    try:
+        summary = await handler.import_plugin_rules(game_title="テストゲーム", input_path=rules_path)
+    finally:
+        await handler.close()
+
+    async with await registry.open_game("テストゲーム") as session:
+        remaining_items = await session.read_translated_items()
+
+    assert summary.deleted_translation_items == 1
+    assert {item.fact_id for item in remaining_items} == {current_fact_id}
 @pytest.mark.asyncio
 async def test_import_empty_event_command_rules_requires_explicit_empty_confirmation(
     minimal_game_dir: Path,
@@ -497,6 +597,111 @@ async def test_import_event_command_rules_uses_native_hit_details_for_stale_clea
         "$['parameters'][3]['window']['title']",
         "$['parameters'][3]['choices'][*]",
     }
+
+
+@pytest.mark.asyncio
+async def test_import_event_command_rules_deletes_only_stale_fact_id_for_same_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """公开事件指令规则导入按 fact_id 删除同路径旧译文，不能按 prefix 删除。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_text = example_setting_text_with_absolute_prompt_files()
+    _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[
+                        EventCommandParameterFilter(index=0, value="TestPlugin"),
+                        EventCommandParameterFilter(index=1, value="Show"),
+                    ],
+                    path_templates=[
+                        "$['parameters'][3]['message']",
+                        "$['parameters'][3]['missing']",
+                    ],
+                )
+            ]
+        )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "event_command"
+            and fact.location_path == "CommonEvents.json/1/4/parameters/3/message"
+            and fact.translatable_text == "プラグイン台詞"
+        )
+        current_fact_id = current_fact.fact_id
+        stale_fact = type(current_fact)(
+            fact_id=f"{current_fact.fact_id}:stale",
+            schema_version=current_fact.schema_version,
+            domain=current_fact.domain,
+            location_path=current_fact.location_path,
+            source_file=current_fact.source_file,
+            source_type=current_fact.source_type,
+            item_type=current_fact.item_type,
+            role=current_fact.role,
+            selector=current_fact.selector,
+            raw_text="古いプラグイン台詞",
+            visible_text="古いプラグイン台詞",
+            translatable_text="古いプラグイン台詞",
+            raw_hash=f"{current_fact.raw_hash}:stale",
+            visible_hash=f"{current_fact.visible_hash}:stale",
+            translatable_hash=f"{current_fact.translatable_hash}:stale",
+            scope_key=current_fact.scope_key,
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
+        current_item = text_fact_record_to_translation_item(current_fact)
+        current_item.translation_lines = ["当前事件指令译文"]
+        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item.translation_lines = ["旧事件指令译文"]
+        await session.write_translation_items([current_item, stale_item])
+
+    async def forbidden_prefix_delete(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("规则导入不得按 location_path prefix 删除译文")
+
+    monkeypatch.setattr(TargetGameSession, "delete_translation_items_by_prefixes", forbidden_prefix_delete)
+    rules_path = tmp_path / "event-command-rules.json"
+    _ = rules_path.write_text(
+        json.dumps(
+            {
+                "357": [
+                    {
+                        "match": {"0": "TestPlugin", "1": "Show"},
+                        "paths": ["$['parameters'][3]['message']"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+
+    try:
+        summary = await handler.import_event_command_rules(
+            game_title="テストゲーム",
+            input_path=rules_path,
+        )
+    finally:
+        await handler.close()
+
+    async with await registry.open_game("テストゲーム") as session:
+        remaining_items = await session.read_translated_items()
+
+    assert summary.deleted_translation_items == 1
+    assert {item.fact_id for item in remaining_items} == {current_fact_id}
 @pytest.mark.asyncio
 async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     minimal_game_dir: Path,

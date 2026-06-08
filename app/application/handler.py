@@ -32,6 +32,11 @@ from app.application.flow_gate import (
     event_command_rule_scope_hash_for_command_codes,
     format_workflow_gate_error,
 )
+from app.agent_toolkit.services.rule_identity import (
+    RuleFactProbe,
+    resolve_current_rule_fact_hits,
+    stale_translation_fact_ids,
+)
 from app.application.runtime import load_runtime_setting
 from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.summaries import (
@@ -202,6 +207,31 @@ def _translation_stage_timings(
         "local_total_excluding_model_ms": local_total_excluding_model_ms,
         "run_batches_wall_ms": run_batches_wall_ms,
     }
+
+
+def _rule_translation_item_text(item: TranslationItem) -> str:
+    """读取规则命中 TranslationItem 对应的可翻译文本。"""
+    if item.item_type in {"long_text", "array"}:
+        return "\n".join(item.original_lines)
+    if not item.original_lines:
+        return ""
+    return item.original_lines[0]
+
+
+def _rule_fact_probes_for_items(
+    *,
+    domain: str,
+    items: list[TranslationItem],
+) -> list[RuleFactProbe]:
+    """把公开规则导入命中转换为当前 v2 fact 解析探针。"""
+    return [
+        RuleFactProbe(
+            domain=domain,
+            location_path=item.location_path,
+            translatable_text=_rule_translation_item_text(item),
+        )
+        for item in items
+    ]
 
 
 def build_runtime_write_plan(
@@ -564,9 +594,23 @@ class TranslationHandler:
             new_plugin_indexes = {rule.plugin_index for rule in rule_records}
             for plugin_index in sorted(set(old_rules) - new_plugin_indexes):
                 stale_prefixes.add(f"{PLUGINS_FILE_NAME}/{plugin_index}/")
+            stale_fact_ids: list[str] = []
+            if stale_prefixes:
+                old_candidate_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                current_plugin_hits = await resolve_current_rule_fact_hits(
+                    session,
+                    _rule_fact_probes_for_items(
+                        domain="plugin_config",
+                        items=context.extracted_items,
+                    ),
+                )
+                stale_fact_ids = stale_translation_fact_ids(
+                    old_items=old_candidate_items,
+                    current_rule_hits=current_plugin_hits,
+                )
             async with RuleImportUnitOfWork(session):
-                if stale_prefixes:
-                    stale_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                if stale_fact_ids:
+                    stale_items = await session.read_translated_items_by_fact_ids(stale_fact_ids)
                     backup = await write_rule_import_translation_backup(
                         game_title=game_title,
                         domain="plugin-rules",
@@ -574,9 +618,7 @@ class TranslationHandler:
                     )
                     if backup is not None:
                         deleted_translation_backup_path = backup.backup_path
-                    deleted_translation_items = await session.delete_translation_items_by_prefixes(
-                        sorted(stale_prefixes),
-                    )
+                    deleted_translation_items = await session.delete_translation_items_by_fact_ids(stale_fact_ids)
                 await session.replace_plugin_text_rules(rule_records)
                 if rule_records:
                     await session.delete_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
@@ -744,9 +786,23 @@ class TranslationHandler:
                 _ = old_rule
                 if rule_key not in new_rule_keys:
                     stale_prefixes.update(old_prefixes_by_key.get(rule_key, ()))
+            stale_fact_ids: list[str] = []
+            if stale_prefixes:
+                old_candidate_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                current_event_command_hits = await resolve_current_rule_fact_hits(
+                    session,
+                    _rule_fact_probes_for_items(
+                        domain="event_command",
+                        items=rule_context.extracted_items,
+                    ),
+                )
+                stale_fact_ids = stale_translation_fact_ids(
+                    old_items=old_candidate_items,
+                    current_rule_hits=current_event_command_hits,
+                )
             async with RuleImportUnitOfWork(session):
-                if stale_prefixes:
-                    stale_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                if stale_fact_ids:
+                    stale_items = await session.read_translated_items_by_fact_ids(stale_fact_ids)
                     backup = await write_rule_import_translation_backup(
                         game_title=game_title,
                         domain="event-command-rules",
@@ -754,9 +810,7 @@ class TranslationHandler:
                     )
                     if backup is not None:
                         deleted_translation_backup_path = backup.backup_path
-                    deleted_translation_items = await session.delete_translation_items_by_prefixes(
-                        sorted(stale_prefixes),
-                    )
+                    deleted_translation_items = await session.delete_translation_items_by_fact_ids(stale_fact_ids)
                 await session.replace_event_command_text_rules(rule_records)
                 if rule_records:
                     await session.delete_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
