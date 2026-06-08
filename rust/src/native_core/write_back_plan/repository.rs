@@ -50,12 +50,46 @@ pub(super) fn open_readonly_connection(db_path: &Path) -> Result<Connection, Str
     Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("只读打开数据库失败 {}: {error}", db_path.display()))
 }
+
+#[derive(Clone, Copy)]
+enum TranslationReadScope {
+    FullWritableIndex,
+    AllowedPaths,
+}
+
+pub(super) fn read_translation_items_for_writable_text_index(
+    connection: &Connection,
+) -> Result<Vec<TranslationItem>, String> {
+    let scope_key = read_current_text_fact_scope_key(connection)?;
+    let allowed_paths = read_writable_text_index_location_paths_for_scope(connection, &scope_key)?;
+    read_translation_items_for_paths(
+        connection,
+        &scope_key,
+        &allowed_paths,
+        TranslationReadScope::FullWritableIndex,
+    )
+}
+
 pub(super) fn read_translation_items_for_allowed_paths(
     connection: &Connection,
     allowed_paths: &[String],
 ) -> Result<Vec<TranslationItem>, String> {
     let scope_key = read_current_text_fact_scope_key(connection)?;
-    assert_no_disallowed_translation_items(connection, &scope_key, allowed_paths)?;
+    read_translation_items_for_paths(
+        connection,
+        &scope_key,
+        allowed_paths,
+        TranslationReadScope::AllowedPaths,
+    )
+}
+
+fn read_translation_items_for_paths(
+    connection: &Connection,
+    scope_key: &str,
+    allowed_paths: &[String],
+    read_scope: TranslationReadScope,
+) -> Result<Vec<TranslationItem>, String> {
+    assert_no_disallowed_translation_items(connection, scope_key, allowed_paths, read_scope)?;
     if allowed_paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -85,8 +119,7 @@ pub(super) fn read_translation_items_for_allowed_paths(
         let mut statement = connection
             .prepare(&sql)
             .map_err(|error| format!("按 v2 fact 可写范围读取译文记录 SQL 准备失败: {error}"))?;
-        let parameters =
-            std::iter::once(scope_key.as_str()).chain(chunk.iter().map(String::as_str));
+        let parameters = std::iter::once(scope_key).chain(chunk.iter().map(String::as_str));
         let rows = statement
             .query_map(params_from_iter(parameters), |row| {
                 let location_path: String = row.get(0)?;
@@ -123,7 +156,21 @@ pub(super) fn read_translation_items_for_allowed_paths(
             fact_rows.push(fact_row);
         }
     }
-    assert_all_translations_resolved_to_v2_facts(connection, allowed_paths, &resolved_fact_ids)?;
+    match read_scope {
+        TranslationReadScope::FullWritableIndex => {
+            assert_all_translations_resolved_to_v2_facts_for_full_write_back(
+                connection,
+                &resolved_fact_ids,
+            )?;
+        }
+        TranslationReadScope::AllowedPaths => {
+            assert_all_translations_resolved_to_v2_facts(
+                connection,
+                allowed_paths,
+                &resolved_fact_ids,
+            )?;
+        }
+    }
     let render_parts_by_fact = read_render_parts_by_fact_id(
         connection,
         &fact_rows
@@ -147,10 +194,10 @@ pub(super) fn read_translation_items_for_allowed_paths(
     Ok(items)
 }
 
-pub(super) fn read_writable_text_index_location_paths(
+fn read_writable_text_index_location_paths_for_scope(
     connection: &Connection,
+    scope_key: &str,
 ) -> Result<Vec<String>, String> {
-    let scope_key = read_current_text_fact_scope_key(connection)?;
     let mut statement = connection
         .prepare(
             "SELECT DISTINCT facts.location_path \
@@ -167,7 +214,7 @@ pub(super) fn read_writable_text_index_location_paths(
             )
         })?;
     let rows = statement
-        .query_map([scope_key.as_str()], |row| {
+        .query_map([scope_key], |row| {
             let location_path: String = row.get(0)?;
             Ok(location_path)
         })
@@ -252,31 +299,74 @@ fn assert_no_disallowed_translation_items(
     connection: &Connection,
     scope_key: &str,
     allowed_paths: &[String],
+    read_scope: TranslationReadScope,
 ) -> Result<(), String> {
+    if allowed_paths.is_empty() {
+        return Ok(());
+    }
     let allowed: HashSet<&str> = allowed_paths.iter().map(String::as_str).collect();
-    let mut statement = connection
-        .prepare(
-            "SELECT facts.location_path \
-             FROM translation_items AS translations \
-             INNER JOIN text_facts_v2 AS facts \
-                ON facts.fact_id = translations.fact_id \
-               AND facts.raw_hash = translations.source_fact_raw_hash \
-               AND facts.translatable_hash = translations.source_fact_translatable_hash \
-               AND facts.scope_key = ? \
-             ORDER BY facts.location_path, facts.fact_id",
-        )
-        .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
-    let rows = statement
-        .query_map([scope_key], |row| {
-            let location_path: String = row.get(0)?;
-            Ok(location_path)
-        })
-        .map_err(|error| format!("读取译文路径失败: {error}"))?;
     let mut disallowed_paths: Vec<String> = Vec::new();
-    for row in rows {
-        let location_path = row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
-        if !allowed.contains(location_path.as_str()) {
-            disallowed_paths.push(location_path);
+    match read_scope {
+        TranslationReadScope::FullWritableIndex => {
+            let mut statement = connection
+                .prepare(
+                    "SELECT facts.location_path \
+                     FROM translation_items AS translations \
+                     INNER JOIN text_facts_v2 AS facts \
+                        ON facts.fact_id = translations.fact_id \
+                       AND facts.raw_hash = translations.source_fact_raw_hash \
+                       AND facts.translatable_hash = translations.source_fact_translatable_hash \
+                      WHERE facts.scope_key = ? \
+                     ORDER BY facts.location_path, facts.fact_id",
+                )
+                .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
+            let rows = statement
+                .query_map([scope_key], |row| {
+                    let location_path: String = row.get(0)?;
+                    Ok(location_path)
+                })
+                .map_err(|error| format!("读取译文路径失败: {error}"))?;
+            for row in rows {
+                let location_path = row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
+                if !allowed.contains(location_path.as_str()) {
+                    disallowed_paths.push(location_path);
+                }
+            }
+        }
+        TranslationReadScope::AllowedPaths => {
+            for chunk in allowed_paths.chunks(SQLITE_IN_CLAUSE_CHUNK_SIZE) {
+                let placeholders = std::iter::repeat_n("?", chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT facts.location_path \
+                     FROM translation_items AS translations \
+                     INNER JOIN text_facts_v2 AS facts \
+                        ON facts.fact_id = translations.fact_id \
+                       AND facts.raw_hash = translations.source_fact_raw_hash \
+                       AND facts.translatable_hash = translations.source_fact_translatable_hash \
+                      WHERE facts.scope_key = ? \
+                        AND facts.location_path IN ({placeholders}) \
+                     ORDER BY facts.location_path, facts.fact_id"
+                );
+                let mut statement = connection
+                    .prepare(&sql)
+                    .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
+                let parameters = std::iter::once(scope_key).chain(chunk.iter().map(String::as_str));
+                let rows = statement
+                    .query_map(params_from_iter(parameters), |row| {
+                        let location_path: String = row.get(0)?;
+                        Ok(location_path)
+                    })
+                    .map_err(|error| format!("读取译文路径失败: {error}"))?;
+                for row in rows {
+                    let location_path =
+                        row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
+                    if !allowed.contains(location_path.as_str()) {
+                        disallowed_paths.push(location_path);
+                    }
+                }
+            }
         }
     }
     if !disallowed_paths.is_empty() {
@@ -361,10 +451,50 @@ fn assert_all_translations_resolved_to_v2_facts(
     allowed_paths: &[String],
     resolved_fact_ids: &HashSet<String>,
 ) -> Result<(), String> {
-    let allowed: HashSet<&str> = allowed_paths.iter().map(String::as_str).collect();
+    if allowed_paths.is_empty() {
+        return Ok(());
+    }
+    let mut unresolved_paths: Vec<String> = Vec::new();
+    for chunk in allowed_paths.chunks(SQLITE_IN_CLAUSE_CHUNK_SIZE) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT fact_id, location_path \
+             FROM translation_items \
+             WHERE location_path IN ({placeholders}) \
+             ORDER BY location_path, fact_id"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter().map(String::as_str)), |row| {
+                let fact_id: String = row.get(0)?;
+                let location_path: String = row.get(1)?;
+                Ok((fact_id, location_path))
+            })
+            .map_err(|error| format!("读取译文路径失败: {error}"))?;
+        for row in rows {
+            let (fact_id, location_path) =
+                row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
+            if !resolved_fact_ids.contains(&fact_id) {
+                unresolved_paths.push(location_path);
+            }
+        }
+    }
+    assert_no_unresolved_translation_paths(unresolved_paths)
+}
+
+fn assert_all_translations_resolved_to_v2_facts_for_full_write_back(
+    connection: &Connection,
+    resolved_fact_ids: &HashSet<String>,
+) -> Result<(), String> {
     let mut statement = connection
         .prepare(
-            "SELECT fact_id, location_path FROM translation_items ORDER BY location_path, fact_id",
+            "SELECT fact_id, location_path \
+             FROM translation_items \
+             ORDER BY location_path, fact_id",
         )
         .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
     let rows = statement
@@ -378,10 +508,14 @@ fn assert_all_translations_resolved_to_v2_facts(
     for row in rows {
         let (fact_id, location_path) =
             row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
-        if allowed.contains(location_path.as_str()) && !resolved_fact_ids.contains(&fact_id) {
+        if !resolved_fact_ids.contains(&fact_id) {
             unresolved_paths.push(location_path);
         }
     }
+    assert_no_unresolved_translation_paths(unresolved_paths)
+}
+
+fn assert_no_unresolved_translation_paths(unresolved_paths: Vec<String>) -> Result<(), String> {
     if unresolved_paths.is_empty() {
         return Ok(());
     }

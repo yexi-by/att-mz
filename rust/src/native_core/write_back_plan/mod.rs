@@ -53,7 +53,7 @@ use self::repository::{
     open_readonly_connection, read_mv_virtual_namebox_fact_templates,
     read_mv_virtual_namebox_rules, read_plugin_source_text_rules, read_source_residual_rules,
     read_terminology_terms, read_translation_items_for_allowed_paths,
-    read_writable_text_index_location_paths,
+    read_translation_items_for_writable_text_index,
 };
 use self::terminology::apply_terminology;
 use self::utils::{build_changed_file, externalize_planned_file_contents, is_map_file};
@@ -102,15 +102,12 @@ fn build_write_back_plan_inner(
     let mut timings_ms: BTreeMap<String, u128> = BTreeMap::new();
     let layout = resolve_layout(Path::new(game_path))?;
     let connection = open_readonly_connection(Path::new(db_path))?;
-    let allowed_translation_paths = match setting_payload.allowed_translation_paths.take() {
-        Some(paths) => paths,
-        None => read_writable_text_index_location_paths(&connection)?,
-    };
-
     let load_started = Instant::now();
     let mut plugins_js = read_plugins_origin_file(&layout.plugins_origin_path)?;
-    let translated_items =
-        read_translation_items_for_allowed_paths(&connection, &allowed_translation_paths)?;
+    let translated_items = match setting_payload.allowed_translation_paths.take() {
+        Some(paths) => read_translation_items_for_allowed_paths(&connection, &paths)?,
+        None => read_translation_items_for_writable_text_index(&connection)?,
+    };
     let source_residual_rules = read_source_residual_rules(&connection)?;
     let plugin_source_text_rules = read_plugin_source_text_rules(&connection)?;
     let terminology = read_terminology_terms(&connection)?;

@@ -314,6 +314,85 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
 
 
 @pytest.mark.asyncio
+async def test_write_back_allowed_paths_do_not_scan_unrelated_stale_translations(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """显式允许路径写回只检查本次候选范围，不被范围外旧译文阻断。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    first_path = "System.json/gameTitle"
+    second_path = "CommonEvents.json/1/0"
+
+    async with await registry.open_game(record.game_title) as session:
+        _game_data, setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_mv_game_dir,
+        )
+        indexed_by_path = {
+            item.location_path: item
+            for item in await session.read_text_index_items()
+        }
+        first_item = indexed_by_path[first_path]
+        second_item = indexed_by_path[second_path]
+        assert first_item.writable
+        assert second_item.writable
+        await write_v2_test_translation_items(session,
+            [
+                TranslationItem(
+                    location_path=first_item.location_path,
+                    item_type=first_item.item_type,
+                    role=first_item.role,
+                    original_lines=[line for line in first_item.original_lines],
+                    source_line_paths=[path for path in first_item.source_line_paths],
+                    translation_lines=["允许路径译文"],
+                ),
+                TranslationItem(
+                    location_path=second_item.location_path,
+                    item_type=second_item.item_type,
+                    role=second_item.role,
+                    original_lines=[line for line in second_item.original_lines],
+                    source_line_paths=[path for path in second_item.source_line_paths],
+                    translation_lines=["未允许路径译文"],
+                ),
+            ]
+        )
+        await write_v2_test_translation_items(session,
+            [
+                TranslationItem(
+                    location_path="System.json/staleTranslation",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["古いテキスト"],
+                    source_line_paths=[],
+                    translation_lines=["索引外旧译文"],
+                )
+            ]
+        )
+        setting_payload, _font_path, _font_names = build_native_write_back_setting_payload(
+            setting=setting,
+            text_rules=text_rules,
+            content_root=session.content_root,
+            confirm_font_overwrite=False,
+            writable_location_paths=[first_path],
+        )
+        planned = build_native_write_back_plan(
+            game_path=session.game_path,
+            content_root=session.content_root,
+            db_path=session.db_path,
+            mode="write_back",
+            confirm_font_overwrite=False,
+            setting_payload=setting_payload,
+        )
+
+    planned_content = "\n".join(file.content or "" for file in planned.files)
+    assert planned.summary.data_item_count + planned.summary.plugin_item_count == 1
+    assert "允许路径译文" in planned_content
+    assert "未允许路径译文" not in planned_content
+    assert "索引外旧译文" not in planned_content
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "index_state"),
     [

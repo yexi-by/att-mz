@@ -135,6 +135,49 @@ fn build_plan_rejects_unwritable_text_index_translation_when_payload_omits_allow
 }
 
 #[test]
+fn build_plan_with_omitted_allowed_paths_rejects_unrelated_stale_translation() {
+    let fixture = create_fixture_dir("att_mz_write_plan_full_scope_stale_translation");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    insert_stale_translation_item(
+        &connection,
+        "tfv2:stale-unrelated",
+        "System.json/staleTranslation",
+        "short_text",
+        "[\"古いテキスト\"]",
+        "[]",
+        "[\"索引外旧译文\"]",
+        "stale-raw-hash",
+        "stale-translatable-hash",
+    );
+    drop(connection);
+    let mut payload = minimal_setting_payload();
+    payload
+        .as_object_mut()
+        .expect("测试配置载荷应为对象")
+        .remove("allowed_translation_paths");
+
+    let error = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &payload.to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect_err("完整写回必须检查全部已保存译文的 v2 fact 身份");
+
+    assert!(
+        error.contains("已保存译文不再匹配当前 v2 文本事实身份")
+            && error.contains("System.json/staleTranslation"),
+        "错误文案应说明完整写回发现范围外 stale 译文，实际为 {error}",
+    );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
 fn write_back_reads_saved_translation_by_fact_id_without_duplicate_location_gate() {
     let fixture = create_fixture_dir("att_mz_write_plan_fact_id_join");
     let db_path = fixture.join("game.db");
@@ -233,6 +276,53 @@ fn write_back_reports_saved_translation_with_stale_fact_id_as_unresolved() {
             && error.contains(location_path),
         "错误文案应说明 v2 fact 身份失配和下一步，实际为 {error}",
     );
+    drop(connection);
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn write_back_allowed_paths_ignore_unrelated_saved_translations() {
+    let fixture = create_fixture_dir("att_mz_write_plan_allowed_paths_scoped");
+    let db_path = fixture.join("game.db");
+    create_empty_database(&db_path);
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    insert_translation_item(
+        &db_path,
+        "System.json/gameTitle",
+        "short_text",
+        "[\"原标题\"]",
+        "[]",
+        "[\"允许路径译文\"]",
+    );
+    insert_translation_item(
+        &db_path,
+        "CommonEvents.json/1/0",
+        "long_text",
+        "[\"未允许原文\"]",
+        "[\"CommonEvents.json/1/1\"]",
+        "[\"未允许路径译文\"]",
+    );
+    insert_stale_translation_item(
+        &connection,
+        "tfv2:stale-unrelated",
+        "System.json/staleTranslation",
+        "short_text",
+        "[\"古いテキスト\"]",
+        "[]",
+        "[\"索引外旧译文\"]",
+        "stale-raw-hash",
+        "stale-translatable-hash",
+    );
+
+    let items = read_translation_items_for_allowed_paths(
+        &connection,
+        &["System.json/gameTitle".to_string()],
+    )
+    .expect("显式允许路径写回不应扫描范围外已保存译文");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].location_path, "System.json/gameTitle");
+    assert_eq!(items[0].translation_lines, vec!["允许路径译文".to_string()]);
     drop(connection);
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
@@ -1460,12 +1550,13 @@ fn build_plan_rejects_missing_v2_scope_when_allowed_translation_paths_omitted() 
 }
 
 #[test]
-fn build_plan_checks_disallowed_paths_before_decoding_translation_payloads() {
+fn build_plan_full_scope_checks_disallowed_paths_before_decoding_translation_payloads() {
     let fixture = create_fixture_dir("att_mz_write_plan_disallowed_paths_before_payloads");
     let game_dir = fixture.join("game");
     let db_path = fixture.join("game.db");
     create_minimal_game_files(&game_dir);
     create_minimal_database(&db_path);
+    create_minimal_text_index_items(&db_path, &[("Map999.json/1/name", false)]);
     insert_translation_item(
         &db_path,
         "Map999.json/1/name",
@@ -1475,14 +1566,20 @@ fn build_plan_checks_disallowed_paths_before_decoding_translation_payloads() {
         "[\"测试\"]",
     );
 
+    let mut payload = minimal_setting_payload();
+    payload
+        .as_object_mut()
+        .expect("测试配置载荷应为对象")
+        .remove("allowed_translation_paths");
+
     let error = build_write_back_plan_impl(
         &game_dir.to_string_lossy(),
         &db_path.to_string_lossy(),
-        &minimal_setting_payload().to_string(),
+        &payload.to_string(),
         "write_back",
         false,
     )
-    .expect_err("不属于当前可写范围的译文必须先被路径检查拦住");
+    .expect_err("完整写回中不属于当前可写范围的译文必须先被路径检查拦住");
 
     assert!(
         error.contains("发现已保存译文不在当前可写文本范围内"),
