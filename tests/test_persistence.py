@@ -711,6 +711,89 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
 
 
 @pytest.mark.asyncio
+async def test_translation_quality_errors_require_fact_id(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量错误属于当前 v2 fact，缺 fact_id 必须显式失败。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        run_record = await session.start_translation_run(
+            total_extracted=1,
+            pending_count=0,
+            deduplicated_count=1,
+            batch_count=1,
+        )
+        with pytest.raises(ValueError, match="质量错误缺少 fact_id"):
+            await session.write_translation_quality_errors(
+                run_record.run_id,
+                [
+                    TranslationErrorItem(
+                        fact_id="",
+                        location_path="Items.json/1/name",
+                        item_type="short_text",
+                        role=None,
+                        original_lines=["原文"],
+                        translation_lines=["译文"],
+                        error_type="AI漏翻",
+                        error_detail=[],
+                        model_response="{}",
+                    )
+                ],
+            )
+
+
+@pytest.mark.asyncio
+async def test_translation_quality_errors_by_paths_preserve_same_path_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """按路径过滤质量错误时不能折叠同一路径的不同 fact。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        run_record = await session.start_translation_run(
+            total_extracted=2,
+            pending_count=0,
+            deduplicated_count=2,
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    fact_id="fact-a",
+                    location_path="Items.json/1/note/desc",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["一"],
+                    translation_lines=["A"],
+                    error_type="AI漏翻",
+                    error_detail=[],
+                    model_response="{}",
+                ),
+                TranslationErrorItem(
+                    fact_id="fact-b",
+                    location_path="Items.json/1/note/desc",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["二"],
+                    translation_lines=["B"],
+                    error_type="AI漏翻",
+                    error_detail=[],
+                    model_response="{}",
+                ),
+            ],
+        )
+        items = await session.read_translation_quality_errors_by_paths(
+            run_record.run_id,
+            {"Items.json/1/note/desc"},
+        )
+    assert [item.fact_id for item in items] == ["fact-a", "fact-b"]
+
+
+@pytest.mark.asyncio
 async def test_translation_items_require_v2_fact_identity(minimal_game_dir: Path, tmp_path: Path) -> None:
     """已保存译文必须以 v2 fact identity 作为主身份。"""
     registry = GameRegistry(tmp_path / "db")
@@ -1534,6 +1617,7 @@ async def test_start_translation_run_clears_previous_quality_errors(minimal_game
             first_run.run_id,
             [
                 TranslationErrorItem(
+                    fact_id="fact-previous-quality-error",
                     location_path="Map001.json/1/0/0",
                     item_type="long_text",
                     role=None,

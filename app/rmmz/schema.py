@@ -255,7 +255,7 @@ def _format_control_counts(counts: dict[str, int]) -> str:
 class TranslationErrorItem(BaseModel):
     """正文翻译错误记录。"""
 
-    fact_id: str | None = Field(default=None, exclude=True)
+    fact_id: str = Field(exclude=True)
     location_path: str
     item_type: ItemType
     role: str | None

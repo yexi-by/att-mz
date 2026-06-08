@@ -140,10 +140,16 @@ class RunRecordSessionMixin(SessionMixinBase):
     ) -> None:
         """写入没通过项目检查的最终译文。"""
         if items:
+            for error_item in items:
+                if not error_item.fact_id:
+                    message = (
+                        f"质量错误缺少 fact_id，无法保存当前文本事实的检查结果: {error_item.location_path}"
+                    )
+                    raise ValueError(message)
             serialized_items = [
                 (
                     run_id,
-                    error_item.fact_id or "",
+                    error_item.fact_id,
                     error_item.location_path,
                     error_item.item_type,
                     error_item.role,
@@ -176,7 +182,7 @@ class RunRecordSessionMixin(SessionMixinBase):
         sorted_paths = sorted(location_paths)
         if not sorted_paths:
             return []
-        quality_errors_by_path: dict[str, TranslationErrorItem] = {}
+        quality_errors: list[TranslationErrorItem] = []
         for batch in _chunks(sorted_paths, PATH_QUERY_BATCH_SIZE):
             placeholders = ", ".join("?" for _path in batch)
             async with self.connection.execute(
@@ -185,16 +191,14 @@ class RunRecordSessionMixin(SessionMixinBase):
                     SELECT *
                     FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
                     WHERE run_id = ? AND location_path IN ({placeholders})
-                    ORDER BY location_path
+                    ORDER BY location_path, fact_id
                 ;
                 """,
                 (run_id, *batch),
             ) as cursor:
                 rows = await cursor.fetchall()
-            for row in rows:
-                item = self._decode_translation_quality_error(row)
-                quality_errors_by_path[item.location_path] = item
-        return [quality_errors_by_path[path] for path in sorted_paths if path in quality_errors_by_path]
+            quality_errors.extend(self._decode_translation_quality_error(row) for row in rows)
+        return sorted(quality_errors, key=lambda item: (item.location_path, item.fact_id))
 
     async def read_translation_quality_errors_by_fact_ids(
         self,

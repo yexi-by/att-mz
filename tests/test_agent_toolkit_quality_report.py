@@ -1075,7 +1075,7 @@ async def test_quality_report_counts_errors_and_model_response(
     quality_error_detail = ensure_json_object(quality_error_items[0], "quality_error_items[0]")
     placeholder_detail = ensure_json_object(placeholder_items[0], "placeholder_risk_items[0]")
     overwide_detail = ensure_json_object(overwide_items[0], "overwide_line_items[0]")
-    assert quality_error_detail["location_path"] == "CommonEvents.json/1/2"
+    assert quality_error_detail["text_position"] == "CommonEvents.json/1/2"
     assert quality_error_detail["error_type"] == "AI漏翻"
     assert isinstance(quality_error_detail["raw_text_sample"], str)
     assert isinstance(quality_error_detail["visible_text_sample"], str)

@@ -113,6 +113,7 @@ def _build_batch(index: int) -> TranslationBatch:
     """构造一个单条正文的测试批次。"""
     location_path = f"Map001.json/{index}"
     item = TranslationItem(
+        fact_id=f"fact-run-limit-{index}",
         location_path=location_path,
         item_type="short_text",
         original_lines=[f"原文 {index}"],

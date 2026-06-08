@@ -114,6 +114,32 @@ async def read_text_fact_sample_details_by_paths_v2(
     }
 
 
+async def read_text_fact_sample_details_by_fact_ids_v2(
+    session: TargetGameSession,
+    fact_ids: Sequence[str],
+    *,
+    max_chars: int = 120,
+) -> dict[str, JsonObject]:
+    """读取当前 v2 facts 的 raw/visible/translatable 短样本，按 fact_id 返回。"""
+    if max_chars <= 0:
+        raise ValueError("max_chars 必须是正整数")
+    facts = await _read_current_text_facts_by_fact_ids_for_quality(
+        session=session,
+        fact_ids=fact_ids,
+    )
+    return {
+        fact.fact_id: {
+            "raw_text_sample": short_text_sample(fact.raw_text, max_chars=max_chars),
+            "visible_text_sample": short_text_sample(fact.visible_text, max_chars=max_chars),
+            "translatable_text_sample": short_text_sample(
+                fact.translatable_text,
+                max_chars=max_chars,
+            ),
+        }
+        for fact in facts
+    }
+
+
 def text_fact_records_to_translation_data_map(
     facts: Iterable[TextFactV2Record],
     *,

@@ -90,7 +90,7 @@ from app.text_facts import (
     read_pending_text_fact_quality_error_fact_ids_v2,
     read_text_fact_quality_error_fact_ids_v2,
     read_text_fact_quality_items_for_translations,
-    read_text_fact_sample_details_by_paths_v2,
+    read_text_fact_sample_details_by_fact_ids_v2,
     read_current_text_fact_translation_items_by_paths,
     read_writable_text_fact_translation_items_v2,
 )
@@ -738,8 +738,8 @@ def _suggested_action_for_write_map(
     if not cache_hash_matches:
         return "当前已保存译文记录已变化或不存在；请重新写回生成新的当前运行文件，或检查对应译文是否仍需要修复"
     if not runtime_file_hash_matches:
-        return "当前运行插件源码文件有无关内容变化，但 selector 和文本哈希仍能反推；请按文本在游戏里的内部位置（location_path）手修已保存译文记录，或重置对应译文后重新翻译，再重新写回"
-    return "请按文本在游戏里的内部位置（location_path）手修已保存译文记录，或重置对应译文后重新翻译，再重新写回"
+        return "当前运行插件源码文件有无关内容变化，但 selector 和文本哈希仍能反推；请按质量报告里的文本位置手修已保存译文记录，或重置对应译文后重新翻译，再重新写回"
+    return "请按质量报告里的文本位置手修已保存译文记录，或重置对应译文后重新翻译，再重新写回"
 
 
 def _suggested_action_for_excluded_write_map(
@@ -1189,14 +1189,9 @@ class QualityAgentMixin:
             write_back_protocol_details=write_back_protocol_details,
             active_paths=active_paths,
         )
-        quality_errors_by_path = {
-            item.location_path: item
-            for item in quality_error_items
-        }
         quality_errors_by_fact_id = {
             item.fact_id: item
             for item in quality_error_items
-            if item.fact_id
         }
         translated_by_fact_id = {
             item.fact_id: item
@@ -1220,7 +1215,6 @@ class QualityAgentMixin:
             translation_lines = _resolve_quality_fix_translation_lines(
                 location_path=location_path,
                 fact_id=active_item.fact_id,
-                quality_errors_by_path=quality_errors_by_path,
                 translated_by_path=translated_by_path,
                 quality_errors_by_fact_id=quality_errors_by_fact_id,
                 translated_by_fact_id=translated_by_fact_id,
@@ -1674,13 +1668,13 @@ class QualityAgentMixin:
             errors.append(issue("stale_source_residual_rules", f"发现 {len(stale_source_residual_rule_paths)} 条不在当前提取范围内的源文残留例外规则"))
 
         quality_error_details: JsonArray = []
-        quality_error_fact_samples = await read_text_fact_sample_details_by_paths_v2(
+        quality_error_fact_samples = await read_text_fact_sample_details_by_fact_ids_v2(
             session,
-            [item.location_path for item in quality_error_items],
+            [item.fact_id for item in quality_error_items],
         )
         for item in quality_error_items:
             detail = _build_translation_error_quality_detail(item)
-            detail.update(_quality_error_fact_sample_fields(quality_error_fact_samples.get(item.location_path)))
+            detail.update(_quality_error_fact_sample_fields(quality_error_fact_samples.get(item.fact_id)))
             quality_error_details.append(detail)
         error_type_counts = Counter(item.error_type for item in quality_error_items)
         llm_failure_counts = Counter(failure.category for failure in llm_failures)

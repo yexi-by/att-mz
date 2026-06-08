@@ -482,6 +482,11 @@ def expand_cached_error_items(
             translation_dedupe_key=error_item.translation_dedupe_key,
         )
         for duplicate_item in duplicate_items:
+            if not duplicate_item.fact_id:
+                message = (
+                    f"质量错误缺少 fact_id，无法展开同键重复文本的检查结果: {duplicate_item.location_path}"
+                )
+                raise ValueError(message)
             expanded_error_items.append(
                 TranslationErrorItem(
                     fact_id=duplicate_item.fact_id,

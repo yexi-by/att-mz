@@ -71,7 +71,7 @@ async def verify_translation_batch(
         for item in items:
             error_items.append(
                 TranslationErrorItem(
-                    fact_id=item.fact_id,
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -93,7 +93,7 @@ async def verify_translation_batch(
         if model_translation_lines is None:
             error_items.append(
                 TranslationErrorItem(
-                    fact_id=item.fact_id,
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -109,7 +109,7 @@ async def verify_translation_batch(
         if _is_empty_translation_lines(model_translation_lines):
             error_items.append(
                 TranslationErrorItem(
-                    fact_id=item.fact_id,
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -142,7 +142,7 @@ async def verify_translation_batch(
             if len(translation_lines) != len(item.original_lines):
                 error_items.append(
                     TranslationErrorItem(
-                        fact_id=item.fact_id,
+                        fact_id=_require_translation_error_fact_id(item),
                         location_path=item.location_path,
                         item_type=item.item_type,
                         role=item.role,
@@ -180,7 +180,7 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
-                    fact_id=item.fact_id,
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -200,7 +200,7 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
-                    fact_id=item.fact_id,
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -223,7 +223,7 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
-                    fact_id=item.fact_id,
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -244,6 +244,13 @@ async def verify_translation_batch(
         await right_queue.put(right_items)
     if error_items:
         await error_queue.put(error_items)
+
+
+def _require_translation_error_fact_id(item: TranslationItem) -> str:
+    """返回质量错误所属 v2 fact identity，缺失时显式失败。"""
+    if not item.fact_id:
+        raise ValueError(f"质量错误缺少 fact_id，无法记录当前文本事实的检查结果: {item.location_path}")
+    return item.fact_id
 
 
 def _parse_translation_response_items(ai_result: str) -> list[TranslationResponseItem]:

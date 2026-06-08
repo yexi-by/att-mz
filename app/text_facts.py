@@ -17,6 +17,7 @@ from app.text_fact_counts import (
 )
 from app.text_fact_quality import (
     read_text_fact_quality_items_for_translations,
+    read_text_fact_sample_details_by_fact_ids_v2,
     read_text_fact_sample_details_by_paths_v2,
     text_fact_record_to_quality_item,
     text_fact_record_to_translation_item,
@@ -63,6 +64,7 @@ __all__ = [
     "read_text_fact_quality_error_fact_ids_v2",
     "read_text_fact_quality_error_paths_v2",
     "read_text_fact_quality_items_for_translations",
+    "read_text_fact_sample_details_by_fact_ids_v2",
     "read_text_fact_sample_details_by_paths_v2",
     "read_unwritable_text_fact_records_v2",
     "read_writable_text_fact_translation_items_by_fact_ids",

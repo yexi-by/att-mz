@@ -643,6 +643,7 @@ async def test_manual_quality_fix_import_uses_warm_text_index_scope(
                     model_response="",
                 ),
                 TranslationErrorItem(
+                    fact_id="fact-ghost-quality-error",
                     location_path="Map999.json/ghost",
                     item_type="long_text",
                     role=None,

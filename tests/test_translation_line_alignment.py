@@ -54,6 +54,12 @@ def _build_model_response(
     return json.dumps([response_item], ensure_ascii=False)
 
 
+def _ensure_test_fact_id(item: TranslationItem) -> None:
+    """让校验器单元测试显式带上 v2 fact identity。"""
+    if not item.fact_id:
+        item.fact_id = "fact-under-test"
+
+
 async def _verify_single_long_text(
     *,
     original_lines: list[str],
@@ -62,6 +68,7 @@ async def _verify_single_long_text(
 ) -> TranslationItem:
     """执行单条 long_text 校验并返回通过校验的条目。"""
     item = TranslationItem(
+        fact_id="fact-long-text",
         location_path="Map001.json/1/0/0",
         item_type="long_text",
         original_lines=original_lines,
@@ -95,6 +102,7 @@ async def _verify_single_item(
     text_rules: TextRules,
 ) -> tuple[list[TranslationItem] | None, list[TranslationErrorItem] | None]:
     """执行单条模型译文校验并返回成功或失败条目。"""
+    _ensure_test_fact_id(item)
     item.build_placeholders(text_rules)
     right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
@@ -121,6 +129,7 @@ async def _verify_single_item_raw_response(
     prompt_id: str = "1",
 ) -> tuple[list[TranslationItem] | None, list[TranslationErrorItem] | None]:
     """执行单条原始模型响应校验并返回成功或失败条目。"""
+    _ensure_test_fact_id(item)
     item.build_placeholders(text_rules)
     right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
@@ -575,6 +584,7 @@ async def test_translation_response_missing_id_is_recorded_as_missing_key() -> N
         item_type="long_text",
         original_lines=["こんにちは"],
     )
+    _ensure_test_fact_id(item)
     item.build_placeholders(text_rules)
     right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
@@ -626,6 +636,7 @@ async def test_empty_translation_lines_are_recorded_as_missing_translation(
         item_type=item_type,
         original_lines=original_lines,
     )
+    _ensure_test_fact_id(item)
     item.build_placeholders(text_rules)
     right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
@@ -655,6 +666,7 @@ async def test_translation_response_duplicate_valid_id_blocks_batch() -> None:
         item_type="long_text",
         original_lines=["こんにちは"],
     )
+    _ensure_test_fact_id(item)
     item.build_placeholders(text_rules)
     response_item = {
         "id": "1",
@@ -878,6 +890,7 @@ async def test_array_response_line_count_mismatch_is_recorded() -> None:
         item_type="array",
         original_lines=["はい", "いいえ"],
     )
+    _ensure_test_fact_id(item)
     item.build_placeholders(text_rules)
     right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
@@ -959,6 +972,7 @@ async def test_invalid_model_response_is_recorded_on_error_items() -> None:
         item_type="long_text",
         original_lines=["あ"],
     )
+    _ensure_test_fact_id(item)
     raw_response = "无法解析的模型输出"
     right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
     error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()

@@ -33,6 +33,7 @@ async def test_manual_import_rejects_latest_quality_error_outside_current_scope(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id="fact-stale-quality-error",
                     location_path=stale_path,
                     item_type="short_text",
                     role=None,

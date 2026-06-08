@@ -988,6 +988,12 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_paths_from_ind
     async with await registry.open_game(record.game_title) as session:
         index_items = await session.read_text_index_items()
         indexed_error_path = index_items[0].location_path
+        async with session.connection.execute(
+            "SELECT fact_id FROM text_facts_v2 WHERE location_path = ? ORDER BY fact_id LIMIT 1",
+            (indexed_error_path,),
+        ) as cursor:
+            indexed_error_fact_row = await cursor.fetchone()
+        assert indexed_error_fact_row is not None
         run_record = await session.start_translation_run(
             total_extracted=len(index_items),
             pending_count=len(index_items),
@@ -998,6 +1004,7 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_paths_from_ind
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=cast(str, indexed_error_fact_row["fact_id"]),
                     location_path=indexed_error_path,
                     item_type="long_text",
                     role=None,
@@ -1008,6 +1015,7 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_paths_from_ind
                     model_response="模型原始返回",
                 ),
                 TranslationErrorItem(
+                    fact_id="fact-outside-quality-error",
                     location_path="Outside.json/not-in-index",
                     item_type="long_text",
                     role=None,

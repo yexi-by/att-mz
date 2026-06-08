@@ -1059,22 +1059,18 @@ def _resolve_quality_fix_translation_lines(
     *,
     location_path: str,
     fact_id: str | None = None,
-    quality_errors_by_path: dict[str, TranslationErrorItem],
+    quality_errors_by_fact_id: dict[str, TranslationErrorItem],
     translated_by_path: dict[str, TranslationItem],
-    quality_errors_by_fact_id: dict[str, TranslationErrorItem] | None = None,
     translated_by_fact_id: dict[str, TranslationItem] | None = None,
 ) -> list[str]:
     """决定质量修复模板中应预填的译文行。"""
     if fact_id:
-        quality_error = (quality_errors_by_fact_id or {}).get(fact_id)
+        quality_error = quality_errors_by_fact_id.get(fact_id)
         if quality_error is not None:
             return list(quality_error.translation_lines)
         translated_item = (translated_by_fact_id or {}).get(fact_id)
         if translated_item is not None:
             return list(translated_item.translation_lines)
-    quality_error = quality_errors_by_path.get(location_path)
-    if quality_error is not None:
-        return list(quality_error.translation_lines)
     translated_item = translated_by_path.get(location_path)
     if translated_item is None:
         return []
@@ -3105,8 +3101,8 @@ def _normalize_manual_translation_lines(
 def _build_translation_error_quality_detail(item: TranslationErrorItem) -> JsonObject:
     """把没通过项目检查的译文转换为质量报告中可定位、可修复的明细。"""
     return {
-        "fact_id": item.fact_id or "",
-        "location_path": item.location_path,
+        "fact_id": item.fact_id,
+        "text_position": item.location_path,
         "item_type": item.item_type,
         "role": item.role,
         "original_lines": _string_lines_to_json_array(item.original_lines),
