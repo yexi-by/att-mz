@@ -748,7 +748,10 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     )
 
     async with await registry.open_game("テストゲーム") as session:
-        remaining_paths = {item.location_path for item in await session.read_translated_items()}
+        remaining_paths = {
+            item.location_path
+            for item in await session.read_translated_items_by_prefixes(["Items.json/"])
+        }
         state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
 
     game_data = await load_game_data(minimal_game_dir)
@@ -3310,7 +3313,10 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
 
     async with await registry.open_game("テストゲーム") as session:
         rules = await session.read_note_tag_text_rules()
-        paths = {item.location_path for item in await session.read_translated_items()}
+        paths = {
+            item.location_path
+            for item in await session.read_translated_items_by_prefixes(["Items.json/"])
+        }
 
     assert report.status == "warning"
     assert report.summary["deleted_translation_items"] == 1

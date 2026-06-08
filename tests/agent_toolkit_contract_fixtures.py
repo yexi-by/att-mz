@@ -796,6 +796,7 @@ async def _install_minimal_workflow_gate_prerequisites(
                 scope_hash=mv_virtual_namebox_rule_scope_hash_for_game_data(game_data),
                 reviewed_empty=True,
             )
+        await session.clear_text_index()
 
 def _replace_first_common_event_text(game_dir: Path, text: str) -> None:
     """把 fixture 第一个公共事件正文替换为指定文本。"""
