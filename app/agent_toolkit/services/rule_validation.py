@@ -10,8 +10,10 @@ from .common import (
     NoteTagTextRuleRecord,
     Path,
     TextRules,
+    TranslationItem,
     _format_mv_namebox_rule_error,
     _note_tag_rule_hits_from_native_details,
+    _note_tag_item_matches_rule,
     _plugin_source_rule_hits_from_scan,
     _RuleHitMetric,
     _validate_event_command_rule_records_with_context,
@@ -75,6 +77,19 @@ from app.plugin_source_text import build_native_plugin_source_scan
 def _note_tag_rule_prefixes(rule_records: list[NoteTagTextRuleRecord]) -> list[str]:
     """返回 Note 标签规则影响的已保存译文路径前缀。"""
     return sorted({f"{record.file_name}/" for record in rule_records})
+
+
+def _translation_items_matching_note_rules(
+    *,
+    translated_items: list[TranslationItem],
+    rule_records: list[NoteTagTextRuleRecord],
+) -> list[TranslationItem]:
+    """按旧 Note 标签规则筛出实际属于规则范围的已保存译文。"""
+    return [
+        item
+        for item in translated_items
+        if any(_note_tag_item_matches_rule(item=item, rule_record=record) for record in rule_records)
+    ]
 
 
 def _plugin_source_rule_prefixes(rule_records: list[PluginSourceTextRuleRecord]) -> list[str]:
@@ -539,6 +554,10 @@ class RuleValidationAgentMixin:
                 old_note_items = await session.read_translated_items_by_prefixes(
                     _note_tag_rule_prefixes(old_records)
                 )
+                old_note_rule_items = _translation_items_matching_note_rules(
+                    translated_items=old_note_items,
+                    rule_records=old_records,
+                )
                 new_note_hit_metrics = _note_tag_rule_hits_from_native_details(
                     records=records,
                     hit_details=collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules),
@@ -554,7 +573,7 @@ class RuleValidationAgentMixin:
                 ]
                 new_note_hits = await resolve_current_rule_fact_hits(session, new_note_probes)
                 stale_fact_ids = stale_translation_fact_ids(
-                    old_items=old_note_items,
+                    old_items=old_note_rule_items,
                     current_rule_hits=new_note_hits,
                 )
                 deleted_translation_items = 0

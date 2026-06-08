@@ -31,7 +31,6 @@ from app.application.flow_gate import (
     event_command_rule_codes_for_setting,
     event_command_rule_scope_hash_for_command_codes,
     format_workflow_gate_error,
-    note_tag_rule_scope_hash_for_text_rules,
 )
 from app.application.runtime import load_runtime_setting
 from app.application.rule_import_backup import write_rule_import_translation_backup
@@ -78,17 +77,12 @@ from app.terminology import (
     validate_terminology_bundle,
 )
 from app.note_tag_text import (
-    NoteTagTextExtraction,
-    build_note_tag_rule_records_from_import,
     export_note_tag_candidates_file,
-    load_note_tag_rule_import_file,
-    note_tag_location_path_matches_rule,
 )
 from app.persistence import GameRegistry, RuleImportUnitOfWork, TargetGameSession
 from app.persistence.repository import current_timestamp_text
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
-    NOTE_TAG_TEXT_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     plugin_rule_scope_hash,
 )
@@ -118,7 +112,6 @@ from app.rmmz.schema import (
     GameData,
     GameLayout,
     EventCommandTextRuleRecord,
-    NoteTagTextRuleRecord,
     NonstandardDataTextRuleRecord,
     PlaceholderRuleRecord,
     PLUGINS_FILE_NAME,
@@ -165,7 +158,7 @@ from app.text_facts import (
     count_translated_text_facts_v2,
     read_pending_text_fact_translation_data_map,
 )
-from app.text_scope import TextScopeResult, collect_translation_data_paths
+from app.text_scope import TextScopeResult
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 
 
@@ -313,26 +306,22 @@ def _unpack_write_progress_callbacks(
     return set_progress, advance_progress, set_status
 
 
-def _translation_paths_matching_note_rules(
-    *,
-    translated_items: list[TranslationItem],
-    rule_records: list[NoteTagTextRuleRecord],
-) -> set[str]:
-    """从已保存译文中找出属于指定 Note 标签规则的定位路径。"""
-    return {
-        item.location_path
-        for item in translated_items
-        for rule_record in rule_records
-        if note_tag_location_path_matches_rule(
-            location_path=item.location_path,
-            rule_record=rule_record,
-        )
-    }
+def _agent_report_summary_int(summary: JsonObject, key: str) -> int:
+    """从 Agent 报告摘要中读取整数计数字段。"""
+    raw_value = summary.get(key)
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise ApplicationBusinessError(f"Agent 报告缺少有效计数字段: {key}")
+    return raw_value
 
 
-def _note_tag_rule_prefixes(rule_records: list[NoteTagTextRuleRecord]) -> list[str]:
-    """返回 Note 标签规则影响的已保存译文路径前缀。"""
-    return sorted({f"{record.file_name}/" for record in rule_records})
+def _agent_report_summary_optional_path(summary: JsonObject, key: str) -> str | None:
+    """从 Agent 报告摘要中读取可选路径字段。"""
+    raw_value = summary.get(key)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ApplicationBusinessError(f"Agent 报告缺少有效路径字段: {key}")
+    return raw_value or None
 
 
 class TranslationHandler:
@@ -797,81 +786,32 @@ class TranslationHandler:
         confirm_empty: bool = False,
     ) -> NoteTagRuleImportSummary:
         """把外部 Note 标签规则 JSON 导入当前游戏数据库。"""
-        async with await self.game_registry.open_game(game_title) as session:
-            setting = self._load_setting(source_language=session.source_language)
-            game_data = await self._load_session_game_data(session)
-            text_rules = self._load_text_rules(
-                setting=setting,
-                placeholder_rule_records=await session.read_placeholder_rules(),
-                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
-            )
-            import_file = await load_note_tag_rule_import_file(input_path)
-            rule_records = build_note_tag_rule_records_from_import(
-                game_data=game_data,
-                import_file=import_file,
-                text_rules=text_rules,
-            )
-            if not rule_records:
-                ensure_empty_rule_confirmed(
-                    rule_label="Note 标签规则",
-                    confirm_empty=confirm_empty,
-                )
-            old_rules = {
-                rule.file_name: rule
-                for rule in await session.read_note_tag_text_rules()
-            }
-            old_note_items = await session.read_translated_items_by_prefixes(
-                _note_tag_rule_prefixes(list(old_rules.values()))
-            )
-            old_note_paths = _translation_paths_matching_note_rules(
-                translated_items=old_note_items,
-                rule_records=list(old_rules.values()),
-            )
-            new_note_paths = collect_translation_data_paths(
-                NoteTagTextExtraction(
-                    game_data=game_data,
-                    rule_records=rule_records,
-                    text_rules=text_rules,
-                ).extract_all_text()
-            )
-            changed_rule_count = sum(
-                1
-                for rule_record in rule_records
-                if self._should_refresh_note_tag_translation_items(old_rules.get(rule_record.file_name), rule_record)
-            )
-            removed_rule_count = len(set(old_rules) - {rule.file_name for rule in rule_records})
-            stale_paths = sorted(old_note_paths - new_note_paths)
-            deleted_translation_items = 0
-            deleted_translation_backup_path: str | None = None
-            async with RuleImportUnitOfWork(session):
-                if stale_paths and (changed_rule_count or removed_rule_count):
-                    stale_items = await session.read_translated_items_by_paths(stale_paths)
-                    backup = await write_rule_import_translation_backup(
-                        game_title=game_title,
-                        domain="note-tag-rules",
-                        items=stale_items,
-                    )
-                    if backup is not None:
-                        deleted_translation_backup_path = backup.backup_path
-                    deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
-                await session.replace_note_tag_text_rules(rule_records)
-                if rule_records:
-                    await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
-                else:
-                    await session.replace_rule_review_state(
-                        rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                        scope_hash=note_tag_rule_scope_hash_for_text_rules(
-                            game_data=game_data,
-                            text_rules=text_rules,
-                        ),
-                        reviewed_empty=True,
-                    )
-        imported_tag_count = sum(len(record.tag_names) for record in rule_records)
-        logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{len(rule_records)}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
+        from app.agent_toolkit.service import AgentToolkitService
+
+        rules_text = input_path.read_text(encoding="utf-8")
+        service = AgentToolkitService(
+            game_registry=self.game_registry,
+            llm_handler=self.llm_handler,
+        )
+        report = await service.import_note_tag_rules(
+            game_title=game_title,
+            rules_text=rules_text,
+            confirm_empty=confirm_empty,
+        )
+        if report.errors:
+            raise ApplicationBusinessError("；".join(error.message for error in report.errors))
+        imported_file_count = _agent_report_summary_int(report.summary, "file_count")
+        imported_tag_count = _agent_report_summary_int(report.summary, "tag_count")
+        deleted_translation_items = _agent_report_summary_int(report.summary, "deleted_translation_items")
+        deleted_translation_backup_path = _agent_report_summary_optional_path(
+            report.summary,
+            "deleted_translation_backup_path",
+        )
+        logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{imported_file_count}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
             logger.warning(f"[tag.warning]已备份被清理的 Note 标签译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
         return NoteTagRuleImportSummary(
-            imported_file_count=len(rule_records),
+            imported_file_count=imported_file_count,
             imported_tag_count=imported_tag_count,
             deleted_translation_items=deleted_translation_items,
             deleted_translation_backup_path=deleted_translation_backup_path,
@@ -1950,19 +1890,6 @@ class TranslationHandler:
             old_rule.command_code != new_rule.command_code
             or old_rule.parameter_filters != new_rule.parameter_filters
             or old_rule.path_templates != new_rule.path_templates
-        )
-
-    @staticmethod
-    def _should_refresh_note_tag_translation_items(
-        old_rule: NoteTagTextRuleRecord | None,
-        new_rule: NoteTagTextRuleRecord,
-    ) -> bool:
-        """判断 Note 标签规则变化后是否需要清理失效译文。"""
-        if old_rule is None:
-            return False
-        return (
-            old_rule.file_name != new_rule.file_name
-            or old_rule.tag_names != new_rule.tag_names
         )
 
     @staticmethod

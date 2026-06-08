@@ -528,7 +528,12 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
         raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
 
+    async def forbidden_path_delete(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("Note 标签规则导入不得按 location_path 删除译文")
+
     monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_full_translation_read)
+    monkeypatch.setattr(TargetGameSession, "delete_translation_items_by_paths", forbidden_path_delete)
 
     summary = await handler.import_note_tag_rules(
         game_title="テストゲーム",
@@ -551,6 +556,52 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
         game_data=game_data,
         text_rules=TextRules.from_setting(setting.text_rules),
     )
+
+
+@pytest.mark.asyncio
+async def test_import_note_tag_rules_keeps_same_file_non_note_translation_when_rules_empty(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """导入空 Note 规则只清理旧 Note 规则译文，不误删同文件普通字段译文。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    stale_note_item = _rule_test_translation_item(
+        location_path="Items.json/1/note/MissingTag",
+        original_lines=["古いタグ"],
+        translation_lines=["旧标签"],
+    )
+    ordinary_item = TranslationItem(
+        location_path="Items.json/1/name",
+        item_type="short_text",
+        original_lines=["回復薬"],
+        source_line_paths=["Items.json/1/name"],
+        translation_lines=["回复药"],
+    )
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
+        )
+        await write_v2_test_translation_items(session, [stale_note_item, ordinary_item])
+        before_items = await session.read_translated_items()
+        ordinary_fact_id = next(
+            item.fact_id
+            for item in before_items
+            if item.location_path == ordinary_item.location_path
+        )
+
+    report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        remaining_items = await session.read_translated_items()
+
+    assert report.summary["deleted_translation_items"] == 1
+    assert {item.fact_id for item in remaining_items} == {ordinary_fact_id}
 @pytest.mark.asyncio
 async def test_mv_virtual_namebox_rule_commands_validate_import_and_reject_mz(
     minimal_mv_game_dir: Path,
