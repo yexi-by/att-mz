@@ -137,6 +137,7 @@ from app.translation import TranslationBatch
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.text_index import detect_text_index_invalidations, rebuild_text_index_native_storage
 from app.text_facts import (
+    read_current_text_fact_translation_data_map_v2,
     read_current_text_fact_scope_v2,
     read_current_text_fact_translation_items_by_paths,
     read_writable_text_fact_translation_items_v2,
@@ -763,13 +764,14 @@ async def _install_minimal_workflow_gate_prerequisites(
         )
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        _ = await rebuild_text_index_native_storage(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
+        translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
         placeholder_coverage = build_normal_placeholder_coverage_result(
-            translation_data_map=scope.translation_data_map,
+            translation_data_map=translation_data_map,
             text_rules=text_rules,
             rule_count=0,
         )
@@ -779,7 +781,7 @@ async def _install_minimal_workflow_gate_prerequisites(
             reviewed_empty=True,
         )
         structured_coverage = build_structured_placeholder_coverage_result(
-            translation_data_map=scope.translation_data_map,
+            translation_data_map=translation_data_map,
             structured_rules=text_rules.structured_placeholder_rules,
             rule_count=0,
         )

@@ -30,10 +30,10 @@ from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_jso
 from app.rmmz.loader import load_translation_source_game_data, resolve_game_layout
 from app.rmmz.schema import NonstandardDataTextRuleRecord
 from app.rmmz.text_rules import JsonObject, TextRules
-from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import write_data_text
 from tests.conftest import EXAMPLE_SETTING_PATH, write_json
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 
 
 def _forbid_python_nonstandard_data_leaf_resolver(value: object) -> object:
@@ -400,9 +400,9 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        before_scope = await TextScopeService().build(
+        before_scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         before_errors = await collect_workflow_gate_errors(
@@ -430,9 +430,9 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
         ),
     )
     async with await registry.open_game("テストゲーム") as session:
-        after_scope = await TextScopeService().build(
+        after_scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         after_errors = await collect_workflow_gate_errors(
@@ -463,6 +463,11 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
+        scope = await rebuild_current_v2_scope_for_test(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
         await session.replace_nonstandard_data_text_rules(
             [
                 NonstandardDataTextRuleRecord(
@@ -471,11 +476,6 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
                     path_templates=["$[*]['name']"],
                 )
             ]
-        )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
         )
         errors = await collect_workflow_gate_errors(
             session=session,
@@ -514,12 +514,11 @@ async def test_nonstandard_data_rules_enter_unified_text_scope(
     )
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
-    game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
 
@@ -532,6 +531,15 @@ async def test_nonstandard_data_rules_enter_unified_text_scope(
     assert entry.rule_source == "非标准 data 文件文本规则"
     assert entry.original_lines == ["これは無視される"]
     assert entry.enters_translation is True
+    item = next(
+        item
+        for data in scope.translation_data_map.values()
+        for item in data.translation_items
+        if item.location_path == entry.location_path
+    )
+    assert item.fact_id
+    assert item.source_fact_raw_hash
+    assert item.source_fact_translatable_hash
 
 
 @pytest.mark.asyncio
@@ -565,12 +573,11 @@ async def test_nonstandard_data_text_scope_uses_native_leaves_for_imported_rules
     )
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
-    game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
 
@@ -591,9 +598,6 @@ async def test_nonstandard_data_text_scope_reuses_native_leaves_within_build(
 ) -> None:
     """统一文本清单同一轮构建只为非标准 data 文件展开一次 native leaves。"""
     from app.json_path_protocol import ResolvedLeaf
-    from app.nonstandard_data.scanner import (
-        resolve_nonstandard_data_file_leaves_native as real_resolve_nonstandard_data_file_leaves_native,
-    )
     from app.rmmz.text_rules import JsonValue
 
     _write_high_risk_nonstandard_data(minimal_game_dir)
@@ -613,13 +617,13 @@ async def test_nonstandard_data_text_scope_reuses_native_leaves_within_build(
             ensure_ascii=False,
         ),
     )
-    native_leaf_inputs: list[dict[str, JsonValue]] = []
+    unexpected_native_leaf_inputs: list[dict[str, JsonValue]] = []
 
     def counting_resolve_nonstandard_data_file_leaves_native(
         nonstandard_data_files: dict[str, JsonValue],
     ) -> dict[str, tuple[ResolvedLeaf, ...]]:
-        native_leaf_inputs.append(dict(nonstandard_data_files))
-        return real_resolve_nonstandard_data_file_leaves_native(nonstandard_data_files)
+        unexpected_native_leaf_inputs.append(dict(nonstandard_data_files))
+        return {}
 
     monkeypatch.setattr(
         "app.nonstandard_data.extraction.resolve_nonstandard_data_file_leaves_native",
@@ -627,17 +631,15 @@ async def test_nonstandard_data_text_scope_reuses_native_leaves_within_build(
     )
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
-    game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
 
-    assert len(native_leaf_inputs) == 1
-    assert set(native_leaf_inputs[0]) == {"UnknownPluginData.json"}
+    assert unexpected_native_leaf_inputs == []
     assert any(
         item.location_path == "nonstandard-data/UnknownPluginData.json/$[0]['name']"
         and item.enters_translation

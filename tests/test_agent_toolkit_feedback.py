@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 
 @pytest.mark.asyncio
 async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
@@ -405,11 +406,10 @@ async def test_default_active_runtime_audit_skips_plugin_source_text_branch(
     )
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
-        game_data = await load_game_data(session.game_path)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         translated_items = [

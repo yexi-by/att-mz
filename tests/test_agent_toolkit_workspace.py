@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
@@ -1374,9 +1375,9 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(

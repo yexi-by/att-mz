@@ -100,9 +100,10 @@ from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_
 
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 
-from app.text_scope import TextScopeService
-
-from app.text_facts import read_current_text_fact_translation_items_by_paths
+from app.text_facts import (
+    read_current_text_fact_translation_data_map_v2,
+    read_current_text_fact_translation_items_by_paths,
+)
 
 from app.text_index import rebuild_text_index_native_storage
 
@@ -276,15 +277,16 @@ async def _prepare_write_gate_session(
         ),
         reviewed_empty=True,
     )
-    scope = await TextScopeService().build(
+    _ = await rebuild_text_index_native_storage(
         session=session,
-        game_data=game_data,
+        setting=setting,
         text_rules=text_rules,
     )
+    translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
     await session.replace_rule_review_state(
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
         scope_hash=structured_placeholder_scope_hash(
-            translation_data_map=scope.translation_data_map,
+            translation_data_map=translation_data_map,
             structured_rules=(),
         ),
         reviewed_empty=True,
@@ -293,11 +295,6 @@ async def _prepare_write_gate_session(
         rule_domain=PLACEHOLDER_RULE_DOMAIN,
         scope_hash="placeholder-rules-imported",
         reviewed_empty=False,
-    )
-    _ = await rebuild_text_index_native_storage(
-        session=session,
-        setting=setting,
-        text_rules=text_rules,
     )
     return game_data, setting, text_rules
 
@@ -509,7 +506,6 @@ __all__ = (
     "get_default_text_rules",
     "TerminologyGlossary",
     "TerminologyRegistry",
-    "TextScopeService",
     "load_setting",
     "reset_writable_copies",
     "write_data_text",

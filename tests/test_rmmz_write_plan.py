@@ -13,6 +13,7 @@ from app.native_write_plan import build_native_write_back_plan, build_native_wri
 from app.persistence.records import TextFactV2ReadFilter
 from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME
 from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_lines
+from app.text_scope import TextScopeService
 from app.text_index import (
     TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
     TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
@@ -22,6 +23,10 @@ from app.text_index import (
 from tests._native_write_plan_helper import (
     _text_fact_domain_for_helper,
     _translation_item_row_for_temp_db,
+)
+from tests.current_v2_scope import (
+    read_current_v2_scope_for_test,
+    rebuild_current_v2_scope_for_test,
 )
 from tests.rmmz_writeback_contract_fixtures import *
 
@@ -143,7 +148,7 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_game_dir,
             registry=(
@@ -157,11 +162,7 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
                 else None
             ),
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         if mode != "write_terminology":
             await write_v2_test_translation_items(session,
                 [
@@ -292,15 +293,11 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         await write_v2_test_translation_items(session,
             [
                 TranslationItem(
@@ -476,17 +473,13 @@ async def test_write_related_commands_rebuild_missing_or_stale_text_index_before
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_game_dir,
             registry=TerminologyRegistry(speaker_names={"アリス": "爱丽丝"}),
             glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         await write_v2_test_translation_items(session,
             [
                 TranslationItem(
@@ -706,15 +699,11 @@ async def test_write_back_warm_index_rejects_quality_errors_without_python_scope
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         active_items = scope.active_items()
         failed_item = active_items[0]
         await write_v2_test_translation_items(session,
@@ -815,15 +804,11 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         active_items = scope.active_items()
         failed_item = active_items[0]
         await write_v2_test_translation_items(session,
@@ -942,15 +927,11 @@ async def test_direct_write_back_delegates_native_quality_to_rust_plan(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         translated_items: list[TranslationItem] = []
         for item in scope.active_items():
             translation_lines = [
@@ -1175,9 +1156,9 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             ),
             reviewed_empty=True,
         )
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(
@@ -1344,9 +1325,9 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
             ),
             reviewed_empty=True,
         )
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(
@@ -1554,9 +1535,9 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             ),
             reviewed_empty=True,
         )
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(

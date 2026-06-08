@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 
 from app.agent_toolkit import AgentToolkitService
 from app.application.flow_gate import (
@@ -28,7 +29,6 @@ from app.rule_review import (
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     plugin_rule_scope_hash,
 )
-from app.text_scope import TextScopeService
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_facts import read_text_fact_quality_items_for_translations
 from app.text_index import text_index_item_to_translation_item
@@ -102,9 +102,9 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
         game_data = await load_game_data(minimal_game_dir)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_terminology_bundle(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 from app.llm.schemas import ChatMessage
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.terminology import TerminologyPromptIndex
@@ -23,9 +24,9 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
         game_data = await load_game_data(minimal_mv_game_dir)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         before_errors = await collect_workflow_gate_errors(
@@ -50,9 +51,9 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
         game_data = await load_game_data(minimal_mv_game_dir)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         after_errors = await collect_workflow_gate_errors(

@@ -28,7 +28,8 @@ from app.rule_review import (
     note_tag_rule_scope_hash_for_candidates,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
-from app.text_scope import TextScopeService
+from app.text_facts import read_current_text_fact_translation_data_map_v2
+from app.text_index import rebuild_text_index_native_storage
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -122,15 +123,16 @@ async def _install_non_plugin_source_gate_prerequisites(
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        scope = await TextScopeService().build(
+        _ = await rebuild_text_index_native_storage(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
+        translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
         await session.replace_rule_review_state(
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=normal_placeholder_scope_hash(
-                translation_data_map=scope.translation_data_map,
+                translation_data_map=translation_data_map,
                 text_rules=text_rules,
             ),
             reviewed_empty=True,
@@ -138,7 +140,7 @@ async def _install_non_plugin_source_gate_prerequisites(
         await session.replace_rule_review_state(
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
-                translation_data_map=scope.translation_data_map,
+                translation_data_map=translation_data_map,
                 structured_rules=text_rules.structured_placeholder_rules,
             ),
             reviewed_empty=True,

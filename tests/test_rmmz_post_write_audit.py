@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
-from app.text_index import rebuild_text_index_native_storage
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 
 @pytest.mark.asyncio
 async def test_native_write_back_helper_saves_runtime_map_after_post_write_audit(
@@ -254,9 +254,9 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
             ),
             reviewed_empty=True,
         )
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(
@@ -266,11 +266,6 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
                 structured_rules=(),
             ),
             reviewed_empty=True,
-        )
-        _ = await rebuild_text_index_native_storage(
-            session=session,
-            setting=setting,
-            text_rules=text_rules,
         )
         await write_v2_test_translation_items(
             session,

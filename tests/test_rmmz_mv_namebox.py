@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
+from tests.current_v2_scope import read_current_v2_scope_for_test
 
 from app.agent_toolkit import AgentToolkitService
 from app.persistence.records import TextFactV2ReadFilter
@@ -636,7 +637,7 @@ async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     async with await registry.open_game("MVテストゲーム") as session:
         await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
-        game_data, _setting, text_rules = await _prepare_write_gate_session(
+        _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_mv_game_dir,
             registry=TerminologyRegistry(
@@ -644,11 +645,7 @@ async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
             ),
             glossary=TerminologyGlossary(terms={"案内人": "向导", "MV勇者": "勇者"}),
         )
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = await read_current_v2_scope_for_test(session=session)
         custom_translations = {
             "CommonEvents.json/2/0": ["你好"],
             "CommonEvents.json/3/0": ["你好」"],

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 from app.agent_toolkit import AgentToolkitService
-from app.text_index import rebuild_text_index_native_storage, text_index_item_to_translation_item
+from app.text_index import text_index_item_to_translation_item
 
 @pytest.mark.asyncio
 async def test_english_visible_401_short_fragment_is_extracted(
@@ -182,9 +183,9 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
             ),
             reviewed_empty=True,
         )
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(
@@ -196,11 +197,6 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
             reviewed_empty=True,
         )
         active_items = scope.active_items()
-        _ = await rebuild_text_index_native_storage(
-            session=session,
-            setting=setting,
-            text_rules=text_rules,
-        )
         await write_v2_test_translation_items(
             session,
             [

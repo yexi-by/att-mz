@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 
 from app.application.flow_gate import count_note_tag_rule_candidates
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
@@ -1524,9 +1525,9 @@ async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
@@ -1579,13 +1580,12 @@ async def test_import_empty_placeholder_rules_uses_full_candidate_hash(
         confirm_empty=True,
     )
 
-    game_data = await load_game_data(minimal_english_game_dir)
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
@@ -1708,9 +1708,9 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
@@ -1766,9 +1766,9 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
@@ -1860,13 +1860,12 @@ async def test_import_empty_structured_placeholder_rules_uses_full_candidate_has
         confirm_empty=True,
     )
 
-    game_data = await load_game_data(minimal_english_game_dir)
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
@@ -1922,9 +1921,9 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         state = await session.read_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
@@ -1971,9 +1970,9 @@ async def test_placeholder_candidate_review_rejects_legacy_sampled_hash(
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         coverage = build_normal_placeholder_coverage_result(
@@ -2030,9 +2029,9 @@ async def test_structured_placeholder_candidate_review_rejects_legacy_sampled_ha
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         coverage = build_structured_placeholder_coverage_result(
@@ -2152,9 +2151,9 @@ async def test_placeholder_candidate_review_state_mismatch_blocks_workflow(
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
         await session.replace_rule_review_state(

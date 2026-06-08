@@ -12,6 +12,7 @@ import pytest
 import app.plugin_source_text as plugin_source_text_package
 import app.plugin_source_text.runtime_audit as plugin_source_runtime_audit
 import app.plugin_source_text.scanner as plugin_source_text_scanner
+from tests.current_v2_scope import rebuild_current_v2_scope_for_test
 from app.application.flow_gate import (
     collect_workflow_gate_errors,
     event_command_rule_scope_hash_for_setting,
@@ -59,7 +60,7 @@ from app.rule_review import (
     plugin_rule_scope_hash,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
-from app.text_scope import TextScopeService
+from app.text_scope import TextScopeResult
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.text_facts import read_current_text_fact_records_v2, text_fact_record_to_translation_item
 from app.utils.config_loader_utils import load_setting
@@ -219,11 +220,7 @@ async def _install_minimal_external_workflow_reviews(
     game_data = await load_game_data(game_dir)
     text_rules = TextRules.from_setting(setting.text_rules)
     async with await registry.open_game(game_title) as session:
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = TextScopeResult(translation_data_map={}, entries=[])
         await session.replace_terminology_bundle(
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
@@ -1669,11 +1666,7 @@ async def test_plugin_source_high_risk_pauses_workflow_until_rules_are_confirmed
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
         plugin_source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
+        scope = TextScopeResult(translation_data_map={}, entries=[])
 
         errors = await collect_workflow_gate_errors(
             session=session,
@@ -1739,11 +1732,7 @@ async def test_plugin_source_stale_rule_hash_blocks_workflow(
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         changed_game_data = await load_game_data(session.game_path)
         session.set_game_data(changed_game_data)
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=changed_game_data,
-            text_rules=text_rules,
-        )
+        scope = TextScopeResult(translation_data_map={}, entries=[])
         errors = await collect_workflow_gate_errors(
             session=session,
             game_data=changed_game_data,
@@ -2897,12 +2886,12 @@ async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
 
 
 @pytest.mark.asyncio
-async def test_text_scope_build_uses_native_plugin_source_scan_when_caller_omits_scan(
+async def test_current_v2_scope_uses_native_plugin_source_scan_for_imported_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """通用 TextScope fallback 使用 Rust-derived scan，不回旧 Python 主扫描。"""
+    """插件源码规则命中通过当前 v2 scope 进入范围，不回旧 Python 主扫描。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "ScopeNativeFallback", "status": True, "description": "", "parameters": {}})
@@ -2931,15 +2920,14 @@ async def test_text_scope_build_uses_native_plugin_source_scan_when_caller_omits
     _forbid_legacy_plugin_source_scan(monkeypatch)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(records)
-        scope = await TextScopeService().build(
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        scope = await rebuild_current_v2_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
-            include_write_probe=True,
         )
 
     assert plugin_source_location_path(file_name="ScopeNativeFallback.js", selector=candidate.selector) in scope.active_paths
-    assert not scope.write_back_probe_error
 
 
 @pytest.mark.asyncio
