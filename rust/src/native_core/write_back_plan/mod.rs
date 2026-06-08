@@ -32,9 +32,10 @@ use self::layout::{
     read_plugins_origin_file, read_selected_origin_data_files, resolve_layout,
 };
 use self::models::{
-    COMMON_EVENTS_FILE_NAME, FontPlanSummary, MvVirtualNameboxRule, MvVirtualSpeakerPolicy,
-    PLUGINS_FILE_NAME, PlanSummary, PlannedFile, PluginSourceTextRule, SYSTEM_FILE_NAME,
-    SettingPayload, TROOPS_FILE_NAME, TextPlanRules, TranslationItem, WriteBackPlan, WritePlanMode,
+    COMMON_EVENTS_FILE_NAME, EngineKind, FontPlanSummary, MvVirtualNameboxRule,
+    MvVirtualSpeakerPolicy, PLUGINS_FILE_NAME, PlanSummary, PlannedFile, PluginSourceTextRule,
+    SYSTEM_FILE_NAME, SettingPayload, TROOPS_FILE_NAME, TextPlanRules, TranslationItem,
+    WriteBackPlan, WritePlanMode,
 };
 use self::nonstandard_data_writer::{
     is_nonstandard_data_item, nonstandard_data_file_name, write_nonstandard_data_item,
@@ -49,8 +50,9 @@ use self::quality_gate::{
     assert_saved_translation_quality_passed, quality_gate_items_for_write_plan,
 };
 use self::repository::{
-    open_readonly_connection, read_mv_virtual_namebox_rules, read_plugin_source_text_rules,
-    read_source_residual_rules, read_terminology_terms, read_translation_items_for_allowed_paths,
+    open_readonly_connection, read_mv_virtual_namebox_fact_templates,
+    read_mv_virtual_namebox_rules, read_plugin_source_text_rules, read_source_residual_rules,
+    read_terminology_terms, read_translation_items_for_allowed_paths,
     read_writable_text_index_location_paths,
 };
 use self::terminology::apply_terminology;
@@ -113,6 +115,13 @@ fn build_write_back_plan_inner(
     let plugin_source_text_rules = read_plugin_source_text_rules(&connection)?;
     let terminology = read_terminology_terms(&connection)?;
     let mv_virtual_namebox_rules = read_mv_virtual_namebox_rules(&connection)?;
+    let mv_virtual_namebox_fact_templates = if matches!(layout.engine_kind, EngineKind::Mv)
+        && terminology.contains_key("speaker_names")
+    {
+        read_mv_virtual_namebox_fact_templates(&connection)?
+    } else {
+        Vec::new()
+    };
     let available_data_file_names = origin_data_file_names(&layout)?;
     let data_file_names_to_load = data_file_names_for_load(
         plan_mode,
@@ -213,6 +222,7 @@ fn build_write_back_plan_inner(
         &terminology,
         &layout,
         &mv_virtual_namebox_rules,
+        &mv_virtual_namebox_fact_templates,
     )?;
     let font_summary = if confirm_font_overwrite {
         apply_font_replacement(

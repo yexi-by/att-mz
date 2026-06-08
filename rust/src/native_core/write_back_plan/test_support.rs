@@ -4,11 +4,13 @@ use super::plugin_source::{
 };
 use super::utils::sha256_text;
 use crate::native_core::javascript_ast::parse_javascript_string_spans;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const TEST_TEXT_FACT_SCOPE_KEY: &str = "test-support-current";
 
 #[test]
 fn build_plan_generates_changed_data_file_from_sqlite() {
@@ -547,6 +549,14 @@ fn build_plan_writes_mv_terminology_virtual_namebox() {
     );
     insert_mv_virtual_namebox_rules(&db_path);
     insert_field_term(&db_path, "speaker_names", "案内人", "向导");
+    insert_mv_quote_namebox_text_fact(
+        &db_path,
+        "CommonEvents.json/1/0",
+        "CommonEvents.json/1/1",
+        "案内人",
+        "案内人「こんにちは」",
+        "こんにちは」",
+    );
 
     let output = build_write_back_plan_impl(
         &game_dir.to_string_lossy(),
@@ -560,6 +570,90 @@ fn build_plan_writes_mv_terminology_virtual_namebox() {
 
     assert_eq!(value["summary"]["terminology_written_count"], 1);
     assert!(planned_file_content(&value, "data/CommonEvents.json").contains("向导「こんにちは」"));
+
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn build_plan_writes_mv_terminology_virtual_namebox_from_v2_render_parts_preserves_spacing() {
+    let fixture = create_fixture_dir("att_mz_write_plan_mv_terminology_render_parts");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_mv_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    write_mv_data_origin_and_active(
+        &game_dir,
+        "CommonEvents.json",
+        r#"[null,{"id":1,"list":[{"code":101,"parameters":[0,0,0,2]},{"code":401,"parameters":["\n<Dan:> Hello"]},{"code":0,"parameters":[]}]}]"#,
+    );
+    insert_mv_angle_namebox_rule(&db_path);
+    insert_field_term(&db_path, "speaker_names", "Dan", "丹");
+    insert_mv_virtual_namebox_text_fact(
+        &db_path,
+        "CommonEvents.json/1/0",
+        "CommonEvents.json/1/1",
+        "Dan",
+        "\n<Dan:> Hello",
+        "Hello",
+        true,
+    );
+
+    let output = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect("MV 虚拟名字框术语应使用 v2 render parts 写入");
+    let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
+
+    assert_eq!(value["summary"]["terminology_written_count"], 1);
+    assert!(
+        planned_file_content(&value, "data/CommonEvents.json").contains(r#"\n<丹:> Hello"#),
+        "MV 术语写回必须复用 v2 render parts 保留原始 spacing",
+    );
+
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn build_plan_rejects_mv_terminology_virtual_namebox_without_v2_render_parts() {
+    let fixture = create_fixture_dir("att_mz_write_plan_mv_terminology_missing_parts");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_mv_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    write_mv_data_origin_and_active(
+        &game_dir,
+        "CommonEvents.json",
+        r#"[null,{"id":1,"list":[{"code":101,"parameters":[0,0,0,2]},{"code":401,"parameters":["\n<Dan:> Hello"]},{"code":0,"parameters":[]}]}]"#,
+    );
+    insert_mv_angle_namebox_rule(&db_path);
+    insert_field_term(&db_path, "speaker_names", "Dan", "丹");
+    insert_mv_virtual_namebox_text_fact(
+        &db_path,
+        "CommonEvents.json/1/0",
+        "CommonEvents.json/1/1",
+        "Dan",
+        "\n<Dan:> Hello",
+        "Hello",
+        false,
+    );
+
+    let error = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect_err("MV 虚拟名字框 v2 fact 缺少 render parts 时必须失败");
+
+    assert!(
+        error.contains("render parts"),
+        "错误文案应说明缺少 v2 render parts: {error}",
+    );
 
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
@@ -1228,12 +1322,17 @@ fn build_plan_rejects_missing_quality_text_rules() {
 }
 
 #[test]
-fn build_plan_rejects_missing_allowed_translation_paths() {
+fn build_plan_rejects_missing_v2_scope_when_allowed_translation_paths_omitted() {
     let fixture = create_fixture_dir("att_mz_write_plan_missing_allowed_paths");
     let game_dir = fixture.join("game");
     let db_path = fixture.join("game.db");
     create_minimal_game_files(&game_dir);
     create_minimal_database(&db_path);
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    connection
+        .execute("DELETE FROM text_fact_scope_v2", [])
+        .expect("测试 text fact scope 应可清空");
+    drop(connection);
     let mut payload = minimal_setting_payload();
     payload
         .as_object_mut()
@@ -1247,11 +1346,11 @@ fn build_plan_rejects_missing_allowed_translation_paths() {
         "rebuild_active_runtime",
         false,
     )
-    .expect_err("缺少可写文本范围时必须直接失败");
+    .expect_err("缺少 allowed_translation_paths 且没有 v2 scope 时必须直接失败");
 
     assert!(
-        error.contains("写回计划缺少 allowed_translation_paths"),
-        "错误文案应说明缺少当前可写文本范围",
+        error.contains("当前数据库缺少 text fact v2 scope"),
+        "错误文案应说明缺少当前 v2 文本事实范围",
     );
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
@@ -2001,9 +2100,59 @@ fn create_minimal_database(db_path: &Path) {
                 speaker_policy TEXT NOT NULL,
                 render_template TEXT NOT NULL
             );
+            CREATE TABLE text_index_items (
+                location_path TEXT PRIMARY KEY,
+                item_type TEXT NOT NULL,
+                role TEXT,
+                original_lines TEXT NOT NULL,
+                source_line_paths TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                writable INTEGER NOT NULL,
+                source_snapshot_fingerprint TEXT NOT NULL,
+                rules_fingerprint TEXT NOT NULL,
+                locator_json TEXT NOT NULL
+            );
+            CREATE TABLE text_facts_v2 (
+                fact_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                location_path TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                item_type TEXT NOT NULL,
+                role TEXT NOT NULL,
+                selector TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                visible_text TEXT NOT NULL,
+                translatable_text TEXT NOT NULL,
+                raw_hash TEXT NOT NULL,
+                visible_hash TEXT NOT NULL,
+                translatable_hash TEXT NOT NULL,
+                scope_key TEXT NOT NULL
+            );
+            CREATE TABLE text_fact_render_parts_v2 (
+                fact_id TEXT NOT NULL,
+                part_order INTEGER NOT NULL,
+                part_kind TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                semantic_text TEXT NOT NULL,
+                template_key TEXT NOT NULL,
+                PRIMARY KEY (fact_id, part_order)
+            );
+            CREATE TABLE text_fact_scope_v2 (
+                scope_key TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                scope_hash TEXT NOT NULL,
+                source_snapshot_hash TEXT NOT NULL,
+                rule_hash TEXT NOT NULL,
+                text_rules_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             ",
         )
         .expect("测试数据库 schema 应可创建");
+    insert_test_text_fact_scope(&connection);
     connection
         .execute(
             "INSERT INTO translation_items \
@@ -2018,6 +2167,14 @@ fn create_minimal_database(db_path: &Path) {
             ],
         )
         .expect("测试译文应可写入");
+    insert_text_fact_contract_for_item(
+        &connection,
+        "System.json/gameTitle",
+        "short_text",
+        None,
+        "[\"原标题\"]",
+        "[]",
+    );
     connection
         .execute(
             "INSERT INTO translation_runs \
@@ -2045,25 +2202,261 @@ fn create_minimal_database(db_path: &Path) {
         .expect("测试运行记录应可写入");
 }
 
-fn create_minimal_text_index_items(db_path: &Path, rows: &[(&str, bool)]) {
-    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+fn ensure_test_text_fact_schema(connection: &Connection) {
     connection
         .execute_batch(
             "
-            CREATE TABLE text_index_items (
+            CREATE TABLE IF NOT EXISTS text_index_items (
                 location_path TEXT PRIMARY KEY,
-                writable INTEGER NOT NULL
+                item_type TEXT NOT NULL,
+                role TEXT,
+                original_lines TEXT NOT NULL,
+                source_line_paths TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                writable INTEGER NOT NULL,
+                source_snapshot_fingerprint TEXT NOT NULL,
+                rules_fingerprint TEXT NOT NULL,
+                locator_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS text_facts_v2 (
+                fact_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                location_path TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                item_type TEXT NOT NULL,
+                role TEXT NOT NULL,
+                selector TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                visible_text TEXT NOT NULL,
+                translatable_text TEXT NOT NULL,
+                raw_hash TEXT NOT NULL,
+                visible_hash TEXT NOT NULL,
+                translatable_hash TEXT NOT NULL,
+                scope_key TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS text_fact_render_parts_v2 (
+                fact_id TEXT NOT NULL,
+                part_order INTEGER NOT NULL,
+                part_kind TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                semantic_text TEXT NOT NULL,
+                template_key TEXT NOT NULL,
+                PRIMARY KEY (fact_id, part_order)
+            );
+            CREATE TABLE IF NOT EXISTS text_fact_scope_v2 (
+                scope_key TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                scope_hash TEXT NOT NULL,
+                source_snapshot_hash TEXT NOT NULL,
+                rule_hash TEXT NOT NULL,
+                text_rules_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
             ",
         )
-        .expect("测试 text index 表应可创建");
-    for (location_path, writable) in rows {
+        .expect("测试 text fact v2 schema 应可创建");
+    insert_test_text_fact_scope(connection);
+}
+
+fn insert_test_text_fact_scope(connection: &Connection) {
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO text_fact_scope_v2 \
+             (scope_key, schema_version, scope_hash, source_snapshot_hash, rule_hash, text_rules_hash, created_at) \
+             VALUES (?1, 2, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                TEST_TEXT_FACT_SCOPE_KEY,
+                "test-support-scope-hash",
+                "test-support-source-snapshot-hash",
+                "test-support-rule-hash",
+                "test-support-text-rules-hash",
+                "2026-01-01T00:00:00+00:00",
+            ],
+        )
+        .expect("测试 text fact v2 scope 应可写入");
+}
+
+fn insert_text_fact_contract_for_item(
+    connection: &Connection,
+    location_path: &str,
+    item_type: &str,
+    role: Option<&str>,
+    original_lines: &str,
+    source_line_paths: &str,
+) {
+    ensure_test_text_fact_schema(connection);
+    let writable = connection
+        .query_row(
+            "SELECT writable FROM text_index_items WHERE location_path = ?1",
+            params![location_path],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .expect("测试 text_index writable 应可读取")
+        .unwrap_or(1);
+    upsert_test_text_index_item(
+        connection,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        writable,
+    );
+    upsert_test_text_fact(connection, location_path, item_type, role, original_lines);
+}
+
+fn upsert_test_text_index_item(
+    connection: &Connection,
+    location_path: &str,
+    item_type: &str,
+    role: Option<&str>,
+    original_lines: &str,
+    source_line_paths: &str,
+    writable: i64,
+) {
+    let domain = test_text_fact_domain(location_path);
+    let source_file = test_source_file(location_path);
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO text_index_items \
+             (location_path, item_type, role, original_lines, source_line_paths, source_type, source_file, \
+              writable, source_snapshot_fingerprint, rules_fingerprint, locator_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '{}')",
+            params![
+                location_path,
+                item_type,
+                role,
+                original_lines,
+                source_line_paths,
+                domain,
+                source_file,
+                writable,
+                "test-support-source-snapshot-hash",
+                "test-support-rules-fingerprint",
+            ],
+        )
+        .expect("测试 text_index item 应可写入");
+}
+
+fn upsert_test_text_fact(
+    connection: &Connection,
+    location_path: &str,
+    item_type: &str,
+    role: Option<&str>,
+    original_lines: &str,
+) {
+    let domain = test_text_fact_domain(location_path);
+    let source_file = test_source_file(location_path);
+    let selector = test_selector(location_path);
+    let fact_id = test_fact_id(location_path);
+    let translatable_text = test_translatable_text(original_lines, item_type);
+    let raw_text = translatable_text.clone();
+    let visible_text = translatable_text.clone();
+    let raw_hash = sha256_text(&raw_text);
+    let visible_hash = sha256_text(&visible_text);
+    let translatable_hash = sha256_text(&translatable_text);
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO text_facts_v2 \
+             (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, \
+              raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
+             VALUES (?1, 2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                fact_id.as_str(),
+                domain,
+                location_path,
+                source_file.as_str(),
+                domain,
+                item_type,
+                role.unwrap_or(""),
+                selector.as_str(),
+                raw_text.as_str(),
+                visible_text.as_str(),
+                translatable_text.as_str(),
+                raw_hash.as_str(),
+                visible_hash.as_str(),
+                translatable_hash.as_str(),
+                TEST_TEXT_FACT_SCOPE_KEY,
+            ],
+        )
+        .expect("测试 text fact v2 应可写入");
+    if domain == "plugin_source" {
         connection
             .execute(
-                "INSERT INTO text_index_items (location_path, writable) VALUES (?1, ?2)",
-                params![location_path, if *writable { 1 } else { 0 }],
+                "INSERT OR REPLACE INTO text_fact_render_parts_v2 \
+                 (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
+                 VALUES (?1, 0, 'translated_body', ?2, ?2, 'body')",
+                params![fact_id.as_str(), translatable_text.as_str()],
             )
-            .expect("测试 text index 行应可写入");
+            .expect("测试 plugin source render part 应可写入");
+    }
+}
+
+fn test_text_fact_domain(location_path: &str) -> &'static str {
+    if location_path.starts_with("js/plugins/") {
+        "plugin_source"
+    } else {
+        "test_support"
+    }
+}
+
+fn test_source_file(location_path: &str) -> String {
+    if location_path.starts_with("js/plugins/") {
+        return location_path
+            .split('/')
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("/");
+    }
+    location_path
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn test_selector(location_path: &str) -> String {
+    if !location_path.starts_with("js/plugins/") {
+        return String::new();
+    }
+    location_path
+        .splitn(4, '/')
+        .nth(3)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn test_fact_id(location_path: &str) -> String {
+    format!("test-support:{}", sha256_text(location_path))
+}
+
+fn test_translatable_text(original_lines: &str, item_type: &str) -> String {
+    let Ok(lines) = serde_json::from_str::<Vec<String>>(original_lines) else {
+        return original_lines.to_string();
+    };
+    if item_type == "short_text" {
+        return lines.first().cloned().unwrap_or_default();
+    }
+    lines.join("\n")
+}
+
+fn create_minimal_text_index_items(db_path: &Path, rows: &[(&str, bool)]) {
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    ensure_test_text_fact_schema(&connection);
+    for (location_path, writable) in rows {
+        upsert_test_text_index_item(
+            &connection,
+            location_path,
+            "short_text",
+            None,
+            "[]",
+            "[]",
+            if *writable { 1 } else { 0 },
+        );
     }
 }
 
@@ -2090,6 +2483,14 @@ fn insert_translation_item(
             ],
         )
         .expect("测试译文应可写入");
+    insert_text_fact_contract_for_item(
+        &connection,
+        location_path,
+        item_type,
+        None,
+        original_lines,
+        source_line_paths,
+    );
 }
 
 fn insert_plugin_source_text_rule(
@@ -2225,6 +2626,142 @@ fn insert_mv_virtual_namebox_rules(db_path: &Path) {
     }
 }
 
+fn insert_mv_angle_namebox_rule(db_path: &Path) {
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    connection
+        .execute(
+            "INSERT INTO mv_virtual_namebox_rules \
+             (rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template) \
+             VALUES (0, 'angle-inline', ?1, 'speaker', 'body', 'translate', '<{speaker}:> {body}')",
+            params![r"^<(?P<speaker>[^:<>]+):>\s*(?P<body>.*)$"],
+        )
+        .expect("MV angle 虚拟名字框规则应可写入");
+}
+
+fn insert_mv_virtual_namebox_text_fact(
+    db_path: &Path,
+    location_path: &str,
+    source_line_path: &str,
+    role: &str,
+    raw_text: &str,
+    translatable_text: &str,
+    include_render_parts: bool,
+) {
+    let render_parts = [
+        ("literal", "\n<", "", "literal"),
+        ("speaker", role, role, "speaker"),
+        ("literal", ":> ", "", "literal"),
+        (
+            "translated_body",
+            translatable_text,
+            translatable_text,
+            "body",
+        ),
+    ];
+    insert_mv_virtual_namebox_text_fact_with_parts(
+        db_path,
+        location_path,
+        source_line_path,
+        role,
+        raw_text,
+        translatable_text,
+        include_render_parts.then_some(render_parts.as_slice()),
+    );
+}
+
+fn insert_mv_quote_namebox_text_fact(
+    db_path: &Path,
+    location_path: &str,
+    source_line_path: &str,
+    role: &str,
+    raw_text: &str,
+    translatable_text: &str,
+) {
+    let render_parts = [
+        ("speaker", role, role, "speaker"),
+        ("literal", "「", "", "literal"),
+        (
+            "translated_body",
+            translatable_text,
+            translatable_text,
+            "body",
+        ),
+    ];
+    insert_mv_virtual_namebox_text_fact_with_parts(
+        db_path,
+        location_path,
+        source_line_path,
+        role,
+        raw_text,
+        translatable_text,
+        Some(render_parts.as_slice()),
+    );
+}
+
+fn insert_mv_virtual_namebox_text_fact_with_parts(
+    db_path: &Path,
+    location_path: &str,
+    source_line_path: &str,
+    role: &str,
+    raw_text: &str,
+    translatable_text: &str,
+    render_parts: Option<&[(&str, &str, &str, &str)]>,
+) {
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    ensure_test_text_fact_schema(&connection);
+    let source_line_paths =
+        serde_json::to_string(&vec![source_line_path]).expect("source_line_paths 应可序列化");
+    upsert_test_text_index_item(
+        &connection,
+        location_path,
+        "long_text",
+        Some(role),
+        &serde_json::to_string(&vec![translatable_text]).expect("original_lines 应可序列化"),
+        &source_line_paths,
+        1,
+    );
+    let fact_id = test_fact_id(location_path);
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO text_facts_v2 \
+             (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, \
+              raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
+             VALUES (?1, 2, 'mv_virtual_namebox', ?2, 'CommonEvents.json', 'event_command', 'long_text', ?3, ?4, ?5, ?5, ?6, ?7, ?7, ?8, ?9)",
+            params![
+                fact_id.as_str(),
+                location_path,
+                role,
+                location_path,
+                raw_text,
+                translatable_text,
+                sha256_text(raw_text),
+                sha256_text(translatable_text),
+                TEST_TEXT_FACT_SCOPE_KEY,
+            ],
+        )
+        .expect("测试 MV virtual namebox v2 fact 应可写入");
+    let Some(render_parts) = render_parts else {
+        return;
+    };
+    for (part_order, (part_kind, raw, semantic, template_key)) in render_parts.iter().enumerate() {
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO text_fact_render_parts_v2 \
+                 (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    fact_id.as_str(),
+                    part_order as i64,
+                    part_kind,
+                    raw,
+                    semantic,
+                    template_key,
+                ],
+            )
+            .expect("测试 MV virtual namebox render part 应可写入");
+    }
+}
+
 fn insert_mv_virtual_namebox_rules_and_items(db_path: &Path) {
     insert_mv_virtual_namebox_rules(db_path);
     let connection = Connection::open(db_path).expect("测试数据库应可打开");
@@ -2266,5 +2803,13 @@ fn insert_mv_virtual_namebox_rules_and_items(db_path: &Path) {
                 params![location_path, original_lines, source_line_paths, translation_lines],
             )
             .expect("MV 虚拟名字框译文应可写入");
+        insert_text_fact_contract_for_item(
+            &connection,
+            location_path,
+            "long_text",
+            None,
+            original_lines,
+            source_line_paths,
+        );
     }
 }

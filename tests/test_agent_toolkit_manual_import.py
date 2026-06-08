@@ -755,7 +755,7 @@ async def test_manual_pending_import_uses_text_index_without_full_scope_load(
     )
 
     assert import_report.status == "ok"
-    assert import_report.summary["scope_mode"] == "text_index"
+    assert import_report.summary["scope_mode"] == "text_fact_v2"
     async with await registry.open_game("テストゲーム") as session:
         translated_items = await session.read_translated_items()
     translated_by_path = {item.location_path: item for item in translated_items}
@@ -824,6 +824,7 @@ async def test_export_pending_translations_uses_v2_fact_translatable_text(
             """
 --sql
             SELECT facts.location_path, facts.translatable_text
+                , facts.fact_id
             FROM text_facts_v2 AS facts
             INNER JOIN text_index_items AS indexed
                 ON indexed.location_path = facts.location_path
@@ -840,6 +841,7 @@ async def test_export_pending_translations_uses_v2_fact_translatable_text(
         assert row is not None
         target_path = cast(str, row["location_path"])
         expected_text = cast(str, row["translatable_text"])
+        expected_fact_id = cast(str, row["fact_id"])
         polluted_lines = json.dumps(
             ["RAW_SHELL_SHOULD_NOT_BE_EXPORTED location_path translated_text 位置:"],
             ensure_ascii=False,
@@ -860,6 +862,7 @@ async def test_export_pending_translations_uses_v2_fact_translatable_text(
     payload = load_json_object(pending_path)
     entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
     assert export_report.status == "ok"
+    assert entry["fact_id"] == expected_fact_id
     assert entry["original_lines"] == [expected_text]
     assert entry["text_for_model_lines"] == [expected_text]
     exported_text = json.dumps(payload, ensure_ascii=False)
@@ -900,11 +903,11 @@ async def test_export_pending_translations_cold_rebuilds_missing_text_index_then
 
 
 @pytest.mark.asyncio
-async def test_manual_pending_import_cold_rebuilds_missing_text_index(
+async def test_manual_pending_import_with_fact_id_rejects_missing_writable_text_index(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """普通手动导入缺索引时自动 cold rebuild，然后只按输入路径保存。"""
+    """带 fact_id 的手动导入缺可写索引记录时必须显式失败且不重建 text_index。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -936,17 +939,81 @@ async def test_manual_pending_import_cold_rebuilds_missing_text_index(
         input_path=pending_path,
     )
 
-    assert import_report.status == "ok"
-    assert import_report.summary["scope_mode"] == "text_index"
-    assert import_report.summary["text_index_status"] == "cold_rebuilt"
-    rebuild_summary = ensure_json_object(import_report.summary["text_index_rebuild_summary"], "rebuild_summary")
-    assert rebuild_summary["index_status"] == "rebuilt"
+    assert import_report.status == "error"
+    assert import_report.summary["scope_mode"] == "text_fact_v2"
+    assert import_report.summary["imported_count"] == 0
+    assert "manual_translation_location" in {error.code for error in import_report.errors}
+    assert "text_index_status" not in import_report.summary
+    assert "text_index_rebuild_summary" not in import_report.summary
     async with await registry.open_game("テストゲーム") as session:
         metadata = await session.read_text_index_metadata()
         translated_items = await session.read_translated_items()
-    assert metadata is not None
-    translated_by_path = {item.location_path: item for item in translated_items}
-    assert translated_by_path[target_path].translation_lines == ["手动译文"]
+    assert metadata is None
+    assert target_path not in {item.location_path for item in translated_items}
+
+
+@pytest.mark.asyncio
+async def test_manual_pending_import_rejects_unwritable_fact_id(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """带 fact_id 的手动导入也必须只接受当前可写 v2 fact。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.fact_id, facts.location_path
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_fact_id = cast(str, row["fact_id"])
+        target_path = cast(str, row["location_path"])
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET writable = 0 WHERE location_path = ?",
+            (target_path,),
+        )
+        await session.connection.commit()
+    import_path = tmp_path / "manual-import-unwritable-fact.json"
+    _ = import_path.write_text(
+        json.dumps(
+            {
+                target_path: {
+                    "fact_id": target_fact_id,
+                    "translation_lines": ["不应保存"],
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=import_path,
+    )
+
+    assert report.status == "error"
+    assert report.summary["imported_count"] == 0
+    assert "manual_translation_location" in {error.code for error in report.errors}
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    assert target_path not in {item.location_path for item in translated_items}
+
+
 @pytest.mark.asyncio
 async def test_translation_status_uses_database_fast_path_by_default(
     minimal_game_dir: Path,
@@ -1608,6 +1675,98 @@ async def test_manual_translation_import_reports_all_invalid_items_without_parti
         ensure_json_object(coerce_json_value(item), "invalid_item")["actual_real_line_break_count"] == 1
         for item in invalid_items
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_uses_v2_fact_id_when_workspace_key_is_stale(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动导入有 fact_id 时按当前 v2 fact 身份保存，不信任旧 workspace 顶层路径。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    assert export_report.status == "ok"
+    payload = load_json_object(pending_path)
+    target_path = ""
+    target_entry: JsonObject = {}
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        original_lines = [
+            line
+            for line in ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
+            if isinstance(line, str)
+        ]
+        if entry["item_type"] == "short_text" and not any("\n" in line or r"\n" in line for line in original_lines):
+            target_path = location_path
+            target_entry = entry
+            break
+    assert target_path
+    assert isinstance(target_entry.get("fact_id"), str)
+    target_entry["translation_lines"] = ["手动译文"]
+    stale_workspace_key = "OldWorkspace/CommonEvents.json/ghost"
+    _ = pending_path.write_text(
+        json.dumps({stale_workspace_key: target_entry}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    translated_by_path = {item.location_path: item for item in translated_items}
+    assert report.status == "ok"
+    assert report.summary["scope_mode"] == "text_fact_v2"
+    assert stale_workspace_key not in translated_by_path
+    assert translated_by_path[target_path].translation_lines == ["手动译文"]
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_asks_to_reexport_when_old_workspace_lacks_v2_fact_id(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """旧手动填写文件没有 fact_id 且路径不属于当前 v2 fact 时，必须要求重新导出。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "old-pending-translations.json"
+    _ = pending_path.write_text(
+        json.dumps(
+            {
+                "OldWorkspace/CommonEvents.json/ghost": {
+                    "item_type": "short_text",
+                    "role": None,
+                    "original_lines": ["こんにちは"],
+                    "translation_lines": ["你好"],
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert report.status == "error"
+    assert report.summary["imported_count"] == 0
+    invalid_items = ensure_json_array(report.details["invalid_items"], "invalid_items")
+    message = str(ensure_json_object(coerce_json_value(invalid_items[0]), "invalid_items[0]")["message"])
+    assert "重新导出 pending translations" in message
 
 
 @pytest.mark.asyncio

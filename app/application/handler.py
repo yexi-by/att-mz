@@ -160,6 +160,9 @@ from app.text_index import (
 from app.text_facts import (
     count_current_text_facts_v2,
     count_pending_text_facts_v2,
+    count_pending_text_fact_quality_errors_v2,
+    count_stale_translations_outside_writable_text_facts_v2,
+    count_translated_text_facts_v2,
     read_pending_text_fact_translation_data_map,
 )
 from app.text_scope import TextScopeResult, collect_translation_data_paths
@@ -1436,17 +1439,20 @@ class TranslationHandler:
         if workflow_gate_errors:
             raise WorkflowGateError(format_workflow_gate_error(workflow_gate_errors))
 
-        stale_translation_count = await session.count_translations_outside_writable_text_index()
+        stale_translation_count = await count_stale_translations_outside_writable_text_facts_v2(session)
         quality_messages: list[str] = []
         if stale_translation_count:
             quality_messages.append(f"发现 {stale_translation_count} 条已保存译文不在当前可写文本范围内")
         if require_complete_translation:
-            pending_count = await session.count_pending_text_index_items()
+            pending_count = await count_pending_text_facts_v2(session)
             if pending_count:
                 quality_messages.append(f"还有 {pending_count} 条文本没有成功保存译文")
             latest_run = await session.read_latest_translation_run()
             if latest_run is not None:
-                quality_error_count = await session.count_pending_text_index_quality_errors(latest_run.run_id)
+                quality_error_count = await count_pending_text_fact_quality_errors_v2(
+                    session,
+                    latest_run.run_id,
+                )
                 if quality_error_count:
                     quality_messages.append(f"最新翻译运行有 {quality_error_count} 条模型翻了但项目检查没通过的译文")
                 if pending_count:
@@ -1458,7 +1464,7 @@ class TranslationHandler:
         if mode == "write_terminology" and await session.read_terminology_registry() is None:
             raise WriteBackGateError("当前游戏数据库中没有已导入术语表，请先执行 import-terminology")
 
-        translated_count = await session.count_text_index_translated_items()
+        translated_count = await count_translated_text_facts_v2(session)
         return PreparedWriteOperation(
             game_data=None,
             setting=setting,

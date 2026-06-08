@@ -2,6 +2,7 @@
 # pyright: reportPrivateUsage=false
 
 import json
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn, cast
@@ -60,7 +61,13 @@ from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeService
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.utils.config_loader_utils import load_setting
-from tests._native_write_plan_helper import reset_writable_copies, write_data_text, write_game_files, write_plugin_source_text
+from tests._native_write_plan_helper import (
+    _write_temp_db,
+    reset_writable_copies,
+    write_data_text,
+    write_game_files,
+    write_plugin_source_text,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -92,6 +99,69 @@ def test_plugin_source_scanner_public_surface_is_current() -> None:
         assert not hasattr(plugin_source_text_scanner, name)
     assert scanner_internal_names.isdisjoint(plugin_source_text_package.__all__)
     assert scanner_internal_names <= set(plugin_source_text_scanner.__all__)
+
+
+@pytest.mark.asyncio
+async def test_native_write_plan_helper_writes_migrated_event_command_fact_with_render_parts(
+    minimal_game_dir: Path,
+) -> None:
+    """native 写回测试 helper 不能用 test_helper domain 绕过迁移域 render parts 校验。"""
+    game_data = await load_game_data(minimal_game_dir)
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="long_text",
+        role="アリス",
+        original_lines=["こんにちは"],
+        source_line_paths=["CommonEvents.json/1/1"],
+        translation_lines=["你好"],
+    )
+
+    db_path = _write_temp_db(
+        game_data=game_data,
+        content_root=game_data.layout.content_root,
+        items=[item],
+        speaker_name_translations=None,
+        terminology_registry=None,
+        mv_virtual_namebox_rule_records=None,
+        plugin_source_rule_records=None,
+    )
+    try:
+        connection = sqlite3.connect(db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            fact_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT fact_id, domain, raw_text FROM text_facts_v2 WHERE location_path = ?",
+                    (item.location_path,),
+                ).fetchone(),
+            )
+            assert fact_row is not None
+            assert fact_row["domain"] == "event_command"
+            part_rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+--sql
+                SELECT part_kind, raw_text, semantic_text, template_key
+                FROM text_fact_render_parts_v2
+                WHERE fact_id = ?
+                ORDER BY part_order
+                ;
+                """,
+                    (fact_row["fact_id"],),
+                ).fetchall(),
+            )
+            assert [
+                (row["part_kind"], row["raw_text"], row["semantic_text"], row["template_key"])
+                for row in part_rows
+            ] == [("translated_body", "こんにちは", "こんにちは", "body")]
+            rendered_raw = "".join(cast(str, row["raw_text"]) for row in part_rows)
+            assert rendered_raw == cast(str, fact_row["raw_text"])
+        finally:
+            connection.close()
+    finally:
+        db_path.unlink(missing_ok=True)
 
 
 def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:

@@ -13,14 +13,37 @@ pub(super) const DATA_ORIGIN_DIRECTORY_NAME: &str = "data_origin";
 pub(super) const PLUGINS_ORIGIN_FILE_NAME: &str = "plugins_origin.js";
 pub(super) const PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME: &str = "plugins_source_origin";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct TranslationItem {
     pub(super) location_path: String,
     pub(super) item_type: String,
     pub(super) role: Option<String>,
+    pub(super) selector: String,
+    pub(super) raw_text: String,
+    pub(super) visible_text: String,
+    pub(super) raw_hash: String,
+    pub(super) render_parts: Vec<TextFactRenderPart>,
     pub(super) original_lines: Vec<String>,
     pub(super) source_line_paths: Vec<String>,
     pub(super) translation_lines: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct TextFactRenderPart {
+    pub(super) fact_id: String,
+    pub(super) part_order: i64,
+    pub(super) part_kind: String,
+    pub(super) raw_text: String,
+    pub(super) template_key: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MvVirtualNameboxFactTemplate {
+    pub(super) location_path: String,
+    pub(super) role: String,
+    pub(super) body_text: String,
+    pub(super) source_line_paths: Vec<String>,
+    pub(super) render_parts: Vec<TextFactRenderPart>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,7 +52,6 @@ pub(super) struct PluginSourceReplacement {
     pub(super) item: TranslationItem,
     pub(super) span: JavaScriptStringSpan,
     pub(super) raw_text: String,
-    pub(super) visible_text: String,
     pub(super) written_text: String,
     pub(super) source_file_hash: String,
 }

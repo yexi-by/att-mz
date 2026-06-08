@@ -521,6 +521,54 @@ async def read_writable_text_fact_translation_items_by_paths(
     return items
 
 
+async def read_writable_text_fact_translation_items_by_fact_ids(
+    session: TargetGameSession,
+    fact_ids: Sequence[str],
+) -> dict[str, TranslationItem]:
+    """按 fact_id 读取当前可写 v2 facts，供手动导入拒绝不可写事实。"""
+    unique_fact_ids = sorted(set(fact_ids))
+    if not unique_fact_ids:
+        return {}
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    placeholders = ", ".join("?" for _fact_id in unique_fact_ids)
+    try:
+        async with session.connection.execute(
+            f"""
+--sql
+                SELECT
+{TEXT_FACT_SELECT_COLUMNS}
+                FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+                INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                    ON indexed.location_path = facts.location_path
+                    AND indexed.writable = 1
+                WHERE facts.scope_key = ?
+                    AND facts.fact_id IN ({placeholders})
+                ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            ;
+            """,
+            (scope.scope_key, *unique_fact_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    except aiosqlite.Error as error:
+        raise _text_fact_contract_error("当前数据库不可按 fact_id 读取可写 text fact v2") from error
+    facts = [_text_fact_v2_from_row(row, session=session) for row in rows]
+    index_records = await _read_index_records_for_facts(session=session, facts=facts)
+    index_by_path = {
+        record.location_path: record
+        for record in index_records
+        if record.writable
+    }
+    return {
+        fact.fact_id: text_fact_record_to_translation_item(
+            fact,
+            index_record=index_by_path.get(fact.location_path),
+        )
+        for fact in facts
+        if fact.location_path in index_by_path
+    }
+
+
 async def read_text_fact_quality_items_for_translations(
     session: TargetGameSession,
     translated_items: Sequence[TranslationItem],
@@ -535,12 +583,16 @@ async def read_text_fact_quality_items_for_translations(
     location_paths = [item.location_path for item in translated_items]
     facts = await _read_current_text_facts_by_paths(session=session, location_paths=location_paths)
     facts_by_path = {fact.location_path: fact for fact in facts}
+    missing_paths = sorted(set(location_paths) - set(facts_by_path))
+    if missing_paths:
+        samples = "、".join(missing_paths[:5])
+        suffix = f" 等 {len(missing_paths)} 条" if len(missing_paths) > 5 else ""
+        raise _text_fact_contract_error(
+            f"已保存译文缺少当前 v2 文本事实，不能重建质量检查源文: {samples}{suffix}"
+        )
     quality_items: list[TranslationItem] = []
     for item in translated_items:
-        fact = facts_by_path.get(item.location_path)
-        if fact is None:
-            quality_items.append(item)
-            continue
+        fact = facts_by_path[item.location_path]
         cloned_item = item.model_copy(deep=True)
         item_type = _item_type_from_text_fact(fact)
         cloned_item.item_type = item_type
@@ -894,6 +946,7 @@ __all__ = [
     "read_text_fact_quality_error_paths_v2",
     "read_text_fact_quality_items_for_translations",
     "read_unwritable_text_fact_records_v2",
+    "read_writable_text_fact_translation_items_by_fact_ids",
     "read_writable_text_fact_translation_items_by_paths",
     "text_fact_record_to_quality_item",
     "text_fact_record_to_translation_item",

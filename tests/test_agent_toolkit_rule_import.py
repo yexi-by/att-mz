@@ -10,6 +10,7 @@ from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
+from app.text_facts import read_current_text_fact_records_v2, text_fact_record_to_translation_item
 
 
 def _json_int_for_assert(value: object, label: str) -> int:
@@ -3156,17 +3157,19 @@ async def test_structured_placeholder_rule_with_standard_control_passes_validati
         game_title="テストゲーム",
         rules_text=rules_text,
     )
+    _ = await _rebuild_text_index_for_test(service)
     async with await registry.open_game("テストゲーム") as session:
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        target_fact = next(
+            fact
+            for fact in facts
+            if "決定ボタンを連打しろ" in fact.translatable_text
+        )
+        target_item = text_fact_record_to_translation_item(target_fact)
+        target_item.translation_lines = [r"D_TEXT \c[17]狂按决定键！ 48"]
         await session.write_translation_items(
             [
-                TranslationItem(
-                    location_path="CommonEvents.json/1/2",
-                    item_type="long_text",
-                    role="アリス",
-                    original_lines=[r"D_TEXT \c[17]決定ボタンを連打しろ！ 48"],
-                    source_line_paths=["CommonEvents.json/1/2"],
-                    translation_lines=[r"D_TEXT \c[17]狂按决定键！ 48"],
-                )
+                target_item
             ]
         )
     quality_report = await service.quality_report(game_title="テストゲーム")

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -27,11 +28,63 @@ from app.rule_review import (
 )
 from app.text_scope import TextScopeService
 from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_facts import read_text_fact_quality_items_for_translations
 from app.text_index import text_index_item_to_translation_item
 from app.utils.config_loader_utils import load_setting
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+@pytest.mark.asyncio
+async def test_quality_item_rehydrate_fails_when_saved_translation_lacks_current_v2_fact(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量检查重建已保存译文源文时缺 v2 fact 必须显式失败，不能回退旧 original_lines。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.location_path
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_path = cast(str, row["location_path"])
+        saved_item = TranslationItem(
+            location_path=target_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["旧 original_lines 不应回退"],
+            source_line_paths=[target_path],
+            translation_lines=["译文"],
+        )
+        await session.write_translation_items([saved_item])
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts_v2 WHERE location_path = ?",
+            (target_path,),
+        )
+        await session.connection.commit()
+
+        with pytest.raises(RuntimeError, match="rebuild-text-index"):
+            _ = await read_text_fact_quality_items_for_translations(
+                session,
+                [saved_item],
+                source_text="translatable",
+            )
 
 
 @pytest.mark.asyncio

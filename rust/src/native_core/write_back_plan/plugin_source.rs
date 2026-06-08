@@ -24,6 +24,11 @@ pub(super) fn write_plugin_source_files(
     let mut items_by_file: HashMap<String, Vec<(String, TranslationItem)>> = HashMap::new();
     for item in items {
         let (file_name, selector) = parse_plugin_source_location_path(&item.location_path)?;
+        let selector = if item.selector.is_empty() {
+            selector
+        } else {
+            item.selector.clone()
+        };
         items_by_file
             .entry(file_name)
             .or_default()
@@ -118,9 +123,33 @@ pub(super) fn write_single_plugin_source_file(
             .get(&selector)
             .ok_or_else(|| format!("插件源码 selector 已失效: {}", item.location_path))?
             .clone();
-        if item.original_lines != vec![visible_text.clone()] {
+        if item.raw_text.is_empty() {
             return Err(format!(
-                "插件源码原文已变化，请重新导出 AST 地图: {}",
+                "插件源码缺少 v2 raw_text，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                item.location_path
+            ));
+        }
+        if item.visible_text.is_empty() {
+            return Err(format!(
+                "插件源码缺少 v2 visible_text，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                item.location_path
+            ));
+        }
+        if item.raw_hash.is_empty() {
+            return Err(format!(
+                "插件源码缺少 v2 raw_hash，不能生成 runtime map；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                item.location_path
+            ));
+        }
+        if item.raw_text != raw_text {
+            return Err(format!(
+                "插件源码原始字符串已变化，请重新导出 AST 地图: {}",
+                item.location_path
+            ));
+        }
+        if item.visible_text != visible_text {
+            return Err(format!(
+                "插件源码可见文本已变化，请重新导出 AST 地图: {}",
                 item.location_path
             ));
         }
@@ -142,7 +171,6 @@ pub(super) fn write_single_plugin_source_file(
             item,
             span,
             raw_text,
-            visible_text,
             written_text,
             source_file_hash: source_file_hash.clone(),
         });
@@ -166,7 +194,7 @@ pub(super) fn write_single_plugin_source_file(
             source_file_name: file_name.to_string(),
             source_selector: result.replacement.selector.clone(),
             source_file_hash: result.replacement.source_file_hash.clone(),
-            source_text_hash: sha256_text(&result.replacement.visible_text),
+            source_text_hash: result.replacement.item.raw_hash.clone(),
             translation_lines_hash: sha256_translation_lines(
                 &result.replacement.item.translation_lines,
             )?,
@@ -573,9 +601,28 @@ mod tests {
             location_path: format!("js/plugins/{file_name}/{selector}"),
             item_type: "short_text".to_string(),
             role: None,
+            raw_text: original.to_string(),
+            visible_text: original.to_string(),
+            raw_hash: super::sha256_text(original),
             original_lines: vec![original.to_string()],
             source_line_paths: Vec::new(),
             translation_lines: vec![translated.to_string()],
+            ..TranslationItem::default()
+        }
+    }
+
+    fn translation_item_with_v2_identity(
+        file_name: &str,
+        selector: &str,
+        raw_text: &str,
+        visible_text: &str,
+        translated: &str,
+    ) -> TranslationItem {
+        TranslationItem {
+            raw_text: raw_text.to_string(),
+            visible_text: visible_text.to_string(),
+            raw_hash: super::sha256_text(raw_text),
+            ..translation_item(file_name, selector, visible_text, translated)
         }
     }
 
@@ -620,7 +667,13 @@ mod tests {
     fn write_single_plugin_source_file_rejects_original_text_mismatch() {
         let source = "const a = \"現在の本文\";";
         let selector = selector_for_visible_text(source, "現在の本文");
-        let item = translation_item("Sample.js", &selector, "古い本文", "新しい本文");
+        let item = translation_item_with_v2_identity(
+            "Sample.js",
+            &selector,
+            "古い本文",
+            "古い本文",
+            "新しい本文",
+        );
 
         let error = match write_single_plugin_source_file(
             "Sample.js",
@@ -633,6 +686,67 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.contains("插件源码原文已变化"));
+        assert!(error.contains("插件源码原始字符串已变化"));
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_rejects_missing_v2_raw_or_visible_identity() {
+        let source = "const a = \"現在の本文\";";
+        let selector = selector_for_visible_text(source, "現在の本文");
+        let mut item = translation_item_with_v2_identity(
+            "Sample.js",
+            &selector,
+            "現在の本文",
+            "現在の本文",
+            "新しい本文",
+        );
+        item.raw_text.clear();
+        item.visible_text.clear();
+
+        let error = match write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(selector, item)],
+            None,
+            "2026-06-06T00:00:00Z",
+        ) {
+            Ok(_) => panic!("插件源码缺少 v2 raw/visible 身份时必须失败"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("缺少 v2 raw_text") || error.contains("缺少 v2 visible_text"),
+            "错误文案应说明缺少 v2 raw/visible 身份: {error}",
+        );
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_rejects_missing_v2_raw_hash() {
+        let source = "const a = \"現在の本文\";";
+        let selector = selector_for_visible_text(source, "現在の本文");
+        let mut item = translation_item_with_v2_identity(
+            "Sample.js",
+            &selector,
+            "現在の本文",
+            "現在の本文",
+            "新しい本文",
+        );
+        item.raw_hash.clear();
+
+        let error = match write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(selector, item)],
+            None,
+            "2026-06-06T00:00:00Z",
+        ) {
+            Ok(_) => panic!("插件源码缺少 v2 raw_hash 时必须失败"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("缺少 v2 raw_hash"),
+            "错误文案应说明缺少 v2 raw_hash: {error}",
+        );
     }
 }

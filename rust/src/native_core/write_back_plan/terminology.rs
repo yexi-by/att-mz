@@ -1,9 +1,8 @@
 use super::command_writer::{find_mv_virtual_speaker_command_ref, write_command_first_parameter};
 use super::models::{
-    COMMON_EVENTS_FILE_NAME, EngineKind, Layout, MvVirtualNameboxRule, MvVirtualSpeakerPolicy,
-    SYSTEM_FILE_NAME, TROOPS_FILE_NAME,
+    COMMON_EVENTS_FILE_NAME, EngineKind, Layout, MvVirtualNameboxFactTemplate,
+    MvVirtualNameboxRule, MvVirtualSpeakerPolicy, SYSTEM_FILE_NAME, TROOPS_FILE_NAME,
 };
-use super::mv_virtual_namebox::render_mv_virtual_speaker_line;
 use super::utils::is_map_file;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -13,14 +12,18 @@ pub(super) fn apply_terminology(
     terminology: &HashMap<String, HashMap<String, String>>,
     layout: &Layout,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
 ) -> Result<usize, String> {
     let mut written_count = 0usize;
     if let Some(speaker_names) = terminology.get("speaker_names") {
         written_count += match layout.engine_kind {
             EngineKind::Mz => write_mz_speaker_names(data_files, speaker_names)?,
-            EngineKind::Mv => {
-                write_mv_virtual_speaker_names(data_files, speaker_names, mv_virtual_namebox_rules)?
-            }
+            EngineKind::Mv => write_mv_virtual_speaker_names(
+                data_files,
+                speaker_names,
+                mv_virtual_namebox_rules,
+                mv_virtual_namebox_fact_templates,
+            )?,
         };
     }
     if let Some(map_names) = terminology.get("map_display_names") {
@@ -281,12 +284,17 @@ pub(super) fn write_mv_virtual_speaker_names(
     data_files: &mut BTreeMap<String, Value>,
     translations: &HashMap<String, String>,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
 ) -> Result<usize, String> {
     if mv_virtual_namebox_rules.is_empty() {
         return Err("MV 术语写回缺少 MV 虚拟名字框规则，不能写入 speaker_names".to_string());
     }
-    let targets =
-        collect_mv_virtual_speaker_name_writes(data_files, translations, mv_virtual_namebox_rules)?;
+    let targets = collect_mv_virtual_speaker_name_writes(
+        data_files,
+        translations,
+        mv_virtual_namebox_rules,
+        mv_virtual_namebox_fact_templates,
+    )?;
     let written_count = targets.len();
     for (target_path, translated_text) in targets {
         write_command_first_parameter(data_files, &target_path, 401, &translated_text)?;
@@ -298,6 +306,7 @@ pub(super) fn collect_mv_virtual_speaker_name_writes(
     data_files: &BTreeMap<String, Value>,
     translations: &HashMap<String, String>,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
 ) -> Result<Vec<(String, String)>, String> {
     let mut targets = Vec::new();
     for (file_name, value) in data_files {
@@ -308,6 +317,7 @@ pub(super) fn collect_mv_virtual_speaker_name_writes(
                 value,
                 translations,
                 mv_virtual_namebox_rules,
+                mv_virtual_namebox_fact_templates,
                 &mut targets,
             )?;
         }
@@ -318,6 +328,7 @@ pub(super) fn collect_mv_virtual_speaker_name_writes(
             value,
             translations,
             mv_virtual_namebox_rules,
+            mv_virtual_namebox_fact_templates,
             &mut targets,
         )?;
     }
@@ -327,6 +338,7 @@ pub(super) fn collect_mv_virtual_speaker_name_writes(
             value,
             translations,
             mv_virtual_namebox_rules,
+            mv_virtual_namebox_fact_templates,
             &mut targets,
         )?;
     }
@@ -339,6 +351,7 @@ pub(super) fn collect_mv_map_virtual_speaker_name_writes(
     value: &Value,
     translations: &HashMap<String, String>,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
     targets: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let object = value
@@ -377,6 +390,7 @@ pub(super) fn collect_mv_map_virtual_speaker_name_writes(
                 &page_context,
                 translations,
                 mv_virtual_namebox_rules,
+                mv_virtual_namebox_fact_templates,
                 targets,
             )?;
         }
@@ -389,6 +403,7 @@ pub(super) fn collect_mv_common_event_virtual_speaker_name_writes(
     value: &Value,
     translations: &HashMap<String, String>,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
     targets: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let events = value
@@ -412,6 +427,7 @@ pub(super) fn collect_mv_common_event_virtual_speaker_name_writes(
             &event_context,
             translations,
             mv_virtual_namebox_rules,
+            mv_virtual_namebox_fact_templates,
             targets,
         )?;
     }
@@ -423,6 +439,7 @@ pub(super) fn collect_mv_troop_virtual_speaker_name_writes(
     value: &Value,
     translations: &HashMap<String, String>,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
     targets: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let troops = value
@@ -457,6 +474,7 @@ pub(super) fn collect_mv_troop_virtual_speaker_name_writes(
                 &page_context,
                 translations,
                 mv_virtual_namebox_rules,
+                mv_virtual_namebox_fact_templates,
                 targets,
             )?;
         }
@@ -470,6 +488,7 @@ pub(super) fn collect_mv_virtual_speaker_name_writes_from_commands(
     command_path_prefix: &str,
     translations: &HashMap<String, String>,
     mv_virtual_namebox_rules: &[MvVirtualNameboxRule],
+    mv_virtual_namebox_fact_templates: &[MvVirtualNameboxFactTemplate],
     targets: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     for (command_index, command_value) in commands.iter().enumerate() {
@@ -503,14 +522,95 @@ pub(super) fn collect_mv_virtual_speaker_name_writes_from_commands(
         let Some(translated_speaker) = translations.get(&virtual_speaker.speaker) else {
             continue;
         };
-        let translated_body = if virtual_speaker.body_text.is_empty() {
-            None
-        } else {
-            Some(virtual_speaker.body_text.as_str())
-        };
+        let fact_template = mv_virtual_namebox_fact_templates
+            .iter()
+            .find(|template| {
+                template
+                    .source_line_paths
+                    .iter()
+                    .any(|path| path == &speaker_line_path)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "MV 虚拟名字框术语写回缺少当前 v2 文本事实，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
+                    speaker_line_path
+                )
+            })?;
+        if fact_template.role != virtual_speaker.speaker {
+            return Err(format!(
+                "MV 虚拟名字框术语写回 v2 文本事实 speaker 不一致，不能写入 speaker_names；请重新运行 rebuild-text-index: 文本路径={}; 触发路径={}; fact_speaker={}; 当前_speaker={}",
+                fact_template.location_path,
+                speaker_line_path,
+                fact_template.role,
+                virtual_speaker.speaker,
+            ));
+        }
         let translated_text =
-            render_mv_virtual_speaker_line(&virtual_speaker, translated_speaker, translated_body)?;
+            render_mv_virtual_speaker_line_from_fact_template(fact_template, translated_speaker)?;
         targets.push((speaker_line_path, translated_text));
     }
     Ok(())
+}
+
+fn render_mv_virtual_speaker_line_from_fact_template(
+    fact_template: &MvVirtualNameboxFactTemplate,
+    translated_speaker: &str,
+) -> Result<String, String> {
+    if fact_template.render_parts.is_empty() {
+        return Err(format!(
+            "MV 虚拟名字框 v2 文本事实缺少 render parts，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
+            fact_template.location_path
+        ));
+    }
+    let mut rendered = String::new();
+    let mut has_speaker_part = false;
+    for part in &fact_template.render_parts {
+        if part.part_kind == "speaker" {
+            has_speaker_part = true;
+            rendered.push_str(&render_text_fact_speaker_part(
+                &fact_template.role,
+                translated_speaker,
+                &part.raw_text,
+            ));
+            continue;
+        }
+        if part.part_kind == "translated_body" || part.template_key == "body" {
+            rendered.push_str(&render_text_fact_body_part(
+                &part.raw_text,
+                &fact_template.body_text,
+            ));
+            continue;
+        }
+        rendered.push_str(&part.raw_text);
+    }
+    if !has_speaker_part {
+        return Err(format!(
+            "MV 虚拟名字框 v2 文本事实 render parts 缺少 speaker，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
+            fact_template.location_path
+        ));
+    }
+    Ok(rendered)
+}
+
+fn render_text_fact_speaker_part(
+    source_role: &str,
+    translated_speaker: &str,
+    raw_speaker_part: &str,
+) -> String {
+    let Some(suffix) = raw_speaker_part.strip_prefix(source_role) else {
+        return translated_speaker.to_string();
+    };
+    format!("{translated_speaker}{suffix}")
+}
+
+fn render_text_fact_body_part(raw_body_part: &str, body_text: &str) -> String {
+    let prefix_len = raw_body_part.len() - raw_body_part.trim_start().len();
+    let suffix_len = raw_body_part.len() - raw_body_part.trim_end().len();
+    let prefix = &raw_body_part[..prefix_len];
+    let suffix = if suffix_len == 0 {
+        ""
+    } else {
+        &raw_body_part[raw_body_part.len() - suffix_len..]
+    };
+    format!("{prefix}{body_text}{suffix}")
 }

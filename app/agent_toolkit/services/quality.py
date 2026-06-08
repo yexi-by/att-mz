@@ -765,27 +765,29 @@ def _plugin_source_write_map_source_matches(
         raise RuntimeError(f"翻译源插件源码扫描结果缺失: {record.source_file_name}")
     if source_scan.file_hash != current_source_file_hash:
         raise RuntimeError(f"翻译源插件源码扫描结果已失效: {record.source_file_name}")
-    candidate_text = _plugin_source_write_map_source_text(
+    candidate_text = _plugin_source_write_map_source_hash_text(
         source_scan=source_scan,
         selector=record.source_selector,
+        use_raw_text=record.mapping_kind == "translated",
     )
     if candidate_text is None:
         return False, source_file_hash_matches
     return plugin_source_runtime_hash_text(candidate_text) == record.source_text_hash, source_file_hash_matches
 
 
-def _plugin_source_write_map_source_text(
+def _plugin_source_write_map_source_hash_text(
     *,
     source_scan: PluginSourceFileTextScan,
     selector: str,
+    use_raw_text: bool,
 ) -> str | None:
-    """从诊断 source scan 中读取 selector 对应的翻译源可见文本。"""
+    """从诊断 source scan 中读取 selector 对应的翻译源 hash 输入文本。"""
     candidate = source_scan.candidate_index.by_selector.get(selector)
     if candidate is not None:
-        return candidate.text
+        return candidate.raw_text if use_raw_text else candidate.text
     for literal in source_scan.literals:
         if literal.selector == selector:
-            return literal.text
+            return literal.raw_text if use_raw_text else literal.text
     return None
 
 

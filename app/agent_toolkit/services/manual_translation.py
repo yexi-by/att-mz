@@ -35,8 +35,10 @@ from app.text_index import (
 )
 from app.text_facts import (
     count_pending_text_facts_v2,
-    read_pending_text_fact_translation_items,
+    read_pending_text_fact_records_v2,
+    read_writable_text_fact_translation_items_by_fact_ids,
     read_writable_text_fact_translation_items_by_paths,
+    text_fact_record_to_translation_item,
 )
 
 
@@ -166,19 +168,35 @@ class ManualTranslationAgentMixin:
             set_status("读取还没成功保存译文的索引条目")
             pending_total_count = await count_pending_text_facts_v2(session)
             if limit is not None and limit <= 0:
-                pending_items: list[TranslationItem] = []
+                pending_fact_entries: list[tuple[str, TranslationItem]] = []
             else:
-                pending_items = await read_pending_text_fact_translation_items(session, limit=limit)
+                pending_facts = await read_pending_text_fact_records_v2(session, limit=limit)
+                index_records = await session.read_text_index_items_by_paths(
+                    sorted({fact.location_path for fact in pending_facts})
+                )
+                index_by_path = {record.location_path: record for record in index_records}
+                pending_fact_entries = [
+                    (
+                        fact.fact_id,
+                        text_fact_record_to_translation_item(
+                            fact,
+                            index_record=index_by_path.get(fact.location_path),
+                        ),
+                    )
+                    for fact in pending_facts
+                ]
             advance_progress(1)
 
         set_status("写出手动填写译文表")
         payload: JsonObject = {}
-        for item in pending_items:
-            payload[item.location_path] = _build_manual_translation_template_entry(
+        for fact_id, item in pending_fact_entries:
+            entry = _build_manual_translation_template_entry(
                 item=item,
                 text_rules=text_rules,
                 translation_lines=[],
             )
+            entry["fact_id"] = fact_id
+            payload[item.location_path] = entry
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(output_path, "w", encoding="utf-8") as file:
@@ -186,7 +204,7 @@ class ManualTranslationAgentMixin:
         advance_progress(1)
 
         warnings: list[AgentIssue] = []
-        if not pending_items:
+        if not pending_fact_entries:
             warnings.append(issue("pending_empty", "当前没有需要手动填写译文的条目"))
         set_progress(5, 5)
         set_status("手动填写译文表已完成")
@@ -194,7 +212,7 @@ class ManualTranslationAgentMixin:
             errors=[],
             warnings=[*rebuild_warnings, *warnings],
             summary=export_summary(
-                pending_exported_count=len(pending_items),
+                pending_exported_count=len(pending_fact_entries),
                 pending_total_count=pending_total_count,
             ),
             details={"text_index_invalidations": text_index_invalidation_details},
@@ -267,48 +285,66 @@ class ManualTranslationAgentMixin:
                 structured_placeholder_rules=structured_rules,
             )
             payload_paths = {str(location_path) for location_path in payload}
+            payload_fact_ids: dict[str, str] = {}
+            for location_path, raw_entry in payload.items():
+                if not isinstance(raw_entry, dict):
+                    continue
+                raw_fact_id = raw_entry.get("fact_id")
+                if isinstance(raw_fact_id, str) and raw_fact_id.strip():
+                    payload_fact_ids[str(location_path)] = raw_fact_id.strip()
+            if payload_fact_ids:
+                scope_mode = "text_fact_v2"
+            requires_text_index = any(path not in payload_fact_ids for path in payload_paths)
             latest_run = await session.read_latest_translation_run()
-            index_invalidations = await detect_text_index_invalidations(
-                session=session,
-                text_rules=text_rules,
-            )
-            if index_invalidations:
-                invalidation_details: JsonArray = [
-                    {
-                        "reason_key": item.reason_key,
-                        "detail": item.detail,
-                        "created_at": item.created_at,
-                    }
-                    for item in index_invalidations
-                ]
-                text_index_status = (
-                    "cold_rebuilt"
-                    if any(item.reason_key == "text_index_missing" for item in index_invalidations)
-                    else "stale_rebuilt"
+            if requires_text_index:
+                index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
                 )
-                rebuild_report = await self.rebuild_text_index(game_title=game_title)
-                text_index_rebuild_summary = dict(rebuild_report.summary)
-                if rebuild_report.status == "error":
-                    text_index_status = "rebuild_failed"
-                    return AgentReport.from_parts(
-                        errors=rebuild_report.errors,
-                        warnings=rebuild_report.warnings,
-                        summary=import_summary(imported_count=0, error_count=len(rebuild_report.errors)),
-                        details={
-                            "text_index_invalidations": invalidation_details,
-                            "text_index_rebuild": rebuild_report.details,
-                        },
+                if index_invalidations:
+                    invalidation_details: JsonArray = [
+                        {
+                            "reason_key": item.reason_key,
+                            "detail": item.detail,
+                            "created_at": item.created_at,
+                        }
+                        for item in index_invalidations
+                    ]
+                    text_index_status = (
+                        "cold_rebuilt"
+                        if any(item.reason_key == "text_index_missing" for item in index_invalidations)
+                        else "stale_rebuilt"
                     )
-                rebuild_warnings.extend(rebuild_report.warnings)
-            else:
-                text_index_status = "used"
-            active_items = {
-                item.location_path: item
-                for item in await read_writable_text_fact_translation_items_by_paths(
+                    rebuild_report = await self.rebuild_text_index(game_title=game_title)
+                    text_index_rebuild_summary = dict(rebuild_report.summary)
+                    if rebuild_report.status == "error":
+                        text_index_status = "rebuild_failed"
+                        return AgentReport.from_parts(
+                            errors=rebuild_report.errors,
+                            warnings=rebuild_report.warnings,
+                            summary=import_summary(imported_count=0, error_count=len(rebuild_report.errors)),
+                            details={
+                                "text_index_invalidations": invalidation_details,
+                                "text_index_rebuild": rebuild_report.details,
+                            },
+                        )
+                    rebuild_warnings.extend(rebuild_report.warnings)
+                else:
+                    text_index_status = "used"
+            active_item_records: list[TranslationItem] = []
+            if requires_text_index:
+                active_item_records = await read_writable_text_fact_translation_items_by_paths(
                     session,
-                    sorted(payload_paths),
+                    sorted(path for path in payload_paths if path not in payload_fact_ids),
                 )
-            }
+            active_items = {item.location_path: item for item in active_item_records}
+            active_items_by_fact_id: dict[str, TranslationItem] = {}
+            if payload_fact_ids:
+                requested_fact_ids = set(payload_fact_ids.values())
+                active_items_by_fact_id = await read_writable_text_fact_translation_items_by_fact_ids(
+                    session,
+                    sorted(requested_fact_ids),
+                )
             source_residual_rules = await session.read_source_residual_rules()
 
             for location_path, raw_entry in payload.items():
@@ -318,18 +354,33 @@ class ManualTranslationAgentMixin:
                     invalid_items.append({"location_path": location_path, "message": message})
                     continue
                 entry = ensure_json_object(raw_entry, f"{location_path}")
-                item = active_items.get(location_path)
+                raw_fact_id = entry.get("fact_id")
+                fact_id = raw_fact_id.strip() if isinstance(raw_fact_id, str) else ""
+                item = active_items_by_fact_id.get(fact_id) if fact_id else active_items.get(location_path)
                 if item is None:
-                    message = f"{location_path} 不在当前可提取文本范围内"
+                    if fact_id:
+                        message = (
+                            f"{location_path} 的 fact_id 不属于当前可写 v2 文本事实；"
+                            "请重新导出 pending translations 后再填写导入"
+                        )
+                    else:
+                        message = (
+                            f"{location_path} 不在当前可写 v2 文本事实范围内；"
+                            "请重新导出 pending translations 后再填写导入"
+                        )
                     errors.append(issue("manual_translation_location", message))
                     invalid_items.append({"location_path": location_path, "message": message})
                     continue
+                resolved_location_path = item.location_path
                 translation_lines: list[str] | None = None
                 try:
                     raw_lines_value = entry.get("translation_lines")
                     if raw_lines_value is None:
-                        raise TypeError(f"{location_path}.translation_lines 必须是字符串数组")
-                    translation_lines = ensure_json_string_list(raw_lines_value, f"{location_path}.translation_lines")
+                        raise TypeError(f"{resolved_location_path}.translation_lines 必须是字符串数组")
+                    translation_lines = ensure_json_string_list(
+                        raw_lines_value,
+                        f"{resolved_location_path}.translation_lines",
+                    )
                     cloned_item = _prepare_manual_translation_item(
                         item=item,
                         translation_lines=translation_lines,
@@ -340,7 +391,7 @@ class ManualTranslationAgentMixin:
                 except Exception as error:
                     error_message = f"{type(error).__name__}: {error}"
                     invalid_detail: JsonObject = {
-                        "location_path": location_path,
+                        "location_path": resolved_location_path,
                         "message": error_message,
                     }
                     if translation_lines is not None:
@@ -358,7 +409,7 @@ class ManualTranslationAgentMixin:
                     errors.append(
                         issue(
                             "manual_translation_invalid",
-                            f"{location_path} 手动填写译文不可用: {error_message}",
+                            f"{resolved_location_path} 手动填写译文不可用: {error_message}",
                         )
                     )
 

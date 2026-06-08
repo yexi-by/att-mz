@@ -2,10 +2,13 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
+from dataclasses import replace
+
 from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
+    JsonArray,
     JsonObject,
     Path,
     TextRules,
@@ -13,10 +16,12 @@ from .common import (
     _collect_feedback_text_occurrences,
     _count_feedback_gap_types,
     _read_feedback_texts,
+    cast,
     issue,
     load_setting,
 )
 from app.text_index import detect_text_index_invalidations, text_index_items_to_scope
+from app.text_facts import read_current_text_fact_records_v2
 
 
 class FeedbackAgentMixin:
@@ -93,6 +98,51 @@ class FeedbackAgentMixin:
                         },
                     )
             index_records = await session.read_text_index_items()
+            current_facts = await read_current_text_fact_records_v2(session, limit=None)
+            facts_by_path = {fact.location_path: fact for fact in current_facts}
+            missing_fact_paths = sorted(
+                record.location_path
+                for record in index_records
+                if record.location_path not in facts_by_path
+            )
+            if missing_fact_paths:
+                missing_message = (
+                    f"当前文本索引有 {len(missing_fact_paths)} 条记录缺少 text fact v2，"
+                    + "不能继续使用旧索引正文；请运行 rebuild-text-index 重新生成当前文本索引"
+                )
+                missing_fact_path_details = cast(JsonArray, missing_fact_paths[:20])
+                return AgentReport.from_parts(
+                    errors=[
+                        issue(
+                            "text_fact_v2_missing",
+                            missing_message,
+                        )
+                    ],
+                    warnings=[],
+                    summary={
+                        "input": str(input_path),
+                        "feedback_text_count": len(feedback_texts),
+                        "occurrence_count": len(occurrences),
+                        "text_index_status": text_index_status,
+                        "text_index_rebuild_summary": text_index_rebuild_summary,
+                    },
+                    details={
+                        "occurrences": occurrences,
+                        "missing_text_fact_location_paths": missing_fact_path_details,
+                    },
+                )
+            index_records = [
+                replace(
+                    record,
+                    original_lines=_feedback_fact_lines(
+                        facts_by_path[record.location_path].translatable_text,
+                        item_type=facts_by_path[record.location_path].item_type,
+                    ),
+                )
+                if record.location_path in facts_by_path
+                else record
+                for record in index_records
+            ]
             translated_paths = await session.read_translation_location_paths()
             scope = text_index_items_to_scope(index_records, translated_paths=translated_paths)
         classified_occurrences = _classify_feedback_occurrences(
@@ -127,3 +177,10 @@ class FeedbackAgentMixin:
                 "write_back_probe_error": scope.write_back_probe_error,
             },
         )
+
+
+def _feedback_fact_lines(text: str, *, item_type: str) -> list[str]:
+    """把 v2 fact 的可译正文转换成反馈归类使用的行模型。"""
+    if item_type in {"long_text", "array"}:
+        return text.split("\n")
+    return [text]

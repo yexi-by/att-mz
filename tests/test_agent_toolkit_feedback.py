@@ -131,6 +131,118 @@ async def test_verify_feedback_text_uses_warm_text_index_without_full_scope_buil
 
 
 @pytest.mark.asyncio
+async def test_verify_feedback_text_classifies_from_v2_fact_translatable_text(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """反馈归类必须读取 v2 fact identity，不能被旧 text_index original_lines 污染。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.location_path
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+                AND facts.translatable_text = ?
+            LIMIT 1
+            ;
+            """,
+            ("こんにちは",),
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_path = cast(str, row["location_path"])
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET original_lines = ? WHERE location_path = ?",
+            (
+                json.dumps(["POLLUTED_OLD_INDEX_SOURCE"], ensure_ascii=False),
+                target_path,
+            ),
+        )
+        await session.connection.commit()
+
+    feedback_path = tmp_path / "feedback-texts.json"
+    _ = feedback_path.write_text(json.dumps(["こんにちは"], ensure_ascii=False), encoding="utf-8")
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
+
+    occurrences = ensure_json_array(report.details["occurrences"], "occurrences")
+    matching_occurrences = [
+        ensure_json_object(coerce_json_value(occurrence), "occurrence")
+        for occurrence in occurrences
+        if ensure_json_object(coerce_json_value(occurrence), "occurrence").get("text") == "こんにちは"
+    ]
+    assert report.status == "error"
+    assert report.summary["text_index_status"] == "used"
+    translation_gap_count = report.summary["translation_gap_count"]
+    assert isinstance(translation_gap_count, int)
+    assert translation_gap_count >= 1
+    assert any(
+        target_path
+        in [
+            path
+            for path in ensure_json_array(
+                occurrence["matching_location_paths"],
+                "matching_location_paths",
+            )
+            if isinstance(path, str)
+        ]
+        for occurrence in matching_occurrences
+    )
+    assert "POLLUTED_OLD_INDEX_SOURCE" not in json.dumps(report.details, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_verify_feedback_text_fails_when_current_index_record_lacks_v2_fact(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """反馈归类遇到当前索引条目缺 v2 fact 时必须显式失败，不能回退旧 original_lines。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await _rebuild_text_index_for_test(service)
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.location_path
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_path = cast(str, row["location_path"])
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts_v2 WHERE location_path = ?",
+            (target_path,),
+        )
+        await session.connection.commit()
+    feedback_path = tmp_path / "feedback-texts.json"
+    _ = feedback_path.write_text(json.dumps(["こんにちは"], ensure_ascii=False), encoding="utf-8")
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
+
+    assert report.status == "error"
+    assert "text_fact_v2_missing" in {error.code for error in report.errors}
+    assert "rebuild-text-index" in report.errors[0].message
+
+
+@pytest.mark.asyncio
 async def test_verify_feedback_text_uses_runtime_literal_scan_for_plugin_source(
     minimal_game_dir: Path,
     tmp_path: Path,

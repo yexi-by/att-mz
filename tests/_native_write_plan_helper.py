@@ -3,26 +3,45 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sqlite3
 import tempfile
 from pathlib import Path
+from string import Formatter
 from typing import cast
 
 from app.application.file_writer import write_planned_text_files
 from app.native_quality import build_native_text_rules_payload
 from app.native_write_plan import NativePlannedFile, NativeWriteBackPlan, build_native_write_back_plan
+from app.plugin_source_text.scanner import scan_plugin_source_runtime_files_text_strict
+from app.rmmz.commands import iter_all_commands
+from app.rmmz.mv_namebox import (
+    MvVirtualSpeaker,
+    parse_mv_virtual_speaker_line,
+    runtime_mv_virtual_namebox_rules,
+)
 from app.persistence.sql import (
     CREATE_FIELD_TRANSLATION_TERMS_TABLE,
     CREATE_LLM_FAILURES_TABLE,
     CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
+    CREATE_TEXT_FACT_RENDER_PARTS_V2_TABLE,
+    CREATE_TEXT_FACT_SCOPE_V2_TABLE,
+    CREATE_TEXT_FACTS_V2_TABLE,
+    CREATE_TEXT_INDEX_ITEMS_TABLE,
     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
     CREATE_TRANSLATION_RUNS_TABLE,
     CREATE_TRANSLATION_TABLE,
+    INSERT_TEXT_FACT_RENDER_PART_V2,
+    INSERT_TEXT_FACT_SCOPE_V2,
+    INSERT_TEXT_FACT_V2,
+    INSERT_TEXT_INDEX_ITEM,
+    TEXT_FACT_SCHEMA_VERSION,
 )
 from app.rmmz.schema import (
+    Code,
     PLUGINS_FILE_NAME,
     GameData,
     MvVirtualNameboxRuleRecord,
@@ -155,6 +174,7 @@ def _apply_native_write_plan(
     """创建测试数据库并调用 Rust 写回计划。"""
     _require_source_snapshot(game_data)
     db_path = _write_temp_db(
+        game_data=game_data,
         content_root=game_data.layout.content_root,
         items=items,
         speaker_name_translations=speaker_name_translations,
@@ -205,6 +225,7 @@ def _build_setting_payload(text_rules: TextRules | None, items: list[Translation
 
 def _write_temp_db(
     *,
+    game_data: GameData,
     content_root: Path,
     items: list[TranslationItem],
     speaker_name_translations: dict[str, str] | None,
@@ -233,6 +254,10 @@ def _write_temp_db(
                     CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
                     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
                     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
+                    CREATE_TEXT_INDEX_ITEMS_TABLE,
+                    CREATE_TEXT_FACTS_V2_TABLE,
+                    CREATE_TEXT_FACT_RENDER_PARTS_V2_TABLE,
+                    CREATE_TEXT_FACT_SCOPE_V2_TABLE,
                 ]
             )
         )
@@ -254,6 +279,14 @@ def _write_temp_db(
                 for item in items
             ],
         )
+        _insert_text_fact_v2_contract(
+            connection,
+            items,
+            game_data,
+            speaker_name_translations,
+            terminology_registry,
+            mv_virtual_namebox_rule_records,
+        )
         _insert_speaker_terms(connection, speaker_name_translations)
         _insert_terminology_registry(connection, terminology_registry)
         _insert_mv_virtual_namebox_rules(connection, mv_virtual_namebox_rule_records)
@@ -262,6 +295,458 @@ def _write_temp_db(
     finally:
         connection.close()
     return db_path
+
+
+def _insert_text_fact_v2_contract(
+    connection: sqlite3.Connection,
+    items: list[TranslationItem],
+    game_data: GameData,
+    speaker_name_translations: dict[str, str] | None,
+    terminology_registry: TerminologyRegistry | None,
+    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
+) -> None:
+    """让测试临时库满足 Rust 写回的 v2 fact scope 契约。"""
+    scope_key = "test-helper-current"
+    _ = connection.execute(
+        INSERT_TEXT_FACT_SCOPE_V2,
+        (
+            scope_key,
+            TEXT_FACT_SCHEMA_VERSION,
+            "test-helper-scope-hash",
+            "test-helper-source-snapshot-hash",
+            "test-helper-rule-hash",
+            "test-helper-text-rules-hash",
+            "2026-01-01T00:00:00+00:00",
+        ),
+    )
+    index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]] = []
+    fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]] = []
+    render_rows: list[tuple[str, int, str, str, str, str]] = []
+    plugin_source_literals = _plugin_source_literals_by_location_path(game_data)
+    source_line_paths_by_location = {
+        item.location_path: list(item.source_line_paths)
+        for item in items
+    }
+    mv_virtual_namebox_candidates = _mv_virtual_namebox_fact_candidates(
+        game_data=game_data,
+        speaker_name_translations=speaker_name_translations,
+        terminology_registry=terminology_registry,
+        mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+    )
+    mv_virtual_namebox_location_paths = {
+        candidate_location_path
+        for (
+            _source_file,
+            candidate_location_path,
+            _source_line_path,
+            _raw_text,
+            _virtual_speaker,
+        ) in mv_virtual_namebox_candidates
+    }
+    for item_index, item in enumerate(items):
+        if item.location_path in mv_virtual_namebox_location_paths:
+            continue
+        fact_id = f"test-helper-fact-{item_index:04d}"
+        domain = _text_fact_domain_for_helper(item.location_path)
+        source_file = _source_file_for_helper(item.location_path)
+        source_type = domain
+        translatable_text = _text_fact_translatable_text(item)
+        raw_text = translatable_text
+        visible_text = translatable_text
+        raw_hash = _sha256_text(raw_text)
+        visible_hash = _sha256_text(visible_text)
+        if domain == "plugin_source":
+            literal_identity = plugin_source_literals.get(item.location_path)
+            if literal_identity is not None:
+                raw_text, visible_text = literal_identity
+                raw_hash = _sha256_text(raw_text)
+                visible_hash = _sha256_text(visible_text)
+        if _helper_domain_requires_render_parts(domain):
+            render_rows.append((fact_id, 0, "translated_body", raw_text, translatable_text, "body"))
+        translatable_hash = _sha256_text(translatable_text)
+        index_rows.append(
+            (
+                item.location_path,
+                item.item_type,
+                item.role,
+                json.dumps(item.original_lines, ensure_ascii=False),
+                json.dumps(item.source_line_paths, ensure_ascii=False),
+                source_type,
+                source_file,
+                1,
+                "test-helper-source-snapshot-hash",
+                "test-helper-rules-fingerprint",
+                "{}",
+            )
+        )
+        fact_rows.append(
+            (
+                fact_id,
+                TEXT_FACT_SCHEMA_VERSION,
+                domain,
+                item.location_path,
+                source_file,
+                source_type,
+                item.item_type,
+                item.role or "",
+                _selector_for_helper(item.location_path),
+                raw_text,
+                visible_text,
+                translatable_text,
+                raw_hash,
+                visible_hash,
+                translatable_hash,
+                scope_key,
+            )
+        )
+    _append_mv_virtual_namebox_fact_rows(
+        scope_key=scope_key,
+        first_fact_index=len(items),
+        candidates=mv_virtual_namebox_candidates,
+        source_line_paths_by_location=source_line_paths_by_location,
+        index_rows=index_rows,
+        fact_rows=fact_rows,
+        render_rows=render_rows,
+    )
+    if index_rows:
+        _ = connection.executemany(INSERT_TEXT_INDEX_ITEM, index_rows)
+    if fact_rows:
+        _ = connection.executemany(INSERT_TEXT_FACT_V2, fact_rows)
+    if render_rows:
+        _ = connection.executemany(INSERT_TEXT_FACT_RENDER_PART_V2, render_rows)
+
+
+def _text_fact_domain_for_helper(location_path: str) -> str:
+    """推断测试 helper 需要进入真实迁移写回域的最小集合。"""
+    if location_path.startswith("js/plugins/"):
+        return "plugin_source"
+    if location_path.startswith("plugins.js/"):
+        return "plugin_config"
+    if location_path.startswith("nonstandard-data/"):
+        return "nonstandard_data"
+    if _is_note_tag_location_path(location_path):
+        return "note_tag"
+    if _is_event_command_location_path(location_path):
+        return "event_command"
+    if _is_json_data_location_path(location_path):
+        return "standard_data"
+    return "test_helper"
+
+
+def _helper_domain_requires_render_parts(domain: str) -> bool:
+    """测试 helper 中已迁移到 v2 render parts 的写回域。"""
+    return domain in {
+        "standard_data",
+        "plugin_config",
+        "event_command",
+        "note_tag",
+        "nonstandard_data",
+        "plugin_source",
+    }
+
+
+def _is_note_tag_location_path(location_path: str) -> bool:
+    """按 Rust note writer 的路径形状识别 Note 标签写回域。"""
+    parts = location_path.split("/")
+    return len(parts) >= 3 and parts[-2] == "note"
+
+
+def _is_event_command_location_path(location_path: str) -> bool:
+    """按 Rust event command writer 的文件路由识别事件指令写回域。"""
+    file_name = location_path.split("/", 1)[0]
+    return (
+        file_name == "CommonEvents.json"
+        or file_name == "Troops.json"
+        or _is_map_file_name_for_helper(file_name)
+    )
+
+
+def _is_map_file_name_for_helper(file_name: str) -> bool:
+    """识别 RPG Maker 地图 data 文件名。"""
+    if not file_name.startswith("Map") or not file_name.endswith(".json"):
+        return False
+    number_text = file_name.removeprefix("Map").removesuffix(".json")
+    return bool(number_text) and number_text.isdigit()
+
+
+def _is_json_data_location_path(location_path: str) -> bool:
+    """识别标准 data JSON 文本路径。"""
+    file_name = location_path.split("/", 1)[0]
+    return file_name.endswith(".json")
+
+
+def _plugin_source_literals_by_location_path(game_data: GameData) -> dict[str, tuple[str, str]]:
+    """从测试插件源码 AST 字符串节点构造 v2 fact 的 raw/visible 身份。"""
+    if not game_data.plugin_source_files:
+        return {}
+    scan = scan_plugin_source_runtime_files_text_strict(
+        files=game_data.plugin_source_files,
+        active_file_names=frozenset(game_data.plugin_source_files),
+    )
+    literals: dict[str, tuple[str, str]] = {}
+    for file_name, file_scan in scan.file_scans.items():
+        for literal in file_scan.literals:
+            location_path = f"js/plugins/{file_name}/{literal.selector}"
+            literals[location_path] = (literal.raw_text, literal.text)
+    return literals
+
+
+def _append_mv_virtual_namebox_fact_rows(
+    *,
+    scope_key: str,
+    first_fact_index: int,
+    candidates: list[tuple[str, str, str, str, MvVirtualSpeaker]],
+    source_line_paths_by_location: dict[str, list[str]],
+    index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
+    fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
+    render_rows: list[tuple[str, int, str, str, str, str]],
+) -> None:
+    """为 MV 虚拟名字框术语写回补当前 v2 fact/render parts 测试契约。"""
+    next_fact_index = first_fact_index
+    for source_file, location_path, source_line_path, raw_text, virtual_speaker in candidates:
+        source_line_paths = source_line_paths_by_location.get(location_path) or [source_line_path]
+        fact_id = f"test-helper-mv-namebox-{next_fact_index:04d}"
+        next_fact_index += 1
+        _append_single_mv_virtual_namebox_fact_row(
+            fact_id=fact_id,
+            scope_key=scope_key,
+            source_file=source_file,
+            location_path=location_path,
+            source_line_paths=source_line_paths,
+            raw_text=raw_text,
+            virtual_speaker=virtual_speaker,
+            index_rows=index_rows,
+            fact_rows=fact_rows,
+            render_rows=render_rows,
+        )
+
+
+def _mv_virtual_namebox_fact_candidates(
+    *,
+    game_data: GameData,
+    speaker_name_translations: dict[str, str] | None,
+    terminology_registry: TerminologyRegistry | None,
+    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
+) -> list[tuple[str, str, str, str, MvVirtualSpeaker]]:
+    """找出应由 MV virtual namebox 专用 render parts 表示的测试 fact。"""
+    speaker_terms = _speaker_terms_for_mv_virtual_namebox_facts(
+        speaker_name_translations=speaker_name_translations,
+        terminology_registry=terminology_registry,
+    )
+    if game_data.layout.engine_kind != "mv" or not speaker_terms or not mv_virtual_namebox_rule_records:
+        return []
+    rules = runtime_mv_virtual_namebox_rules(mv_virtual_namebox_rule_records)
+    pending_name_path: str | None = None
+    pending_list_path: tuple[str | int, ...] | None = None
+    candidates: list[tuple[str, str, str, str, MvVirtualSpeaker]] = []
+    for path, _display_name, command in iter_all_commands(game_data):
+        location_path = "/".join(map(str, path))
+        if command.code == Code.NAME:
+            pending_name_path = location_path
+            pending_list_path = tuple(path[:-1])
+            continue
+        if command.code != Code.TEXT:
+            pending_name_path = None
+            pending_list_path = None
+            continue
+        if pending_name_path is None or pending_list_path != tuple(path[:-1]):
+            continue
+        fact_location_path = pending_name_path
+        pending_name_path = None
+        pending_list_path = None
+        if not command.parameters or not isinstance(command.parameters[0], str):
+            continue
+        raw_text = command.parameters[0]
+        try:
+            virtual_speaker = parse_mv_virtual_speaker_line(
+                text=raw_text,
+                game_data=game_data,
+                rules=rules,
+                location_path=location_path,
+            )
+        except ValueError:
+            continue
+        if virtual_speaker is None or virtual_speaker.speaker not in speaker_terms:
+            continue
+        candidates.append((str(path[0]), fact_location_path, location_path, raw_text, virtual_speaker))
+    return candidates
+
+
+def _speaker_terms_for_mv_virtual_namebox_facts(
+    *,
+    speaker_name_translations: dict[str, str] | None,
+    terminology_registry: TerminologyRegistry | None,
+) -> dict[str, str]:
+    """收集本次术语写回会尝试更新的 speaker_names。"""
+    speaker_terms: dict[str, str] = {}
+    if speaker_name_translations:
+        speaker_terms.update(speaker_name_translations)
+    if terminology_registry is not None:
+        speaker_terms.update(terminology_registry.speaker_names)
+    return speaker_terms
+
+
+def _append_single_mv_virtual_namebox_fact_row(
+    *,
+    fact_id: str,
+    scope_key: str,
+    source_file: str,
+    location_path: str,
+    source_line_paths: list[str],
+    raw_text: str,
+    virtual_speaker: MvVirtualSpeaker,
+    index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
+    fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
+    render_rows: list[tuple[str, int, str, str, str, str]],
+) -> None:
+    """追加单条 MV virtual namebox v2 fact 测试行。"""
+    render_parts = _mv_virtual_namebox_render_parts(raw_text, virtual_speaker)
+    translatable_text = virtual_speaker.body_text
+    raw_hash = _sha256_text(raw_text)
+    translatable_hash = _sha256_text(translatable_text)
+    index_rows.append(
+        (
+            location_path,
+            "long_text",
+            virtual_speaker.speaker,
+            json.dumps([translatable_text], ensure_ascii=False),
+            json.dumps(source_line_paths, ensure_ascii=False),
+            "event_command",
+            source_file,
+            1,
+            "test-helper-source-snapshot-hash",
+            "test-helper-rules-fingerprint",
+            "{}",
+        )
+    )
+    fact_rows.append(
+        (
+            fact_id,
+            TEXT_FACT_SCHEMA_VERSION,
+            "mv_virtual_namebox",
+            location_path,
+            source_file,
+            "event_command",
+            "long_text",
+            virtual_speaker.speaker,
+            location_path,
+            raw_text,
+            raw_text,
+            translatable_text,
+            raw_hash,
+            raw_hash,
+            translatable_hash,
+            scope_key,
+        )
+    )
+    render_rows.extend(
+        (
+            fact_id,
+            part_order,
+            part_kind,
+            part_raw_text,
+            semantic_text,
+            template_key,
+        )
+        for part_order, (part_kind, part_raw_text, semantic_text, template_key) in enumerate(render_parts)
+    )
+
+
+def _mv_virtual_namebox_render_parts(
+    raw_text: str,
+    virtual_speaker: MvVirtualSpeaker,
+) -> list[tuple[str, str, str, str]]:
+    """按 v2 fact render parts 形状拆分 MV 虚拟名字框源文本。"""
+    parts: list[tuple[str, str, str, str]] = []
+    formatter = Formatter()
+    for literal_text, field_name, _format_spec, _conversion in formatter.parse(virtual_speaker.render_template):
+        if literal_text:
+            parts.append(("literal", literal_text, literal_text, "literal"))
+        if field_name is None:
+            continue
+        normalized_field = field_name.split(".", maxsplit=1)[0].split("[", maxsplit=1)[0]
+        if normalized_field == "speaker" or normalized_field == virtual_speaker.speaker_group:
+            parts.append(
+                (
+                    "speaker",
+                    virtual_speaker.source_speaker_text,
+                    virtual_speaker.speaker,
+                    "speaker",
+                )
+            )
+            continue
+        if normalized_field == "body" or (
+            virtual_speaker.body_group and normalized_field == virtual_speaker.body_group
+        ):
+            parts.append(
+                (
+                    "translated_body",
+                    virtual_speaker.body_text,
+                    virtual_speaker.body_text,
+                    "body",
+                )
+            )
+            continue
+        value = virtual_speaker.group_values.get(normalized_field, "")
+        parts.append(("literal", value, value, normalized_field))
+    if not any(part_kind == "translated_body" for part_kind, _raw, _semantic, _key in parts):
+        parts.append(("translated_body", "", "", "body"))
+    return _reconcile_mv_virtual_namebox_render_parts(raw_text, parts)
+
+
+def _reconcile_mv_virtual_namebox_render_parts(
+    raw_text: str,
+    parts: list[tuple[str, str, str, str]],
+) -> list[tuple[str, str, str, str]]:
+    """保留规则模板外的原始空白外壳。"""
+    rebuilt = "".join(part_raw_text for _part_kind, part_raw_text, _semantic_text, _template_key in parts)
+    if rebuilt == raw_text:
+        return parts
+    start_index = raw_text.find(rebuilt)
+    if start_index < 0:
+        return parts
+    end_index = start_index + len(rebuilt)
+    prefix = raw_text[:start_index]
+    suffix = raw_text[end_index:]
+    reconciled = list(parts)
+    if prefix:
+        reconciled.insert(0, ("literal", prefix, prefix, "literal"))
+    if suffix:
+        reconciled.append(("literal", suffix, suffix, "literal"))
+    return reconciled
+
+
+def _text_fact_translatable_text(item: TranslationItem) -> str:
+    """按 v2 fact 的 item_type 语义序列化可译正文。"""
+    if item.item_type == "short_text":
+        return item.original_lines[0] if item.original_lines else ""
+    return "\n".join(item.original_lines)
+
+
+def _source_file_for_helper(location_path: str) -> str:
+    """从测试 location_path 提取最小 source_file 字段。"""
+    if location_path.startswith("js/plugins/"):
+        parts = location_path.split("/")
+        return "/".join(parts[:3]) if len(parts) >= 3 else location_path
+    if location_path.startswith("nonstandard-data/"):
+        parts = location_path.split("/", 2)
+        return parts[1] if len(parts) >= 2 else location_path
+    return location_path.split("/", 1)[0]
+
+
+def _selector_for_helper(location_path: str) -> str:
+    """从插件源码 location_path 提取 selector，其余测试路径保持为空。"""
+    if not location_path.startswith("js/plugins/"):
+        return ""
+    parts = location_path.split("/", 3)
+    if len(parts) < 4:
+        return ""
+    return parts[3]
+
+
+def _sha256_text(text: str) -> str:
+    """计算与 Rust v2 fact 一致的 UTF-8 SHA-256。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _insert_speaker_terms(

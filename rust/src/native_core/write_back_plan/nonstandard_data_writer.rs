@@ -180,6 +180,7 @@ mod tests {
             original_lines: vec!["原文".to_string()],
             source_line_paths: Vec::new(),
             translation_lines: vec![translation.to_string()],
+            ..TranslationItem::default()
         }
     }
 

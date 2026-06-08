@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from collections.abc import Callable
 
 from app.agent_toolkit import AgentToolkitService
+from app.native_write_plan import build_native_write_back_plan, build_native_write_back_setting_payload
+from app.persistence.records import TextFactV2ReadFilter
 from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME
+from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_lines
 from app.text_index import (
     TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
     TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
@@ -1430,6 +1435,345 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
 
     assert summary.data_item_count > 0
     assert _read_test_json(common_events_path) != original_events
+
+
+@pytest.mark.asyncio
+async def test_native_write_back_reads_mv_namebox_render_parts_not_saved_source_fields(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MV 写回必须用 v2 fact/render parts 重建源文本，不能信任旧译文记录源字段。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_events.append(
+        {
+            "id": 2,
+            "list": [
+                {"code": 101, "parameters": [0, 0, 0, 2]},
+                {"code": 401, "parameters": [r"\n<Dan:> Hello"]},
+                {"code": 0, "parameters": []},
+            ],
+        }
+    )
+    _rewrite_json(common_events_path, common_events)
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="en")
+    service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
+    text_rules_for_translations: TextRules
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
+        _game_data, _setting, text_rules_for_translations = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_mv_game_dir,
+            registry=TerminologyRegistry(speaker_names={"Dan": "丹"}),
+            glossary=TerminologyGlossary(terms={"Dan": "丹"}),
+        )
+
+    rebuild_report = await service.rebuild_text_index(game_title=record.game_title)
+    assert rebuild_report.status == "ok"
+    scope_key = str(rebuild_report.summary["scope_key"])
+
+    async with await registry.open_game(record.game_title) as session:
+        facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        )
+        fact = next(item for item in facts if item.location_path == "CommonEvents.json/2/0")
+        render_parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+        assert "".join(part.raw_text for part in render_parts) == r"\n<Dan:> Hello"
+        indexed_items = await session.read_text_index_items()
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=item.location_path,
+                    item_type=item.item_type,
+                    role=(
+                        "旧译文记录里的错误说话人"
+                        if item.location_path == fact.location_path
+                        else item.role
+                    ),
+                    original_lines=(
+                        ["OLD_SOURCE_FIELD_SHOULD_NOT_BE_USED"]
+                        if item.location_path == fact.location_path
+                        else [line for line in item.original_lines]
+                    ),
+                    source_line_paths=(
+                        ["CommonEvents.json/999/999"]
+                        if item.location_path == fact.location_path
+                        else [path for path in item.source_line_paths]
+                    ),
+                    translation_lines=(
+                        ["你好"]
+                        if item.location_path == fact.location_path
+                        else [
+                            _translated_test_line_preserving_controls(line, text_rules_for_translations)
+                            for line in item.original_lines
+                        ]
+                    ),
+                )
+                for item in indexed_items
+                if item.writable
+            ]
+        )
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.write_back(
+            game_title=record.game_title,
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    written_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    written_event = next(
+        ensure_json_object(item, "CommonEvents item")
+        for item in written_events
+        if isinstance(item, dict) and item.get("id") == 2
+    )
+    written_commands = ensure_json_array(
+        written_event["list"],
+        "CommonEvents[2].list",
+    )
+    written_line = ensure_json_array(
+        ensure_json_object(written_commands[1], "CommonEvents[2].list[1]")["parameters"],
+        "CommonEvents[2].list[1].parameters",
+    )[0]
+    assert summary.data_item_count >= 1
+    assert written_line == r"\n<丹:> 你好"
+
+
+@pytest.mark.asyncio
+async def test_native_plugin_source_runtime_maps_use_v2_fact_hashes(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码 runtime map 的源文本 hash 必须来自 v2 fact raw_hash。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "HashEscapedText", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HashEscapedText.js").write_text(
+        "const Messages = { title: '\\u539f文' };\n",
+        encoding="utf-8",
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        game_data, setting, text_rules = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+        )
+        candidate = next(
+            candidate
+            for candidate in build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates
+            if candidate.file_name == "HashEscapedText.js" and candidate.text == "原文"
+        )
+        plugin_source_records = build_plugin_source_rule_records_from_import(
+            game_data=game_data,
+            import_file=parse_plugin_source_rule_import_text(
+                json.dumps(
+                    [
+                        {
+                            "file": "HashEscapedText.js",
+                            "selectors": [candidate.selector],
+                            "excluded_selectors": [],
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            ),
+            text_rules=text_rules,
+        )
+        await session.replace_plugin_source_text_rules(plugin_source_records)
+
+    service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
+    rebuild_report = await service.rebuild_text_index(game_title=record.game_title)
+    assert rebuild_report.status == "ok"
+    scope_key = str(rebuild_report.summary["scope_key"])
+
+    async with await registry.open_game(record.game_title) as session:
+        facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(scope_key=scope_key, domain="plugin_source")
+        )
+        fact = next(item for item in facts if item.source_file == "HashEscapedText.js")
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=fact.location_path,
+                    item_type="short_text",
+                    role=None,
+                    original_lines=[fact.visible_text],
+                    source_line_paths=[fact.location_path],
+                    translation_lines=["哈希译文"],
+                )
+            ]
+        )
+        setting_payload, _font_path, _font_names = build_native_write_back_setting_payload(
+            setting=setting,
+            text_rules=text_rules,
+            content_root=session.content_root,
+            confirm_font_overwrite=False,
+            writable_location_paths=None,
+        )
+        native_plan = build_native_write_back_plan(
+            game_path=session.game_path,
+            content_root=session.content_root,
+            db_path=session.db_path,
+            mode="write_back",
+            confirm_font_overwrite=False,
+            setting_payload=setting_payload,
+        )
+
+    record_map = next(
+        item
+        for item in native_plan.plugin_source_runtime_write_maps
+        if item.location_path == fact.location_path
+    )
+    assert fact.raw_text == r"\u539f文"
+    assert fact.visible_text == "原文"
+    assert record_map.source_text_hash == fact.raw_hash
+    assert record_map.source_text_hash != hashlib.sha256(fact.visible_text.encode("utf-8")).hexdigest()
+    assert record_map.translation_lines_hash == plugin_source_runtime_hash_lines(["哈希译文"])
+
+
+@pytest.mark.asyncio
+async def test_native_write_back_blocks_stale_plugin_source_raw_selector(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码 raw selector 失效时必须阻止写回，即便可见文本没有变化。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    setting_path = app_home / "setting.toml"
+    _ = setting_path.write_text(
+        _example_setting_text_with_absolute_prompt_files(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATT_MZ_HOME", str(app_home))
+
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "RawSelectorChanged", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    source_path = plugin_source_dir / "RawSelectorChanged.js"
+    _ = source_path.write_text(
+        "const Messages = { title: '\\u539f文' };\n",
+        encoding="utf-8",
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    setting_for_plan: Setting
+    text_rules_for_plan: TextRules
+    async with await registry.open_game(record.game_title) as session:
+        game_data, setting_for_plan, text_rules_for_plan = await _prepare_write_gate_session(
+            session=session,
+            game_dir=minimal_game_dir,
+        )
+        candidate = next(
+            candidate
+            for candidate in build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules_for_plan).candidates
+            if candidate.file_name == "RawSelectorChanged.js" and candidate.text == "原文"
+        )
+        plugin_source_records = build_plugin_source_rule_records_from_import(
+            game_data=game_data,
+            import_file=parse_plugin_source_rule_import_text(
+                json.dumps(
+                    [
+                        {
+                            "file": "RawSelectorChanged.js",
+                            "selectors": [candidate.selector],
+                            "excluded_selectors": [],
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            ),
+            text_rules=text_rules_for_plan,
+        )
+        await session.replace_plugin_source_text_rules(plugin_source_records)
+
+    service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
+    rebuild_report = await service.rebuild_text_index(game_title=record.game_title)
+    assert rebuild_report.status == "ok"
+    scope_key = str(rebuild_report.summary["scope_key"])
+
+    async with await registry.open_game(record.game_title) as session:
+        facts = await session.read_text_facts_v2(
+            TextFactV2ReadFilter(scope_key=scope_key, domain="plugin_source")
+        )
+        fact = next(item for item in facts if item.source_file == "RawSelectorChanged.js")
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=fact.location_path,
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["原文"],
+                    source_line_paths=[fact.location_path],
+                    translation_lines=["哈希译文"],
+                )
+            ]
+        )
+        origin_source_path = resolve_game_layout(minimal_game_dir).plugin_source_origin_dir / "RawSelectorChanged.js"
+        _ = origin_source_path.write_text("const Messages = { title: '原文' };\n", encoding="utf-8")
+        setting_payload, _font_path, _font_names = build_native_write_back_setting_payload(
+            setting=setting_for_plan,
+            text_rules=text_rules_for_plan,
+            content_root=session.content_root,
+            confirm_font_overwrite=False,
+            writable_location_paths=None,
+        )
+        with pytest.raises(RuntimeError, match="插件源码 selector 已失效"):
+            _ = build_native_write_back_plan(
+                game_path=session.game_path,
+                content_root=session.content_root,
+                db_path=session.db_path,
+                mode="write_back",
+                confirm_font_overwrite=False,
+                setting_payload=setting_payload,
+            )
 @pytest.mark.asyncio
 async def test_direct_write_terminology_rejects_missing_workflow_rules(
     minimal_game_dir: Path,
