@@ -46,6 +46,17 @@ def count_translated_rule_hits(hits: Iterable[RuleFactHit], translated_fact_ids:
     return sum(1 for hit in hits if hit.fact_id in translated_fact_ids)
 
 
+def stale_translation_fact_ids(
+    *,
+    old_items: Sequence[TranslationItem],
+    current_rule_hits: Sequence[RuleFactHit],
+) -> list[str]:
+    """计算规则变更后需要删除的旧译文 fact_id。"""
+    old_fact_ids = require_translation_fact_ids(old_items)
+    current_fact_ids = {hit.fact_id for hit in current_rule_hits}
+    return sorted(old_fact_ids - current_fact_ids)
+
+
 def _translation_item_translatable_text(item: TranslationItem) -> str:
     """读取规则命中 TranslationItem 对应的单条可翻译文本。"""
     if item.item_type in {"long_text", "array"}:

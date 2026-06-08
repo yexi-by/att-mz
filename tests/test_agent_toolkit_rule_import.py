@@ -2517,6 +2517,170 @@ async def test_validate_note_tag_rules_does_not_count_same_path_stale_fact_as_tr
 
 
 @pytest.mark.asyncio
+async def test_import_note_tag_rules_deletes_only_stale_fact_id_for_same_path(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Note 标签规则导入按 fact_id 删除同路径旧译文，保留当前译文。"""
+    items_path = minimal_mv_game_dir / "www" / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:現在の説明>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
+        )
+    _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
+    async with await registry.open_game("MVテストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "note_tag"
+            and fact.location_path == "Items.json/1/note/拡張説明"
+            and fact.translatable_text == "現在の説明"
+        )
+        current_fact_id = current_fact.fact_id
+        stale_fact = type(current_fact)(
+            fact_id=f"{current_fact.fact_id}:stale",
+            schema_version=current_fact.schema_version,
+            domain=current_fact.domain,
+            location_path=current_fact.location_path,
+            source_file=current_fact.source_file,
+            source_type=current_fact.source_type,
+            item_type=current_fact.item_type,
+            role=current_fact.role,
+            selector=current_fact.selector,
+            raw_text="古い説明",
+            visible_text="古い説明",
+            translatable_text="古い説明",
+            raw_hash=f"{current_fact.raw_hash}:stale",
+            visible_hash=f"{current_fact.visible_hash}:stale",
+            translatable_hash=f"{current_fact.translatable_hash}:stale",
+            scope_key=current_fact.scope_key,
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
+        current_item = text_fact_record_to_translation_item(current_fact)
+        current_item.translation_lines = ["当前说明"]
+        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item.translation_lines = ["旧说明"]
+        await session.write_translation_items([current_item, stale_item])
+
+    report = await service.import_note_tag_rules(
+        game_title="MVテストゲーム",
+        rules_text=json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+    )
+
+    async with await registry.open_game("MVテストゲーム") as session:
+        remaining_items = await session.read_translated_items()
+
+    assert report.summary["deleted_translation_items"] == 1
+    assert {item.fact_id for item in remaining_items} == {current_fact_id}
+
+
+@pytest.mark.asyncio
+async def test_import_plugin_source_rules_deletes_only_stale_fact_id_for_same_path(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码规则导入按 fact_id 删除同路径旧译文，不能按 path 删除。"""
+    source_path = minimal_mv_game_dir / "www" / "js" / "plugins" / "MvPlugin.js"
+    source_text = "Window_Base.prototype.drawText('現在のプラグイン本文', 0, 0, 320);\n"
+    _ = source_path.write_text(source_text, encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    game_data = await load_game_data(
+        minimal_mv_game_dir,
+        include_plugin_source_files=True,
+        run_dialogue_probe_check=False,
+    )
+    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=get_default_text_rules())
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "MvPlugin.js")
+    rules_text = json.dumps(
+        [
+            {
+                "file": "MvPlugin.js",
+                "selectors": [candidate.selector],
+                "excluded_selectors": [],
+            }
+        ],
+        ensure_ascii=False,
+    )
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="MvPlugin.js",
+                    file_hash=build_plugin_source_file_hash(source_text),
+                    selectors=[candidate.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+    _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
+    async with await registry.open_game("MVテストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_fact = next(
+            fact
+            for fact in facts
+            if fact.domain == "plugin_source"
+            and fact.location_path == f"js/plugins/MvPlugin.js/{candidate.selector}"
+            and fact.translatable_text == "現在のプラグイン本文"
+        )
+        current_fact_id = current_fact.fact_id
+        stale_fact = type(current_fact)(
+            fact_id=f"{current_fact.fact_id}:stale",
+            schema_version=current_fact.schema_version,
+            domain=current_fact.domain,
+            location_path=current_fact.location_path,
+            source_file=current_fact.source_file,
+            source_type=current_fact.source_type,
+            item_type=current_fact.item_type,
+            role=current_fact.role,
+            selector=current_fact.selector,
+            raw_text="古いプラグイン本文",
+            visible_text="古いプラグイン本文",
+            translatable_text="古いプラグイン本文",
+            raw_hash=f"{current_fact.raw_hash}:stale",
+            visible_hash=f"{current_fact.visible_hash}:stale",
+            translatable_hash=f"{current_fact.translatable_hash}:stale",
+            scope_key=current_fact.scope_key,
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
+        current_item = text_fact_record_to_translation_item(current_fact)
+        current_item.translation_lines = ["当前插件正文"]
+        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item.translation_lines = ["旧插件正文"]
+        await session.write_translation_items([current_item, stale_item])
+
+    async def forbidden_path_delete(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("规则导入不得按 location_path 删除译文")
+
+    monkeypatch.setattr(TargetGameSession, "delete_translation_items_by_paths", forbidden_path_delete)
+
+    report = await service.import_plugin_source_rules(
+        game_title="MVテストゲーム",
+        rules_text=rules_text,
+    )
+
+    async with await registry.open_game("MVテストゲーム") as session:
+        remaining_items = await session.read_translated_items()
+
+    assert report.summary["deleted_translation_items"] == 1
+    assert {item.fact_id for item in remaining_items} == {current_fact_id}
+
+
+@pytest.mark.asyncio
 async def test_rule_fact_resolver_does_not_match_same_path_when_text_differs(
     minimal_mv_game_dir: Path,
     tmp_path: Path,

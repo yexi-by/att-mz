@@ -10,10 +10,8 @@ from .common import (
     NoteTagTextRuleRecord,
     Path,
     TextRules,
-    TranslationItem,
     _format_mv_namebox_rule_error,
     _note_tag_rule_hits_from_native_details,
-    _note_tag_item_matches_rule,
     _plugin_source_rule_hits_from_scan,
     _RuleHitMetric,
     _validate_event_command_rule_records_with_context,
@@ -36,6 +34,7 @@ from .rule_identity import (
     require_translation_fact_ids,
     resolve_current_rule_fact_hits,
     resolve_current_rule_translation_items,
+    stale_translation_fact_ids,
 )
 from app.event_command_text.native_validation import (
     NativeEventCommandRuleValidationContext,
@@ -59,34 +58,18 @@ from app.plugin_source_text import (
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
-from app.plugin_source_text.extraction import plugin_source_location_path
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_rule_records_to_import_json,
     parse_mv_virtual_namebox_rule_import_text,
 )
 from app.rmmz.mv_namebox_native import native_mv_virtual_namebox_candidates_payload, scan_native_mv_virtual_namebox
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
-from app.note_tag_text import note_tag_location_path_matches_rule
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
 )
 from app.text_index import text_index_source_branch_gates_prechecked
 from app.plugin_source_text import build_native_plugin_source_scan
-
-
-def _translation_paths_matching_note_rules(
-    *,
-    translated_items: list[TranslationItem],
-    rule_records: list[NoteTagTextRuleRecord],
-) -> set[str]:
-    """从已保存译文中找出属于指定 Note 标签规则的定位路径。"""
-    return {
-        item.location_path
-        for item in translated_items
-        for rule_record in rule_records
-        if _note_tag_item_matches_rule(item=item, rule_record=rule_record)
-    }
 
 
 def _note_tag_rule_prefixes(rule_records: list[NoteTagTextRuleRecord]) -> list[str]:
@@ -211,44 +194,6 @@ async def _resolve_event_command_rule_validation_context(
         translation_prefixes=context.translation_prefixes,
         translation_prefixes_by_index=context.translation_prefixes_by_index,
     )
-
-
-def _note_tag_paths_from_native_hits(
-    *,
-    game_data: GameData,
-    text_rules: TextRules,
-    rule_records: list[NoteTagTextRuleRecord],
-) -> set[str]:
-    """从 native Note 标签逐命中明细读取当前规则命中的可翻译路径。"""
-    paths: set[str] = set()
-    hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
-    for raw_detail in hit_details:
-        if not isinstance(raw_detail, dict):
-            continue
-        location_path = raw_detail.get("location_path")
-        translatable = raw_detail.get("translatable")
-        if not isinstance(location_path, str) or translatable is not True:
-            continue
-        if any(
-            note_tag_location_path_matches_rule(
-                location_path=location_path,
-                rule_record=record,
-            )
-            for record in rule_records
-        ):
-            paths.add(location_path)
-    return paths
-
-
-def _plugin_source_paths_from_rule_records(
-    rule_records: list[PluginSourceTextRuleRecord],
-) -> set[str]:
-    """从已通过 native 校验的插件源码规则读取当前规则命中路径。"""
-    return {
-        plugin_source_location_path(file_name=record.file_name, selector=selector)
-        for record in rule_records
-        for selector in record.selectors
-    }
 
 
 def _plugin_source_import_matches_current_exclusions(
@@ -594,21 +539,29 @@ class RuleValidationAgentMixin:
                 old_note_items = await session.read_translated_items_by_prefixes(
                     _note_tag_rule_prefixes(old_records)
                 )
-                old_note_paths = _translation_paths_matching_note_rules(
-                    translated_items=old_note_items,
-                    rule_records=old_records,
+                new_note_hit_metrics = _note_tag_rule_hits_from_native_details(
+                    records=records,
+                    hit_details=collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules),
                 )
-                new_note_paths = _note_tag_paths_from_native_hits(
-                    game_data=game_data,
-                    text_rules=text_rules,
-                    rule_records=records,
+                new_note_probes = [
+                    RuleFactProbe(
+                        domain="note_tag",
+                        location_path=hit.location_path,
+                        translatable_text=hit.sample_text,
+                    )
+                    for record_hits in new_note_hit_metrics
+                    for hit in record_hits
+                ]
+                new_note_hits = await resolve_current_rule_fact_hits(session, new_note_probes)
+                stale_fact_ids = stale_translation_fact_ids(
+                    old_items=old_note_items,
+                    current_rule_hits=new_note_hits,
                 )
-                stale_paths = sorted(old_note_paths - new_note_paths)
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
                 async with RuleImportUnitOfWork(session):
-                    if stale_paths:
-                        stale_items = await session.read_translated_items_by_paths(stale_paths)
+                    if stale_fact_ids:
+                        stale_items = await session.read_translated_items_by_fact_ids(stale_fact_ids)
                         backup = await write_rule_import_translation_backup(
                             game_title=game_title,
                             domain="note-tag-rules",
@@ -616,7 +569,7 @@ class RuleValidationAgentMixin:
                         )
                         if backup is not None:
                             deleted_translation_backup_path = backup.backup_path
-                        deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
+                        deleted_translation_items = await session.delete_translation_items_by_fact_ids(stale_fact_ids)
                     await session.replace_note_tag_text_rules(records)
                     if records:
                         await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
@@ -974,19 +927,29 @@ class RuleValidationAgentMixin:
                 old_translated_items = await session.read_translated_items_by_prefixes(
                     _plugin_source_rule_prefixes(old_records)
                 )
-                old_paths = {item.location_path for item in old_translated_items}
-                new_paths = _plugin_source_paths_from_rule_records(records)
-                stale_paths = sorted(old_paths - new_paths)
+                new_plugin_source_hit_metrics = _plugin_source_rule_hits_from_scan(
+                    records=records,
+                    scan=scan,
+                )
+                new_plugin_source_probes = [
+                    RuleFactProbe(
+                        domain="plugin_source",
+                        location_path=hit.location_path,
+                        translatable_text=hit.sample_text,
+                    )
+                    for record_hits in new_plugin_source_hit_metrics.values()
+                    for hit in record_hits
+                ]
+                new_plugin_source_hits = await resolve_current_rule_fact_hits(session, new_plugin_source_probes)
+                stale_fact_ids = stale_translation_fact_ids(
+                    old_items=old_translated_items,
+                    current_rule_hits=new_plugin_source_hits,
+                )
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
                 async with RuleImportUnitOfWork(session):
-                    if stale_paths:
-                        stale_path_set = set(stale_paths)
-                        stale_items = [
-                            item
-                            for item in old_translated_items
-                            if item.location_path in stale_path_set
-                        ]
+                    if stale_fact_ids:
+                        stale_items = await session.read_translated_items_by_fact_ids(stale_fact_ids)
                         backup = await write_rule_import_translation_backup(
                             game_title=game_title,
                             domain="plugin-source-rules",
@@ -994,7 +957,7 @@ class RuleValidationAgentMixin:
                         )
                         if backup is not None:
                             deleted_translation_backup_path = backup.backup_path
-                        deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
+                        deleted_translation_items = await session.delete_translation_items_by_fact_ids(stale_fact_ids)
                     await session.replace_plugin_source_text_rules(records)
                     await session.clear_plugin_source_runtime_write_maps()
         except Exception as error:
