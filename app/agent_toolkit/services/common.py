@@ -175,6 +175,14 @@ type LlmCheckFunc = Callable[[LLMHandler, str], Awaitable[None]]
 type QualityProgressCallbacks = tuple[Callable[[int, int], None], Callable[[int], None], Callable[[str], None]]
 
 
+@dataclass(frozen=True, slots=True)
+class QualityFixProblemItem:
+    """质量修复导出中的单个问题项。"""
+
+    fact_id: str
+    location_path: str
+
+
 class AgentServiceContext(Protocol):
     """声明 Agent 工具箱 mixin 方法运行时需要的门面能力。"""
 
@@ -887,6 +895,7 @@ def _build_manual_translation_template_entry(
     }
     if cloned_item.fact_id:
         entry["fact_id"] = cloned_item.fact_id
+    entry["text_position"] = cloned_item.location_path
     return entry
 
 
@@ -938,7 +947,7 @@ def _build_translation_line_break_count_detail(
     }
 
 
-def _collect_quality_fix_problem_paths(
+def _collect_quality_fix_problem_items(
     *,
     quality_error_items: list[TranslationErrorItem],
     residual_details: JsonArray,
@@ -946,16 +955,35 @@ def _collect_quality_fix_problem_paths(
     placeholder_details: JsonArray,
     overwide_details: JsonArray,
     write_back_protocol_details: JsonArray,
-    active_paths: set[str],
-) -> list[str]:
-    """按质量报告优先级收集需要导出的唯一定位路径。"""
-    location_paths: list[str] = []
+    active_items_by_path: dict[str, TranslationItem],
+    active_items_by_fact_id: dict[str, TranslationItem],
+) -> list[QualityFixProblemItem]:
+    """按质量报告优先级收集需要导出的唯一 v2 fact 问题项。"""
+    problem_items: list[QualityFixProblemItem] = []
     for item in quality_error_items:
-        _append_unique_active_path(location_paths, item.location_path, active_paths)
+        active_item = active_items_by_fact_id.get(item.fact_id)
+        if active_item is None:
+            continue
+        _append_unique_quality_fix_problem_item(
+            problem_items,
+            QualityFixProblemItem(
+                fact_id=active_item.fact_id or item.fact_id,
+                location_path=active_item.location_path,
+            ),
+        )
     for details in (residual_details, text_structure_details, placeholder_details, overwide_details, write_back_protocol_details):
         for location_path in _location_paths_from_quality_details(details):
-            _append_unique_active_path(location_paths, location_path, active_paths)
-    return location_paths
+            active_item = active_items_by_path.get(location_path)
+            if active_item is None or not active_item.fact_id:
+                continue
+            _append_unique_quality_fix_problem_item(
+                problem_items,
+                QualityFixProblemItem(
+                    fact_id=active_item.fact_id,
+                    location_path=active_item.location_path,
+                ),
+            )
+    return problem_items
 
 
 def _build_quality_fix_categories_by_path(
@@ -1029,17 +1057,14 @@ def _append_quality_detail_categories(
             path_categories.append(category)
 
 
-def _append_unique_active_path(
-    location_paths: list[str],
-    location_path: str,
-    active_paths: set[str],
+def _append_unique_quality_fix_problem_item(
+    problem_items: list[QualityFixProblemItem],
+    item: QualityFixProblemItem,
 ) -> None:
-    """只把当前有效且未出现过的定位路径加入列表。"""
-    if location_path not in active_paths:
+    """只把尚未出现过的 v2 fact 问题项加入列表。"""
+    if any(existing.fact_id == item.fact_id for existing in problem_items):
         return
-    if location_path in location_paths:
-        return
-    location_paths.append(location_path)
+    problem_items.append(item)
 
 
 def _location_paths_from_quality_details(details: JsonArray) -> list[str]:
@@ -3231,6 +3256,7 @@ __all__: list[str] = [
     'read_fresh_plugin_text_rules',
     'LlmCheckFunc',
     'QualityProgressCallbacks',
+    'QualityFixProblemItem',
     'AgentServiceContext',
     '_noop_quality_progress_callbacks',
     '_noop_set_progress',
@@ -3266,12 +3292,12 @@ __all__: list[str] = [
     '_build_manual_translation_template_entry',
     '_restore_template_translation_lines',
     '_build_translation_line_break_count_detail',
-    '_collect_quality_fix_problem_paths',
+    '_collect_quality_fix_problem_items',
     '_build_quality_error_category_counts',
     '_quality_error_category',
     '_build_quality_fix_categories_by_path',
     '_append_quality_detail_categories',
-    '_append_unique_active_path',
+    '_append_unique_quality_fix_problem_item',
     '_location_paths_from_quality_details',
     '_resolve_quality_fix_translation_lines',
     '_count_active_quality_details',

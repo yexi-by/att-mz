@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from tests.agent_toolkit_contract_fixtures import *
+from app.persistence.records import TextFactV2ReadFilter
+from app.rmmz.schema import ItemType
+from app.text_facts import read_current_text_fact_scope_v2
 
 
 async def _current_fact_id_for_path(session: TargetGameSession, location_path: str) -> str:
@@ -14,6 +19,19 @@ async def _current_fact_id_for_path(session: TargetGameSession, location_path: s
         row = await cursor.fetchone()
     assert row is not None
     return cast(str, row["fact_id"])
+
+
+def _quality_fix_template_entry_by_text_position(
+    template: dict[str, object],
+    text_position: str,
+) -> JsonObject:
+    """按显示位置读取 fact-id keyed 质量修复模板条目。"""
+    for raw_entry in template.values():
+        entry = ensure_json_object(coerce_json_value(raw_entry), text_position)
+        if entry.get("text_position") == text_position:
+            return entry
+    raise AssertionError(f"质量修复模板缺少文本位置: {text_position}")
+
 
 @pytest.mark.asyncio
 async def test_export_quality_fix_template_stops_on_text_scope_blocker(
@@ -913,6 +931,7 @@ async def test_export_quality_fix_template_uses_v2_fact_translatable_text(
     assert expected_original_lines
 
     async with await registry.open_game("テストゲーム") as session:
+        target_fact_id = await _current_fact_id_for_path(session, target_path)
         polluted_lines = json.dumps(
             ["OLD_INDEX_SHOULD_NOT_FEED_QUALITY_FIX_TEMPLATE translated_text 位置:"],
             ensure_ascii=False,
@@ -931,7 +950,7 @@ async def test_export_quality_fix_template_uses_v2_fact_translatable_text(
             run_record.run_id,
             [
                 TranslationErrorItem(
-                    fact_id=await _current_fact_id_for_path(session, target_path),
+                    fact_id=target_fact_id,
                     location_path=target_path,
                     item_type="short_text",
                     role=None,
@@ -951,8 +970,9 @@ async def test_export_quality_fix_template_uses_v2_fact_translatable_text(
     )
 
     template = load_json_object(template_path)
-    exported_entry = ensure_json_object(coerce_json_value(template[target_path]), target_path)
+    exported_entry = ensure_json_object(coerce_json_value(template[target_fact_id]), target_fact_id)
     assert report.status == "ok"
+    assert exported_entry["text_position"] == target_path
     assert exported_entry["original_lines"] == expected_original_lines
     exported_text = json.dumps(template, ensure_ascii=False)
     assert "OLD_INDEX_SHOULD_NOT_FEED_QUALITY_FIX_TEMPLATE" not in exported_text
@@ -2326,13 +2346,125 @@ async def test_export_quality_fix_template_collects_repairable_items(
     assert report.summary["source_residual_count"] == 1
     assert report.summary["placeholder_risk_count"] == 1
     assert report.summary["overwide_line_count"] == 1
-    assert set(template) == {quality_error_path, residual_path, placeholder_path}
-    quality_template = ensure_json_object(coerce_json_value(template[quality_error_path]), quality_error_path)
-    placeholder_template = ensure_json_object(coerce_json_value(template[placeholder_path]), placeholder_path)
+    exported_text_positions: set[str] = set()
+    for template_key, raw_entry in template.items():
+        template_entry = ensure_json_object(coerce_json_value(raw_entry), str(template_key))
+        assert template_key == template_entry["fact_id"]
+        text_position = template_entry["text_position"]
+        assert isinstance(text_position, str)
+        exported_text_positions.add(text_position)
+    assert exported_text_positions == {quality_error_path, residual_path, placeholder_path}
+    quality_template = _quality_fix_template_entry_by_text_position(template, quality_error_path)
+    placeholder_template = _quality_fix_template_entry_by_text_position(template, placeholder_path)
     assert quality_template["translation_lines"] == ["候选译文"]
     assert placeholder_template["translation_lines"] == [r"\C[4]甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"]
     categories = ensure_json_object(report.details["problem_categories_by_path"], "problem_categories_by_path")
     assert categories[placeholder_path] == ["placeholder_risk", "overwide_line"]
+
+
+@pytest.mark.asyncio
+async def test_export_quality_fix_template_preserves_same_path_quality_error_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """同一路径下多个质量错误 fact 必须分别导出，不能被路径键覆盖。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    template_path = tmp_path / "quality-fix-template.json"
+
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    target_path = sorted(payload)[0]
+    target_entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
+    target_original_lines = [
+        line
+        for line in ensure_json_array(target_entry["original_lines"], f"{target_path}.original_lines")
+        if isinstance(line, str)
+    ]
+    assert target_original_lines
+
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await session.read_text_facts_v2(TextFactV2ReadFilter(scope_key=scope.scope_key))
+        target_fact = next(fact for fact in facts if fact.location_path == target_path)
+        duplicate_fact = replace(
+            target_fact,
+            fact_id=f"{target_fact.fact_id}:same-path-quality-error",
+            raw_text=f"{target_fact.raw_text}\n同路径第二事实",
+            visible_text=f"{target_fact.visible_text}\n同路径第二事实",
+            translatable_text=f"{target_fact.translatable_text}\n同路径第二事实",
+            raw_hash=f"{target_fact.raw_hash}:same-path-quality-error",
+            visible_hash=f"{target_fact.visible_hash}:same-path-quality-error",
+            translatable_hash=f"{target_fact.translatable_hash}:same-path-quality-error",
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, duplicate_fact])
+        run_record = await session.start_translation_run(
+            total_extracted=len(facts) + 1,
+            pending_count=len(facts) + 1,
+            deduplicated_count=len(facts) + 1,
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    fact_id=target_fact.fact_id,
+                    location_path=target_path,
+                    item_type=cast(ItemType, target_fact.item_type),
+                    role=target_fact.role or None,
+                    original_lines=target_original_lines,
+                    translation_lines=["第一候选译文"],
+                    error_type="AI漏翻",
+                    error_detail=["第一条质量错误"],
+                    model_response='{"translation_lines":["第一候选译文"]}',
+                ),
+                TranslationErrorItem(
+                    fact_id=duplicate_fact.fact_id,
+                    location_path=target_path,
+                    item_type=cast(ItemType, duplicate_fact.item_type),
+                    role=duplicate_fact.role or None,
+                    original_lines=["同路径第二事实"],
+                    translation_lines=["第二候选译文"],
+                    error_type="AI漏翻",
+                    error_detail=["第二条质量错误"],
+                    model_response='{"translation_lines":["第二候选译文"]}',
+                ),
+            ],
+        )
+
+    report = await service.export_quality_fix_template(
+        game_title="テストゲーム",
+        output_path=template_path,
+    )
+
+    template = load_json_object(template_path)
+    exported_fact_ids = {
+        str(entry["fact_id"])
+        for entry in (
+            ensure_json_object(coerce_json_value(raw_entry), str(template_key))
+            for template_key, raw_entry in template.items()
+        )
+    }
+    assert report.status == "ok"
+    assert report.summary["quality_error_count"] == 2
+    assert report.summary["exported_count"] == 2
+    assert exported_fact_ids == {target_fact.fact_id, duplicate_fact.fact_id}
+    assert any(
+        ensure_json_object(coerce_json_value(raw_entry), str(template_key))["translation_lines"]
+        == ["第一候选译文"]
+        for template_key, raw_entry in template.items()
+    )
+    assert any(
+        ensure_json_object(coerce_json_value(raw_entry), str(template_key))["translation_lines"]
+        == ["第二候选译文"]
+        for template_key, raw_entry in template.items()
+    )
 @pytest.mark.asyncio
 async def test_quality_fix_template_restores_prefilled_model_placeholders(
     minimal_game_dir: Path,
@@ -2367,6 +2499,7 @@ async def test_quality_fix_template_restores_prefilled_model_placeholders(
 
     assert target_path
     async with await registry.open_game("テストゲーム") as session:
+        target_fact_id = await _current_fact_id_for_path(session, target_path)
         run_record = await session.start_translation_run(
             total_extracted=len(payload),
             pending_count=len(payload),
@@ -2377,7 +2510,7 @@ async def test_quality_fix_template_restores_prefilled_model_placeholders(
             run_record.run_id,
             [
                 TranslationErrorItem(
-                    fact_id=await _current_fact_id_for_path(session, target_path),
+                    fact_id=target_fact_id,
                     location_path=target_path,
                     item_type="long_text",
                     role=None,
@@ -2396,10 +2529,11 @@ async def test_quality_fix_template_restores_prefilled_model_placeholders(
     )
 
     template = load_json_object(template_path)
-    exported_entry = ensure_json_object(coerce_json_value(template[target_path]), target_path)
-    text_for_model_lines = ensure_json_array(exported_entry["text_for_model_lines"], f"{target_path}.text_for_model_lines")
+    exported_entry = ensure_json_object(coerce_json_value(template[target_fact_id]), target_fact_id)
+    text_for_model_lines = ensure_json_array(exported_entry["text_for_model_lines"], f"{target_fact_id}.text_for_model_lines")
     manual_fill_note = exported_entry["manual_fill_note"]
     assert report.status == "ok"
+    assert exported_entry["text_position"] == target_path
     assert exported_entry["translation_lines"] == [r"\C[4]强调\C[0]"]
     assert any(isinstance(line, str) and "[RMMZ_TEXT_COLOR_4]" in line for line in text_for_model_lines)
     assert isinstance(manual_fill_note, str)

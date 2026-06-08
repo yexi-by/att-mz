@@ -24,7 +24,7 @@ from .common import (
     _build_quality_fix_categories_by_path,
     _build_translation_error_quality_detail,
     _collect_active_translation_location_paths,
-    _collect_quality_fix_problem_paths,
+    _collect_quality_fix_problem_items,
     _count_active_quality_details,
     _coverage_hard_stop_errors,
     current_timestamp_text,
@@ -1062,16 +1062,19 @@ class QualityAgentMixin:
             translated_by_path = {item.location_path: item for item in translated_items}
             translated_fact_ids = {item.fact_id for item in translated_items if item.fact_id}
             active_translation_items = await read_writable_text_fact_translation_items_v2(session)
-            active_items = {
-                item.location_path: item
-                for item in active_translation_items
-            }
+            active_items_by_path: dict[str, TranslationItem] = {}
+            active_items_by_fact_id: dict[str, TranslationItem] = {}
+            for item in active_translation_items:
+                if item.location_path not in active_items_by_path:
+                    active_items_by_path[item.location_path] = item
+                if item.fact_id:
+                    active_items_by_fact_id[item.fact_id] = item
             active_fact_ids = {
                 item.fact_id
                 for item in active_translation_items
                 if item.fact_id
             }
-            active_paths = set(active_items)
+            active_paths = set(active_items_by_path)
             translated_items_in_active_paths = [
                 item
                 for item in translated_items
@@ -1180,14 +1183,15 @@ class QualityAgentMixin:
         )
         advance_progress(1)
         set_status("整理质量修复条目")
-        problem_paths = _collect_quality_fix_problem_paths(
+        problem_items = _collect_quality_fix_problem_items(
             quality_error_items=quality_error_items,
             residual_details=residual_details,
             text_structure_details=text_structure_details,
             placeholder_details=placeholder_details,
             overwide_details=overwide_details,
             write_back_protocol_details=write_back_protocol_details,
-            active_paths=active_paths,
+            active_items_by_path=active_items_by_path,
+            active_items_by_fact_id=active_items_by_fact_id,
         )
         quality_errors_by_fact_id = {
             item.fact_id: item
@@ -1210,16 +1214,16 @@ class QualityAgentMixin:
         advance_progress(1)
         set_status("写出质量修复表")
         payload: JsonObject = {}
-        for location_path in problem_paths:
-            active_item = active_items[location_path]
+        for problem_item in problem_items:
+            active_item = active_items_by_fact_id[problem_item.fact_id]
             translation_lines = _resolve_quality_fix_translation_lines(
-                location_path=location_path,
+                location_path=problem_item.location_path,
                 fact_id=active_item.fact_id,
                 translated_by_path=translated_by_path,
                 quality_errors_by_fact_id=quality_errors_by_fact_id,
                 translated_by_fact_id=translated_by_fact_id,
             )
-            payload[location_path] = _build_manual_translation_template_entry(
+            payload[problem_item.fact_id] = _build_manual_translation_template_entry(
                 item=active_item,
                 text_rules=text_rules,
                 translation_lines=translation_lines,
@@ -1231,7 +1235,7 @@ class QualityAgentMixin:
         advance_progress(1)
 
         warnings: list[AgentIssue] = []
-        if not problem_paths:
+        if not problem_items:
             warnings.append(issue("quality_fix_empty", "当前没有可导出的质量修复条目"))
         set_progress(8, 8)
         set_status("质量修复表已完成")
@@ -1242,7 +1246,7 @@ class QualityAgentMixin:
             errors=[],
             warnings=warnings,
             summary={
-                "exported_count": len(problem_paths),
+                "exported_count": len(problem_items),
                 "output": str(output_path),
                 "quality_error_items_count": len(quality_error_items),
                 "quality_error_category_counts": _build_quality_error_category_counts(quality_error_items),
@@ -1259,7 +1263,8 @@ class QualityAgentMixin:
                 ),
             },
             details={
-                "location_paths": _string_lines_to_json_array(problem_paths),
+                "fact_ids": _string_lines_to_json_array([item.fact_id for item in problem_items]),
+                "text_positions": _string_lines_to_json_array([item.location_path for item in problem_items]),
                 "problem_categories_by_path": categories_by_path,
             },
         )
