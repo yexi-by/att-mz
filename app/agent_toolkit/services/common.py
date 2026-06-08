@@ -2745,12 +2745,14 @@ def _validate_note_tag_rule_records_with_context(
     details: JsonObject = {"rules": []}
     resolved_hits_by_record: list[list[_RuleHitMetric]] = []
     try:
-        hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
-        resolved_hits_by_record = (
-            hits_by_record
-            if hits_by_record is not None
-            else _note_tag_rule_hits_from_native_details(records=records, hit_details=hit_details)
-        )
+        if hits_by_record is None:
+            hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+            resolved_hits_by_record = _note_tag_rule_hits_from_native_details(
+                records=records,
+                hit_details=hit_details,
+            )
+        else:
+            resolved_hits_by_record = hits_by_record
         extracted_items = _note_tag_probe_items_from_hits(resolved_hits_by_record)
         unwritable_items = _collect_write_protocol_unwritable_items(
             game_data=game_data,

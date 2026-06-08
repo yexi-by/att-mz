@@ -11,6 +11,7 @@ from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.schema import ItemType
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
+from app.agent_toolkit.services.rule_identity import RuleFactProbe, resolve_current_rule_fact_hits
 from app.text_facts import (
     read_current_text_fact_records_v2,
     read_current_text_fact_scope_v2,
@@ -2513,6 +2514,42 @@ async def test_validate_note_tag_rules_does_not_count_same_path_stale_fact_as_tr
     assert report.status == "ok"
     assert report.summary["hit_count"] == 1
     assert report.summary["translated_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_rule_fact_resolver_does_not_match_same_path_when_text_differs(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """规则命中解析必须匹配正文；同 path 唯一 fact 也不能冒充命中。"""
+    items_path = minimal_mv_game_dir / "www" / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:現在の説明>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("MVテストゲーム") as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
+        )
+    _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
+
+    async with await registry.open_game("MVテストゲーム") as session:
+        hits = await resolve_current_rule_fact_hits(
+            session,
+            [
+                RuleFactProbe(
+                    domain="note_tag",
+                    location_path="Items.json/1/note/拡張説明",
+                    translatable_text="古い説明",
+                )
+            ],
+        )
+
+    assert hits == []
 
 
 @pytest.mark.asyncio

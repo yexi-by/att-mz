@@ -166,13 +166,16 @@ async def _resolve_plugin_rule_validation_context(
         domain="plugin_config",
         items=context.extracted_items,
     )
-    resolved_by_path = {item.location_path: item for item in resolved_items}
+    resolved_by_item_id = {
+        id(original_item): resolved_item
+        for original_item, resolved_item in zip(context.extracted_items, resolved_items, strict=True)
+    }
     return NativePluginRuleValidationContext(
         records=context.records,
         extracted_items=resolved_items,
         record_items_by_index={
             plugin_index: [
-                resolved_by_path.get(item.location_path, item)
+                resolved_by_item_id.get(id(item), item)
                 for item in record_items
             ]
             for plugin_index, record_items in context.record_items_by_index.items()
@@ -192,12 +195,15 @@ async def _resolve_event_command_rule_validation_context(
         domain="event_command",
         items=context.extracted_items,
     )
-    resolved_by_path = {item.location_path: item for item in resolved_items}
+    resolved_by_item_id = {
+        id(original_item): resolved_item
+        for original_item, resolved_item in zip(context.extracted_items, resolved_items, strict=True)
+    }
     return NativeEventCommandRuleValidationContext(
         extracted_items=resolved_items,
         record_items_by_index=[
             [
-                resolved_by_path.get(item.location_path, item)
+                resolved_by_item_id.get(id(item), item)
                 for item in record_items
             ]
             for record_items in context.record_items_by_index

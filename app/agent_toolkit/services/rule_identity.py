@@ -97,12 +97,9 @@ async def resolve_current_rule_fact_hits(
     location_paths = sorted({probe.location_path for probe in probes})
     facts = await session.read_text_facts_v2(TextFactV2ReadFilter(location_paths=location_paths))
     facts_by_key: dict[tuple[str, str, str], list[TextFactV2Record]] = {}
-    facts_by_path: dict[tuple[str, str], list[TextFactV2Record]] = {}
     for fact in facts:
         key = (fact.domain, fact.location_path, fact.translatable_text)
         facts_by_key.setdefault(key, []).append(fact)
-        path_key = (fact.domain, fact.location_path)
-        facts_by_path.setdefault(path_key, []).append(fact)
     hits: list[RuleFactHit] = []
     for probe in probes:
         key = (probe.domain, probe.location_path, probe.translatable_text)
@@ -110,9 +107,7 @@ async def resolve_current_rule_fact_hits(
         if len(matched) > 1:
             raise ValueError(f"当前规则命中解析到多个 v2 fact: {probe.location_path}")
         if not matched:
-            matched = facts_by_path.get((probe.domain, probe.location_path), [])
-            if len(matched) != 1:
-                continue
+            continue
         if len(matched) == 1:
             fact = matched[0]
             hits.append(
