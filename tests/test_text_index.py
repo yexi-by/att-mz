@@ -1150,36 +1150,36 @@ async def test_plugin_source_rule_file_hash_does_not_change_text_index_rules_fin
     assert changed_selector != first
 
 
-def test_text_index_source_branch_precheck_rejects_legacy_v1_gate_hashes() -> None:
-    """旧 passed_v1 scope hash 不能继续代表当前索引源分支已预检。"""
-    legacy_metadata = TextIndexMetadata(
+def test_text_index_source_branch_precheck_rejects_invalid_gate_markers() -> None:
+    """预检键必须使用当前契约标记才算源分支已预检。"""
+    invalid_metadata = TextIndexMetadata(
         source_snapshot_fingerprint="snapshot",
         rules_fingerprint="rules",
         item_count=0,
         created_at="2026-06-08T00:00:00",
         workflow_gate_scope_hashes={
-            TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "passed_v1",
-            TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "passed_v1",
+            TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "invalid-marker",
+            TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "invalid-marker",
         },
     )
     current_metadata = replace(
-        legacy_metadata,
+        invalid_metadata,
         workflow_gate_scope_hashes={
             TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
             TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
         },
     )
 
-    assert not text_index_source_branch_gates_prechecked(legacy_metadata)
+    assert not text_index_source_branch_gates_prechecked(invalid_metadata)
     assert text_index_source_branch_gates_prechecked(current_metadata)
 
 
 @pytest.mark.asyncio
-async def test_read_text_index_metadata_rejects_legacy_v1_gate_hashes(
+async def test_read_text_index_metadata_rejects_invalid_gate_markers(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧 workflow gate 元数据必须显式要求重建当前文本范围索引。"""
+    """不符合当前契约的 workflow gate 元数据必须要求重建当前文本范围索引。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
 
@@ -1191,8 +1191,8 @@ async def test_read_text_index_metadata_rejects_legacy_v1_gate_hashes(
                 item_count=0,
                 created_at="2026-06-08T00:00:00",
                 workflow_gate_scope_hashes={
-                    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "passed_v1",
-                    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "passed_v1",
+                    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "invalid-marker",
+                    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "invalid-marker",
                 },
             ),
             items=[],
@@ -1202,6 +1202,6 @@ async def test_read_text_index_metadata_rejects_legacy_v1_gate_hashes(
             _ = await session.read_text_index_metadata()
 
         message = str(error_info.value)
-        assert "rebuild-text-index / workflow gate" in message
-        assert "passed_v1" in message
+        assert "预检标记不符合当前文本范围索引契约" in message
+        assert "invalid-marker" in message
         assert "请运行 rebuild-text-index" in message
