@@ -259,20 +259,17 @@ async def read_writable_text_fact_translation_items_by_paths(
     facts = await session.read_text_facts_v2(
         TextFactV2ReadFilter(scope_key=scope.scope_key, location_paths=unique_paths)
     )
-    facts_by_path = {
-        fact.location_path: fact
-        for fact in facts
-        if fact.scope_key == scope.scope_key and fact.location_path in unique_paths
-    }
+    facts_by_path: dict[str, list[TextFactV2Record]] = {}
+    for fact in facts:
+        if fact.scope_key == scope.scope_key and fact.location_path in unique_paths:
+            facts_by_path.setdefault(fact.location_path, []).append(fact)
     index_records = await session.read_text_index_items_by_paths(unique_paths)
     items: list[TranslationItem] = []
     for record in index_records:
         if not record.writable:
             continue
-        fact = facts_by_path.get(record.location_path)
-        if fact is None:
-            continue
-        items.append(text_fact_record_to_translation_item(fact, index_record=record))
+        for fact in facts_by_path.get(record.location_path, []):
+            items.append(text_fact_record_to_translation_item(fact, index_record=record))
     return items
 
 
@@ -348,10 +345,12 @@ async def read_writable_text_fact_translation_items_by_fact_ids(
         return {}
     scope = await read_current_text_fact_scope_v2(session)
     await assert_current_scope_fact_schema(session=session, scope=scope)
-    placeholders = ", ".join("?" for _fact_id in unique_fact_ids)
     try:
-        async with session.connection.execute(
-            f"""
+        facts: list[TextFactV2Record] = []
+        for batch in chunks(unique_fact_ids, 500):
+            placeholders = ", ".join("?" for _fact_id in batch)
+            async with session.connection.execute(
+                f"""
 --sql
                 SELECT
 {TEXT_FACT_SELECT_COLUMNS}
@@ -364,12 +363,12 @@ async def read_writable_text_fact_translation_items_by_fact_ids(
                 ORDER BY indexed.location_path, facts.domain, facts.fact_id
             ;
             """,
-            (scope.scope_key, *unique_fact_ids),
-        ) as cursor:
-            rows = await cursor.fetchall()
+                (scope.scope_key, *batch),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            facts.extend(text_fact_v2_from_row(row, session=session) for row in rows)
     except aiosqlite.Error as error:
         raise text_fact_contract_error("当前数据库不可按 fact_id 读取可写 text fact v2") from error
-    facts = [text_fact_v2_from_row(row, session=session) for row in rows]
     index_records = await _read_index_records_for_facts(session=session, facts=facts)
     index_by_path = {
         record.location_path: record

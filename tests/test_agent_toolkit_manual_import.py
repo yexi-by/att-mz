@@ -8,6 +8,7 @@ from tests.agent_toolkit_contract_fixtures import *
 from app.persistence.records import TextFactV2ReadFilter
 from app.rmmz.schema import ItemType
 from app.text_facts import read_current_text_fact_scope_v2
+from app.text_fact_readers import read_writable_text_fact_translation_items_by_paths
 
 
 async def _current_fact_id_for_path(session: TargetGameSession, location_path: str) -> str:
@@ -2465,6 +2466,50 @@ async def test_export_quality_fix_template_preserves_same_path_quality_error_fac
         == ["第二候选译文"]
         for template_key, raw_entry in template.items()
     )
+
+
+@pytest.mark.asyncio
+async def test_writable_path_reader_preserves_same_path_text_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """按路径读取可写文本时，同一路径多个当前 fact 必须全部返回。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    _ = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    target_path = sorted(payload)[0]
+
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await read_current_text_fact_scope_v2(session)
+        facts = await session.read_text_facts_v2(TextFactV2ReadFilter(scope_key=scope.scope_key))
+        target_fact = next(fact for fact in facts if fact.location_path == target_path)
+        duplicate_fact = replace(
+            target_fact,
+            fact_id=f"{target_fact.fact_id}:same-path-readable",
+            raw_text=f"{target_fact.raw_text}\n同路径第二事实",
+            visible_text=f"{target_fact.visible_text}\n同路径第二事实",
+            translatable_text=f"{target_fact.translatable_text}\n同路径第二事实",
+            raw_hash=f"{target_fact.raw_hash}:same-path-readable",
+            visible_hash=f"{target_fact.visible_hash}:same-path-readable",
+            translatable_hash=f"{target_fact.translatable_hash}:same-path-readable",
+        )
+        await session.replace_text_facts_v2(scope=scope, facts=[*facts, duplicate_fact])
+
+        items = await read_writable_text_fact_translation_items_by_paths(session, [target_path])
+
+    returned_fact_ids = {item.fact_id for item in items}
+    assert returned_fact_ids == {target_fact.fact_id, duplicate_fact.fact_id}
+    assert {item.location_path for item in items} == {target_path}
+
+
 @pytest.mark.asyncio
 async def test_quality_fix_template_restores_prefilled_model_placeholders(
     minimal_game_dir: Path,

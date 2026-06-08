@@ -523,6 +523,7 @@ def test_task7_fact_id_helpers_use_batched_in_queries() -> None:
 
     for source, function_name in (
         (text_fact_readers_source, "_read_current_text_facts_by_fact_ids"),
+        (text_fact_readers_source, "read_writable_text_fact_translation_items_by_fact_ids"),
         (text_fact_quality_source, "_read_current_text_facts_by_fact_ids_for_quality"),
     ):
         function_source = _source_for_function(source, function_name)
