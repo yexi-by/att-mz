@@ -71,6 +71,7 @@ async def verify_translation_batch(
         for item in items:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=item.fact_id,
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -92,6 +93,7 @@ async def verify_translation_batch(
         if model_translation_lines is None:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=item.fact_id,
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -107,6 +109,7 @@ async def verify_translation_batch(
         if _is_empty_translation_lines(model_translation_lines):
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=item.fact_id,
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -139,6 +142,7 @@ async def verify_translation_batch(
             if len(translation_lines) != len(item.original_lines):
                 error_items.append(
                     TranslationErrorItem(
+                        fact_id=item.fact_id,
                         location_path=item.location_path,
                         item_type=item.item_type,
                         role=item.role,
@@ -176,6 +180,7 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=item.fact_id,
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -195,6 +200,7 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=item.fact_id,
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
@@ -217,6 +223,7 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=item.fact_id,
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,

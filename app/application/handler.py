@@ -2004,6 +2004,8 @@ class TranslationHandler:
                 return 0
             expanded_items = expand_cached_translation_items(items, translation_cache)
             await session.write_translation_items(expanded_items)
+            translated_fact_ids = {item.fact_id for item in expanded_items if item.fact_id}
+            _ = await session.delete_translation_quality_errors_by_fact_ids(translated_fact_ids)
             logger.success(f"[tag.success]已写入正文翻译结果[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] [tag.count]{len(expanded_items)}[/tag.count] 条")
             return len(expanded_items)
 

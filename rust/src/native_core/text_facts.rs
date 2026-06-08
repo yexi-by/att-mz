@@ -22,15 +22,18 @@ pub(crate) mod domains {
     pub(crate) const NONSTANDARD_DATA: &str = "nonstandard_data";
     /// 插件源码文本。
     pub(crate) const PLUGIN_SOURCE: &str = "plugin_source";
-    /// 普通 placeholder 候选文本。
+    /// 普通 placeholder 候选文本。当前不属于 `text_facts_v2` 支持的翻译事实域。
+    #[cfg(test)]
     pub(crate) const PLACEHOLDER_CANDIDATE: &str = "placeholder_candidate";
-    /// 结构化 placeholder 候选文本。
+    /// 结构化 placeholder 候选文本。当前不属于 `text_facts_v2` 支持的翻译事实域。
+    #[cfg(test)]
     pub(crate) const STRUCTURED_PLACEHOLDER_CANDIDATE: &str = "structured_placeholder_candidate";
-    /// 运行时字面量事实。
+    /// 运行时字面量事实。当前不属于 `text_facts_v2` 支持的翻译事实域。
+    #[cfg(test)]
     pub(crate) const ACTIVE_RUNTIME_LITERAL: &str = "active_runtime_literal";
 
-    /// 当前 v2 契约允许写入的文本域集合。
-    pub(crate) const SUPPORTED: [&str; 10] = [
+    /// 当前 v2 契约允许写入的翻译事实域集合。
+    pub(crate) const SUPPORTED: [&str; 7] = [
         STANDARD_DATA,
         MV_VIRTUAL_NAMEBOX,
         PLUGIN_CONFIG,
@@ -38,9 +41,6 @@ pub(crate) mod domains {
         NOTE_TAG,
         NONSTANDARD_DATA,
         PLUGIN_SOURCE,
-        PLACEHOLDER_CANDIDATE,
-        STRUCTURED_PLACEHOLDER_CANDIDATE,
-        ACTIVE_RUNTIME_LITERAL,
     ];
 }
 
@@ -516,6 +516,54 @@ mod tests {
         .expect_err("MV 虚拟名字框 speaker 为空必须拒绝");
 
         assert!(error.contains("MV 虚拟名字框 speaker 为空"));
+    }
+
+    #[test]
+    fn text_fact_supported_domains_are_current_contract() {
+        assert_eq!(
+            domains::SUPPORTED,
+            [
+                domains::STANDARD_DATA,
+                domains::MV_VIRTUAL_NAMEBOX,
+                domains::PLUGIN_CONFIG,
+                domains::EVENT_COMMAND,
+                domains::NOTE_TAG,
+                domains::NONSTANDARD_DATA,
+                domains::PLUGIN_SOURCE,
+            ],
+        );
+        assert!(!domains::SUPPORTED.contains(&domains::PLACEHOLDER_CANDIDATE));
+        assert!(!domains::SUPPORTED.contains(&domains::STRUCTURED_PLACEHOLDER_CANDIDATE));
+        assert!(!domains::SUPPORTED.contains(&domains::ACTIVE_RUNTIME_LITERAL));
+    }
+
+    #[test]
+    fn text_fact_rejects_current_non_translation_domains() {
+        let scope_key = build_scope_key("source-v1", "rules-v1", "text-rules-v1");
+        for domain in [
+            domains::PLACEHOLDER_CANDIDATE,
+            domains::STRUCTURED_PLACEHOLDER_CANDIDATE,
+            domains::ACTIVE_RUNTIME_LITERAL,
+        ] {
+            let error = TextFact::from_input(
+                TextFactInput {
+                    domain: domain.to_string(),
+                    location_path: format!("{domain}/sample"),
+                    source_file: "System.json".to_string(),
+                    source_type: domain.to_string(),
+                    item_type: "short_text".to_string(),
+                    role: String::new(),
+                    selector: "sample".to_string(),
+                    raw_text: "原文".to_string(),
+                    visible_text: "原文".to_string(),
+                    translatable_text: "原文".to_string(),
+                },
+                scope_key.clone(),
+            )
+            .expect_err("当前非翻译事实域不得写入 text_facts_v2");
+
+            assert!(error.contains("domain 不受支持"), "实际错误为 {error}");
+        }
     }
 
     #[test]

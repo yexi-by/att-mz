@@ -10,6 +10,8 @@ from typing import cast
 
 import pytest
 
+from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
+
 from app import native_scope_index
 from app.native_scope_index import (
     build_native_placeholder_candidates_payload,
@@ -439,7 +441,7 @@ async def test_inspect_native_scope_index_storage_reads_db_and_game_files(
                 )
             ]
         )
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="System.json/gameTitle",

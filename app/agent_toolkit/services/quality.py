@@ -87,8 +87,8 @@ from app.text_facts import (
     count_translated_text_facts_v2,
     count_writable_text_facts_v2,
     read_current_text_fact_records_v2,
-    read_pending_text_fact_quality_error_paths_v2,
-    read_text_fact_quality_error_paths_v2,
+    read_pending_text_fact_quality_error_fact_ids_v2,
+    read_text_fact_quality_error_fact_ids_v2,
     read_text_fact_quality_items_for_translations,
     read_text_fact_sample_details_by_paths_v2,
     read_current_text_fact_translation_items_by_paths,
@@ -1060,17 +1060,22 @@ class QualityAgentMixin:
                 )
             translated_items = await session.read_translated_items()
             translated_by_path = {item.location_path: item for item in translated_items}
-            translated_paths = set(translated_by_path)
+            translated_fact_ids = {item.fact_id for item in translated_items if item.fact_id}
             active_translation_items = await read_writable_text_fact_translation_items_v2(session)
             active_items = {
                 item.location_path: item
                 for item in active_translation_items
             }
+            active_fact_ids = {
+                item.fact_id
+                for item in active_translation_items
+                if item.fact_id
+            }
             active_paths = set(active_items)
             translated_items_in_active_paths = [
                 item
                 for item in translated_items
-                if item.location_path in active_paths
+                if item.fact_id in active_fact_ids
             ]
             active_translated_items = [
                 item
@@ -1123,12 +1128,12 @@ class QualityAgentMixin:
                 },
                 details={"coverage": coverage_report.details},
             )
-        pending_paths = active_paths - translated_paths
+        pending_fact_ids = active_fact_ids - translated_fact_ids
         set_status("整理模型检查失败记录")
         quality_error_items = [
             item
             for item in quality_error_items
-            if item.location_path in pending_paths
+            if item.fact_id in pending_fact_ids
         ]
         advance_progress(1)
         source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules)
@@ -1188,6 +1193,16 @@ class QualityAgentMixin:
             item.location_path: item
             for item in quality_error_items
         }
+        quality_errors_by_fact_id = {
+            item.fact_id: item
+            for item in quality_error_items
+            if item.fact_id
+        }
+        translated_by_fact_id = {
+            item.fact_id: item
+            for item in translated_items
+            if item.fact_id
+        }
         categories_by_path = _build_quality_fix_categories_by_path(
             quality_error_items=quality_error_items,
             residual_details=residual_details,
@@ -1204,8 +1219,11 @@ class QualityAgentMixin:
             active_item = active_items[location_path]
             translation_lines = _resolve_quality_fix_translation_lines(
                 location_path=location_path,
+                fact_id=active_item.fact_id,
                 quality_errors_by_path=quality_errors_by_path,
                 translated_by_path=translated_by_path,
+                quality_errors_by_fact_id=quality_errors_by_fact_id,
+                translated_by_fact_id=translated_by_fact_id,
             )
             payload[location_path] = _build_manual_translation_template_entry(
                 item=active_item,
@@ -1349,18 +1367,21 @@ class QualityAgentMixin:
             pending_count = await count_pending_text_facts_v2(session)
             writable_count = await count_writable_text_facts_v2(session)
             stale_translation_count = await count_stale_translations_outside_writable_text_facts_v2(session)
-            active_quality_error_paths = await read_text_fact_quality_error_paths_v2(session, latest_run.run_id)
-            pending_quality_error_paths = await read_pending_text_fact_quality_error_paths_v2(
+            active_quality_error_fact_ids = await read_text_fact_quality_error_fact_ids_v2(
+                session,
+                latest_run.run_id,
+            )
+            pending_quality_error_fact_ids = await read_pending_text_fact_quality_error_fact_ids_v2(
                 session,
                 latest_run.run_id,
             )
             quality_error_items = [
                 item
                 for item in run_quality_error_items
-                if item.location_path in pending_quality_error_paths
+                if item.fact_id in pending_quality_error_fact_ids
             ]
-            active_quality_error_items = await session.read_translated_items_by_paths(
-                sorted(active_quality_error_paths)
+            active_quality_error_items = await session.read_translated_items_by_fact_ids(
+                sorted(active_quality_error_fact_ids)
             )
             native_quality_items = await read_text_fact_quality_items_for_translations(
                 session,
@@ -1394,6 +1415,7 @@ class QualityAgentMixin:
         else:
             text_fact_records = await read_current_text_fact_records_v2(session, limit=None)
             active_paths = {record.location_path for record in text_fact_records}
+            active_fact_ids = {record.fact_id for record in text_fact_records}
             translated_items = await session.read_translated_items()
             writable_paths = {
                 item.location_path
@@ -1402,14 +1424,7 @@ class QualityAgentMixin:
             active_translated_items = [
                 item
                 for item in translated_items
-                if item.location_path in active_paths
-            ]
-            index_source_files = {record.source_file for record in text_fact_records}
-            source_existing_stale_items = [
-                item
-                for item in translated_items
-                if item.location_path not in active_paths
-                and item.location_path.split("/", 1)[0] in index_source_files
+                if item.fact_id in active_fact_ids
             ]
             stale_source_residual_rule_paths = {
                 rule.location_path
@@ -1417,18 +1432,21 @@ class QualityAgentMixin:
                 if rule.rule_type == "position" and rule.location_path not in active_paths
             }
             if latest_run is None:
-                active_quality_error_paths: set[str] = set()
-                pending_quality_error_paths: set[str] = set()
+                active_quality_error_fact_ids: set[str] = set()
+                pending_quality_error_fact_ids: set[str] = set()
             else:
-                active_quality_error_paths = await read_text_fact_quality_error_paths_v2(session, latest_run.run_id)
-                pending_quality_error_paths = await read_pending_text_fact_quality_error_paths_v2(
+                active_quality_error_fact_ids = await read_text_fact_quality_error_fact_ids_v2(
+                    session,
+                    latest_run.run_id,
+                )
+                pending_quality_error_fact_ids = await read_pending_text_fact_quality_error_fact_ids_v2(
                     session,
                     latest_run.run_id,
                 )
             quality_error_items = [
                 item
                 for item in run_quality_error_items
-                if item.location_path in pending_quality_error_paths
+                if item.fact_id in pending_quality_error_fact_ids
             ]
             active_count = len(active_paths)
             writable_count = await count_writable_text_facts_v2(session)
@@ -1447,15 +1465,12 @@ class QualityAgentMixin:
                 include_write_probe=include_write_probe,
             )
             if latest_run is None or len(active_translated_items) <= QUALITY_REPORT_FULL_RECHECK_LIMIT:
-                native_quality_items = [
-                    *active_translated_items,
-                    *source_existing_stale_items,
-                ]
+                native_quality_items = active_translated_items
             else:
                 native_quality_items = [
                     item
                     for item in active_translated_items
-                    if item.location_path in active_quality_error_paths
+                    if item.fact_id in active_quality_error_fact_ids
                 ]
             native_visible_quality_items = await read_text_fact_quality_items_for_translations(
                 session,

@@ -123,7 +123,7 @@ async def count_translated_text_facts_v2(session: TargetGameSession) -> int:
             SELECT COUNT(*) AS translated_count
             FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
             INNER JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-                ON translations.location_path = facts.location_path
+                ON {_translation_matches_fact_sql()}
             INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
             WHERE facts.scope_key = ?
@@ -186,7 +186,7 @@ async def count_stale_translations_outside_writable_text_facts_v2(session: Targe
             SELECT COUNT(*) AS stale_translation_count
             FROM [{TRANSLATION_TABLE_NAME}] AS translations
             LEFT JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
-                ON facts.location_path = translations.location_path
+                ON {_translation_matches_fact_sql()}
                 AND facts.scope_key = ?
             LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
@@ -255,6 +255,23 @@ async def read_pending_text_fact_quality_error_paths_v2(
     return {row_str(row, "location_path", session.db_path) for row in rows}
 
 
+async def read_pending_text_fact_quality_error_fact_ids_v2(
+    session: TargetGameSession,
+    run_id: str,
+) -> set[str]:
+    """读取当前 v2 pending 范围内指定运行没通过项目检查的 fact_id。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    sql = _pending_text_fact_quality_error_sql(
+        select_clause="quality_errors.fact_id",
+        group_by="",
+        order_by="ORDER BY quality_errors.fact_id",
+    )
+    async with session.connection.execute(sql, (run_id, scope.scope_key)) as cursor:
+        rows = await cursor.fetchall()
+    return {row_str(row, "fact_id", session.db_path) for row in rows}
+
+
 async def read_text_fact_quality_error_paths_v2(
     session: TargetGameSession,
     run_id: str,
@@ -268,7 +285,8 @@ async def read_text_fact_quality_error_paths_v2(
             SELECT quality_errors.location_path
             FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
             INNER JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
-                ON facts.location_path = quality_errors.location_path
+                ON facts.fact_id = quality_errors.fact_id
+                AND quality_errors.fact_id <> ''
             WHERE quality_errors.run_id = ?
                 AND facts.scope_key = ?
             ORDER BY quality_errors.location_path
@@ -278,6 +296,32 @@ async def read_text_fact_quality_error_paths_v2(
     ) as cursor:
         rows = await cursor.fetchall()
     return {row_str(row, "location_path", session.db_path) for row in rows}
+
+
+async def read_text_fact_quality_error_fact_ids_v2(
+    session: TargetGameSession,
+    run_id: str,
+) -> set[str]:
+    """读取当前 v2 scope 内指定运行没通过项目检查的 fact_id。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    async with session.connection.execute(
+        f"""
+--sql
+            SELECT quality_errors.fact_id
+            FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
+            INNER JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+                ON facts.fact_id = quality_errors.fact_id
+                AND quality_errors.fact_id <> ''
+            WHERE quality_errors.run_id = ?
+                AND facts.scope_key = ?
+            ORDER BY quality_errors.fact_id
+        ;
+        """,
+        (run_id, scope.scope_key),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return {row_str(row, "fact_id", session.db_path) for row in rows}
 
 
 async def read_pending_text_fact_records_v2(
@@ -300,10 +344,10 @@ async def read_pending_text_fact_records_v2(
             INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
             LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-                ON translations.location_path = facts.location_path
+                ON {_translation_matches_fact_sql()}
             WHERE facts.scope_key = ?
                 AND indexed.writable = 1
-                AND translations.location_path IS NULL
+                AND translations.fact_id IS NULL
             ORDER BY indexed.location_path, facts.domain, facts.fact_id
             LIMIT ?
         ;
@@ -390,10 +434,10 @@ async def read_pending_text_fact_path_samples_v2(
             INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
             LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-                ON translations.location_path = facts.location_path
+                ON {_translation_matches_fact_sql()}
             WHERE facts.scope_key = ?
                 AND indexed.writable = 1
-                AND translations.location_path IS NULL
+                AND translations.fact_id IS NULL
             ORDER BY indexed.location_path, facts.domain, facts.fact_id
             LIMIT ?
         ;
@@ -420,7 +464,7 @@ async def read_stale_translation_path_samples_outside_writable_text_facts_v2(
             SELECT translations.location_path
             FROM [{TRANSLATION_TABLE_NAME}] AS translations
             LEFT JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
-                ON facts.location_path = translations.location_path
+                ON {_translation_matches_fact_sql()}
                 AND facts.scope_key = ?
             LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
@@ -642,19 +686,36 @@ async def read_text_fact_quality_items_for_translations(
         return []
     if source_text not in {"translatable", "visible", "raw"}:
         raise ValueError("source_text 必须是 translatable、visible 或 raw")
-    location_paths = [item.location_path for item in translated_items]
-    facts = await _read_current_text_facts_by_paths(session=session, location_paths=location_paths)
-    facts_by_path = {fact.location_path: fact for fact in facts}
-    missing_paths = sorted(set(location_paths) - set(facts_by_path))
-    if missing_paths:
-        samples = "、".join(missing_paths[:5])
-        suffix = f" 等 {len(missing_paths)} 条" if len(missing_paths) > 5 else ""
+    fact_ids = [item.fact_id for item in translated_items if item.fact_id]
+    if len(fact_ids) != len(translated_items):
+        missing_identity_paths = sorted(
+            item.location_path for item in translated_items if not item.fact_id
+        )
+        samples = "、".join(missing_identity_paths[:5])
+        suffix = f" 等 {len(missing_identity_paths)} 条" if len(missing_identity_paths) > 5 else ""
+        raise _text_fact_contract_error(
+            f"已保存译文缺少 v2 fact identity，不能重建质量检查源文: {samples}{suffix}"
+        )
+    facts = await _read_current_text_facts_by_fact_ids(session=session, fact_ids=fact_ids)
+    facts_by_id = {fact.fact_id: fact for fact in facts}
+    missing_fact_ids = sorted(set(fact_ids) - set(facts_by_id))
+    if missing_fact_ids:
+        samples = "、".join(missing_fact_ids[:5])
+        suffix = f" 等 {len(missing_fact_ids)} 条" if len(missing_fact_ids) > 5 else ""
         raise _text_fact_contract_error(
             f"已保存译文缺少当前 v2 文本事实，不能重建质量检查源文: {samples}{suffix}"
         )
     quality_items: list[TranslationItem] = []
     for item in translated_items:
-        fact = facts_by_path[item.location_path]
+        fact = facts_by_id[item.fact_id or ""]
+        if (
+            item.source_fact_raw_hash != fact.raw_hash
+            or item.source_fact_translatable_hash != fact.translatable_hash
+        ):
+            raise _text_fact_contract_error(
+                "已保存译文不再匹配当前 v2 文本事实身份，不能重建质量检查源文: "
+                + f"{item.location_path}"
+            )
         cloned_item = item.model_copy(deep=True)
         item_type = _item_type_from_text_fact(fact)
         cloned_item.item_type = item_type
@@ -740,11 +801,14 @@ def text_fact_record_to_translation_item(
         else []
     )
     return TranslationItem(
+        fact_id=fact.fact_id,
         location_path=fact.location_path,
         item_type=item_type,
         role=fact.role or None,
         original_lines=_text_fact_lines(fact.translatable_text, item_type=item_type),
         source_line_paths=source_line_paths,
+        source_fact_raw_hash=fact.raw_hash,
+        source_fact_translatable_hash=fact.translatable_hash,
         terminology_owner_terms=terminology_owner_terms,
         translation_dedupe_key=f"text_fact_v2:{fact.translatable_hash}",
     )
@@ -775,6 +839,38 @@ async def _read_current_text_facts_by_paths(
     return await session.read_text_facts_v2(
         TextFactV2ReadFilter(scope_key=scope.scope_key, location_paths=unique_paths)
     )
+
+
+async def _read_current_text_facts_by_fact_ids(
+    *,
+    session: TargetGameSession,
+    fact_ids: Sequence[str],
+) -> list[TextFactV2Record]:
+    """按 fact_id 读取当前 scope 内的 v2 facts。"""
+    unique_fact_ids = sorted(set(fact_ids))
+    if not unique_fact_ids:
+        return []
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    records: list[TextFactV2Record] = []
+    for batch in _chunks(unique_fact_ids, 500):
+        placeholders = ", ".join("?" for _fact_id in batch)
+        async with session.connection.execute(
+            f"""
+--sql
+                SELECT
+{TEXT_FACT_SELECT_COLUMNS}
+                FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+                WHERE facts.scope_key = ?
+                    AND facts.fact_id IN ({placeholders})
+                ORDER BY facts.domain, facts.location_path, facts.fact_id
+            ;
+            """,
+            (scope.scope_key, *batch),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        records.extend(_text_fact_v2_from_row(row, session=session) for row in rows)
+    return records
 
 
 async def _read_index_records_for_facts(
@@ -839,10 +935,10 @@ def _pending_text_fact_count_sql() -> str:
         INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
             ON indexed.location_path = facts.location_path
         LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-            ON translations.location_path = facts.location_path
+            ON {_translation_matches_fact_sql()}
         WHERE facts.scope_key = ?
             AND indexed.writable = 1
-            AND translations.location_path IS NULL
+            AND translations.fact_id IS NULL
     ;
     """
 
@@ -859,19 +955,34 @@ def _pending_text_fact_quality_error_sql(
         SELECT {select_clause}
         FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] AS quality_errors
         INNER JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
-            ON facts.location_path = quality_errors.location_path
+            ON facts.fact_id = quality_errors.fact_id
+            AND quality_errors.fact_id <> ''
         INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
             ON indexed.location_path = facts.location_path
         LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-            ON translations.location_path = quality_errors.location_path
+            ON {_translation_matches_fact_sql()}
         WHERE quality_errors.run_id = ?
             AND facts.scope_key = ?
             AND indexed.writable = 1
-            AND translations.location_path IS NULL
+            AND translations.fact_id IS NULL
         {group_by}
         {order_by}
     ;
     """
+
+
+def _translation_matches_fact_sql() -> str:
+    """返回已保存译文和当前 v2 fact 身份完全一致的 SQL 条件。"""
+    return (
+        "translations.fact_id = facts.fact_id "
+        "AND translations.source_fact_raw_hash = facts.raw_hash "
+        "AND translations.source_fact_translatable_hash = facts.translatable_hash"
+    )
+
+
+def _chunks(values: Sequence[str], size: int) -> list[Sequence[str]]:
+    """把 fact_id 列表分块，避免 SQLite 参数过多。"""
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 def _text_fact_v2_from_row(
@@ -1000,6 +1111,7 @@ __all__ = [
     "read_current_text_fact_translation_data_map_v2",
     "read_current_text_fact_translation_items_by_paths",
     "read_pending_text_fact_quality_error_paths_v2",
+    "read_pending_text_fact_quality_error_fact_ids_v2",
     "read_pending_text_fact_records_v2",
     "read_pending_text_fact_path_samples_v2",
     "read_pending_text_fact_translation_data_map",
@@ -1007,6 +1119,7 @@ __all__ = [
     "read_stale_translation_path_samples_outside_writable_text_facts_v2",
     "read_text_fact_sample_details_by_paths_v2",
     "read_text_fact_quality_error_paths_v2",
+    "read_text_fact_quality_error_fact_ids_v2",
     "read_text_fact_quality_items_for_translations",
     "read_unwritable_text_fact_records_v2",
     "read_writable_text_fact_translation_items_by_fact_ids",

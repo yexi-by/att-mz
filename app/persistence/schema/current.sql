@@ -1,4 +1,4 @@
--- ATT-MZ SQLite schema v16. Shared by Python persistence and Rust native storage.
+-- ATT-MZ SQLite schema v17. Shared by Python persistence and Rust native storage.
 -- Keep schema_version value in app.persistence.sql.CURRENT_SCHEMA_VERSION.
 
 --sql
@@ -10,13 +10,31 @@
 
 --sql
     CREATE TABLE IF NOT EXISTS [translation_items] (
-        location_path      TEXT PRIMARY KEY,
-        item_type          TEXT NOT NULL,
-        role               TEXT,
-        original_lines     TEXT NOT NULL,
-        source_line_paths  TEXT NOT NULL,
-        translation_lines  TEXT NOT NULL
+        fact_id                       TEXT PRIMARY KEY,
+        location_path                 TEXT NOT NULL,
+        item_type                     TEXT NOT NULL,
+        role                          TEXT,
+        original_lines                TEXT NOT NULL,
+        source_line_paths             TEXT NOT NULL,
+        source_fact_raw_hash          TEXT NOT NULL,
+        source_fact_translatable_hash TEXT NOT NULL,
+        translation_lines             TEXT NOT NULL
     )
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_items_location_path]
+    ON [translation_items](location_path)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_items_source_fact_raw_hash]
+    ON [translation_items](source_fact_raw_hash)
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_items_source_fact_translatable_hash]
+    ON [translation_items](source_fact_translatable_hash)
 ;
 
 --sql
@@ -271,6 +289,7 @@
 --sql
     CREATE TABLE IF NOT EXISTS [translation_quality_errors] (
         run_id           TEXT NOT NULL,
+        fact_id          TEXT NOT NULL,
         location_path    TEXT NOT NULL,
         item_type        TEXT NOT NULL,
         role             TEXT,
@@ -279,9 +298,14 @@
         error_type       TEXT NOT NULL,
         error_detail     TEXT NOT NULL,
         model_response   TEXT NOT NULL,
-        PRIMARY KEY (run_id, location_path),
+        PRIMARY KEY (run_id, fact_id, location_path),
         FOREIGN KEY (run_id) REFERENCES [translation_runs](run_id) ON DELETE CASCADE
     )
+;
+
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_quality_errors_fact_id]
+    ON [translation_quality_errors](fact_id)
 ;
 
 --sql
@@ -439,5 +463,5 @@
 ;
 
 INSERT OR REPLACE INTO [schema_version] (schema_key, version)
-VALUES ('current', 16)
+VALUES ('current', 17)
 ;

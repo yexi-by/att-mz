@@ -63,6 +63,9 @@ class Code(IntEnum):
 class TranslationItem(BaseModel):
     """单个翻译条目，负责维护控制符占位符与译文恢复。"""
 
+    fact_id: str | None = Field(default=None, exclude=True)
+    source_fact_raw_hash: str | None = Field(default=None, exclude=True)
+    source_fact_translatable_hash: str | None = Field(default=None, exclude=True)
     role: str | None = None
     location_path: str
     item_type: ItemType
@@ -252,6 +255,7 @@ def _format_control_counts(counts: dict[str, int]) -> str:
 class TranslationErrorItem(BaseModel):
     """正文翻译错误记录。"""
 
+    fact_id: str | None = Field(default=None, exclude=True)
     location_path: str
     item_type: ItemType
     role: str | None

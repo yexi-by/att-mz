@@ -457,8 +457,8 @@ class ManualTranslationAgentMixin:
                 )
 
             await session.write_translation_items(plan.valid_items)
-            imported_paths = {item.location_path for item in plan.valid_items}
-            _ = await session.delete_translation_quality_errors_by_paths(imported_paths)
+            imported_fact_ids = {item.fact_id for item in plan.valid_items if item.fact_id}
+            _ = await session.delete_translation_quality_errors_by_fact_ids(imported_fact_ids)
             if latest_run is not None:
                 remaining_quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)

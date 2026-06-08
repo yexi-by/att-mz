@@ -55,30 +55,32 @@ pub(super) fn read_translation_items_for_allowed_paths(
     allowed_paths: &[String],
 ) -> Result<Vec<TranslationItem>, String> {
     let scope_key = read_current_text_fact_scope_key(connection)?;
-    assert_no_disallowed_translation_items(connection, allowed_paths)?;
+    assert_no_disallowed_translation_items(connection, &scope_key, allowed_paths)?;
     if allowed_paths.is_empty() {
         return Ok(Vec::new());
     }
     let mut fact_rows: Vec<TranslationFactRow> = Vec::new();
-    let mut seen_locations: HashSet<String> = HashSet::new();
+    let mut resolved_fact_ids: HashSet<String> = HashSet::new();
     for chunk in allowed_paths.chunks(SQLITE_IN_CLAUSE_CHUNK_SIZE) {
         let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT translations.location_path, translations.translation_lines, \
+            "SELECT facts.location_path, translations.translation_lines, \
                     facts.fact_id, facts.domain, facts.item_type, facts.role, \
                     facts.selector, facts.raw_text, facts.visible_text, \
                     facts.translatable_text, facts.raw_hash, indexed.source_line_paths \
              FROM translation_items AS translations \
              INNER JOIN text_facts_v2 AS facts \
-                ON facts.location_path = translations.location_path \
+                ON facts.fact_id = translations.fact_id \
+               AND facts.raw_hash = translations.source_fact_raw_hash \
+               AND facts.translatable_hash = translations.source_fact_translatable_hash \
                AND facts.scope_key = ? \
              INNER JOIN text_index_items AS indexed \
                 ON indexed.location_path = facts.location_path \
                AND indexed.writable = 1 \
-             WHERE translations.location_path IN ({placeholders}) \
-             ORDER BY translations.location_path, facts.domain, facts.fact_id"
+             WHERE facts.location_path IN ({placeholders}) \
+             ORDER BY facts.location_path, facts.domain, facts.fact_id"
         );
         let mut statement = connection
             .prepare(&sql)
@@ -117,16 +119,11 @@ pub(super) fn read_translation_items_for_allowed_paths(
             .map_err(|error| format!("按 v2 fact 可写范围读取译文记录失败: {error}"))?;
         for row in rows {
             let fact_row = row.map_err(|error| format!("读取 v2 fact 译文记录行失败: {error}"))?;
-            if !seen_locations.insert(fact_row.location_path.clone()) {
-                return Err(format!(
-                    "当前 v2 文本事实出现重复 location_path，不能继续写进游戏文件，请重新运行 rebuild-text-index: {}",
-                    fact_row.location_path
-                ));
-            }
+            resolved_fact_ids.insert(fact_row.fact_id.clone());
             fact_rows.push(fact_row);
         }
     }
-    assert_all_translations_resolved_to_v2_facts(connection, allowed_paths, &seen_locations)?;
+    assert_all_translations_resolved_to_v2_facts(connection, allowed_paths, &resolved_fact_ids)?;
     let render_parts_by_fact = read_render_parts_by_fact_id(
         connection,
         &fact_rows
@@ -142,7 +139,11 @@ pub(super) fn read_translation_items_for_allowed_paths(
             .unwrap_or_default();
         items.push(translation_item_from_v2_fact_row(row, render_parts)?);
     }
-    items.sort_by(|left, right| left.location_path.cmp(&right.location_path));
+    items.sort_by(|left, right| {
+        left.location_path
+            .cmp(&right.location_path)
+            .then_with(|| left.fact_id.cmp(&right.fact_id))
+    });
     Ok(items)
 }
 
@@ -249,14 +250,24 @@ pub(super) fn parse_string_array(text: &str, label: &str) -> Result<Vec<String>,
 
 fn assert_no_disallowed_translation_items(
     connection: &Connection,
+    scope_key: &str,
     allowed_paths: &[String],
 ) -> Result<(), String> {
     let allowed: HashSet<&str> = allowed_paths.iter().map(String::as_str).collect();
     let mut statement = connection
-        .prepare("SELECT location_path FROM translation_items ORDER BY location_path")
+        .prepare(
+            "SELECT facts.location_path \
+             FROM translation_items AS translations \
+             INNER JOIN text_facts_v2 AS facts \
+                ON facts.fact_id = translations.fact_id \
+               AND facts.raw_hash = translations.source_fact_raw_hash \
+               AND facts.translatable_hash = translations.source_fact_translatable_hash \
+               AND facts.scope_key = ? \
+             ORDER BY facts.location_path, facts.fact_id",
+        )
         .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map([scope_key], |row| {
             let location_path: String = row.get(0)?;
             Ok(location_path)
         })
@@ -348,22 +359,26 @@ fn read_current_text_fact_scope_key(connection: &Connection) -> Result<String, S
 fn assert_all_translations_resolved_to_v2_facts(
     connection: &Connection,
     allowed_paths: &[String],
-    resolved_paths: &HashSet<String>,
+    resolved_fact_ids: &HashSet<String>,
 ) -> Result<(), String> {
     let allowed: HashSet<&str> = allowed_paths.iter().map(String::as_str).collect();
     let mut statement = connection
-        .prepare("SELECT location_path FROM translation_items ORDER BY location_path")
+        .prepare(
+            "SELECT fact_id, location_path FROM translation_items ORDER BY location_path, fact_id",
+        )
         .map_err(|error| format!("读取译文路径 SQL 准备失败: {error}"))?;
     let rows = statement
         .query_map([], |row| {
-            let location_path: String = row.get(0)?;
-            Ok(location_path)
+            let fact_id: String = row.get(0)?;
+            let location_path: String = row.get(1)?;
+            Ok((fact_id, location_path))
         })
         .map_err(|error| format!("读取译文路径失败: {error}"))?;
     let mut unresolved_paths: Vec<String> = Vec::new();
     for row in rows {
-        let location_path = row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
-        if allowed.contains(location_path.as_str()) && !resolved_paths.contains(&location_path) {
+        let (fact_id, location_path) =
+            row.map_err(|error| format!("读取译文路径行失败: {error}"))?;
+        if allowed.contains(location_path.as_str()) && !resolved_fact_ids.contains(&fact_id) {
             unresolved_paths.push(location_path);
         }
     }
@@ -382,7 +397,7 @@ fn assert_all_translations_resolved_to_v2_facts(
         String::new()
     };
     Err(format!(
-        "已保存译文无法匹配当前 v2 文本事实，请重新运行 rebuild-text-index 并重新导出 pending translations: {samples}{suffix}"
+        "已保存译文不再匹配当前 v2 文本事实身份，请 rebuild-text-index 后重新翻译/手动导入: {samples}{suffix}"
     ))
 }
 
@@ -458,6 +473,7 @@ fn translation_item_from_v2_fact_row(
         Some(row.role)
     };
     Ok(TranslationItem {
+        fact_id: row.fact_id,
         location_path: row.location_path,
         item_type: row.item_type,
         role,

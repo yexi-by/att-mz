@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
+
 from app.agent_toolkit import AgentToolkitService
 from app.application.flow_gate import (
     event_command_rule_scope_hash_for_setting,
@@ -72,7 +74,7 @@ async def test_quality_item_rehydrate_fails_when_saved_translation_lacks_current
             source_line_paths=[target_path],
             translation_lines=["译文"],
         )
-        await session.write_translation_items([saved_item])
+        await write_v2_test_translation_items(session, [saved_item])
         _ = await session.connection.execute(
             "DELETE FROM text_facts_v2 WHERE location_path = ?",
             (target_path,),
@@ -148,7 +150,7 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
         )
         target_item = next(item for item in scope.active_items() if item.item_type != "array")
         target_path = target_item.location_path
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=target_path,
@@ -171,7 +173,7 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
             item = text_index_item_to_translation_item(index_item)
             item.translation_lines = ["结构化质量结果测试译文" for _line in item.original_lines]
             translated_items.append(item)
-        await session.write_translation_items(translated_items)
+        await write_v2_test_translation_items(session, translated_items)
 
     def fake_native_quality_details(**kwargs: object) -> NativeQualityDetails:
         _ = kwargs

@@ -450,3 +450,73 @@ def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> N
     ):
         assert marker not in export_plugins_source
         assert marker not in exporter_source
+
+
+def test_task6_rule_validation_production_paths_do_not_keep_python_extractor_fallbacks() -> None:
+    """Task 6 公共规则校验和工作区验收不得保留 Python 全量 extractor fallback。"""
+    production_paths = (
+        Path("app/agent_toolkit/services/common.py"),
+        Path("app/agent_toolkit/services/rule_validation.py"),
+        Path("app/agent_toolkit/services/workspace.py"),
+    )
+    forbidden_markers = (
+        "PluginSourceTextExtraction(",
+        "NoteTagTextExtraction(",
+        "TextScopeService().build(",
+        "TextScopeService(",
+    )
+    for path in production_paths:
+        source = path.read_text(encoding="utf-8")
+        for marker in forbidden_markers:
+            assert marker not in source, f"{path.as_posix()} still contains {marker}"
+
+
+def test_task7_text_fact_v2_identity_paths_do_not_fallback_to_location_or_python_scope() -> None:
+    """Text Fact v2 译文身份路径不能退回 location_path join 或 Python 全量范围。"""
+    identity_paths = (
+        Path("app/text_facts.py"),
+        Path("app/persistence/translation_records.py"),
+        Path("rust/src/native_core/write_back_plan/repository.rs"),
+    )
+    identity_forbidden_markers = (
+        "translations.location_path = facts.location_path",
+        "ON facts.location_path = translations.location_path",
+        "当前 v2 文本事实出现重复 location_path",
+    )
+    for path in identity_paths:
+        source = path.read_text(encoding="utf-8")
+        for marker in identity_forbidden_markers:
+            assert marker not in source, f"{path.as_posix()} still contains {marker}"
+
+    rule_validation_paths = (
+        Path("app/agent_toolkit/services/common.py"),
+        Path("app/agent_toolkit/services/rule_validation.py"),
+        Path("app/agent_toolkit/services/workspace.py"),
+    )
+    full_scope_markers = (
+        "TextScopeService().build(",
+        "PluginSourceTextExtraction(",
+        "NoteTagTextExtraction(",
+    )
+    for path in rule_validation_paths:
+        source = path.read_text(encoding="utf-8")
+        for marker in full_scope_markers:
+            assert marker not in source, f"{path.as_posix()} still contains {marker}"
+
+
+def test_task7_fact_id_helpers_use_batched_in_queries() -> None:
+    """fact_id helper 必须批量查询，避免按行读取 v2 facts 或 saved translations。"""
+    translation_source = Path("app/persistence/translation_records.py").read_text(encoding="utf-8")
+    run_source = Path("app/persistence/run_records.py").read_text(encoding="utf-8")
+    text_facts_source = Path("app/text_facts.py").read_text(encoding="utf-8")
+
+    for source, function_name in (
+        (translation_source, "read_translated_items_by_fact_ids"),
+        (translation_source, "delete_translation_items_by_fact_ids"),
+        (run_source, "read_translation_quality_errors_by_fact_ids"),
+        (run_source, "delete_translation_quality_errors_by_fact_ids"),
+        (text_facts_source, "_read_current_text_facts_by_fact_ids"),
+    ):
+        function_source = _source_for_function(source, function_name)
+        assert "for batch in _chunks" in function_source
+        assert "fact_id IN ({placeholders})" in function_source

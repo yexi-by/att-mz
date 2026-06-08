@@ -33,6 +33,7 @@ from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
+    ItemType,
     LlmFailureRecord,
     NonstandardDataTextRuleRecord,
     PlaceholderRuleRecord,
@@ -100,6 +101,32 @@ def make_text_fact_v2_record(
         visible_hash=f"visible-{suffix}",
         translatable_hash=f"translatable-{suffix}",
         scope_key=scope_key,
+    )
+
+
+def make_saved_translation_item(
+    *,
+    fact_id: str,
+    location_path: str,
+    item_type: ItemType = "short_text",
+    role: str | None = None,
+    original_lines: list[str] | None = None,
+    source_line_paths: list[str] | None = None,
+    translation_lines: list[str] | None = None,
+    source_fact_raw_hash: str | None = None,
+    source_fact_translatable_hash: str | None = None,
+) -> TranslationItem:
+    """构造带 v2 fact identity 的已保存译文测试对象。"""
+    return TranslationItem(
+        fact_id=fact_id,
+        source_fact_raw_hash=source_fact_raw_hash or f"raw:{fact_id}",
+        source_fact_translatable_hash=source_fact_translatable_hash or f"translatable:{fact_id}",
+        location_path=location_path,
+        item_type=item_type,
+        role=role,
+        original_lines=original_lines or ["原文"],
+        source_line_paths=[location_path] if source_line_paths is None else source_line_paths,
+        translation_lines=translation_lines or ["译文"],
     )
 
 
@@ -195,11 +222,29 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
         render_part_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_render_parts_v2")
         domain_payload_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_domain_payloads_v2")
         text_fact_declared_indexes = read_sqlite_declared_index_columns(connection, "text_facts_v2")
+        translation_item_columns = read_sqlite_table_columns(connection, "translation_items")
+        translation_item_declared_indexes = read_sqlite_declared_index_columns(connection, "translation_items")
 
     assert {row[0] for row in table_rows} - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
-    assert CURRENT_SCHEMA_VERSION == 16
+    assert CURRENT_SCHEMA_VERSION == 17
     assert version_row == (CURRENT_SCHEMA_VERSION,)
     assert len(current_schema_fingerprint()) == 64
+    assert translation_item_columns == (
+        (0, "fact_id", "TEXT", 0, None, 1),
+        (1, "location_path", "TEXT", 1, None, 0),
+        (2, "item_type", "TEXT", 1, None, 0),
+        (3, "role", "TEXT", 0, None, 0),
+        (4, "original_lines", "TEXT", 1, None, 0),
+        (5, "source_line_paths", "TEXT", 1, None, 0),
+        (6, "source_fact_raw_hash", "TEXT", 1, None, 0),
+        (7, "source_fact_translatable_hash", "TEXT", 1, None, 0),
+        (8, "translation_lines", "TEXT", 1, None, 0),
+    )
+    assert translation_item_declared_indexes == {
+        "idx_translation_items_location_path": ("location_path",),
+        "idx_translation_items_source_fact_raw_hash": ("source_fact_raw_hash",),
+        "idx_translation_items_source_fact_translatable_hash": ("source_fact_translatable_hash",),
+    }
     assert text_fact_columns == (
         (0, "fact_id", "TEXT", 0, None, 1),
         (1, "schema_version", "INTEGER", 1, None, 0),
@@ -387,7 +432,8 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         assert session.target_language == "zh-Hans"
         await session.write_translation_items(
             [
-                TranslationItem(
+                make_saved_translation_item(
+                    fact_id="tfv2:rawhash:system-title",
                     location_path="System.json/gameTitle",
                     item_type="short_text",
                     role=None,
@@ -402,7 +448,8 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         assert translated_items[0].source_line_paths == []
         await session.write_translation_items(
             [
-                TranslationItem(
+                make_saved_translation_item(
+                    fact_id="tfv2:rawhash:common-event",
                     location_path="CommonEvents.json/1/0",
                     item_type="long_text",
                     role="アリス",
@@ -420,7 +467,8 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         assert translated_long_item.source_line_paths == ["CommonEvents.json/1/1"]
         await session.write_translation_items(
             [
-                TranslationItem(
+                make_saved_translation_item(
+                    fact_id="tfv2:rawhash:plugin-title",
                     location_path="plugins.js/0/Title",
                     item_type="short_text",
                     role=None,
@@ -593,6 +641,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id="fact-quality-error-1",
                     location_path="Map001.json/1/0/0",
                     item_type="long_text",
                     role=None,
@@ -603,6 +652,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
                     model_response="模型原始返回",
                 ),
                 TranslationErrorItem(
+                    fact_id="fact-quality-error-2",
                     location_path="Map002.json/1/0/0",
                     item_type="long_text",
                     role=None,
@@ -622,6 +672,11 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             {"Map002.json/1/0/0", "missing/path"},
         )
         assert [item.location_path for item in quality_errors_by_paths] == ["Map002.json/1/0/0"]
+        quality_errors_by_fact_ids = await session.read_translation_quality_errors_by_fact_ids(
+            run_record.run_id,
+            {"fact-quality-error-1", "missing-fact"},
+        )
+        assert [item.fact_id for item in quality_errors_by_fact_ids] == ["fact-quality-error-1"]
         await session.write_translation_run(
             run_record.model_copy(
                 update={
@@ -634,6 +689,11 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             run_record.run_id
         )
         assert quality_errors_after_progress_update[0].model_response == "模型原始返回"
+        deleted_quality_errors = await session.delete_translation_quality_errors_by_fact_ids(
+            {"fact-quality-error-1"}
+        )
+        assert deleted_quality_errors == 1
+        assert await session.count_translation_quality_errors(run_record.run_id) == 1
 
         await session.write_llm_failure(
             LlmFailureRecord(
@@ -648,6 +708,41 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         llm_failures = await session.read_llm_failures(run_record.run_id)
         assert llm_failures[0].category == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_translation_items_require_v2_fact_identity(minimal_game_dir: Path, tmp_path: Path) -> None:
+    """已保存译文必须以 v2 fact identity 作为主身份。"""
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    async with await registry.open_game(record.game_title) as session:
+        item = TranslationItem(
+            fact_id="tfv2:rawhash:identity",
+            source_fact_raw_hash="rawhash",
+            source_fact_translatable_hash="transhash",
+            location_path="System.json/gameTitle",
+            item_type="short_text",
+            original_lines=["原文"],
+            source_line_paths=["System.json/gameTitle"],
+            translation_lines=["译文"],
+        )
+        await session.write_translation_items([item])
+
+        saved_items = await session.read_translated_items()
+
+        assert [saved.fact_id for saved in saved_items] == ["tfv2:rawhash:identity"]
+        assert saved_items[0].source_fact_raw_hash == "rawhash"
+        assert saved_items[0].source_fact_translatable_hash == "transhash"
+
+        missing_identity_items = [
+            item.model_copy(update={"fact_id": None}),
+            item.model_copy(update={"source_fact_raw_hash": None}),
+            item.model_copy(update={"source_fact_translatable_hash": None}),
+        ]
+        for missing_identity_item in missing_identity_items:
+            with pytest.raises(ValueError, match="v2 fact identity"):
+                await session.write_translation_items([missing_identity_item])
 
 
 @pytest.mark.asyncio
@@ -715,7 +810,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
     assert TEXT_FACT_SCHEMA_VERSION == 2
-    assert CURRENT_SCHEMA_VERSION == 16
+    assert CURRENT_SCHEMA_VERSION == 17
     scope = make_text_fact_v2_scope()
     namebox_fact = TextFactV2Record(
         fact_id="fact-namebox",
@@ -1061,7 +1156,8 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
 
         await session.write_translation_items(
             [
-                TranslationItem(
+                make_saved_translation_item(
+                    fact_id="tfv2:rawhash:first-index-item",
                     location_path=first_item.location_path,
                     item_type=first_item.item_type,
                     role=first_item.role,
@@ -1084,7 +1180,8 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
 
         await session.write_translation_items(
             [
-                TranslationItem(
+                make_saved_translation_item(
+                    fact_id="tfv2:rawhash:unwritable-index-item",
                     location_path=second_item.location_path,
                     item_type=second_item.item_type,
                     role=second_item.role,
@@ -1092,7 +1189,8 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
                     source_line_paths=second_item.source_line_paths,
                     translation_lines=["不可写路径译文"],
                 ),
-                TranslationItem(
+                make_saved_translation_item(
+                    fact_id="tfv2:rawhash:stale-index-item",
                     location_path="missing/from/current/index",
                     item_type="short_text",
                     role=None,

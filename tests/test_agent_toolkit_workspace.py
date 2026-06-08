@@ -532,6 +532,119 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
     assert report.details["plugin_source_rules"]
 
 
+@pytest.mark.asyncio
+async def test_validate_agent_workspace_skips_plugin_source_note_tag_python_extractor_fallbacks(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """工作区验收规则分支不再构造插件源码/Note 标签 Python 提取器或完整文本范围。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
+    plugins = ensure_json_array(coerce_json_value(cast(object, json.loads(plugins_json_text))), "plugins")
+    plugins.append({"name": "WorkspaceFallbackGuard", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "WorkspaceFallbackGuard.js").write_text(
+        "Window_Base.prototype.drawText('ワークスペース検証本文', 0, 0, 320);\n",
+        encoding="utf-8",
+    )
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:薬草の詳細>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        game_data = await load_game_data(
+            minimal_game_dir,
+            include_writable_copies=False,
+            run_dialogue_probe_check=False,
+        )
+        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "WorkspaceFallbackGuard.js")
+
+    workspace = tmp_path / "workspace"
+    _ = await service.prepare_agent_workspace(
+        game_title="テストゲーム",
+        output_dir=workspace,
+        command_codes=None,
+    )
+    plugin_source_rule_entries: JsonArray = []
+    for file_scan in scan.files:
+        active_selectors = [
+            active_candidate.selector
+            for active_candidate in file_scan.candidates
+            if active_candidate.active
+        ]
+        if not active_selectors:
+            continue
+        plugin_source_rule_entries.append(
+            {
+                "file": file_scan.file_name,
+                "selectors": [candidate.selector] if file_scan.file_name == candidate.file_name else [],
+                "excluded_selectors": [
+                    selector
+                    for selector in active_selectors
+                    if selector != candidate.selector
+                ],
+            }
+        )
+    _ = (workspace / "plugin-source-rules.json").write_text(
+        json.dumps(plugin_source_rule_entries, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _ = (workspace / "note-tag-rules.json").write_text(
+        json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest_path = workspace / "manifest.json"
+    manifest = load_json_object(manifest_path)
+    manifest_files = ensure_json_array(coerce_json_value(manifest["files"]), "manifest.files")
+    manifest_files.append(str(workspace / "plugin-source-rules.json"))
+    _ = manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def forbidden_plugin_source_extractor(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 不应构造 PluginSourceTextExtraction")
+
+    def forbidden_note_tag_extractor(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 不应构造 NoteTagTextExtraction")
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("validate-agent-workspace 不应构建完整 TextScopeService 范围")
+
+    monkeypatch.setattr(
+        "app.plugin_source_text.extraction.PluginSourceTextExtraction",
+        forbidden_plugin_source_extractor,
+    )
+    monkeypatch.setattr(
+        "app.note_tag_text.extraction.NoteTagTextExtraction",
+        forbidden_note_tag_extractor,
+    )
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
+
+    assert "plugin_source_rules" in report.details
+    assert "note_tag_rules" in report.details
+    assert not any(error.code.startswith("plugin_source_") for error in report.errors)
+    assert not any(error.code.startswith("note_tag_") for error in report.errors)
+
+
 @pytest.mark.parametrize(
     ("sample_text", "expected_candidate"),
     [

@@ -710,7 +710,7 @@ async def test_translate_max_items_warm_index_uses_sql_pending_count_without_ful
     assert isinstance(indexed_count, int)
     async with await registry.open_game("テストゲーム") as session:
         existing_item = (await session.read_pending_text_index_items(limit=1))[0]
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=existing_item.location_path,
@@ -776,7 +776,7 @@ async def test_translate_max_items_warm_index_skips_pending_rows_when_sql_pendin
     async with await registry.open_game("テストゲーム") as session:
         pending_items = await session.read_pending_text_index_items(limit=None)
         assert pending_items
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,

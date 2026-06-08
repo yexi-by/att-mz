@@ -4,6 +4,17 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 
+
+async def _current_fact_id_for_path(session: TargetGameSession, location_path: str) -> str:
+    """读取测试路径对应的当前 v2 fact_id。"""
+    async with session.connection.execute(
+        "SELECT fact_id FROM text_facts_v2 WHERE location_path = ? ORDER BY fact_id LIMIT 1",
+        (location_path,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    return cast(str, row["fact_id"])
+
 @pytest.mark.asyncio
 async def test_export_quality_fix_template_stops_on_text_scope_blocker(
     minimal_game_dir: Path,
@@ -542,6 +553,7 @@ async def test_manual_pending_translation_export_and_import(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, target_path),
                     location_path=target_path,
                     item_type="short_text",
                     role=None,
@@ -601,10 +613,9 @@ async def test_manual_quality_fix_import_uses_warm_text_index_scope(
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=target_path,
-                    item_type="long_text",
-                    role="アリス",
                     original_lines=["こんにちは"],
                     source_line_paths=["CommonEvents.json/1/1"],
                     translation_lines=["こんにちは"],
@@ -621,6 +632,7 @@ async def test_manual_quality_fix_import_uses_warm_text_index_scope(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, target_path),
                     location_path=target_path,
                     item_type="long_text",
                     role="アリス",
@@ -918,6 +930,7 @@ async def test_export_quality_fix_template_uses_v2_fact_translatable_text(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, target_path),
                     location_path=target_path,
                     item_type="short_text",
                     role=None,
@@ -967,17 +980,14 @@ async def test_export_quality_fix_template_hard_stop_does_not_leak_old_index_tex
                 ),
             ),
         )
-        await session.write_translation_items(
-            [
-                TranslationItem(
-                    location_path="Removed.json/ghost",
-                    item_type="short_text",
-                    role=None,
-                    original_lines=["旧译文源文"],
-                    source_line_paths=["Removed.json/ghost"],
-                    translation_lines=["旧译文"],
-                )
-            ]
+        await insert_stale_v2_translation_row_for_test(
+            session,
+            location_path="Removed.json/ghost",
+            item_type="short_text",
+            role=None,
+            original_lines=["旧译文源文"],
+            source_line_paths=["Removed.json/ghost"],
+            translation_lines=["旧译文"],
         )
         await session.connection.commit()
 
@@ -1317,10 +1327,9 @@ async def test_reset_translations_input_deletes_paths_without_full_scope_load(
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=target_path,
-                    item_type="long_text",
-                    role="アリス",
                     original_lines=["こんにちは"],
                     source_line_paths=["CommonEvents.json/1/1"],
                     translation_lines=["你好"],
@@ -1368,10 +1377,9 @@ async def test_reset_translations_input_rejects_unknown_paths_without_partial_de
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=target_path,
-                    item_type="long_text",
-                    role="アリス",
                     original_lines=["こんにちは"],
                     source_line_paths=["CommonEvents.json/1/1"],
                     translation_lines=["你好"],
@@ -1413,10 +1421,9 @@ async def test_reset_translations_input_rejects_path_missing_current_v2_fact(
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=target_path,
-                    item_type="long_text",
-                    role="アリス",
                     original_lines=["こんにちは"],
                     source_line_paths=["CommonEvents.json/1/1"],
                     translation_lines=["你好"],
@@ -1455,20 +1462,22 @@ async def test_reset_translations_input_cold_rebuilds_missing_text_index(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
     target_path = "CommonEvents.json/1/0"
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=target_path,
-                    item_type="long_text",
-                    role="アリス",
                     original_lines=["こんにちは"],
                     source_line_paths=["CommonEvents.json/1/1"],
                     translation_lines=["你好"],
                 )
             ]
         )
+        await session.clear_text_index()
     input_path = tmp_path / "reset-cold.json"
     _ = input_path.write_text(
         json.dumps({"location_paths": [target_path]}, ensure_ascii=False),
@@ -2255,20 +2264,16 @@ async def test_export_quality_fix_template_collects_repairable_items(
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=residual_path,
-                    item_type="short_text",
-                    role=None,
                     original_lines=residual_original_lines,
-                    source_line_paths=[],
                     translation_lines=residual_original_lines,
                 ),
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=placeholder_path,
-                    item_type="long_text",
-                    role=None,
                     original_lines=placeholder_original_lines,
-                    source_line_paths=[],
                     translation_lines=[r"\C[4]甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"],
                 ),
             ]
@@ -2283,6 +2288,7 @@ async def test_export_quality_fix_template_collects_repairable_items(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, quality_error_path),
                     location_path=quality_error_path,
                     item_type="short_text",
                     role=None,
@@ -2370,6 +2376,7 @@ async def test_quality_fix_template_restores_prefilled_model_placeholders(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, target_path),
                     location_path=target_path,
                     item_type="long_text",
                     role=None,
@@ -2424,12 +2431,10 @@ async def test_reset_translations_input_deletes_known_paths_and_warns_missing_sa
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
+                await make_current_v2_saved_translation_item(
+                    session,
                     location_path=target_path,
-                    item_type="short_text",
-                    role=None,
                     original_lines=["こんにちは"],
-                    source_line_paths=[],
                     translation_lines=["你好"],
                 )
             ]
@@ -2476,17 +2481,11 @@ async def test_reset_translations_all_deletes_current_active_translation_cache(
     target_paths = list(payload)[:2]
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
-            [
-                TranslationItem(
-                    location_path=target_path,
-                    item_type="short_text",
-                    role=None,
-                    original_lines=["こんにちは"],
-                    source_line_paths=[],
-                    translation_lines=["你好"],
-                )
-                for target_path in target_paths
-            ]
+            await make_current_v2_saved_translation_items(
+                session,
+                location_paths=target_paths,
+                translations_by_path={target_path: ["你好"] for target_path in target_paths},
+            )
         )
 
     report = await service.reset_translations(game_title="テストゲーム", reset_all=True)

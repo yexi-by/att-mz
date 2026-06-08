@@ -102,6 +102,10 @@ from app.terminology import TerminologyGlossary, TerminologyRegistry
 
 from app.text_scope import TextScopeService
 
+from app.text_facts import read_current_text_fact_translation_items_by_paths
+
+from app.text_index import rebuild_text_index_native_storage
+
 from app.utils.config_loader_utils import load_setting
 
 from tests._native_write_plan_helper import reset_writable_copies, write_data_text, write_game_files
@@ -290,7 +294,87 @@ async def _prepare_write_gate_session(
         scope_hash="placeholder-rules-imported",
         reviewed_empty=False,
     )
+    _ = await rebuild_text_index_native_storage(
+        session=session,
+        setting=setting,
+        text_rules=text_rules,
+    )
     return game_data, setting, text_rules
+
+async def write_v2_test_translation_items(
+    session: TargetGameSession,
+    items: list[TranslationItem],
+) -> None:
+    """把旧式测试译文映射到当前 v2 fact 身份后写入主译文表。"""
+    items_to_migrate = [item for item in items]
+    current_items = await read_current_text_fact_translation_items_by_paths(
+        session,
+        [item.location_path for item in items_to_migrate],
+    )
+    current_paths = {item.location_path for item in current_items}
+    missing_items = [
+        item for item in items_to_migrate if item.location_path not in current_paths
+    ]
+    if missing_items:
+        await session.write_translation_items(
+            [_generated_stale_v2_test_item(item) for item in missing_items]
+        )
+        missing_item_ids = {id(item) for item in missing_items}
+        items_to_migrate = [
+            item for item in items_to_migrate if id(item) not in missing_item_ids
+        ]
+        if not items_to_migrate:
+            return
+        current_items = await read_current_text_fact_translation_items_by_paths(
+            session,
+            [item.location_path for item in items_to_migrate],
+        )
+    current_by_path: dict[str, list[TranslationItem]] = {}
+    for current_item in current_items:
+        current_by_path.setdefault(current_item.location_path, []).append(current_item)
+    migrated_items: list[TranslationItem] = []
+    for item in items_to_migrate:
+        current_item = _pop_matching_v2_test_item(
+            current_by_path.get(item.location_path, []),
+            item,
+        )
+        if current_item is None:
+            raise AssertionError(f"测试夹具缺少当前 v2 fact: {item.location_path}")
+        current_item.role = item.role
+        current_item.original_lines = [line for line in item.original_lines]
+        current_item.source_line_paths = [path for path in item.source_line_paths]
+        current_item.translation_lines = [line for line in item.translation_lines]
+        migrated_items.append(current_item)
+    await session.write_translation_items(migrated_items)
+
+def _generated_stale_v2_test_item(item: TranslationItem) -> TranslationItem:
+    """把无当前 fact 的写回测试译文转成显式过期 v2 行。"""
+    identity = item.location_path.replace("'", "_")
+    return TranslationItem(
+        fact_id=f"test-stale-fact:{identity}",
+        source_fact_raw_hash=f"test-stale-raw:{identity}",
+        source_fact_translatable_hash=f"test-stale-translatable:{identity}",
+        location_path=item.location_path,
+        item_type=item.item_type,
+        role=item.role,
+        original_lines=[line for line in item.original_lines],
+        source_line_paths=[path for path in item.source_line_paths],
+        translation_lines=[line for line in item.translation_lines],
+    )
+
+def _pop_matching_v2_test_item(
+    candidates: list[TranslationItem],
+    item: TranslationItem,
+) -> TranslationItem | None:
+    """从同 path 候选中优先取源文一致的 v2 fact 测试项。"""
+    if not candidates:
+        return None
+    for index, candidate in enumerate(candidates):
+        if candidate.original_lines == item.original_lines:
+            return candidates.pop(index)
+    if len(candidates) == 1:
+        return candidates.pop()
+    return candidates.pop(0)
 
 class _NativePlanSessionStub:
     """测试 Rust 写回计划应用层协议的会话桩。"""
@@ -439,5 +523,6 @@ __all__ = (
     "_translated_test_line_preserving_controls",
     "_mv_virtual_namebox_rule_records",
     "_prepare_write_gate_session",
+    "write_v2_test_translation_items",
     "_NativePlanSessionStub",
 )

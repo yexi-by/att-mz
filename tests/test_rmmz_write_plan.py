@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from collections.abc import Callable
+from typing import cast
 
 from app.agent_toolkit import AgentToolkitService
 from app.native_write_plan import build_native_write_back_plan, build_native_write_back_setting_payload
@@ -14,9 +15,21 @@ from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_li
 from app.text_index import (
     TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
     TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
+    rebuild_text_index_native_storage,
 )
 
 from tests.rmmz_writeback_contract_fixtures import *
+
+
+async def _current_fact_id_for_path(session: TargetGameSession, location_path: str) -> str:
+    """读取当前 v2 fact_id，供写回质量错误测试使用。"""
+    async with session.connection.execute(
+        "SELECT fact_id FROM text_facts_v2 WHERE location_path = ? ORDER BY fact_id LIMIT 1",
+        (location_path,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    return cast(str, row["fact_id"])
 
 
 async def _write_translations_from_rebuilt_text_index(
@@ -34,7 +47,7 @@ async def _write_translations_from_rebuilt_text_index(
     assert rebuild_report.status == "ok"
     async with await registry.open_game(game_title) as session:
         indexed_items = await session.read_text_index_items()
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -101,7 +114,7 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
             text_rules=text_rules,
         )
         if mode != "write_terminology":
-            await session.write_translation_items(
+            await write_v2_test_translation_items(session,
                 [
                     TranslationItem(
                         location_path=item.location_path,
@@ -239,7 +252,7 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
             game_data=game_data,
             text_rules=text_rules,
         )
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -263,7 +276,7 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
     assert rebuild_report.status == "ok"
 
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="System.json/staleTranslation",
@@ -346,7 +359,7 @@ async def test_write_related_commands_rebuild_missing_or_stale_text_index_before
             game_data=game_data,
             text_rules=text_rules,
         )
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -493,6 +506,7 @@ async def test_write_related_commands_stop_when_text_index_rebuild_fails_without
             registry=TerminologyRegistry(speaker_names={"アリス": "爱丽丝"}),
             glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
         )
+        await session.clear_text_index()
 
     async def fake_rebuild_text_index_for_write_operation(
         self: TranslationHandler,
@@ -575,7 +589,7 @@ async def test_write_back_warm_index_rejects_quality_errors_without_python_scope
         )
         active_items = scope.active_items()
         failed_item = active_items[0]
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -602,6 +616,7 @@ async def test_write_back_warm_index_rejects_quality_errors_without_python_scope
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, failed_item.location_path),
                     location_path=failed_item.location_path,
                     item_type=failed_item.item_type,
                     role=failed_item.role,
@@ -683,7 +698,7 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
         )
         active_items = scope.active_items()
         failed_item = active_items[0]
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -709,6 +724,7 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, failed_item.location_path),
                     location_path=failed_item.location_path,
                     item_type=failed_item.item_type,
                     role=failed_item.role,
@@ -825,7 +841,7 @@ async def test_direct_write_back_delegates_native_quality_to_rust_plan(
                     translation_lines=translation_lines,
                 )
             )
-        await session.write_translation_items(translated_items)
+        await write_v2_test_translation_items(session, translated_items)
 
     def forbidden_python_native_check(*args: object, **kwargs: object) -> NoReturn:
         """Python 写回前置不应再重复执行 Rust 已覆盖的 native 质量检查。"""
@@ -1044,6 +1060,11 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             ),
             reviewed_empty=True,
         )
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
         active_items = scope.active_items()
         assert active_items
         failed_item = active_items[0]
@@ -1057,6 +1078,7 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             run_record.run_id,
             [
                 TranslationErrorItem(
+                    fact_id=await _current_fact_id_for_path(session, failed_item.location_path),
                     location_path=failed_item.location_path,
                     item_type=failed_item.item_type,
                     role=failed_item.role,
@@ -1492,7 +1514,7 @@ async def test_native_write_back_reads_mv_namebox_render_parts_not_saved_source_
         render_parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
         assert "".join(part.raw_text for part in render_parts) == r"\n<Dan:> Hello"
         indexed_items = await session.read_text_index_items()
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -1627,7 +1649,7 @@ async def test_native_plugin_source_runtime_maps_use_v2_fact_hashes(
             TextFactV2ReadFilter(scope_key=scope_key, domain="plugin_source")
         )
         fact = next(item for item in facts if item.source_file == "HashEscapedText.js")
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=fact.location_path,
@@ -1744,7 +1766,7 @@ async def test_native_write_back_blocks_stale_plugin_source_raw_selector(
             TextFactV2ReadFilter(scope_key=scope_key, domain="plugin_source")
         )
         fact = next(item for item in facts if item.source_file == "RawSelectorChanged.js")
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=fact.location_path,

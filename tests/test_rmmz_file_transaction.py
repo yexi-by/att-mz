@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
 from app.agent_toolkit import AgentToolkitService
-from app.text_index import text_index_item_to_translation_item
+from app.text_index import rebuild_text_index_native_storage, text_index_item_to_translation_item
 
 @pytest.mark.asyncio
 async def test_english_visible_401_short_fragment_is_extracted(
@@ -196,7 +196,13 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
             reviewed_empty=True,
         )
         active_items = scope.active_items()
-        await session.write_translation_items(
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await write_v2_test_translation_items(
+            session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -233,7 +239,7 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
                 ]
             )
             indexed_translation_items.append(item)
-        await session.write_translation_items(indexed_translation_items)
+        await write_v2_test_translation_items(session, indexed_translation_items)
 
     handler = TranslationHandler(registry, LLMHandler())
     try:

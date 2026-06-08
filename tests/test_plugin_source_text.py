@@ -74,6 +74,22 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
 
 
+def _stale_v2_translation_item_for_test(item: TranslationItem) -> TranslationItem:
+    """给故意过期的测试译文补齐 v2 身份，避免绕过生产保存校验。"""
+    identity = item.location_path.replace("\\", ":").replace("/", ":").replace("'", "_")
+    return TranslationItem(
+        fact_id=f"test-stale-fact:{identity}",
+        source_fact_raw_hash=f"test-stale-raw:{identity}",
+        source_fact_translatable_hash=f"test-stale-translatable:{identity}",
+        location_path=item.location_path,
+        item_type=item.item_type,
+        role=item.role,
+        original_lines=[line for line in item.original_lines],
+        source_line_paths=[path for path in item.source_line_paths],
+        translation_lines=[line for line in item.translation_lines],
+    )
+
+
 def test_plugin_source_scanner_public_surface_is_current() -> None:
     """包根只暴露业务级插件源码能力，低层 scanner API 留在 scanner 模块内。"""
     removed_names = {
@@ -2406,17 +2422,21 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
     async with await registry.open_game("テストゲーム") as session:
         await session.write_translation_items(
             [
-                TranslationItem(
-                    location_path=target_item.location_path,
-                    item_type=target_item.item_type,
-                    original_lines=target_item.original_lines,
-                    translation_lines=["候选一"],
+                _stale_v2_translation_item_for_test(
+                    TranslationItem(
+                        location_path=target_item.location_path,
+                        item_type=target_item.item_type,
+                        original_lines=target_item.original_lines,
+                        translation_lines=["候选一"],
+                    )
                 ),
-                TranslationItem(
-                    location_path="Actors.json/1/name",
-                    item_type="short_text",
-                    original_lines=["関係ない名前"],
-                    translation_lines=["无关名字"],
+                _stale_v2_translation_item_for_test(
+                    TranslationItem(
+                        location_path="Actors.json/1/name",
+                        item_type="short_text",
+                        original_lines=["関係ない名前"],
+                        translation_lines=["无关名字"],
+                    )
                 ),
             ]
         )
@@ -2669,7 +2689,7 @@ async def test_import_plugin_source_rules_replaces_stale_existing_rule(
                 )
             ]
         )
-        await session.write_translation_items([stale_item])
+        await session.write_translation_items([_stale_v2_translation_item_for_test(stale_item)])
 
     report = await AgentToolkitService(
         game_registry=registry,

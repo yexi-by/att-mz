@@ -7,6 +7,8 @@ from typing import cast
 
 import pytest
 
+from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
+
 from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import TextRulesSetting
 from app.persistence import GameRegistry, TargetGameSession
@@ -66,11 +68,17 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
     old_records = build_plugin_source_rule_records_from_import(
         game_data=game_data,
         import_file=parse_plugin_source_rule_import_text(
-            json.dumps(
-                [{"file": "RuleSource.js", "selectors": [old_candidate.selector]}],
-                ensure_ascii=False,
-            )
-        ),
+                json.dumps(
+                    [
+                        {
+                            "file": "RuleSource.js",
+                            "selectors": [old_candidate.selector],
+                            "excluded_selectors": [new_candidate.selector],
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            ),
         text_rules=text_rules,
         scan=scan,
     )
@@ -94,7 +102,11 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
     )
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(old_records)
-        await session.write_translation_items([old_item])
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        await write_v2_test_translation_items(session, [old_item])
         await session.replace_plugin_source_runtime_write_maps([runtime_map])
 
     async def failing_clear_runtime_maps(
@@ -105,7 +117,6 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         raise RuntimeError("forced rule import tail failure")
 
     monkeypatch.setattr(TargetGameSession, "clear_plugin_source_runtime_write_maps", failing_clear_runtime_maps)
-    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     new_rules_text = json.dumps(
         [
             {

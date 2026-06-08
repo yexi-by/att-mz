@@ -261,31 +261,34 @@ def _write_temp_db(
                 ]
             )
         )
-        _ = connection.executemany(
-            """
-            INSERT INTO translation_items
-            (location_path, item_type, role, original_lines, source_line_paths, translation_lines)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    item.location_path,
-                    item.item_type,
-                    item.role,
-                    json.dumps(item.original_lines, ensure_ascii=False),
-                    json.dumps(item.source_line_paths, ensure_ascii=False),
-                    json.dumps(item.translation_lines, ensure_ascii=False),
-                )
-                for item in items
-            ],
-        )
-        _insert_text_fact_v2_contract(
+        fact_identity_by_location = _insert_text_fact_v2_contract(
             connection,
             items,
             game_data,
             speaker_name_translations,
             terminology_registry,
             mv_virtual_namebox_rule_records,
+        )
+        _ = connection.executemany(
+            """
+            INSERT INTO translation_items
+            (
+                fact_id,
+                location_path,
+                item_type,
+                role,
+                original_lines,
+                source_line_paths,
+                source_fact_raw_hash,
+                source_fact_translatable_hash,
+                translation_lines
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                _translation_item_row_for_temp_db(item, fact_identity_by_location)
+                for item in items
+            ],
         )
         _insert_speaker_terms(connection, speaker_name_translations)
         _insert_terminology_registry(connection, terminology_registry)
@@ -304,7 +307,7 @@ def _insert_text_fact_v2_contract(
     speaker_name_translations: dict[str, str] | None,
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
-) -> None:
+) -> dict[str, tuple[str, str, str]]:
     """让测试临时库满足 Rust 写回的 v2 fact scope 契约。"""
     scope_key = "test-helper-current"
     _ = connection.execute(
@@ -322,6 +325,7 @@ def _insert_text_fact_v2_contract(
     index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]] = []
     fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]] = []
     render_rows: list[tuple[str, int, str, str, str, str]] = []
+    fact_identity_by_location: dict[str, tuple[str, str, str]] = {}
     plugin_source_literals = _plugin_source_literals_by_location_path(game_data)
     source_line_paths_by_location = {
         item.location_path: list(item.source_line_paths)
@@ -364,6 +368,7 @@ def _insert_text_fact_v2_contract(
         if _helper_domain_requires_render_parts(domain):
             render_rows.append((fact_id, 0, "translated_body", raw_text, translatable_text, "body"))
         translatable_hash = _sha256_text(translatable_text)
+        fact_identity_by_location[item.location_path] = (fact_id, raw_hash, translatable_hash)
         index_rows.append(
             (
                 item.location_path,
@@ -407,6 +412,7 @@ def _insert_text_fact_v2_contract(
         index_rows=index_rows,
         fact_rows=fact_rows,
         render_rows=render_rows,
+        fact_identity_by_location=fact_identity_by_location,
     )
     if index_rows:
         _ = connection.executemany(INSERT_TEXT_INDEX_ITEM, index_rows)
@@ -414,6 +420,29 @@ def _insert_text_fact_v2_contract(
         _ = connection.executemany(INSERT_TEXT_FACT_V2, fact_rows)
     if render_rows:
         _ = connection.executemany(INSERT_TEXT_FACT_RENDER_PART_V2, render_rows)
+    return fact_identity_by_location
+
+
+def _translation_item_row_for_temp_db(
+    item: TranslationItem,
+    fact_identity_by_location: dict[str, tuple[str, str, str]],
+) -> tuple[str, str, str, str | None, str, str, str, str, str]:
+    """按测试临时 v2 fact 身份序列化保存译文行。"""
+    identity = fact_identity_by_location.get(item.location_path)
+    if identity is None:
+        raise AssertionError(f"测试临时库缺少当前 v2 fact: {item.location_path}")
+    fact_id, raw_hash, translatable_hash = identity
+    return (
+        fact_id,
+        item.location_path,
+        item.item_type,
+        item.role,
+        json.dumps(item.original_lines, ensure_ascii=False),
+        json.dumps(item.source_line_paths, ensure_ascii=False),
+        raw_hash,
+        translatable_hash,
+        json.dumps(item.translation_lines, ensure_ascii=False),
+    )
 
 
 def _text_fact_domain_for_helper(location_path: str) -> str:
@@ -500,6 +529,7 @@ def _append_mv_virtual_namebox_fact_rows(
     index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
     fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
     render_rows: list[tuple[str, int, str, str, str, str]],
+    fact_identity_by_location: dict[str, tuple[str, str, str]],
 ) -> None:
     """为 MV 虚拟名字框术语写回补当前 v2 fact/render parts 测试契约。"""
     next_fact_index = first_fact_index
@@ -518,6 +548,7 @@ def _append_mv_virtual_namebox_fact_rows(
             index_rows=index_rows,
             fact_rows=fact_rows,
             render_rows=render_rows,
+            fact_identity_by_location=fact_identity_by_location,
         )
 
 
@@ -598,12 +629,14 @@ def _append_single_mv_virtual_namebox_fact_row(
     index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
     fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
     render_rows: list[tuple[str, int, str, str, str, str]],
+    fact_identity_by_location: dict[str, tuple[str, str, str]],
 ) -> None:
     """追加单条 MV virtual namebox v2 fact 测试行。"""
     render_parts = _mv_virtual_namebox_render_parts(raw_text, virtual_speaker)
     translatable_text = virtual_speaker.body_text
     raw_hash = _sha256_text(raw_text)
     translatable_hash = _sha256_text(translatable_text)
+    fact_identity_by_location[location_path] = (fact_id, raw_hash, translatable_hash)
     index_rows.append(
         (
             location_path,

@@ -15,6 +15,7 @@ pub(super) const PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME: &str = "plugins_source_ori
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct TranslationItem {
+    pub(super) fact_id: String,
     pub(super) location_path: String,
     pub(super) item_type: String,
     pub(super) role: Option<String>,

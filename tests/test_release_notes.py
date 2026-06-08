@@ -47,6 +47,19 @@ def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
     assert not missing_terms, f"最新 CHANGELOG 段落缺少 v2 契约变化: {missing_terms}"
 
 
+def test_text_fact_v2_design_keeps_runtime_literal_out_of_current_domains() -> None:
+    """当前 v2 fact domain 列表不得把 runtime literal 伪装成翻译事实。"""
+    spec_text = (
+        ROOT / "docs" / "superpowers" / "specs" / "2026-06-07-text-fact-contract-v2-design.md"
+    ).read_text(encoding="utf-8")
+    current_domains = spec_text.split("## 非翻译事实边界", 1)[0]
+    non_translation_boundary = spec_text.split("## 非翻译事实边界", 1)[1]
+
+    assert "active_runtime_literal" not in current_domains
+    assert "Placeholder 候选和 active runtime literal 诊断" in non_translation_boundary
+    assert "不属于当前 v2 fact domains" in non_translation_boundary
+
+
 def test_extract_release_notes_section_reads_matching_tag() -> None:
     """发布说明来自 CHANGELOG 中指定 tag 的完整版本段落。"""
     changelog_text = """# 更新日志

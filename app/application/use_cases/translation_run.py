@@ -484,6 +484,7 @@ def expand_cached_error_items(
         for duplicate_item in duplicate_items:
             expanded_error_items.append(
                 TranslationErrorItem(
+                    fact_id=duplicate_item.fact_id,
                     location_path=duplicate_item.location_path,
                     item_type=duplicate_item.item_type,
                     role=duplicate_item.role,

@@ -45,6 +45,10 @@ uv run python main.py rebuild-text-index --game <游戏标题>
 - `nonstandard_data`
 - `plugin_source`
 
+## 非翻译事实边界
+
+当前 `text_facts_v2` 只保存会参与翻译、质量检查、手动补译或写进游戏文件的文本事实。Placeholder 候选和 active runtime literal 诊断仍由 Rust/native scan 输出和 workflow metadata 承载，不属于当前 v2 fact domains。若后续需要把它们持久化，应新开设计，明确它们是否进入独立 audit fact 表，避免污染正文翻译事实表。
+
 ## SQLite 边界
 
 当前 schema 以 `text_facts_v2`、`text_fact_render_parts_v2`、`text_fact_domain_payloads_v2` 和 `text_fact_scope_v2` 为 v2 文本事实边界。业务代码只通过持久化会话与 typed adapter 读取这些事实，不在 Python 侧重新构建完整文本范围来替代 Rust 生成结果。
@@ -106,6 +110,21 @@ uv run python main.py rebuild-text-index --game <游戏标题> --debug --debug-t
 ```
 
 普通 summary 只作为业务结果；阶段级耗时从 `summary.diagnostics` 或完整诊断 JSON 读取。
+
+本次 v2 review closure 的代码侧性能防线是：当前实现不得新增 Python 全量文本范围重建，不得按行查询 v2 facts 或 `translation_items`，不得把 saved translation 状态退回 `location_path` join，Rust 写回继续使用可配置 Rayon 线程池。真实游戏性能不在本设计文档中宣称已经通过；维护者需要在目标样本上单独执行 benchmark 并记录耗时。
+
+维护者验收真实游戏性能时，建议至少运行：
+
+```powershell
+uv run python main.py rebuild-text-index --game <游戏标题> --debug-timings
+uv run python main.py quality-report --game <游戏标题> --debug-timings
+uv run python main.py prepare-agent-workspace --game <游戏标题> --output-dir <工作区> --debug-timings
+uv run python main.py validate-agent-workspace --game <游戏标题> --workspace <工作区> --debug-timings
+uv run python main.py export-pending-translations --game <游戏标题> --output <输出文件> --debug-timings
+uv run python main.py write-translated --game <游戏标题> --debug-timings
+```
+
+每个命令至少记录总耗时、`text_fact_count`、`render_part_count`、`scan_file_count`、`domain_fact_counts`、`native_thread_count`、Rust 内部分段耗时、索引是否重建或复用，以及 CPU 和内存压力。若慢于 v2 前基线，先排查重复全量扫描，再看 SQL query plan，最后看 Rust 并行阶段耗时；不得为性能恢复新增 Python fallback 路径。
 
 ## 文档边界
 

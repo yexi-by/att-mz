@@ -8,6 +8,7 @@ from app.application.flow_gate import count_note_tag_rule_candidates
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
+from app.rmmz.schema import ItemType
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
 from app.text_facts import read_current_text_fact_records_v2, text_fact_record_to_translation_item
@@ -18,6 +19,26 @@ def _json_int_for_assert(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise AssertionError(f"{label} 必须是整数")
     return value
+
+
+def _rule_test_translation_item(
+    *,
+    location_path: str,
+    original_lines: list[str],
+    translation_lines: list[str],
+    item_type: ItemType = "short_text",
+) -> TranslationItem:
+    """构造符合当前 v2 保存译文表形状的规则测试译文。"""
+    return TranslationItem(
+        fact_id=f"test-fact:{location_path}",
+        source_fact_raw_hash=f"test-raw:{location_path}",
+        source_fact_translatable_hash=f"test-translatable:{location_path}",
+        location_path=location_path,
+        item_type=item_type,
+        original_lines=original_lines,
+        source_line_paths=[location_path],
+        translation_lines=translation_lines,
+    )
 
 @pytest.mark.asyncio
 async def test_agent_translation_source_load_skips_writable_copies_by_default(
@@ -82,7 +103,7 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
 
     _ = await handler.import_plugin_rules(game_title="テストゲーム", input_path=rules_path)
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Message",
@@ -232,7 +253,7 @@ async def test_import_plugin_rules_uses_native_plugin_config_context(
     )
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_text_rules([old_rule])
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Message",
@@ -307,7 +328,7 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
 
     _ = await handler.import_event_command_rules(game_title="テストゲーム", input_path=rules_path)
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="CommonEvents.json/1/4/parameters/3/message",
@@ -413,7 +434,7 @@ async def test_import_event_command_rules_uses_native_hit_details_for_stale_clea
                 )
             ]
         )
-        await session.write_translation_items([stale_item])
+        await write_v2_test_translation_items(session, [stale_item])
 
     rules_path = tmp_path / "event-command-rules.json"
     _ = rules_path.write_text(
@@ -488,9 +509,8 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
     empty_rules_path = tmp_path / "note-tag-rules-empty.json"
     _ = empty_rules_path.write_text("{}\n", encoding="utf-8")
-    stale_item = TranslationItem(
+    stale_item = _rule_test_translation_item(
         location_path="Items.json/1/note/MissingTag",
-        item_type="short_text",
         original_lines=["古いタグ"],
         translation_lines=["旧标签"],
     )
@@ -498,7 +518,7 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
         await session.replace_note_tag_text_rules(
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
-        await session.write_translation_items([stale_item])
+        await write_v2_test_translation_items(session, [stale_item])
 
     async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
         raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
@@ -1055,7 +1075,7 @@ async def test_source_residual_rule_commands_use_warm_text_index_without_full_sc
         if "こんにちは" in "\n".join(item.original_lines)
     )
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=target_item.location_path,
@@ -2161,7 +2181,7 @@ async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Nested/text",
@@ -2216,7 +2236,7 @@ async def test_validate_plugin_rules_uses_native_plugin_config_hit_details(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Nested/text",
@@ -2393,17 +2413,15 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
-                TranslationItem(
+                _rule_test_translation_item(
                     location_path="Items.json/1/note/拡張説明",
-                    item_type="short_text",
                     original_lines=["一行目"],
                     translation_lines=["第一行"],
                 ),
-                TranslationItem(
+                _rule_test_translation_item(
                     location_path="Actors.json/1/name",
-                    item_type="short_text",
                     original_lines=["関係ない名前"],
                     translation_lines=["无关名字"],
                 ),
@@ -2685,9 +2703,8 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    stale_item = TranslationItem(
+    stale_item = _rule_test_translation_item(
         location_path="Items.json/1/note/MissingTag",
-        item_type="short_text",
         original_lines=["古いタグ"],
         translation_lines=["旧标签"],
     )
@@ -2695,7 +2712,7 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
         await session.replace_note_tag_text_rules(
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
-        await session.write_translation_items([stale_item])
+        await write_v2_test_translation_items(session, [stale_item])
 
     async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
         raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
@@ -2716,6 +2733,115 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
     assert report.summary["deleted_translation_items"] == 1
     assert rules == []
     assert stale_item.location_path not in paths
+
+
+@pytest.mark.asyncio
+async def test_public_rule_validation_and_import_skip_python_extractor_fallbacks(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件源码和 Note 标签公共规则命令不再构造 Python 全量提取器或完整文本范围。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
+    plugins = ensure_json_array(coerce_json_value(cast(object, json.loads(plugins_json_text))), "plugins")
+    plugins.append({"name": "RuleFallbackGuard", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "RuleFallbackGuard.js").write_text(
+        "Window_Base.prototype.drawText('ガード対象本文', 0, 0, 320);\n",
+        encoding="utf-8",
+    )
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:薬草の詳細>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        game_data = await load_game_data(
+            minimal_game_dir,
+            include_writable_copies=False,
+            run_dialogue_probe_check=False,
+        )
+        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "RuleFallbackGuard.js")
+    plugin_rules_text = json.dumps(
+        [
+            {
+                "file": "RuleFallbackGuard.js",
+                "selectors": [candidate.selector],
+                "excluded_selectors": [
+                    other.selector
+                    for other in scan.candidates
+                    if other.active
+                    and other.file_name == "RuleFallbackGuard.js"
+                    and other.selector != candidate.selector
+                ],
+            }
+        ],
+        ensure_ascii=False,
+    )
+    note_rules_text = json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False)
+
+    def forbidden_plugin_source_extractor(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("公共插件源码规则命令不应构造 PluginSourceTextExtraction")
+
+    def forbidden_note_tag_extractor(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("公共 Note 标签规则命令不应构造 NoteTagTextExtraction")
+
+    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("公共规则命令不应构建完整 TextScopeService 范围")
+
+    monkeypatch.setattr(
+        "app.plugin_source_text.extraction.PluginSourceTextExtraction",
+        forbidden_plugin_source_extractor,
+    )
+    monkeypatch.setattr(
+        "app.note_tag_text.extraction.NoteTagTextExtraction",
+        forbidden_note_tag_extractor,
+    )
+    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
+
+    plugin_validate_report = await service.validate_plugin_source_rules(
+        game_title="テストゲーム",
+        rules_text=plugin_rules_text,
+    )
+    plugin_import_report = await service.import_plugin_source_rules(
+        game_title="テストゲーム",
+        rules_text=plugin_rules_text,
+    )
+    note_validate_report = await service.validate_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=note_rules_text,
+    )
+    note_import_report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=note_rules_text,
+    )
+
+    assert plugin_validate_report.status == "ok"
+    assert plugin_validate_report.summary["hit_count"] == 1
+    assert plugin_import_report.status == "ok"
+    assert plugin_import_report.summary["selector_count"] == 1
+    assert note_validate_report.status == "ok"
+    assert note_validate_report.summary["hit_count"] == 1
+    assert note_import_report.status == "ok"
+    assert note_import_report.summary["tag_count"] == 1
 @pytest.mark.asyncio
 async def test_agent_reports_error_on_stale_plugin_rules(
     minimal_game_dir: Path,
@@ -3058,7 +3184,7 @@ async def test_validate_event_command_rules_uses_precise_hit_paths_for_translate
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path="CommonEvents.json/1/4/parameters/3/message",
@@ -3167,7 +3293,7 @@ async def test_structured_placeholder_rule_with_standard_control_passes_validati
         )
         target_item = text_fact_record_to_translation_item(target_fact)
         target_item.translation_lines = [r"D_TEXT \c[17]狂按决定键！ 48"]
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 target_item
             ]

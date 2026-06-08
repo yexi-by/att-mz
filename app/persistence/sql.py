@@ -46,7 +46,7 @@ METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
 TEXT_INDEX_META_KEY = "current"
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 TEXT_FACT_SCHEMA_VERSION = 2
 CURRENT_SCHEMA_RESOURCE_PACKAGE = "app.persistence.schema"
 CURRENT_SCHEMA_RESOURCE_NAME = "current.sql"
@@ -103,13 +103,37 @@ CREATE_SCHEMA_VERSION_TABLE = f"""
 CREATE_TRANSLATION_TABLE = f"""
 --sql
     CREATE TABLE IF NOT EXISTS [{TRANSLATION_TABLE_NAME}] (
-        location_path      TEXT PRIMARY KEY,
-        item_type          TEXT NOT NULL,
-        role               TEXT,
-        original_lines     TEXT NOT NULL,
-        source_line_paths  TEXT NOT NULL,
-        translation_lines  TEXT NOT NULL
+        fact_id                       TEXT PRIMARY KEY,
+        location_path                 TEXT NOT NULL,
+        item_type                     TEXT NOT NULL,
+        role                          TEXT,
+        original_lines                TEXT NOT NULL,
+        source_line_paths             TEXT NOT NULL,
+        source_fact_raw_hash          TEXT NOT NULL,
+        source_fact_translatable_hash TEXT NOT NULL,
+        translation_lines             TEXT NOT NULL
     )
+;
+"""
+
+CREATE_TRANSLATION_LOCATION_PATH_INDEX = f"""
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_items_location_path]
+    ON [{TRANSLATION_TABLE_NAME}](location_path)
+;
+"""
+
+CREATE_TRANSLATION_SOURCE_FACT_RAW_HASH_INDEX = f"""
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_items_source_fact_raw_hash]
+    ON [{TRANSLATION_TABLE_NAME}](source_fact_raw_hash)
+;
+"""
+
+CREATE_TRANSLATION_SOURCE_FACT_TRANSLATABLE_HASH_INDEX = f"""
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_items_source_fact_translatable_hash]
+    ON [{TRANSLATION_TABLE_NAME}](source_fact_translatable_hash)
 ;
 """
 
@@ -240,6 +264,7 @@ CREATE_TRANSLATION_QUALITY_ERRORS_TABLE = f"""
 --sql
     CREATE TABLE IF NOT EXISTS [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}] (
         run_id           TEXT NOT NULL,
+        fact_id          TEXT NOT NULL,
         location_path    TEXT NOT NULL,
         item_type        TEXT NOT NULL,
         role             TEXT,
@@ -248,9 +273,16 @@ CREATE_TRANSLATION_QUALITY_ERRORS_TABLE = f"""
         error_type       TEXT NOT NULL,
         error_detail     TEXT NOT NULL,
         model_response   TEXT NOT NULL,
-        PRIMARY KEY (run_id, location_path),
+        PRIMARY KEY (run_id, fact_id, location_path),
         FOREIGN KEY (run_id) REFERENCES [{TRANSLATION_RUNS_TABLE_NAME}](run_id) ON DELETE CASCADE
     )
+;
+"""
+
+CREATE_TRANSLATION_QUALITY_ERRORS_FACT_ID_INDEX = f"""
+--sql
+    CREATE INDEX IF NOT EXISTS [idx_translation_quality_errors_fact_id]
+    ON [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}](fact_id)
 ;
 """
 
@@ -575,8 +607,18 @@ CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE = f"""
 INSERT_TRANSLATION = f"""
 --sql
     INSERT OR REPLACE INTO [{TRANSLATION_TABLE_NAME}]
-    (location_path, item_type, role, original_lines, source_line_paths, translation_lines)
-    VALUES (?, ?, ?, ?, ?, ?)
+    (
+        fact_id,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_fact_raw_hash,
+        source_fact_translatable_hash,
+        translation_lines
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -824,8 +866,19 @@ INSERT_LLM_FAILURE = f"""
 INSERT_TRANSLATION_QUALITY_ERROR = f"""
 --sql
     INSERT OR REPLACE INTO [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
-    (run_id, location_path, item_type, role, original_lines, translation_lines, error_type, error_detail, model_response)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (
+        run_id,
+        fact_id,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        translation_lines,
+        error_type,
+        error_detail,
+        model_response
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -1058,7 +1111,16 @@ COUNT_TRANSLATED_ITEMS = f"""
 
 SELECT_TRANSLATED_ITEMS = f"""
 --sql
-    SELECT location_path, item_type, role, original_lines, source_line_paths, translation_lines
+    SELECT
+        fact_id,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_fact_raw_hash,
+        source_fact_translatable_hash,
+        translation_lines
     FROM [{TRANSLATION_TABLE_NAME}]
     ORDER BY location_path
 ;
@@ -1066,7 +1128,16 @@ SELECT_TRANSLATED_ITEMS = f"""
 
 SELECT_TRANSLATED_ITEMS_BY_PREFIX = f"""
 --sql
-    SELECT location_path, item_type, role, original_lines, source_line_paths, translation_lines
+    SELECT
+        fact_id,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_fact_raw_hash,
+        source_fact_translatable_hash,
+        translation_lines
     FROM [{TRANSLATION_TABLE_NAME}]
     WHERE location_path LIKE ?
     ORDER BY location_path
@@ -1075,7 +1146,16 @@ SELECT_TRANSLATED_ITEMS_BY_PREFIX = f"""
 
 SELECT_TRANSLATED_ITEM_BY_PATH = f"""
 --sql
-    SELECT location_path, item_type, role, original_lines, source_line_paths, translation_lines
+    SELECT
+        fact_id,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        source_fact_raw_hash,
+        source_fact_translatable_hash,
+        translation_lines
     FROM [{TRANSLATION_TABLE_NAME}]
     WHERE location_path = ?
     LIMIT 1
@@ -1589,11 +1669,14 @@ COUNT_TRANSLATIONS_OUTSIDE_WRITABLE_TEXT_INDEX = f"""
 SELECT_TRANSLATED_ITEMS_FOR_WRITABLE_TEXT_INDEX = f"""
 --sql
     SELECT
+        translations.fact_id,
         translations.location_path,
         translations.item_type,
         translations.role,
         translations.original_lines,
         translations.source_line_paths,
+        translations.source_fact_raw_hash,
+        translations.source_fact_translatable_hash,
         translations.translation_lines
     FROM [{TRANSLATION_TABLE_NAME}] AS translations
     INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS index_items

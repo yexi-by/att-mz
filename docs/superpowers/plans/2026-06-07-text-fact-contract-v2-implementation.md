@@ -1,5 +1,7 @@
 # Text Fact Contract v2 Implementation Plan
 
+> **历史说明（2026-06-08）：** 本计划是 Text Fact Contract v2 的原始实现计划，未完成或未复核的 runtime-literal fact 相关任务已由 `docs/superpowers/plans/2026-06-08-text-fact-v2-review-closure.md` 接管。新实现请以 closure plan 为准，不要继续把 `active_runtime_literal`、placeholder 候选或结构化 placeholder 候选作为当前 `text_facts_v2` 翻译事实域执行。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement the breaking `Text Fact Contract v2` described in `docs/superpowers/specs/2026-06-07-text-fact-contract-v2-design.md`.

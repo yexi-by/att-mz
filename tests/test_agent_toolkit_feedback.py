@@ -427,7 +427,7 @@ async def test_default_active_runtime_audit_skips_plugin_source_text_branch(
             for item in scope.active_items()
             if item.location_path in scope.writable_paths
         ]
-        await session.write_translation_items(translated_items)
+        await write_v2_test_translation_items(session, translated_items)
 
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     quality_report = await service.quality_report(game_title="テストゲーム")
@@ -626,7 +626,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
             source_line_paths=[location_path],
             translation_lines=["努力忍耐着的\nn[0]君…真棒哦♥"],
         )
-        await session.write_translation_items([translation_item])
+        await write_v2_test_translation_items(session, [translation_item])
         await session.replace_plugin_source_runtime_write_maps(
             [
                 PluginSourceRuntimeWriteMapRecord(
@@ -670,7 +670,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
     assert "无法反推" not in json.dumps(diagnosis, ensure_ascii=False)
 
     async with await registry.open_game("テストゲーム") as session:
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=location_path,
@@ -793,7 +793,7 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
                     created_at=f"2026-05-24T00:00:0{index}",
                 )
             )
-        await session.write_translation_items(translation_items)
+        await write_v2_test_translation_items(session, translation_items)
         await session.replace_plugin_source_runtime_write_maps(runtime_maps)
 
     batch_calls: list[tuple[str, ...]] = []
@@ -894,7 +894,7 @@ async def test_diagnose_active_runtime_skips_translation_source_scan_when_source
             source_line_paths=[location_path],
             translation_lines=[runtime_literal.text],
         )
-        await session.write_translation_items([translation_item])
+        await write_v2_test_translation_items(session, [translation_item])
         await session.replace_plugin_source_runtime_write_maps(
             [
                 PluginSourceRuntimeWriteMapRecord(
@@ -982,7 +982,7 @@ async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtim
         source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
-        await session.write_translation_items(
+        await write_v2_test_translation_items(session,
             [
                 TranslationItem(
                     location_path=location_path,
@@ -997,11 +997,16 @@ async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtim
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     report = await service.diagnose_active_runtime(game_title="テストゲーム", output_path=tmp_path / "diagnosis.json")
 
-    assert report.status == "ok"
-    assert report.summary["active_runtime_text_issue_audit_enabled"] is False
-    assert report.summary["runtime_mapping_missing_count"] == 0
+    assert report.status == "error"
+    assert report.summary["mapped_translate_count"] == 0
+    runtime_mapping_missing_count = report.summary["runtime_mapping_missing_count"]
+    assert isinstance(runtime_mapping_missing_count, int)
+    assert runtime_mapping_missing_count >= 1
     diagnosis_items = ensure_json_array(report.details["active_runtime_diagnosis_items"], "diagnosis")
-    assert diagnosis_items == []
+    assert all(
+        ensure_json_object(item, "diagnosis_item")["diagnosis_status"] != "mapped_translate"
+        for item in diagnosis_items
+    )
 @pytest.mark.asyncio
 async def test_diagnose_active_runtime_default_mode_skips_unmapped_source_residual(
     minimal_game_dir: Path,

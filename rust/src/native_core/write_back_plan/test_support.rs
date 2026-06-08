@@ -2,6 +2,7 @@ use super::build_write_back_plan_impl;
 use super::plugin_source::{
     candidate_selector_for_span, normalize_visible_text_for_extraction, unescape_js_text,
 };
+use super::repository::read_translation_items_for_allowed_paths;
 use super::utils::sha256_text;
 use crate::native_core::javascript_ast::parse_javascript_string_spans;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -130,6 +131,109 @@ fn build_plan_rejects_unwritable_text_index_translation_when_payload_omits_allow
             && error.contains("System.json/switches/1"),
         "错误文案应说明不可写索引路径上存在已保存译文，实际为 {error}",
     );
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn write_back_reads_saved_translation_by_fact_id_without_duplicate_location_gate() {
+    let fixture = create_fixture_dir("att_mz_write_plan_fact_id_join");
+    let db_path = fixture.join("game.db");
+    create_empty_database(&db_path);
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    let location_path = "System.json/gameTitle";
+    let first_fact_id = insert_test_text_fact_with_identity(
+        &connection,
+        TestTextFactIdentity {
+            fact_id: "tfv2:first-fact".to_string(),
+            location_path: location_path.to_string(),
+            item_type: "short_text".to_string(),
+            role: None,
+            selector: "title:first".to_string(),
+            raw_text: "第一源文".to_string(),
+            visible_text: "第一源文".to_string(),
+            translatable_text: "第一源文".to_string(),
+            domain: "standard_data".to_string(),
+        },
+    );
+    _ = insert_test_text_fact_with_identity(
+        &connection,
+        TestTextFactIdentity {
+            fact_id: "tfv2:second-fact".to_string(),
+            location_path: location_path.to_string(),
+            item_type: "short_text".to_string(),
+            role: None,
+            selector: "title:second".to_string(),
+            raw_text: "第二源文".to_string(),
+            visible_text: "第二源文".to_string(),
+            translatable_text: "第二源文".to_string(),
+            domain: "standard_data".to_string(),
+        },
+    );
+    insert_translation_item_for_fact(
+        &connection,
+        &first_fact_id,
+        location_path,
+        "short_text",
+        None,
+        "[\"第一源文\"]",
+        "[]",
+        "[\"第一译文\"]",
+    );
+
+    let items = read_translation_items_for_allowed_paths(&connection, &[location_path.to_string()])
+        .expect("重复 location_path 的当前 facts 不应阻断按 fact_id 读取译文");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].translation_lines, vec!["第一译文".to_string()]);
+    assert_eq!(items[0].raw_text, "第一源文");
+    drop(connection);
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn write_back_reports_saved_translation_with_stale_fact_id_as_unresolved() {
+    let fixture = create_fixture_dir("att_mz_write_plan_stale_fact_id");
+    let db_path = fixture.join("game.db");
+    create_empty_database(&db_path);
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    let location_path = "System.json/gameTitle";
+    _ = insert_test_text_fact_with_identity(
+        &connection,
+        TestTextFactIdentity {
+            fact_id: "tfv2:current-fact".to_string(),
+            location_path: location_path.to_string(),
+            item_type: "short_text".to_string(),
+            role: None,
+            selector: "title:current".to_string(),
+            raw_text: "当前源文".to_string(),
+            visible_text: "当前源文".to_string(),
+            translatable_text: "当前源文".to_string(),
+            domain: "standard_data".to_string(),
+        },
+    );
+    insert_stale_translation_item(
+        &connection,
+        "tfv2:stale-fact",
+        location_path,
+        "short_text",
+        "[\"当前源文\"]",
+        "[]",
+        "[\"旧译文\"]",
+        "stale-raw-hash",
+        "stale-translatable-hash",
+    );
+
+    let error = read_translation_items_for_allowed_paths(&connection, &[location_path.to_string()])
+        .expect_err("fact_id 不匹配的已保存译文必须被判定为 unresolved/stale");
+
+    assert!(
+        error.contains("已保存译文不再匹配当前 v2 文本事实身份")
+            && error.contains("rebuild-text-index")
+            && error.contains("重新翻译/手动导入")
+            && error.contains(location_path),
+        "错误文案应说明 v2 fact 身份失配和下一步，实际为 {error}",
+    );
+    drop(connection);
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
 
@@ -2045,11 +2149,14 @@ fn create_minimal_database(db_path: &Path) {
         .execute_batch(
             "
             CREATE TABLE translation_items (
-                location_path TEXT PRIMARY KEY,
+                fact_id TEXT PRIMARY KEY,
+                location_path TEXT NOT NULL,
                 item_type TEXT NOT NULL,
                 role TEXT,
                 original_lines TEXT NOT NULL,
                 source_line_paths TEXT NOT NULL,
+                source_fact_raw_hash TEXT NOT NULL,
+                source_fact_translatable_hash TEXT NOT NULL,
                 translation_lines TEXT NOT NULL
             );
             CREATE TABLE translation_runs (
@@ -2153,20 +2260,6 @@ fn create_minimal_database(db_path: &Path) {
         )
         .expect("测试数据库 schema 应可创建");
     insert_test_text_fact_scope(&connection);
-    connection
-        .execute(
-            "INSERT INTO translation_items \
-             (location_path, item_type, role, original_lines, source_line_paths, translation_lines) \
-             VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
-            params![
-                "System.json/gameTitle",
-                "short_text",
-                "[\"原标题\"]",
-                "[]",
-                "[\"测试标题\"]",
-            ],
-        )
-        .expect("测试译文应可写入");
     insert_text_fact_contract_for_item(
         &connection,
         "System.json/gameTitle",
@@ -2174,6 +2267,15 @@ fn create_minimal_database(db_path: &Path) {
         None,
         "[\"原标题\"]",
         "[]",
+    );
+    insert_translation_item_for_current_fact(
+        &connection,
+        "System.json/gameTitle",
+        "short_text",
+        None,
+        "[\"原标题\"]",
+        "[]",
+        "[\"测试标题\"]",
     );
     connection
         .execute(
@@ -2200,6 +2302,21 @@ fn create_minimal_database(db_path: &Path) {
             ],
         )
         .expect("测试运行记录应可写入");
+}
+
+fn create_empty_database(db_path: &Path) {
+    create_minimal_database(db_path);
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    connection
+        .execute_batch(
+            "
+            DELETE FROM translation_items;
+            DELETE FROM text_fact_render_parts_v2;
+            DELETE FROM text_facts_v2;
+            DELETE FROM text_index_items;
+            ",
+        )
+        .expect("测试数据库 seed 文本事实应可清理");
 }
 
 fn ensure_test_text_fact_schema(connection: &Connection) {
@@ -2396,6 +2513,91 @@ fn upsert_test_text_fact(
     }
 }
 
+struct TestTextFactIdentity {
+    fact_id: String,
+    location_path: String,
+    item_type: String,
+    role: Option<String>,
+    selector: String,
+    raw_text: String,
+    visible_text: String,
+    translatable_text: String,
+    domain: String,
+}
+
+fn insert_test_text_fact_with_identity(
+    connection: &Connection,
+    identity: TestTextFactIdentity,
+) -> String {
+    ensure_test_text_fact_schema(connection);
+    let source_line_paths = serde_json::to_string(&vec![identity.location_path.as_str()])
+        .expect("source_line_paths 应可序列化");
+    let original_lines = serde_json::to_string(&text_fact_lines_for_item_type(
+        &identity.translatable_text,
+        &identity.item_type,
+    ))
+    .expect("original_lines 应可序列化");
+    upsert_test_text_index_item(
+        connection,
+        &identity.location_path,
+        &identity.item_type,
+        identity.role.as_deref(),
+        &original_lines,
+        &source_line_paths,
+        1,
+    );
+    let source_file = test_source_file(&identity.location_path);
+    let raw_hash = sha256_text(&identity.raw_text);
+    let visible_hash = sha256_text(&identity.visible_text);
+    let translatable_hash = sha256_text(&identity.translatable_text);
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO text_facts_v2 \
+             (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, \
+              raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
+             VALUES (?1, 2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                identity.fact_id.as_str(),
+                identity.domain.as_str(),
+                identity.location_path.as_str(),
+                source_file.as_str(),
+                identity.domain.as_str(),
+                identity.item_type.as_str(),
+                identity.role.as_deref().unwrap_or(""),
+                identity.selector.as_str(),
+                identity.raw_text.as_str(),
+                identity.visible_text.as_str(),
+                identity.translatable_text.as_str(),
+                raw_hash.as_str(),
+                visible_hash.as_str(),
+                translatable_hash.as_str(),
+                TEST_TEXT_FACT_SCOPE_KEY,
+            ],
+        )
+        .expect("测试自定义 text fact v2 应可写入");
+    insert_test_render_part(connection, &identity.fact_id, &identity.raw_text);
+    identity.fact_id
+}
+
+fn insert_test_render_part(connection: &Connection, fact_id: &str, raw_text: &str) {
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO text_fact_render_parts_v2 \
+             (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
+             VALUES (?1, 0, 'translated_body', ?2, ?2, 'body')",
+            params![fact_id, raw_text],
+        )
+        .expect("测试 render part 应可写入");
+}
+
+fn text_fact_lines_for_item_type(text: &str, item_type: &str) -> Vec<String> {
+    if item_type == "short_text" {
+        vec![text.to_string()]
+    } else {
+        text.split('\n').map(str::to_string).collect()
+    }
+}
+
 fn test_text_fact_domain(location_path: &str) -> &'static str {
     if location_path.starts_with("js/plugins/") {
         "plugin_source"
@@ -2469,20 +2671,6 @@ fn insert_translation_item(
     translation_lines: &str,
 ) {
     let connection = Connection::open(db_path).expect("测试数据库应可打开");
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO translation_items \
-             (location_path, item_type, role, original_lines, source_line_paths, translation_lines) \
-             VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
-            params![
-                location_path,
-                item_type,
-                original_lines,
-                source_line_paths,
-                translation_lines,
-            ],
-        )
-        .expect("测试译文应可写入");
     insert_text_fact_contract_for_item(
         &connection,
         location_path,
@@ -2491,6 +2679,108 @@ fn insert_translation_item(
         original_lines,
         source_line_paths,
     );
+    insert_translation_item_for_current_fact(
+        &connection,
+        location_path,
+        item_type,
+        None,
+        original_lines,
+        source_line_paths,
+        translation_lines,
+    );
+}
+
+fn insert_translation_item_for_current_fact(
+    connection: &Connection,
+    location_path: &str,
+    item_type: &str,
+    role: Option<&str>,
+    original_lines: &str,
+    source_line_paths: &str,
+    translation_lines: &str,
+) {
+    let fact_id = test_fact_id(location_path);
+    insert_translation_item_for_fact(
+        connection,
+        &fact_id,
+        location_path,
+        item_type,
+        role,
+        original_lines,
+        source_line_paths,
+        translation_lines,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_translation_item_for_fact(
+    connection: &Connection,
+    fact_id: &str,
+    location_path: &str,
+    item_type: &str,
+    role: Option<&str>,
+    original_lines: &str,
+    source_line_paths: &str,
+    translation_lines: &str,
+) {
+    let (raw_hash, translatable_hash) = connection
+        .query_row(
+            "SELECT raw_hash, translatable_hash FROM text_facts_v2 WHERE fact_id = ?1",
+            params![fact_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("测试 v2 fact hash 应可读取");
+    insert_stale_translation_item(
+        connection,
+        fact_id,
+        location_path,
+        item_type,
+        original_lines,
+        source_line_paths,
+        translation_lines,
+        &raw_hash,
+        &translatable_hash,
+    );
+    if role.is_some() {
+        connection
+            .execute(
+                "UPDATE translation_items SET role = ?1 WHERE fact_id = ?2",
+                params![role, fact_id],
+            )
+            .expect("测试译文 role 应可更新");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_stale_translation_item(
+    connection: &Connection,
+    fact_id: &str,
+    location_path: &str,
+    item_type: &str,
+    original_lines: &str,
+    source_line_paths: &str,
+    translation_lines: &str,
+    source_fact_raw_hash: &str,
+    source_fact_translatable_hash: &str,
+) {
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO translation_items \
+             (fact_id, location_path, item_type, role, original_lines, source_line_paths, \
+              source_fact_raw_hash, source_fact_translatable_hash, translation_lines) \
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                fact_id,
+                location_path,
+                item_type,
+                original_lines,
+                source_line_paths,
+                source_fact_raw_hash,
+                source_fact_translatable_hash,
+                translation_lines,
+            ],
+        )
+        .expect("测试译文应可写入");
 }
 
 fn insert_plugin_source_text_rule(
@@ -2795,14 +3085,6 @@ fn insert_mv_virtual_namebox_rules_and_items(db_path: &Path) {
         ),
     ];
     for (location_path, original_lines, source_line_paths, translation_lines) in items {
-        connection
-            .execute(
-                "INSERT INTO translation_items \
-                 (location_path, item_type, role, original_lines, source_line_paths, translation_lines) \
-                 VALUES (?1, 'long_text', NULL, ?2, ?3, ?4)",
-                params![location_path, original_lines, source_line_paths, translation_lines],
-            )
-            .expect("MV 虚拟名字框译文应可写入");
         insert_text_fact_contract_for_item(
             &connection,
             location_path,
@@ -2810,6 +3092,15 @@ fn insert_mv_virtual_namebox_rules_and_items(db_path: &Path) {
             None,
             original_lines,
             source_line_paths,
+        );
+        insert_translation_item_for_current_fact(
+            &connection,
+            location_path,
+            "long_text",
+            None,
+            original_lines,
+            source_line_paths,
+            translation_lines,
         );
     }
 }

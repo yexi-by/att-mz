@@ -2,7 +2,11 @@
 
 import hashlib
 
-from app.application.use_cases.translation_run import count_translation_items, deduplicate_translation_data
+from app.application.use_cases.translation_run import (
+    count_translation_items,
+    deduplicate_translation_data,
+    expand_cached_translation_items,
+)
 from app.persistence.records import TextFactV2Record
 from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
 from app.rmmz.control_codes import REAL_LINE_BREAK_PLACEHOLDER
@@ -57,6 +61,40 @@ def test_translation_cache_deduplicates_and_expands_items() -> None:
     assert cache.remember_or_defer(first)
     assert not cache.remember_or_defer(duplicate)
     assert cache.pop_duplicate_items(first) == [duplicate]
+
+
+def test_text_fact_cache_expansion_preserves_fact_identity() -> None:
+    """同 dedupe key 展开保存时，重复 fact 保持自己的 v2 identity。"""
+    cache = TranslationCache()
+    first = TranslationItem(
+        fact_id="fact-a",
+        source_fact_raw_hash="raw-a",
+        source_fact_translatable_hash="translatable",
+        location_path="A/1",
+        item_type="short_text",
+        original_lines=["こんにちは"],
+        translation_dedupe_key="text_fact_v2:shared",
+    )
+    duplicate = TranslationItem(
+        fact_id="fact-b",
+        source_fact_raw_hash="raw-b",
+        source_fact_translatable_hash="translatable",
+        location_path="B/1",
+        item_type="short_text",
+        original_lines=["こんにちは"],
+        translation_dedupe_key="text_fact_v2:shared",
+    )
+    assert cache.remember_or_defer(first)
+    assert not cache.remember_or_defer(duplicate)
+    first.translation_lines = ["你好"]
+
+    expanded_items = expand_cached_translation_items([first], cache)
+
+    assert {item.fact_id for item in expanded_items} == {"fact-a", "fact-b"}
+    assert {
+        item.source_fact_raw_hash for item in expanded_items
+    } == {"raw-a", "raw-b"}
+    assert all(item.translation_lines == ["你好"] for item in expanded_items)
 
 
 def test_text_fact_v2_adapter_uses_translatable_text_and_hash_dedupes_prompt() -> None:

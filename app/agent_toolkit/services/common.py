@@ -9,6 +9,7 @@ import shutil
 import sys
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -61,11 +62,11 @@ from app.plugin_text import (
 )
 from app.plugin_source_text import (
     PluginSourceScan,
-    PluginSourceTextExtraction,
     build_plugin_source_rule_records_from_import,
     collect_plugin_source_review_coverage,
     parse_plugin_source_rule_import_text,
 )
+from app.plugin_source_text.extraction import plugin_source_location_path
 from app.plugin_source_text.scanner import scan_plugin_source_runtime_files_text_strict
 from app.rmmz.control_codes import (
     ControlSequenceSpan,
@@ -147,11 +148,13 @@ from app.terminology import (
 )
 from app.terminology.files import write_field_terms_json, write_glossary_json
 from app.note_tag_text import (
-    NoteTagTextExtraction,
-    build_note_tag_rule_records_from_import,
     export_note_tag_candidates_file,
     note_tag_location_path_matches_rule,
     parse_note_tag_rule_import_text,
+)
+from app.native_note_tag_scan import (
+    build_note_tag_rule_records_from_native_candidates,
+    collect_native_note_tag_hit_details,
 )
 from app.note_tag_text.sources import note_file_pattern_matches
 from app.persistence.repository import current_timestamp_text
@@ -164,7 +167,6 @@ from app.source_residual import (
 from app.text_scope import (
     TextScopeEntry,
     TextScopeResult,
-    collect_translation_data_paths,
     read_fresh_plugin_text_rules,
 )
 from app.text_scope.write_probe import collect_write_back_probe_reasons
@@ -871,7 +873,7 @@ def _build_manual_translation_template_entry(
         item=cloned_item,
         translation_lines=translation_lines,
     )
-    return {
+    entry: JsonObject = {
         "item_type": cloned_item.item_type,
         "role": cloned_item.role,
         "original_lines": _string_lines_to_json_array(cloned_item.original_lines),
@@ -883,6 +885,9 @@ def _build_manual_translation_template_entry(
             "不得保留 [RMMZ_...] 或 [CUSTOM_...]。"
         ),
     }
+    if cloned_item.fact_id:
+        entry["fact_id"] = cloned_item.fact_id
+    return entry
 
 
 def _restore_template_translation_lines(
@@ -1053,10 +1058,20 @@ def _location_paths_from_quality_details(details: JsonArray) -> list[str]:
 def _resolve_quality_fix_translation_lines(
     *,
     location_path: str,
+    fact_id: str | None = None,
     quality_errors_by_path: dict[str, TranslationErrorItem],
     translated_by_path: dict[str, TranslationItem],
+    quality_errors_by_fact_id: dict[str, TranslationErrorItem] | None = None,
+    translated_by_fact_id: dict[str, TranslationItem] | None = None,
 ) -> list[str]:
     """决定质量修复模板中应预填的译文行。"""
+    if fact_id:
+        quality_error = (quality_errors_by_fact_id or {}).get(fact_id)
+        if quality_error is not None:
+            return list(quality_error.translation_lines)
+        translated_item = (translated_by_fact_id or {}).get(fact_id)
+        if translated_item is not None:
+            return list(translated_item.translation_lines)
     quality_error = quality_errors_by_path.get(location_path)
     if quality_error is not None:
         return list(quality_error.translation_lines)
@@ -1742,6 +1757,26 @@ def _first_original_line_samples(items: Iterable[TranslationItem], limit: int = 
     return samples
 
 
+@dataclass(frozen=True, slots=True)
+class _RuleHitMetric:
+    """规则校验报告需要的单条命中轻量信息。"""
+
+    location_path: str
+    sample_text: str
+
+
+def _sample_texts_from_rule_hits(hits: Iterable[_RuleHitMetric], limit: int = 5) -> JsonArray:
+    """从 native/v2 命中明细提取少量样本文本。"""
+    samples: JsonArray = []
+    for hit in hits:
+        if not hit.sample_text:
+            continue
+        samples.append(hit.sample_text)
+        if len(samples) >= limit:
+            break
+    return samples
+
+
 def _build_rule_metric_detail(
     *,
     record_items: Sequence[TranslationItem],
@@ -1760,6 +1795,27 @@ def _build_rule_metric_detail(
             for item in unwritable_items_by_path.get(extracted_item.location_path, [])
         ],
         "samples": _first_original_line_samples(record_items),
+    }
+
+
+def _build_rule_hit_metric_detail(
+    *,
+    record_hits: Sequence[_RuleHitMetric],
+    translated_paths: set[str],
+    unwritable_items_by_path: dict[str, JsonArray],
+) -> JsonObject:
+    """生成单条外部规则的 native/v2 命中、保存和可写统计。"""
+    return {
+        "hit_count": len(record_hits),
+        "extractable_count": len(record_hits),
+        "translated_count": sum(1 for hit in record_hits if hit.location_path in translated_paths),
+        "writable_count": sum(1 for hit in record_hits if hit.location_path not in unwritable_items_by_path),
+        "unwritable_items": [
+            item
+            for hit in record_hits
+            for item in unwritable_items_by_path.get(hit.location_path, [])
+        ],
+        "samples": _sample_texts_from_rule_hits(record_hits),
     }
 
 
@@ -1995,6 +2051,52 @@ def _collect_plugin_source_unwritable_items(
     ]
 
 
+def _plugin_source_rule_hits_from_scan(
+    *,
+    records: list[PluginSourceTextRuleRecord],
+    scan: PluginSourceScan,
+) -> dict[str, list[_RuleHitMetric]]:
+    """从 native 插件源码扫描结果生成规则命中路径与样本。"""
+    candidates_by_file_and_selector = {
+        (candidate.file_name, candidate.selector): candidate
+        for candidate in scan.candidates
+    }
+    hits_by_file: dict[str, list[_RuleHitMetric]] = {}
+    for record in records:
+        record_hits: list[_RuleHitMetric] = []
+        for selector in record.selectors:
+            candidate = candidates_by_file_and_selector.get((record.file_name, selector))
+            if candidate is None:
+                continue
+            record_hits.append(
+                _RuleHitMetric(
+                    location_path=plugin_source_location_path(
+                        file_name=record.file_name,
+                        selector=selector,
+                    ),
+                    sample_text=candidate.text,
+                )
+            )
+        hits_by_file[record.file_name] = record_hits
+    return hits_by_file
+
+
+def _plugin_source_probe_items_from_hits(
+    hits_by_file: dict[str, list[_RuleHitMetric]],
+) -> list[TranslationItem]:
+    """把插件源码 native 命中转换成写回协议探针条目。"""
+    return [
+        TranslationItem(
+            location_path=hit.location_path,
+            item_type="short_text",
+            original_lines=[hit.sample_text],
+            source_line_paths=[hit.location_path],
+        )
+        for record_hits in hits_by_file.values()
+        for hit in record_hits
+    ]
+
+
 def _validate_plugin_source_rules_with_context(
     *,
     rules_text: str,
@@ -2008,7 +2110,7 @@ def _validate_plugin_source_rules_with_context(
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
     records: list[PluginSourceTextRuleRecord] = []
-    extracted_items: list[TranslationItem] = []
+    hits_by_file: dict[str, list[_RuleHitMetric]] = {}
     unwritable_items: JsonArray = []
     unreviewed_count = 0
     try:
@@ -2021,20 +2123,11 @@ def _validate_plugin_source_rules_with_context(
         )
         review = collect_plugin_source_review_coverage(scan=scan, rule_records=records)
         unreviewed_count = len(review.unreviewed_candidates)
-        extracted_map = PluginSourceTextExtraction(
-            game_data,
-            rule_records=records,
-            text_rules=text_rules,
-            scan=scan,
-        ).extract_all_text()
-        extracted_items = [
-            item
-            for translation_data in extracted_map.values()
-            for item in translation_data.translation_items
-        ]
+        hits_by_file = _plugin_source_rule_hits_from_scan(records=records, scan=scan)
+        probe_items = _plugin_source_probe_items_from_hits(hits_by_file)
         unwritable_items = _collect_plugin_source_unwritable_items(
             game_data=game_data,
-            extracted_items=extracted_items,
+            extracted_items=probe_items,
             scan=scan,
         )
         if unwritable_items:
@@ -2054,23 +2147,20 @@ def _validate_plugin_source_rules_with_context(
                 "reviewed_selector_count": len(record.selectors) + len(record.excluded_selectors),
                 "selectors": list(record.selectors),
                 "excluded_selectors": list(record.excluded_selectors),
-                **_build_rule_metric_detail(
-                    record_items=record_items,
+                **_build_rule_hit_metric_detail(
+                    record_hits=record_hits,
                     translated_paths=translated_paths,
                     unwritable_items_by_path=unwritable_items_by_path,
                 ),
             }
             for record in records
-            for record_items in [[
-                item
-                for item in extracted_items
-                if item.location_path.startswith(f"js/plugins/{record.file_name}/")
-            ]]
+            for record_hits in [hits_by_file.get(record.file_name, [])]
         ]
         if not records:
             warnings.append(issue("plugin_source_rules_empty", "插件源码规则为空"))
         excluded_selector_count = sum(len(record.excluded_selectors) for record in records)
-        if records and not extracted_items and excluded_selector_count == 0:
+        hit_count = sum(len(record_hits) for record_hits in hits_by_file.values())
+        if records and hit_count == 0 and excluded_selector_count == 0:
             warnings.append(issue("plugin_source_rules_no_hits", "插件源码规则没有提取到任何可翻译文本"))
         if unreviewed_count:
             review_issue = issue(
@@ -2084,9 +2174,10 @@ def _validate_plugin_source_rules_with_context(
     except Exception as error:
         errors.append(issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}"))
         records = []
-        extracted_items = []
+        hits_by_file = {}
         unwritable_items = []
         unreviewed_count = 0
+    hit_count = sum(len(record_hits) for record_hits in hits_by_file.values())
     return AgentReport.from_parts(
         errors=errors,
         warnings=warnings,
@@ -2099,10 +2190,15 @@ def _validate_plugin_source_rules_with_context(
                 for record in records
             ),
             "unreviewed_selector_count": unreviewed_count,
-            "hit_count": len(extracted_items),
-            "extractable_count": len(extracted_items),
-            "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
-            "writable_count": len(extracted_items) - len(unwritable_items),
+            "hit_count": hit_count,
+            "extractable_count": hit_count,
+            "translated_count": sum(
+                1
+                for record_hits in hits_by_file.values()
+                for hit in record_hits
+                if hit.location_path in translated_paths
+            ),
+            "writable_count": hit_count - len(unwritable_items),
             "unwritable_count": len(unwritable_items),
         },
         details=details,
@@ -2491,6 +2587,71 @@ def _note_tag_item_matches_rule(*, item: TranslationItem, rule_record: NoteTagTe
     )
 
 
+def _note_tag_hit_matches_rule(*, hit_detail: JsonObject, rule_record: NoteTagTextRuleRecord) -> bool:
+    """判断 native Note 标签命中是否属于指定规则。"""
+    file_name = hit_detail.get("file_name")
+    tag_name = hit_detail.get("tag_name")
+    location_path = hit_detail.get("location_path")
+    translatable = hit_detail.get("translatable")
+    if (
+        not isinstance(file_name, str)
+        or not isinstance(tag_name, str)
+        or not isinstance(location_path, str)
+        or translatable is not True
+    ):
+        return False
+    if tag_name not in rule_record.tag_names:
+        return False
+    return note_file_pattern_matches(file_name=file_name, file_pattern=rule_record.file_name)
+
+
+def _note_tag_rule_hits_from_native_details(
+    *,
+    records: list[NoteTagTextRuleRecord],
+    hit_details: JsonArray,
+) -> list[list[_RuleHitMetric]]:
+    """从 native Note 标签逐命中明细生成规则命中路径与样本。"""
+    normalized_hits: list[JsonObject] = [
+        item
+        for item in hit_details
+        if isinstance(item, dict)
+    ]
+    hits_by_record: list[list[_RuleHitMetric]] = []
+    for record in records:
+        record_hits: list[_RuleHitMetric] = []
+        for hit_detail in normalized_hits:
+            if not _note_tag_hit_matches_rule(hit_detail=hit_detail, rule_record=record):
+                continue
+            location_path = hit_detail.get("location_path")
+            original_text = hit_detail.get("original_text")
+            if not isinstance(location_path, str) or not isinstance(original_text, str):
+                continue
+            record_hits.append(
+                _RuleHitMetric(
+                    location_path=location_path,
+                    sample_text=original_text,
+                )
+            )
+        hits_by_record.append(record_hits)
+    return hits_by_record
+
+
+def _note_tag_probe_items_from_hits(
+    hits_by_record: Sequence[Sequence[_RuleHitMetric]],
+) -> list[TranslationItem]:
+    """把 Note 标签 native 命中转换成写回协议探针条目。"""
+    return [
+        TranslationItem(
+            location_path=hit.location_path,
+            item_type="short_text",
+            original_lines=[hit.sample_text],
+            source_line_paths=[hit.location_path],
+        )
+        for record_hits in hits_by_record
+        for hit in record_hits
+    ]
+
+
 def _validate_note_tag_rules_with_context(
     *,
     rules_text: str,
@@ -2501,7 +2662,7 @@ def _validate_note_tag_rules_with_context(
     """使用已加载游戏上下文校验 Note 标签规则。"""
     try:
         import_file = parse_note_tag_rule_import_text(rules_text)
-        records = build_note_tag_rule_records_from_import(
+        records = build_note_tag_rule_records_from_native_candidates(
             game_data=game_data,
             import_file=import_file,
             text_rules=text_rules,
@@ -2540,42 +2701,27 @@ def _validate_note_tag_rule_records_with_context(
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     details: JsonObject = {"rules": []}
+    hits_by_record: list[list[_RuleHitMetric]] = []
     try:
-        extracted_map = NoteTagTextExtraction(
-            game_data=game_data,
-            rule_records=records,
-            text_rules=text_rules,
-        ).extract_all_text()
-        extracted_items = [
-            item
-            for translation_data in extracted_map.values()
-            for item in translation_data.translation_items
-        ]
+        hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+        hits_by_record = _note_tag_rule_hits_from_native_details(records=records, hit_details=hit_details)
+        extracted_items = _note_tag_probe_items_from_hits(hits_by_record)
         unwritable_items = _collect_write_protocol_unwritable_items(
             game_data=game_data,
             extracted_items=extracted_items,
         )
-        try:
-            _preview_event_command_write_back(
-                game_data=game_data,
-                extracted_items=extracted_items,
-                text_rules=text_rules,
-            )
-            details["write_back_preview"] = {
-                "checked_item_count": len(extracted_items),
-                "status": "ok",
-            }
-        except Exception as error:
-            errors.append(
-                issue(
-                    "note_tag_write_back_invalid",
-                    f"Note 标签规则命中项无法回写: {type(error).__name__}: {error}",
-                )
-            )
+        if unwritable_items:
+            reason = f"写入协议检查发现 {len(unwritable_items)} 个不可写命中项"
+            errors.append(issue("note_tag_write_back_invalid", f"Note 标签规则命中项无法回写: ValueError: {reason}"))
             details["write_back_preview"] = {
                 "checked_item_count": len(extracted_items),
                 "status": "error",
-                "reason": f"{type(error).__name__}: {error}",
+                "reason": f"ValueError: {reason}",
+            }
+        else:
+            details["write_back_preview"] = {
+                "checked_item_count": len(extracted_items),
+                "status": "ok",
             }
         if unwritable_items:
             errors.append(issue("note_tag_write_back_unwritable", f"Note 标签规则存在 {len(unwritable_items)} 个不可写命中项"))
@@ -2585,36 +2731,37 @@ def _validate_note_tag_rule_records_with_context(
                 "file_name": record.file_name,
                 "tag_count": len(record.tag_names),
                 "tag_names": list(record.tag_names),
-                **_build_rule_metric_detail(
-                    record_items=record_items,
+                **_build_rule_hit_metric_detail(
+                    record_hits=record_hits,
                     translated_paths=translated_paths,
                     unwritable_items_by_path=unwritable_items_by_path,
                 ),
             }
-            for record in records
-            for record_items in [[
-                item
-                for item in extracted_items
-                if _note_tag_item_matches_rule(item=item, rule_record=record)
-            ]]
+            for record, record_hits in zip(records, hits_by_record, strict=True)
         ]
         if not records:
             warnings.append(issue("note_tag_rules_empty", "Note 标签规则为空"))
     except Exception as error:
         errors.append(issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}"))
         records = []
-        extracted_items = []
+        hits_by_record = []
         unwritable_items = []
+    hit_count = sum(len(record_hits) for record_hits in hits_by_record)
     return AgentReport.from_parts(
         errors=errors,
         warnings=warnings,
         summary={
             "file_count": len(records),
             "tag_count": sum(len(record.tag_names) for record in records),
-            "hit_count": len(extracted_items),
-            "extractable_count": len(extracted_items),
-            "translated_count": sum(1 for item in extracted_items if item.location_path in translated_paths),
-            "writable_count": len(extracted_items) - len(unwritable_items),
+            "hit_count": hit_count,
+            "extractable_count": hit_count,
+            "translated_count": sum(
+                1
+                for record_hits in hits_by_record
+                for hit in record_hits
+                if hit.location_path in translated_paths
+            ),
+            "writable_count": hit_count - len(unwritable_items),
             "unwritable_count": len(unwritable_items),
         },
         details=details,
@@ -2958,6 +3105,7 @@ def _normalize_manual_translation_lines(
 def _build_translation_error_quality_detail(item: TranslationErrorItem) -> JsonObject:
     """把没通过项目检查的译文转换为质量报告中可定位、可修复的明细。"""
     return {
+        "fact_id": item.fact_id or "",
         "location_path": item.location_path,
         "item_type": item.item_type,
         "role": item.role,
@@ -3074,8 +3222,6 @@ __all__: list[str] = [
     'load_terminology_registry',
     'write_field_terms_json',
     'write_glossary_json',
-    'NoteTagTextExtraction',
-    'build_note_tag_rule_records_from_import',
     'export_note_tag_candidates_file',
     'parse_note_tag_rule_import_text',
     'note_file_pattern_matches',
@@ -3086,7 +3232,6 @@ __all__: list[str] = [
     'parse_source_residual_rule_import_text',
     'TextScopeEntry',
     'TextScopeResult',
-    'collect_translation_data_paths',
     'read_fresh_plugin_text_rules',
     'LlmCheckFunc',
     'QualityProgressCallbacks',

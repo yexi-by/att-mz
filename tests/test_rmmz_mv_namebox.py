@@ -654,7 +654,8 @@ async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
             "CommonEvents.json/3/0": ["你好」"],
             "CommonEvents.json/4/0": ["勇者正文"],
         }
-        await session.write_translation_items(
+        await write_v2_test_translation_items(
+            session,
             [
                 TranslationItem(
                     location_path=item.location_path,

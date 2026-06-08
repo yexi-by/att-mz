@@ -7,7 +7,6 @@ from .common import (
     AgentReport,
     AgentServiceContext,
     JsonObject,
-    NoteTagTextExtraction,
     NoteTagTextRuleRecord,
     Path,
     TextRules,
@@ -22,7 +21,6 @@ from .common import (
     build_native_plugin_rule_validation_context_from_import,
     build_event_command_rule_records_from_import_shape,
     build_plugin_rule_validation_report_from_native_context,
-    collect_translation_data_paths,
     export_note_tag_candidates_file,
     issue,
     load_setting,
@@ -36,22 +34,26 @@ from app.application.flow_gate import (
     ensure_empty_rule_confirmed,
     note_tag_rule_scope_hash_for_text_rules,
 )
-from app.native_note_tag_scan import build_note_tag_rule_records_from_native_candidates
+from app.native_note_tag_scan import (
+    build_note_tag_rule_records_from_native_candidates,
+    collect_native_note_tag_hit_details,
+)
 from app.persistence import RuleImportUnitOfWork
 from app.plugin_source_text import (
-    PluginSourceTextExtraction,
     PluginSourceRuleImportFile,
     build_plugin_source_rule_records_from_import,
     collect_plugin_source_review_coverage,
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
+from app.plugin_source_text.extraction import plugin_source_location_path
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_rule_records_to_import_json,
     parse_mv_virtual_namebox_rule_import_text,
 )
 from app.rmmz.mv_namebox_native import native_mv_virtual_namebox_candidates_payload, scan_native_mv_virtual_namebox
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
+from app.note_tag_text import note_tag_location_path_matches_rule
 from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
@@ -87,6 +89,44 @@ def _plugin_source_rule_prefixes(rule_records: list[PluginSourceTextRuleRecord])
 def _plugin_source_file_prefixes(game_data: GameData) -> list[str]:
     """返回当前启用插件源码文件对应的已保存译文路径前缀。"""
     return sorted({f"js/plugins/{file_name}/" for file_name in game_data.plugin_source_files})
+
+
+def _note_tag_paths_from_native_hits(
+    *,
+    game_data: GameData,
+    text_rules: TextRules,
+    rule_records: list[NoteTagTextRuleRecord],
+) -> set[str]:
+    """从 native Note 标签逐命中明细读取当前规则命中的可翻译路径。"""
+    paths: set[str] = set()
+    hit_details = collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules)
+    for raw_detail in hit_details:
+        if not isinstance(raw_detail, dict):
+            continue
+        location_path = raw_detail.get("location_path")
+        translatable = raw_detail.get("translatable")
+        if not isinstance(location_path, str) or translatable is not True:
+            continue
+        if any(
+            note_tag_location_path_matches_rule(
+                location_path=location_path,
+                rule_record=record,
+            )
+            for record in rule_records
+        ):
+            paths.add(location_path)
+    return paths
+
+
+def _plugin_source_paths_from_rule_records(
+    rule_records: list[PluginSourceTextRuleRecord],
+) -> set[str]:
+    """从已通过 native 校验的插件源码规则读取当前规则命中路径。"""
+    return {
+        plugin_source_location_path(file_name=record.file_name, selector=selector)
+        for record in rule_records
+        for selector in record.selectors
+    }
 
 
 def _plugin_source_import_matches_current_exclusions(
@@ -426,12 +466,10 @@ class RuleValidationAgentMixin:
                     translated_items=old_note_items,
                     rule_records=old_records,
                 )
-                new_note_paths = collect_translation_data_paths(
-                    NoteTagTextExtraction(
-                        game_data=game_data,
-                        rule_records=records,
-                        text_rules=text_rules,
-                    ).extract_all_text()
+                new_note_paths = _note_tag_paths_from_native_hits(
+                    game_data=game_data,
+                    text_rules=text_rules,
+                    rule_records=records,
                 )
                 stale_paths = sorted(old_note_paths - new_note_paths)
                 deleted_translation_items = 0
@@ -786,14 +824,7 @@ class RuleValidationAgentMixin:
                     _plugin_source_rule_prefixes(old_records)
                 )
                 old_paths = {item.location_path for item in old_translated_items}
-                new_paths = collect_translation_data_paths(
-                    PluginSourceTextExtraction(
-                        game_data,
-                        rule_records=records,
-                        text_rules=text_rules,
-                        scan=scan,
-                    ).extract_all_text()
-                )
+                new_paths = _plugin_source_paths_from_rule_records(records)
                 stale_paths = sorted(old_paths - new_paths)
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None

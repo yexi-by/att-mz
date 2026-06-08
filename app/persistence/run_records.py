@@ -143,6 +143,7 @@ class RunRecordSessionMixin(SessionMixinBase):
             serialized_items = [
                 (
                     run_id,
+                    error_item.fact_id or "",
                     error_item.location_path,
                     error_item.item_type,
                     error_item.role,
@@ -195,6 +196,40 @@ class RunRecordSessionMixin(SessionMixinBase):
                 quality_errors_by_path[item.location_path] = item
         return [quality_errors_by_path[path] for path in sorted_paths if path in quality_errors_by_path]
 
+    async def read_translation_quality_errors_by_fact_ids(
+        self,
+        run_id: str,
+        fact_ids: set[str],
+    ) -> list[TranslationErrorItem]:
+        """按 v2 fact_id 读取指定运行中没通过项目检查的译文。"""
+        sorted_fact_ids = sorted(fact_ids)
+        if not sorted_fact_ids:
+            return []
+        quality_errors_by_fact_id: dict[str, TranslationErrorItem] = {}
+        for batch in _chunks(sorted_fact_ids, PATH_QUERY_BATCH_SIZE):
+            placeholders = ", ".join("?" for _fact_id in batch)
+            async with self.connection.execute(
+                f"""
+--sql
+                    SELECT *
+                    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+                    WHERE run_id = ? AND fact_id IN ({placeholders})
+                    ORDER BY location_path, fact_id
+                ;
+                """,
+                (run_id, *batch),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                item = self._decode_translation_quality_error(row)
+                if item.fact_id:
+                    quality_errors_by_fact_id[item.fact_id] = item
+        return [
+            quality_errors_by_fact_id[fact_id]
+            for fact_id in sorted_fact_ids
+            if fact_id in quality_errors_by_fact_id
+        ]
+
     async def count_translation_quality_errors(self, run_id: str) -> int:
         """统计指定运行还剩多少条没通过项目检查的译文。"""
         async with self.connection.execute(COUNT_TRANSLATION_QUALITY_ERRORS_BY_RUN, (run_id,)) as cursor:
@@ -229,6 +264,26 @@ class RunRecordSessionMixin(SessionMixinBase):
         await self.connection.commit()
         return max(cursor.rowcount, 0)
 
+    async def delete_translation_quality_errors_by_fact_ids(self, fact_ids: set[str]) -> int:
+        """按 v2 fact_id 清理已经修好的译文检查失败明细。"""
+        sorted_fact_ids = sorted(fact_ids)
+        if not sorted_fact_ids:
+            return 0
+        deleted_rows = 0
+        for batch in _chunks(sorted_fact_ids, PATH_QUERY_BATCH_SIZE):
+            placeholders = ", ".join("?" for _fact_id in batch)
+            cursor = await self.connection.execute(
+                f"""
+--sql
+                    DELETE FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+                    WHERE fact_id IN ({placeholders})
+                """,
+                tuple(batch),
+            )
+            deleted_rows += max(cursor.rowcount, 0)
+        await self.connection.commit()
+        return deleted_rows
+
     def _decode_translation_run(self, row: aiosqlite.Row) -> TranslationRunRecord:
         """把 SQLite 行转换成正文翻译运行状态。"""
         return TranslationRunRecord(
@@ -251,6 +306,7 @@ class RunRecordSessionMixin(SessionMixinBase):
     def _decode_translation_quality_error(self, row: aiosqlite.Row) -> TranslationErrorItem:
         """把 SQLite 行转换成质量错误记录。"""
         return TranslationErrorItem(
+            fact_id=row_str(row, "fact_id", self.db_path),
             location_path=row_str(row, "location_path", self.db_path),
             item_type=row_item_type(row, "item_type", self.db_path),
             role=row_optional_str(row, "role", self.db_path),
