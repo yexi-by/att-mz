@@ -761,6 +761,67 @@ async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1
 
 
 @pytest.mark.asyncio
+async def test_rebuild_native_scope_index_storage_keeps_same_path_note_tag_facts(
+    minimal_mv_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """同一路径不同 NoteTag fact 必须同时进入 text_facts_v2。"""
+    items_path = minimal_mv_game_dir / "www" / "data" / "Items.json"
+    items = cast(list[object], json.loads(items_path.read_text(encoding="utf-8")))
+    item = ensure_json_object(coerce_json_value(items[1]), "Items.json[1]")
+    item["note"] = "<desc:回復薬>\n<desc:重複>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["desc"])]
+        )
+
+    setting = TextRulesSetting(source_text_required_pattern=r".+")
+    result = rebuild_native_scope_index_storage(
+        {
+            "db_path": str(record.db_path),
+            "game_path": str(minimal_mv_game_dir),
+            "source_snapshot_fingerprint": "snapshot-v1",
+            "rules_fingerprint": "rules-v1",
+            "source_language": "ja",
+            "target_language": "zh-Hans",
+            "engine_kind": "mv",
+            "text_rules_setting": setting.model_dump(mode="json"),
+            "rule_candidate_text_rules": _rebuild_rule_candidate_text_rules(setting),
+            "event_command_scope_codes": [101, 401],
+            "source_text_required_pattern": setting.source_text_required_pattern,
+            "created_at": "2026-06-08T00:00:00",
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert _json_int(result["text_fact_count"], "text_fact_count") > _json_int(
+        result["indexed_count"],
+        "indexed_count",
+    )
+    with sqlite3.connect(record.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT fact_id, location_path, selector, raw_text, translatable_text
+                FROM text_facts_v2
+                WHERE domain = 'note_tag'
+                    AND location_path = 'Items.json/1/note/desc'
+                ORDER BY translatable_text
+                """
+            ).fetchall(),
+        )
+    assert len(rows) == 2
+    assert {_sqlite_row_str(row, "translatable_text") for row in rows} == {"回復薬", "重複"}
+    assert len({_sqlite_row_str(row, "fact_id") for row in rows}) == 2
+
+
+@pytest.mark.asyncio
 async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_payloads(
     minimal_game_dir: Path,
     tmp_path: Path,

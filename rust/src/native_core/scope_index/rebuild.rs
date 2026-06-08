@@ -128,7 +128,7 @@ struct ParsedDataFile {
     data: Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct DirectTextIndexRow {
     location_path: String,
     item_type: String,
@@ -412,21 +412,28 @@ fn rebuild_with_context(
     rows.extend(scan_note_tag_rows(&data_files, &context)?);
     record_stage(&mut internal_stage_timings, "scan_note_tags", stage_started);
     let stage_started = Instant::now();
-    rows.sort_by(|left, right| left.location_path.cmp(&right.location_path));
-    rows.dedup_by(|left, right| left.location_path == right.location_path);
+    let mut fact_rows = rows;
+    fact_rows.sort_by(|left, right| {
+        left.location_path
+            .cmp(&right.location_path)
+            .then(left.source_type.cmp(&right.source_type))
+            .then(left.fact_selector.cmp(&right.fact_selector))
+            .then(left.original_lines.cmp(&right.original_lines))
+    });
+    let warm_index_rows = warm_index_rows_from_fact_rows(&fact_rows);
     record_stage(
         &mut internal_stage_timings,
         "sort_dedup_rows",
         stage_started,
     );
     let stage_started = Instant::now();
-    let domain_summary = domain_summary_from_rows(&rows);
-    let item_count = rows.len();
+    let domain_summary = domain_summary_from_rows(&warm_index_rows);
+    let item_count = warm_index_rows.len();
     let scope_summary = DirectScopeSummary {
         total_count: item_count,
         active_count: item_count,
-        writable_count: rows.iter().filter(|row| row.writable).count(),
-        unwritable_count: rows.iter().filter(|row| !row.writable).count(),
+        writable_count: warm_index_rows.iter().filter(|row| row.writable).count(),
+        unwritable_count: warm_index_rows.iter().filter(|row| !row.writable).count(),
         stale_rule_count: stale_plugin_rule_count,
         native_thread_count,
     };
@@ -444,7 +451,7 @@ fn rebuild_with_context(
         &context,
         &data_files,
         &plugin_config_inputs,
-        &rows,
+        &warm_index_rows,
         &mut internal_stage_timings,
     )?;
     record_stage(
@@ -461,7 +468,7 @@ fn rebuild_with_context(
         payload.created_at.clone(),
     );
     let text_fact_payload = build_text_fact_storage_payload_with_context(
-        &rows,
+        &fact_rows,
         &text_fact_scope,
         &data_files,
         Some(&context),
@@ -479,7 +486,7 @@ fn rebuild_with_context(
             workflow_gate_scope_hashes,
             created_at: payload.created_at,
         },
-        text_index_rows: rows
+        text_index_rows: warm_index_rows
             .into_iter()
             .map(|row| {
                 let text_fact_raw_text = text_fact_raw_text_by_location_path
@@ -3376,6 +3383,13 @@ fn domain_summary_from_rows(rows: &[DirectTextIndexRow]) -> Vec<DirectDomainSumm
             inactive_rule_hit_count: 0,
         })
         .collect()
+}
+
+fn warm_index_rows_from_fact_rows(rows: &[DirectTextIndexRow]) -> Vec<DirectTextIndexRow> {
+    let mut warm_rows = rows.to_vec();
+    warm_rows.sort_by(|left, right| left.location_path.cmp(&right.location_path));
+    warm_rows.dedup_by(|left, right| left.location_path == right.location_path);
+    warm_rows
 }
 
 #[cfg(test)]

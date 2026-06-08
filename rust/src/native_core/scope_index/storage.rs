@@ -540,16 +540,6 @@ fn validate_text_fact_write_payload(
         || !payload.text_facts.is_empty()
         || !payload.text_fact_render_parts.is_empty()
         || !payload.text_fact_domain_payloads.is_empty();
-    if has_explicit_text_fact_payload && payload.metadata.item_count != payload.text_facts.len() {
-        return Err(structured_error(
-            "scope_index_storage_text_fact_count_mismatch",
-            format!(
-                "text index 元信息 item_count={} 与 v2 fact 数量 {} 不一致",
-                payload.metadata.item_count,
-                payload.text_facts.len()
-            ),
-        ));
-    }
 
     let mut fact_ids = BTreeSet::new();
     let mut facts_by_id = BTreeMap::new();
@@ -648,13 +638,37 @@ fn validate_text_fact_write_payload(
 }
 
 fn validate_text_index_fact_identities(payload: &WriteStoragePayload) -> Result<(), String> {
-    let text_index_identities = text_index_identity_counts(&payload.text_index_rows);
+    validate_warm_rows_have_matching_facts(payload)?;
+    validate_facts_have_warm_locator_rows(payload)?;
+    Ok(())
+}
+
+fn validate_warm_rows_have_matching_facts(payload: &WriteStoragePayload) -> Result<(), String> {
     let text_fact_identities = text_fact_identity_counts(&payload.text_facts);
-    if text_index_identities != text_fact_identities {
-        return Err(structured_error(
-            "scope_index_storage_text_fact_identity_mismatch",
-            "warm index rows 与 v2 facts 的文本身份不一致，拒绝写入混合来源数据".to_string(),
-        ));
+    for row in &payload.text_index_rows {
+        let identity = text_index_identity(
+            row,
+            row.text_fact_raw_text
+                .clone()
+                .unwrap_or_else(|| row.original_lines.join("\n")),
+        );
+        if !text_fact_identities.contains_key(&identity) {
+            return Err(text_fact_identity_mismatch_error());
+        }
+    }
+    Ok(())
+}
+
+fn validate_facts_have_warm_locator_rows(payload: &WriteStoragePayload) -> Result<(), String> {
+    let warm_locations = payload
+        .text_index_rows
+        .iter()
+        .map(|row| row.location_path.as_str())
+        .collect::<BTreeSet<_>>();
+    for fact in &payload.text_facts {
+        if !warm_locations.contains(fact.location_path.as_str()) {
+            return Err(text_fact_identity_mismatch_error());
+        }
     }
     Ok(())
 }
@@ -663,13 +677,7 @@ fn validate_text_fact_raw_identity_overrides(
     payload: &WriteStoragePayload,
     render_parts_by_fact_id: &BTreeMap<String, Vec<&TextFactRenderPart>>,
 ) -> Result<(), String> {
-    let mut facts_by_identity: BTreeMap<TextFactIdentity, Vec<&TextFact>> = BTreeMap::new();
-    for fact in &payload.text_facts {
-        facts_by_identity
-            .entry(text_fact_identity(fact))
-            .or_default()
-            .push(fact);
-    }
+    let facts_by_identity = facts_by_identity(&payload.text_facts);
     for row in &payload.text_index_rows {
         let Some(raw_text) = &row.text_fact_raw_text else {
             continue;
@@ -703,20 +711,6 @@ fn text_fact_identity_mismatch_error() -> String {
     )
 }
 
-fn text_index_identity_counts(rows: &[TextIndexRowInput]) -> BTreeMap<TextFactIdentity, usize> {
-    let mut counts = BTreeMap::new();
-    for row in rows {
-        let identity = text_index_identity(
-            row,
-            row.text_fact_raw_text
-                .clone()
-                .unwrap_or_else(|| row.original_lines.join("\n")),
-        );
-        *counts.entry(identity).or_insert(0) += 1;
-    }
-    counts
-}
-
 fn text_index_identity(row: &TextIndexRowInput, raw_text: String) -> TextFactIdentity {
     (
         row.location_path.clone(),
@@ -735,6 +729,17 @@ fn text_fact_identity_counts(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, u
         *counts.entry(identity).or_insert(0) += 1;
     }
     counts
+}
+
+fn facts_by_identity(facts: &[TextFact]) -> BTreeMap<TextFactIdentity, Vec<&TextFact>> {
+    let mut facts_by_identity: BTreeMap<TextFactIdentity, Vec<&TextFact>> = BTreeMap::new();
+    for fact in facts {
+        facts_by_identity
+            .entry(text_fact_identity(fact))
+            .or_default()
+            .push(fact);
+    }
+    facts_by_identity
 }
 
 fn text_fact_identity(fact: &TextFact) -> TextFactIdentity {
@@ -1395,9 +1400,9 @@ mod tests {
     }
 
     #[test]
-    fn write_scope_index_storage_rejects_text_fact_count_mismatch() {
+    fn write_scope_index_storage_accepts_more_text_facts_than_warm_rows_when_locations_match() {
         let fixture = std::env::temp_dir().join(format!(
-            "att_mz_text_fact_mismatch_{}",
+            "att_mz_text_fact_warm_subset_{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("系统时间应晚于 UNIX_EPOCH")
@@ -1418,19 +1423,23 @@ mod tests {
             "text-rules-v1".to_string(),
             "2026-06-05T00:00:00".to_string(),
         );
+        let first_fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture");
+        let second_fact = standard_text_fact(&scope, "System.json/gameTitle", "Fixture Alt");
         let mut payload = text_fact_payload(
             db_path.to_string_lossy().to_string(),
             scope,
-            Vec::new(),
+            vec![first_fact, second_fact],
             Vec::new(),
             Vec::new(),
         );
         payload.metadata.item_count = 1;
+        payload.text_index_rows.clear();
         payload.text_index_rows.push(dummy_text_index_row());
 
-        let error = write_scope_index_storage_direct(&payload)
-            .expect_err("text index item_count 与 v2 fact 数量不一致必须拒绝");
-        assert!(error.contains("scope_index_storage_text_fact_count_mismatch"));
+        let output = write_scope_index_storage_direct(&payload)
+            .expect("同一路径存在更多 v2 facts 时 warm index 子集应可写入");
+        assert_eq!(output.written_item_count, 1);
+        assert_eq!(output.text_fact_count, 2);
 
         fs::remove_dir_all(fixture).expect("测试目录应可清理");
     }
