@@ -123,10 +123,18 @@ uv run python main.py rebuild-text-index --game <游戏标题>
 
 旧数据库没有 v2 facts、索引缺失或范围不一致时，后续翻译、质量检查和写进游戏文件会失败并要求重建索引，不会继续使用旧文本范围。
 
-旧工作区缺少当前 v2 范围信息时，工作区验收会失败。让 Agent 重新准备工作区即可：
+旧工作区缺少当前 v2 范围信息时，工作区验收会失败。让 Agent 重新准备工作区即可。
+
+源码运行：
 
 ```powershell
-prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
+uv run python main.py prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
+```
+
+发行包运行：
+
+```powershell
+.\att-mz.exe prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
 ```
 
 旧 runtime map 缺少 v2 hash 时，当前运行文件审计或反馈定位会提示无法继续信任旧映射。先重建文本索引，再按需要重建当前运行文件。

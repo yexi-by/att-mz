@@ -24,6 +24,15 @@ def _changelog_section_by_title(changelog_text: str, title: str) -> str:
     return match.group(0)
 
 
+def _readme_section_by_title(readme_text: str, title: str) -> str:
+    """按 README 小节标题返回段落。"""
+    pattern = rf"^### {re.escape(title)}\n.+?(?=^## |\Z)"
+    match = re.search(pattern, readme_text, flags=re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(f"README.md 缺少小节: {title}")
+    return match.group(0)
+
+
 def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
     """Text Fact Contract v2 发布说明必须写明具体契约变化。"""
     changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -48,6 +57,26 @@ def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
     missing_terms = sorted(term for term in required_terms if term not in current_section)
 
     assert not missing_terms, f"最新 CHANGELOG 段落缺少 v2 契约变化: {missing_terms}"
+
+
+def test_readme_text_fact_contract_lists_prepare_workspace_command_entries() -> None:
+    """README 当前文本事实契约小节必须区分源码和发行包工作区命令。"""
+    readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+    current_section = _readme_section_by_title(readme_text, "当前文本事实契约")
+
+    source_command = (
+        "uv run python main.py prepare-agent-workspace "
+        "--game <游戏标题> --output-dir <工作区>"
+    )
+    release_command = (
+        ".\\att-mz.exe prepare-agent-workspace "
+        "--game <游戏标题> --output-dir <工作区>"
+    )
+    bare_command = "prepare-agent-workspace --game <游戏标题> --output-dir <工作区>"
+
+    assert source_command in current_section
+    assert release_command in current_section
+    assert bare_command not in current_section.splitlines()
 
 
 def test_text_fact_v2_design_keeps_runtime_literal_out_of_current_domains() -> None:
