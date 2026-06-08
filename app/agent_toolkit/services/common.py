@@ -51,7 +51,6 @@ from app.native_structured_placeholder_scan import (
 )
 from app.regex_contract import RegexContractValidationError
 from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
-from app.persistence.records import TextIndexItemRecord
 from app.plugin_text import (
     NativePluginRuleValidationContext,
     build_native_plugin_rule_validation_context_from_import,
@@ -1221,115 +1220,6 @@ def write_back_probe_report_fields(
         "write_back_probe_executed": executed,
         "write_back_probe_mode": mode,
         "write_back_probe_enabled": executed,
-    }
-
-
-TEXT_INDEX_COVERAGE_DETAIL_SAMPLE_LIMIT = 20
-
-
-def build_text_index_coverage_report(
-    *,
-    index_records: list[TextIndexItemRecord],
-    translated_items: list[TranslationItem],
-    include_write_probe: bool = False,
-) -> AgentReport:
-    """用持久索引生成轻量覆盖结果，避免构造完整 Python scope。"""
-    errors: list[AgentIssue] = []
-    translated_paths = {item.location_path for item in translated_items}
-    writable_paths: set[str] = set()
-    active_paths: set[str] = set()
-    rule_hit_count = 0
-    unwritable_count = 0
-    pending_count = 0
-    unwritable_samples: JsonArray = []
-    pending_samples: JsonArray = []
-    for record in index_records:
-        active_paths.add(record.location_path)
-        if record.source_type != "standard_data":
-            rule_hit_count += 1
-        if record.writable:
-            writable_paths.add(record.location_path)
-            if record.location_path not in translated_paths:
-                pending_count += 1
-                _append_text_index_coverage_sample(pending_samples, record.location_path)
-            continue
-        unwritable_count += 1
-        _append_text_index_coverage_sample(unwritable_samples, _text_index_record_sample(record))
-    stale_count = 0
-    stale_samples: JsonArray = []
-    for item in translated_items:
-        if item.location_path in writable_paths:
-            continue
-        stale_count += 1
-        _append_text_index_coverage_sample(stale_samples, item.location_path)
-
-    if unwritable_count:
-        errors.append(issue("coverage_unwritable", f"发现 {unwritable_count} 条当前文本无法写进游戏文件"))
-    if pending_count:
-        errors.append(issue("coverage_missing_translation", f"存在 {pending_count} 条当前可写文本还没成功保存译文"))
-    if stale_count:
-        errors.append(issue("stale_saved_translations", f"发现 {stale_count} 条已保存译文不在当前可写范围内"))
-
-    probe_fields = write_back_probe_report_fields(
-        requested=include_write_probe,
-        executed=False,
-        mode="index_writable" if include_write_probe else "disabled",
-    )
-    return AgentReport.from_parts(
-        errors=errors,
-        warnings=[],
-        summary={
-            "rule_hit_count": rule_hit_count,
-            "extractable_count": len(active_paths),
-            "translated_count": len(translated_paths & active_paths),
-            "writable_count": len(writable_paths),
-            "pending_count": pending_count,
-            "unwritable_count": unwritable_count,
-            "unwritable_rule_hit_count": 0,
-            "stale_translation_count": stale_count,
-            "stale_plugin_rule_count": 0,
-            "write_back_probe_failed": False,
-            **probe_fields,
-        },
-        details={
-            "detail_mode": "sampled",
-            "unwritable_items": _sampled_text_index_coverage_detail(total=unwritable_count, samples=unwritable_samples),
-            "unwritable_rule_items": _sampled_text_index_coverage_detail(total=0, samples=[]),
-            "inactive_rule_hits": _sampled_text_index_coverage_detail(total=0, samples=[]),
-            "pending_location_paths": _sampled_text_index_coverage_detail(total=pending_count, samples=pending_samples),
-            "stale_translation_paths": _sampled_text_index_coverage_detail(total=stale_count, samples=stale_samples),
-            "stale_plugin_rules": _sampled_text_index_coverage_detail(total=0, samples=[]),
-            "write_back_probe_error": "",
-            **probe_fields,
-        },
-    )
-
-
-def _append_text_index_coverage_sample(samples: JsonArray, value: JsonValue) -> None:
-    """按固定上限收集持久索引覆盖样本。"""
-    if len(samples) >= TEXT_INDEX_COVERAGE_DETAIL_SAMPLE_LIMIT:
-        return
-    samples.append(value)
-
-
-def _sampled_text_index_coverage_detail(*, total: int, samples: JsonArray) -> JsonObject:
-    """构造持久索引覆盖样本摘要。"""
-    return {
-        "count": total,
-        "samples": samples,
-        "omitted_count": max(0, total - len(samples)),
-    }
-
-
-def _text_index_record_sample(record: TextIndexItemRecord) -> JsonObject:
-    """把索引项转换为 coverage 样本，不展开完整 scope entry。"""
-    return {
-        "location_path": record.location_path,
-        "source_type": record.source_type,
-        "item_type": record.item_type,
-        "original_lines": [line for line in record.original_lines],
-        "role": record.role or "",
-        "can_write_back": record.writable,
     }
 
 
@@ -3247,7 +3137,6 @@ __all__: list[str] = [
     '_preview_placeholder_sample',
     '_placeholder_preview_loses_visible_source_text',
     '_build_coverage_report',
-    'build_text_index_coverage_report',
     '_nonstandard_data_skipped_file_names',
     '_nonstandard_data_skipped_warnings',
     '_validate_source_residual_rule_records',

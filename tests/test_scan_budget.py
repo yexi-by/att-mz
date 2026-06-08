@@ -142,9 +142,9 @@ def test_rust_scope_index_scan_budget_table_covers_current_p0_p1_commands() -> N
 def test_budget_facts_keep_single_authoritative_native_or_sqlite_source() -> None:
     """关键命令的事实来源必须落在 Rust/native/SQLite 当前路径。"""
     expected_sources = {
-        "export-pending-translations --limit": "SQLite text_index_items pending 快路径",
+        "export-pending-translations --limit": "SQLite text_facts_v2 pending 快路径 / typed v2 adapter",
         "rebuild-text-index": "Rust build_scope_index / SQLite text index",
-        "quality-report": "Rust evaluate_scope_gate / Rust quality / SQLite text index",
+        "quality-report": "Rust evaluate_scope_gate / Rust quality / SQLite text_facts_v2 / typed v2 adapter",
         "write-back": "Rust evaluate_scope_gate / Rust write plan",
         "prepare-agent-workspace": "Rust build_scope_index / scan_rule_candidates",
         "scan-plugin-source-text": "Rust scan_rule_candidates(plugin_source)",
@@ -155,7 +155,7 @@ def test_budget_facts_keep_single_authoritative_native_or_sqlite_source() -> Non
         "export-event-commands-json": "Rust scan_rule_candidates(event_commands)",
         "validate-plugin-rules": "Rust scan_rule_candidates(plugin_config)",
         "export-mv-virtual-namebox-candidates": "Rust scan_rule_candidates(mv_virtual_namebox)",
-        "validate-source-residual-rules": "SQLite text_index_items",
+        "validate-source-residual-rules": "SQLite text_facts_v2 / typed v2 adapter",
         "verify-feedback-text": "SQLite text_index_items / Rust plugin source runtime scan",
         "export-terminology": "terminology repository / terminology context",
         "probe-source-language": "raw JSON visible-text sampler",
@@ -185,8 +185,9 @@ def test_p1b_candidate_commands_are_closed_over_native_or_sqlite_boundaries() ->
     source_residual_commands = {"validate-source-residual-rules", "import-source-residual-rules"}
     for command_name, budget in p1b_budgets.items():
         if command_name in source_residual_commands:
+            assert budget.text_scope_build_count == 0
             assert budget.candidate_scan_count == 0
-            assert "SQLite text_index_items" in budget.authoritative_source
+            assert "SQLite text_facts_v2 / typed v2 adapter" in budget.authoritative_source
         else:
             assert budget.candidate_scan_count == 1
             assert "scan_rule_candidates" in budget.authoritative_source
@@ -314,7 +315,48 @@ def test_agent_toolkit_scope_map_helper_uses_rust_text_index_not_python_scope_bu
     assert "TextScopeService" not in extract_source
     assert "TextScopeService" not in read_index_source
     assert "rebuild_text_index_native_storage" in read_index_calls
-    assert "text_index_items_to_translation_data_map" in read_index_calls
+    assert "read_current_text_fact_translation_data_map_v2" in read_index_calls
+
+
+def test_task11_agent_production_paths_do_not_rebuild_body_from_v1_index_rows() -> None:
+    """Agent 生产路径不能再把 text_index_items.original_lines 当正文事实来源。"""
+    excluded_paths = {"app/text_index.py"}
+    for marker in (
+        "text_index_item_to_translation_item",
+        "text_index_items_to_translation_data_map",
+    ):
+        paths = _python_paths_containing(
+            marker,
+            roots=(Path("app"),),
+            excluded_paths=excluded_paths,
+        )
+        assert paths == set(), marker
+
+
+def test_task11_source_residual_rules_read_v2_facts_without_scope_rebuild() -> None:
+    """源文残留规则校验先检查 freshness，再按路径读当前 v2 fact。"""
+    core_source = Path("app/agent_toolkit/services/core.py").read_text(encoding="utf-8")
+    build_source = _source_for_function(core_source, "_build_source_residual_rule_records")
+    build_calls = _call_names_for_function(core_source, "_build_source_residual_rule_records")
+
+    assert "detect_text_index_invalidations" in build_calls
+    assert "read_current_text_fact_translation_items_by_paths" in build_calls
+    assert "read_translated_items_by_paths" in build_calls
+    assert "rebuild_text_index" not in build_calls
+    assert "read_text_index_items_by_paths" not in build_source
+    assert "text_index_item_to_translation_item" not in build_source
+
+
+def test_task11_reset_input_uses_v2_fact_membership_not_index_rows() -> None:
+    """reset --input 的路径归属不能由旧 text_index_items 行决定。"""
+    quality_source = Path("app/agent_toolkit/services/quality.py").read_text(encoding="utf-8")
+    reset_source = _source_for_function(quality_source, "reset_translations")
+    reset_calls = _call_names_for_function(quality_source, "reset_translations")
+
+    assert "read_current_text_fact_translation_items_by_paths" in reset_calls
+    assert "read_text_index_items_by_paths" not in reset_source
+    assert "text_index_item_to_translation_item" not in reset_source
+    assert "text_index_items_to_translation_data_map" not in reset_source
 
 
 def test_batch7_production_paths_do_not_keep_python_text_scope_fallbacks() -> None:

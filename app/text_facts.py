@@ -521,6 +521,68 @@ async def read_writable_text_fact_translation_items_by_paths(
     return items
 
 
+async def read_writable_text_fact_translation_items_v2(
+    session: TargetGameSession,
+) -> list[TranslationItem]:
+    """读取当前可写 v2 facts，正文使用 translatable_text。"""
+    scope = await read_current_text_fact_scope_v2(session)
+    await _assert_current_scope_fact_schema(session=session, scope=scope)
+    try:
+        async with session.connection.execute(
+            f"""
+--sql
+                SELECT
+{TEXT_FACT_SELECT_COLUMNS}
+                FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
+                INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
+                    ON indexed.location_path = facts.location_path
+                    AND indexed.writable = 1
+                WHERE facts.scope_key = ?
+                ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            ;
+            """,
+            (scope.scope_key,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    except aiosqlite.Error as error:
+        raise _text_fact_contract_error("当前数据库不可读取可写 text fact v2") from error
+    facts = [_text_fact_v2_from_row(row, session=session) for row in rows]
+    index_records = await _read_index_records_for_facts(session=session, facts=facts)
+    index_by_path = {
+        record.location_path: record
+        for record in index_records
+        if record.writable
+    }
+    return [
+        text_fact_record_to_translation_item(
+            fact,
+            index_record=index_by_path.get(fact.location_path),
+        )
+        for fact in facts
+        if fact.location_path in index_by_path
+    ]
+
+
+async def read_current_text_fact_translation_items_by_paths(
+    session: TargetGameSession,
+    location_paths: Sequence[str],
+) -> list[TranslationItem]:
+    """按定位路径读取当前 v2 facts，缺失路径由调用方按业务语义处理。"""
+    facts = await _read_current_text_facts_by_paths(
+        session=session,
+        location_paths=location_paths,
+    )
+    index_records = await _read_index_records_for_facts(session=session, facts=facts)
+    index_by_path = {record.location_path: record for record in index_records}
+    return [
+        text_fact_record_to_translation_item(
+            fact,
+            index_record=index_by_path.get(fact.location_path),
+        )
+        for fact in facts
+    ]
+
+
 async def read_writable_text_fact_translation_items_by_fact_ids(
     session: TargetGameSession,
     fact_ids: Sequence[str],
@@ -936,6 +998,7 @@ __all__ = [
     "read_current_text_fact_records_v2",
     "read_current_text_fact_placeholder_entries_v2",
     "read_current_text_fact_translation_data_map_v2",
+    "read_current_text_fact_translation_items_by_paths",
     "read_pending_text_fact_quality_error_paths_v2",
     "read_pending_text_fact_records_v2",
     "read_pending_text_fact_path_samples_v2",
@@ -948,6 +1011,7 @@ __all__ = [
     "read_unwritable_text_fact_records_v2",
     "read_writable_text_fact_translation_items_by_fact_ids",
     "read_writable_text_fact_translation_items_by_paths",
+    "read_writable_text_fact_translation_items_v2",
     "text_fact_record_to_quality_item",
     "text_fact_record_to_translation_item",
     "text_fact_records_to_translation_data_map",

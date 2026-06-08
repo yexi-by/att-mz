@@ -27,8 +27,10 @@ from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 from app.text_index import (
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
-    text_index_item_to_translation_item,
-    text_index_items_to_translation_data_map,
+)
+from app.text_facts import (
+    read_current_text_fact_translation_data_map_v2,
+    read_current_text_fact_translation_items_by_paths,
 )
 
 
@@ -104,7 +106,7 @@ class CoreAgentMixin:
         text_rules: TextRules,
         plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
-        """兼容旧内部调用点，从 Rust 持久索引读取当前正文条目。"""
+        """兼容旧内部调用点，从当前 v2 文本事实读取正文条目。"""
         _ = (game_data, plugin_source_scan)
         return await self._read_active_translation_data_map_from_text_index(
             session=session,
@@ -117,7 +119,7 @@ class CoreAgentMixin:
         session: TargetGameSession,
         text_rules: TextRules,
     ) -> dict[str, TranslationData]:
-        """读取当前持久文本索引；失效时用 Rust 原生入口重建。"""
+        """确认持久索引有效后，读取当前 v2 文本事实正文映射。"""
         text_index_invalidations = await detect_text_index_invalidations(
             session=session,
             text_rules=text_rules,
@@ -130,7 +132,7 @@ class CoreAgentMixin:
                 text_rules=text_rules,
                 include_write_probe=False,
             )
-        return text_index_items_to_translation_data_map(await session.read_text_index_items())
+        return await read_current_text_fact_translation_data_map_v2(session)
 
     async def _build_source_residual_rule_records(
         self: AgentServiceContext,
@@ -161,17 +163,20 @@ class CoreAgentMixin:
                     text_rules=text_rules,
                 )
                 if text_index_invalidations:
-                    rebuild_report = await self.rebuild_text_index(
-                        game_title=game_title,
-                        include_write_probe=False,
+                    reason_details = "；".join(item.detail for item in text_index_invalidations)
+                    message = (
+                        "源文残留例外规则校验前需要当前 Text Fact Contract v2 文本事实；"
+                        "当前文本范围索引缺失或已过期，请先运行 rebuild-text-index"
                     )
-                    if rebuild_report.status == "error":
-                        messages = "；".join(error.message for error in rebuild_report.errors)
-                        if not messages:
-                            messages = "文本范围索引重建失败"
-                        raise RuntimeError(f"源文残留例外规则校验前无法建立文本范围索引: {messages}")
-                index_records = await session.read_text_index_items_by_paths(position_paths)
-                active_items = [text_index_item_to_translation_item(record) for record in index_records]
+                    if reason_details:
+                        message = f"{message}: {reason_details}"
+                    raise RuntimeError(
+                        message
+                    )
+                active_items = await read_current_text_fact_translation_items_by_paths(
+                    session,
+                    position_paths,
+                )
                 translated_items = await session.read_translated_items_by_paths(position_paths)
         return build_source_residual_rule_records_from_import(
             import_file=import_file,

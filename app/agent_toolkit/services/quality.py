@@ -19,7 +19,6 @@ from .common import (
     SettingOverrides,
     TextRules,
     TranslationErrorItem,
-    build_text_index_coverage_report,
     _build_manual_translation_template_entry,
     _build_quality_error_category_counts,
     _build_quality_fix_categories_by_path,
@@ -78,7 +77,6 @@ from app.text_index import detect_text_index_invalidations
 from app.text_index import collect_text_index_external_rule_gate_errors
 from app.text_index import collect_text_index_scope_gate_errors
 from app.text_index import collect_text_index_placeholder_gate_decisions
-from app.text_index import text_index_item_to_translation_item
 from app.text_index import text_index_source_branch_gates_prechecked
 from app.text_facts import (
     count_current_text_facts_v2,
@@ -93,6 +91,8 @@ from app.text_facts import (
     read_text_fact_quality_error_paths_v2,
     read_text_fact_quality_items_for_translations,
     read_text_fact_sample_details_by_paths_v2,
+    read_current_text_fact_translation_items_by_paths,
+    read_writable_text_fact_translation_items_v2,
 )
 from app.observability import current_diagnostics
 
@@ -259,6 +259,7 @@ def _text_index_coverage_report_from_counts(
     pending_count: int,
     unwritable_count: int,
     stale_translation_count: int,
+    include_write_probe: bool = False,
 ) -> AgentReport:
     """用 SQL 计数生成大库 coverage 摘要，避免读全量索引行。"""
     errors: list[AgentIssue] = []
@@ -268,6 +269,11 @@ def _text_index_coverage_report_from_counts(
         errors.append(issue("coverage_missing_translation", f"存在 {pending_count} 条当前可写文本还没成功保存译文"))
     if stale_translation_count:
         errors.append(issue("stale_saved_translations", f"发现 {stale_translation_count} 条已保存译文不在当前可写范围内"))
+    probe_fields = write_back_probe_report_fields(
+        requested=include_write_probe,
+        executed=False,
+        mode="index_writable" if include_write_probe else "disabled",
+    )
     return AgentReport.from_parts(
         errors=errors,
         warnings=[],
@@ -283,7 +289,7 @@ def _text_index_coverage_report_from_counts(
             "stale_translation_count": stale_translation_count,
             "stale_plugin_rule_count": 0,
             "write_back_probe_failed": False,
-            "write_back_probe_enabled": False,
+            **probe_fields,
         },
         details={
             "detail_mode": "count_only",
@@ -294,7 +300,7 @@ def _text_index_coverage_report_from_counts(
             "stale_translation_paths": _empty_sampled_detail(stale_translation_count),
             "stale_plugin_rules": _empty_sampled_detail(0),
             "write_back_probe_error": "",
-            "write_back_probe_enabled": False,
+            **probe_fields,
         },
     )
 
@@ -1052,22 +1058,27 @@ class QualityAgentMixin:
                     },
                     details={},
                 )
-            index_records = await session.read_text_index_items()
             translated_items = await session.read_translated_items()
             translated_by_path = {item.location_path: item for item in translated_items}
             translated_paths = set(translated_by_path)
+            active_translation_items = await read_writable_text_fact_translation_items_v2(session)
             active_items = {
-                record.location_path: text_index_item_to_translation_item(record)
-                for record in index_records
+                item.location_path: item
+                for item in active_translation_items
             }
-            active_paths = {
-                record.location_path
-                for record in index_records
-                if record.writable
-            }
-            active_translated_items = [
+            active_paths = set(active_items)
+            translated_items_in_active_paths = [
                 item
                 for item in translated_items
+                if item.location_path in active_paths
+            ]
+            active_translated_items = [
+                item
+                for item in await read_text_fact_quality_items_for_translations(
+                    session,
+                    translated_items_in_active_paths,
+                    source_text="translatable",
+                )
                 if item.location_path in active_paths
             ]
             latest_run = await session.read_latest_translation_run()
@@ -1076,9 +1087,15 @@ class QualityAgentMixin:
             else:
                 quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
             source_residual_rules = await session.read_source_residual_rules()
-            coverage_report = build_text_index_coverage_report(
-                index_records=index_records,
-                translated_items=translated_items,
+            text_fact_count = await count_current_text_facts_v2(session)
+            writable_fact_count = await count_writable_text_facts_v2(session)
+            coverage_report = _text_index_coverage_report_from_counts(
+                extractable_count=text_fact_count,
+                translated_count=await count_translated_text_facts_v2(session),
+                writable_count=writable_fact_count,
+                pending_count=await count_pending_text_facts_v2(session),
+                unwritable_count=max(0, text_fact_count - writable_fact_count),
+                stale_translation_count=await count_stale_translations_outside_writable_text_facts_v2(session),
                 include_write_probe=include_write_probe,
             )
             advance_progress(2)
@@ -1377,12 +1394,10 @@ class QualityAgentMixin:
         else:
             text_fact_records = await read_current_text_fact_records_v2(session, limit=None)
             active_paths = {record.location_path for record in text_fact_records}
-            index_records = await session.read_text_index_items_by_paths(sorted(active_paths))
             translated_items = await session.read_translated_items()
             writable_paths = {
-                record.location_path
-                for record in index_records
-                if record.writable
+                item.location_path
+                for item in await read_writable_text_fact_translation_items_v2(session)
             }
             active_translated_items = [
                 item
@@ -1396,11 +1411,6 @@ class QualityAgentMixin:
                 if item.location_path not in active_paths
                 and item.location_path.split("/", 1)[0] in index_source_files
             ]
-            coverage_report = build_text_index_coverage_report(
-                index_records=index_records,
-                translated_items=translated_items,
-                include_write_probe=include_write_probe,
-            )
             stale_source_residual_rule_paths = {
                 rule.location_path
                 for rule in source_residual_rules
@@ -1421,12 +1431,21 @@ class QualityAgentMixin:
                 if item.location_path in pending_quality_error_paths
             ]
             active_count = len(active_paths)
-            writable_count = len(writable_paths)
-            unwritable_count = len(active_paths - writable_paths)
+            writable_count = await count_writable_text_facts_v2(session)
+            unwritable_count = max(0, active_count - writable_count)
             translated_count = await count_translated_text_facts_v2(session)
             pending_paths_count = await count_pending_text_facts_v2(session)
             writable_translation_count = max(0, writable_count - pending_paths_count)
             stale_paths_count = await count_stale_translations_outside_writable_text_facts_v2(session)
+            coverage_report = _text_index_coverage_report_from_counts(
+                extractable_count=active_count,
+                translated_count=translated_count,
+                writable_count=writable_count,
+                pending_count=pending_paths_count,
+                unwritable_count=unwritable_count,
+                stale_translation_count=stale_paths_count,
+                include_write_probe=include_write_probe,
+            )
             if latest_run is None or len(active_translated_items) <= QUALITY_REPORT_FULL_RECHECK_LIMIT:
                 native_quality_items = [
                     *active_translated_items,
@@ -2210,8 +2229,11 @@ class QualityAgentMixin:
                             },
                         )
                 requested_path_set = set(requested_paths)
-                index_records = await session.read_text_index_items_by_paths(requested_paths)
-                active_paths = {record.location_path for record in index_records}
+                active_items = await read_current_text_fact_translation_items_by_paths(
+                    session,
+                    requested_paths,
+                )
+                active_paths = {item.location_path for item in active_items}
                 invalid_paths = sorted(requested_path_set - active_paths)
                 if invalid_paths:
                     reset_error_summary: JsonObject = {

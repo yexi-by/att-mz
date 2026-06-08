@@ -444,9 +444,53 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
     assert diagnostics.counters["quality.native_quality_payload_item_count"] == report.summary["translated_count"]
     assert isinstance(diagnostics.counters["runtime.native_thread_count"], int)
     coverage = ensure_json_object(report.details["coverage"], "coverage")
-    assert coverage["detail_mode"] == "sampled"
+    assert coverage["detail_mode"] == "count_only"
     pending_paths = ensure_json_object(coverage["pending_location_paths"], "pending_location_paths")
     assert set(pending_paths) == {"count", "samples", "omitted_count"}
+
+
+@pytest.mark.asyncio
+async def test_quality_report_coverage_hard_stop_does_not_leak_old_index_text(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """quality-report coverage 明细不能暴露旧索引 original_lines。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.rebuild_text_index(game_title="テストゲーム")
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET original_lines = ?",
+            (
+                json.dumps(
+                    ["OLD_INDEX_SHOULD_NOT_APPEAR_IN_QUALITY_REPORT translated_text 位置:"],
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="Removed.json/ghost",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["旧译文源文"],
+                    source_line_paths=["Removed.json/ghost"],
+                    translation_lines=["旧译文"],
+                )
+            ]
+        )
+        await session.connection.commit()
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    assert report.status == "error"
+    assert "stale_saved_translations" in {error.code for error in report.errors}
+    report_text = report.to_json_text()
+    assert "OLD_INDEX_SHOULD_NOT_APPEAR_IN_QUALITY_REPORT" not in report_text
+    assert "translated_text" not in report_text
+    assert "位置:" not in report_text
 
 
 @pytest.mark.asyncio
@@ -509,7 +553,7 @@ async def test_quality_report_counts_current_v2_facts_not_index_rows(
     assert report.summary["text_fact_count"] == 1
     assert report.summary["extractable_count"] == 1
     assert report.summary["pending_count"] == 1
-    assert coverage["index_item_count"] == 1
+    assert coverage["detail_mode"] == "count_only"
     assert pending_paths["count"] == 1
 
 

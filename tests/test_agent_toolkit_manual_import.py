@@ -872,6 +872,129 @@ async def test_export_pending_translations_uses_v2_fact_translatable_text(
 
 
 @pytest.mark.asyncio
+async def test_export_quality_fix_template_uses_v2_fact_translatable_text(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量修复模板源文必须来自 v2 fact，不读取旧索引 original_lines。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+    template_path = tmp_path / "quality-fix-template.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    payload = load_json_object(pending_path)
+    target_path = sorted(payload)[0]
+    target_entry = ensure_json_object(coerce_json_value(payload[target_path]), target_path)
+    expected_original_lines = [
+        line
+        for line in ensure_json_array(target_entry["original_lines"], f"{target_path}.original_lines")
+        if isinstance(line, str)
+    ]
+    assert export_report.status == "ok"
+    assert expected_original_lines
+
+    async with await registry.open_game("テストゲーム") as session:
+        polluted_lines = json.dumps(
+            ["OLD_INDEX_SHOULD_NOT_FEED_QUALITY_FIX_TEMPLATE translated_text 位置:"],
+            ensure_ascii=False,
+        )
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET original_lines = ? WHERE location_path = ?",
+            (polluted_lines, target_path),
+        )
+        run_record = await session.start_translation_run(
+            total_extracted=len(payload),
+            pending_count=len(payload),
+            deduplicated_count=len(payload),
+            batch_count=1,
+        )
+        await session.write_translation_quality_errors(
+            run_record.run_id,
+            [
+                TranslationErrorItem(
+                    location_path=target_path,
+                    item_type="short_text",
+                    role=None,
+                    original_lines=list(expected_original_lines),
+                    translation_lines=["候选译文"],
+                    error_type="AI漏翻",
+                    error_detail=["测试质量错误"],
+                    model_response='{"translation_lines":["候选译文"]}',
+                )
+            ],
+        )
+        await session.connection.commit()
+
+    report = await service.export_quality_fix_template(
+        game_title="テストゲーム",
+        output_path=template_path,
+    )
+
+    template = load_json_object(template_path)
+    exported_entry = ensure_json_object(coerce_json_value(template[target_path]), target_path)
+    assert report.status == "ok"
+    assert exported_entry["original_lines"] == expected_original_lines
+    exported_text = json.dumps(template, ensure_ascii=False)
+    assert "OLD_INDEX_SHOULD_NOT_FEED_QUALITY_FIX_TEMPLATE" not in exported_text
+    assert "translated_text" not in exported_text
+    assert "位置:" not in exported_text
+
+
+@pytest.mark.asyncio
+async def test_export_quality_fix_template_hard_stop_does_not_leak_old_index_text(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量修复表阻断明细不能暴露旧索引 original_lines。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    output_path = tmp_path / "quality-fix-template.json"
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET original_lines = ?",
+            (
+                json.dumps(
+                    ["OLD_INDEX_SHOULD_NOT_APPEAR_IN_COVERAGE_DETAIL translated_text 位置:"],
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path="Removed.json/ghost",
+                    item_type="short_text",
+                    role=None,
+                    original_lines=["旧译文源文"],
+                    source_line_paths=["Removed.json/ghost"],
+                    translation_lines=["旧译文"],
+                )
+            ]
+        )
+        await session.connection.commit()
+
+    report = await service.export_quality_fix_template(
+        game_title="テストゲーム",
+        output_path=output_path,
+    )
+
+    assert report.status == "error"
+    assert "stale_saved_translations" in {error.code for error in report.errors}
+    report_text = report.to_json_text()
+    assert "OLD_INDEX_SHOULD_NOT_APPEAR_IN_COVERAGE_DETAIL" not in report_text
+    assert "translated_text" not in report_text
+    assert "位置:" not in report_text
+
+
+@pytest.mark.asyncio
 async def test_export_pending_translations_cold_rebuilds_missing_text_index_then_uses_limit(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1273,6 +1396,56 @@ async def test_reset_translations_input_rejects_unknown_paths_without_partial_de
         translated_items = await session.read_translated_items()
     assert len(translated_items) == 1
     assert translated_items[0].location_path == target_path
+
+
+@pytest.mark.asyncio
+async def test_reset_translations_input_rejects_path_missing_current_v2_fact(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """reset --input 的路径归属必须来自当前 v2 fact，而不是旧索引行。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    target_path = "CommonEvents.json/1/0"
+    async with await registry.open_game("テストゲーム") as session:
+        await session.write_translation_items(
+            [
+                TranslationItem(
+                    location_path=target_path,
+                    item_type="long_text",
+                    role="アリス",
+                    original_lines=["こんにちは"],
+                    source_line_paths=["CommonEvents.json/1/1"],
+                    translation_lines=["你好"],
+                )
+            ]
+        )
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts_v2 WHERE location_path = ?",
+            (target_path,),
+        )
+        await session.connection.commit()
+    input_path = tmp_path / "reset-missing-v2-fact.json"
+    _ = input_path.write_text(
+        json.dumps({"location_paths": [target_path]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.reset_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert report.status == "error"
+    assert report.errors[0].code == "reset_translation_location"
+    assert report.summary["reset_count"] == 0
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    assert len(translated_items) == 1
+    assert translated_items[0].location_path == target_path
 @pytest.mark.asyncio
 async def test_reset_translations_input_cold_rebuilds_missing_text_index(
     minimal_game_dir: Path,
@@ -1518,6 +1691,142 @@ async def test_manual_translation_uses_source_residual_exception_rules(
     assert residual_rules[0].location_path == target_path
     assert residual_rules[0].allowed_terms == ["こんにちは"]
     assert residual_rules[0].reason == "proper_noun"
+
+
+@pytest.mark.asyncio
+async def test_source_residual_rule_commands_use_v2_fact_translatable_text(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """源文残留规则 allowed_terms 校验必须读取 v2 fact 可译正文。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.location_path, facts.translatable_text
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+                AND facts.translatable_text <> ''
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            ;
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        target_path = ""
+        allowed_term = ""
+        for row in rows:
+            candidate_text = cast(str, row["translatable_text"])
+            if "\n" in candidate_text:
+                continue
+            target_path = cast(str, row["location_path"])
+            allowed_term = candidate_text
+            break
+        assert target_path
+        assert allowed_term
+        polluted_lines = json.dumps(
+            ["OLD_INDEX_SHOULD_NOT_VALIDATE_SOURCE_RESIDUAL"],
+            ensure_ascii=False,
+        )
+        _ = await session.connection.execute(
+            "UPDATE text_index_items SET original_lines = ? WHERE location_path = ?",
+            (polluted_lines, target_path),
+        )
+        await session.connection.commit()
+    rules_text = json.dumps(
+        {
+            "position_rules": {
+                target_path: {
+                    "allowed_terms": [allowed_term],
+                    "reason": "proper_noun",
+                }
+            },
+            "structural_rules": [],
+        },
+        ensure_ascii=False,
+    )
+
+    validate_report = await service.validate_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+    import_report = await service.import_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+
+    assert validate_report.status == "ok"
+    assert import_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        residual_rules = await session.read_source_residual_rules()
+    assert residual_rules[0].location_path == target_path
+    assert residual_rules[0].allowed_terms == [allowed_term]
+
+
+@pytest.mark.asyncio
+async def test_source_residual_rule_commands_reject_stale_text_fact_scope(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """源文残留规则校验遇到过期 v2 scope 必须要求重建。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.location_path, facts.translatable_text
+            FROM text_facts_v2 AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+                AND facts.translatable_text <> ''
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_path = cast(str, row["location_path"])
+        allowed_term = cast(str, row["translatable_text"])
+        _ = await session.connection.execute("DELETE FROM text_index_meta")
+        await session.connection.commit()
+    rules_text = json.dumps(
+        {
+            "position_rules": {
+                target_path: {
+                    "allowed_terms": [allowed_term],
+                    "reason": "proper_noun",
+                }
+            },
+            "structural_rules": [],
+        },
+        ensure_ascii=False,
+    )
+
+    validate_report = await service.validate_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+    import_report = await service.import_source_residual_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+    )
+
+    assert validate_report.status == "error"
+    assert import_report.status == "error"
+    assert validate_report.errors[0].code == "source_residual_rules_invalid"
+    assert import_report.errors[0].code == "source_residual_rules_invalid"
+    assert "rebuild-text-index" in validate_report.errors[0].message
+    assert "rebuild-text-index" in import_report.errors[0].message
 @pytest.mark.asyncio
 async def test_manual_long_text_import_splits_overwide_lines(
     minimal_game_dir: Path,
@@ -1921,12 +2230,26 @@ async def test_export_quality_fix_template_collects_repairable_items(
             residual_path = candidate_path
             break
     assert residual_path
-    placeholder_path = next(path for path in sorted_paths if path not in {quality_error_path, residual_path})
+    placeholder_path = ""
+    for candidate_path in sorted_paths:
+        if candidate_path in {quality_error_path, residual_path}:
+            continue
+        candidate_entry = ensure_json_object(coerce_json_value(payload[candidate_path]), candidate_path)
+        if candidate_entry["item_type"] == "long_text":
+            placeholder_path = candidate_path
+            break
+    assert placeholder_path
     quality_error_entry = ensure_json_object(coerce_json_value(payload[quality_error_path]), quality_error_path)
     residual_entry = ensure_json_object(coerce_json_value(payload[residual_path]), residual_path)
+    placeholder_entry = ensure_json_object(coerce_json_value(payload[placeholder_path]), placeholder_path)
     residual_original_lines = [
         line
         for line in ensure_json_array(residual_entry["original_lines"], f"{residual_path}.original_lines")
+        if isinstance(line, str)
+    ]
+    placeholder_original_lines = [
+        line
+        for line in ensure_json_array(placeholder_entry["original_lines"], f"{placeholder_path}.original_lines")
         if isinstance(line, str)
     ]
     async with await registry.open_game("テストゲーム") as session:
@@ -1944,7 +2267,7 @@ async def test_export_quality_fix_template_collects_repairable_items(
                     location_path=placeholder_path,
                     item_type="long_text",
                     role=None,
-                    original_lines=["こんにちは"],
+                    original_lines=placeholder_original_lines,
                     source_line_paths=[],
                     translation_lines=[r"\C[4]甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"],
                 ),

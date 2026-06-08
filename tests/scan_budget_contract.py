@@ -155,14 +155,14 @@ def _source_residual_rule_budget(
         command_name=command_name,
         category="P1-B",
         game_data_load_count=1,
-        text_scope_build_count=1,
+        text_scope_build_count=0,
         candidate_scan_count=0,
         plugin_source_ast_scan_count=0,
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source=(
-            "SQLite text_index_items 精确路径查询 / Python source_residual 规则解析 / "
-            "Rust regex contract / Rust quality"
+            "SQLite text_facts_v2 / typed v2 adapter 精确路径查询 / "
+            "Python source_residual 规则解析 / Rust regex contract / Rust quality"
         ),
         old_path_action="删除命令内 Python 全量文本范围构建和全量译文读取",
         evidence=evidence,
@@ -173,7 +173,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
     "export-pending-translations --limit": _scope_budget(
         "export-pending-translations --limit",
         "P0",
-        authoritative_source="SQLite text_index_items pending 快路径",
+        authoritative_source="SQLite text_facts_v2 pending 快路径 / typed v2 adapter",
         old_path_action="删除 Python 全量 pending 筛选",
         evidence="有效索引下 limit 必须在 SQLite 查询中生效；索引失效时最多触发一次 Rust rebuild。",
     ),
@@ -201,7 +201,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         "quality-report",
         "P1-A",
         quality_gate_count=1,
-        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text index",
+        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text_facts_v2 / typed v2 adapter",
         old_path_action="删除 Python 重复质量门禁和大规模筛选",
         evidence="质量报告最多执行一次质量 gate，并复用当前范围事实。",
     ),
@@ -209,7 +209,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         "export-quality-fix-template",
         "P1-A",
         quality_gate_count=1,
-        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text index",
+        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text_facts_v2 / typed v2 adapter",
         old_path_action="删除 Python 重复质量明细筛选",
         evidence="修复表导出消费 quality-report 同源结果，不另建范围事实。",
     ),
@@ -222,7 +222,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         plugin_source_ast_scan_count=0,
         quality_gate_count=0,
         write_plan_count=0,
-        authoritative_source="SQLite text index 路径归属校验",
+        authoritative_source="SQLite text_facts_v2 / typed v2 adapter 路径归属校验",
         old_path_action="删除 Python 全量路径归属筛选",
         evidence="手动导入只验证路径属于当前范围，不执行候选扫描和质量 gate。",
     ),
@@ -235,7 +235,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         plugin_source_ast_scan_count=0,
         quality_gate_count=0,
         write_plan_count=0,
-        authoritative_source="SQLite text index 路径归属校验",
+        authoritative_source="SQLite text_facts_v2 / typed v2 adapter 路径归属校验",
         old_path_action="删除 Python 全量路径归属筛选",
         evidence="精确重置输入只做路径归属校验，不能全量构建再筛选。",
     ),
@@ -452,7 +452,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
     ),
     "validate-source-residual-rules": _source_residual_rule_budget(
         "validate-source-residual-rules",
-        evidence="已收束: 规则校验只按 position_rules 路径读取 text_index_items 和对应译文；结构规则只做输入与 Rust regex 契约校验。",
+        evidence="已收束: 规则校验只按 position_rules 路径读取 text_facts_v2 当前事实和对应译文；结构规则只做输入与 Rust regex 契约校验。",
     ),
     "import-source-residual-rules": _source_residual_rule_budget(
         "import-source-residual-rules",
