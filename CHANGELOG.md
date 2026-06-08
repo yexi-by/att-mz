@@ -23,6 +23,7 @@
 
 - 大型游戏会建立文本范围索引，质量报告、手动补译、当前运行重建和写入审计复用已加载范围，避免同一命令内重复全量扫描。
 - 翻译停止阈值、Rust 线程数和写回计划扫描都通过当前配置真实参与调度；阶段 0 与阶段 7 的基准测试用于防止小样本和当前运行重建路径回退。
+- 性能边界：自动测试和 scan budget 只证明当前实现没有回到旧 Python 全量范围和旧路径身份；真实游戏耗时仍需要维护者在目标样本运行 `rebuild-text-index`、`quality-report`、`export-pending-translations` 和 `write-translated` 的 `--debug-timings` 命令确认。
 
 ### 验证命令
 

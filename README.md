@@ -107,10 +107,18 @@ Agent 收到任务后，会自己完成整个流程：
 
 ### 当前文本事实契约
 
-A.T.T MZ 当前使用 **Text Fact Contract v2**。工具会把游戏文本拆成 v2 facts：原始片段、玩家可见文本、真正送模型翻译的正文、写进游戏文件时要保留的结构片段和对应 hash。大型游戏或源文件、规则变化后，Agent 会先建立当前文本索引：
+A.T.T MZ 当前使用 **Text Fact Contract v2**。工具会把游戏文本拆成 v2 facts：原始片段、玩家可见文本、真正送模型翻译的正文、写进游戏文件时要保留的结构片段和对应 hash。大型游戏或源文件、规则变化后，Agent 会先建立当前文本索引。
+
+源码运行：
 
 ```powershell
-rebuild-text-index --game <游戏标题>
+uv run python main.py rebuild-text-index --game <游戏标题>
+```
+
+发行包运行：
+
+```powershell
+.\att-mz.exe rebuild-text-index --game <游戏标题>
 ```
 
 旧数据库没有 v2 facts、索引缺失或范围不一致时，后续翻译、质量检查和写进游戏文件会失败并要求重建索引，不会继续使用旧文本范围。
@@ -121,11 +129,20 @@ rebuild-text-index --game <游戏标题>
 prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
 ```
 
-旧 runtime map 缺少 v2 hash 时，当前运行文件审计或反馈定位会提示无法继续信任旧映射。先重建文本索引，再按需要重建当前运行文件：
+旧 runtime map 缺少 v2 hash 时，当前运行文件审计或反馈定位会提示无法继续信任旧映射。先重建文本索引，再按需要重建当前运行文件。
+
+源码运行：
 
 ```powershell
 uv run python main.py rebuild-text-index --game <游戏标题>
 uv run python main.py rebuild-active-runtime --game <游戏标题>
+```
+
+发行包运行：
+
+```powershell
+.\att-mz.exe rebuild-text-index --game <游戏标题>
+.\att-mz.exe rebuild-active-runtime --game <游戏标题>
 ```
 
 ## 🎯 第五步：试玩 + 反馈

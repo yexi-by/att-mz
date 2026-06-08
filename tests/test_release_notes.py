@@ -40,6 +40,9 @@ def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
         "旧 runtime map",
         "prepare-agent-workspace",
         "rebuild-active-runtime",
+        "真实游戏耗时",
+        "--debug-timings",
+        "scan budget",
     }
 
     missing_terms = sorted(term for term in required_terms if term not in current_section)
