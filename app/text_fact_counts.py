@@ -15,6 +15,7 @@ from app.text_fact_core import (
     assert_current_scope_fact_schema,
     read_count,
     read_current_text_fact_scope_v2,
+    translation_matches_fact_sql,
 )
 
 if TYPE_CHECKING:
@@ -62,7 +63,7 @@ async def count_translated_text_facts_v2(session: TargetGameSession) -> int:
             SELECT COUNT(*) AS translated_count
             FROM [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
             INNER JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-                ON {_translation_matches_fact_sql()}
+                ON {translation_matches_fact_sql()}
             INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
             WHERE facts.scope_key = ?
@@ -125,7 +126,7 @@ async def count_stale_translations_outside_writable_text_facts_v2(session: Targe
             SELECT COUNT(*) AS stale_translation_count
             FROM [{TRANSLATION_TABLE_NAME}] AS translations
             LEFT JOIN [{TEXT_FACTS_V2_TABLE_NAME}] AS facts
-                ON {_translation_matches_fact_sql()}
+                ON {translation_matches_fact_sql()}
                 AND facts.scope_key = ?
             LEFT JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
                 ON indexed.location_path = facts.location_path
@@ -272,7 +273,7 @@ def _pending_text_fact_count_sql() -> str:
         INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
             ON indexed.location_path = facts.location_path
         LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-            ON {_translation_matches_fact_sql()}
+            ON {translation_matches_fact_sql()}
         WHERE facts.scope_key = ?
             AND indexed.writable = 1
             AND translations.fact_id IS NULL
@@ -297,7 +298,7 @@ def _pending_text_fact_quality_error_sql(
         INNER JOIN [{TEXT_INDEX_ITEMS_TABLE_NAME}] AS indexed
             ON indexed.location_path = facts.location_path
         LEFT JOIN [{TRANSLATION_TABLE_NAME}] AS translations
-            ON {_translation_matches_fact_sql()}
+            ON {translation_matches_fact_sql()}
         WHERE quality_errors.run_id = ?
             AND facts.scope_key = ?
             AND indexed.writable = 1
@@ -306,15 +307,3 @@ def _pending_text_fact_quality_error_sql(
         {order_by}
     ;
     """
-
-
-def _translation_matches_fact_sql() -> str:
-    """返回已保存译文和当前 v2 fact 身份完全一致的 SQL 条件。"""
-    return (
-        "translations.fact_id = facts.fact_id "
-        "AND translations.source_fact_raw_hash = facts.raw_hash "
-        "AND translations.source_fact_translatable_hash = facts.translatable_hash"
-    )
-
-
-translation_matches_fact_sql = _translation_matches_fact_sql

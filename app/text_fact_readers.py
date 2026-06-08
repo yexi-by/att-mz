@@ -24,8 +24,8 @@ from app.text_fact_core import (
     text_fact_contract_error,
     text_fact_lines,
     text_fact_v2_from_row,
+    translation_matches_fact_sql,
 )
-from app.text_fact_counts import translation_matches_fact_sql
 from app.text_fact_quality import (
     text_fact_record_to_translation_item,
     text_fact_records_to_translation_data_map,

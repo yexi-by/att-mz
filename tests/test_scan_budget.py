@@ -508,15 +508,23 @@ def test_task7_fact_id_helpers_use_batched_in_queries() -> None:
     """fact_id helper 必须批量查询，避免按行读取 v2 facts 或 saved translations。"""
     translation_source = Path("app/persistence/translation_records.py").read_text(encoding="utf-8")
     run_source = Path("app/persistence/run_records.py").read_text(encoding="utf-8")
-    text_facts_source = Path("app/text_facts.py").read_text(encoding="utf-8")
+    text_fact_readers_source = Path("app/text_fact_readers.py").read_text(encoding="utf-8")
+    text_fact_quality_source = Path("app/text_fact_quality.py").read_text(encoding="utf-8")
 
     for source, function_name in (
         (translation_source, "read_translated_items_by_fact_ids"),
         (translation_source, "delete_translation_items_by_fact_ids"),
         (run_source, "read_translation_quality_errors_by_fact_ids"),
         (run_source, "delete_translation_quality_errors_by_fact_ids"),
-        (text_facts_source, "_read_current_text_facts_by_fact_ids"),
     ):
         function_source = _source_for_function(source, function_name)
         assert "for batch in _chunks" in function_source
+        assert "fact_id IN ({placeholders})" in function_source
+
+    for source, function_name in (
+        (text_fact_readers_source, "_read_current_text_facts_by_fact_ids"),
+        (text_fact_quality_source, "_read_current_text_facts_by_fact_ids_for_quality"),
+    ):
+        function_source = _source_for_function(source, function_name)
+        assert "for batch in chunks" in function_source
         assert "fact_id IN ({placeholders})" in function_source

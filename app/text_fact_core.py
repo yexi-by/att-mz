@@ -123,6 +123,15 @@ def chunks(values: Sequence[str], size: int) -> list[Sequence[str]]:
     return [values[index:index + size] for index in range(0, len(values), size)]
 
 
+def translation_matches_fact_sql() -> str:
+    """返回已保存译文和当前 v2 fact 身份完全一致的 SQL 条件。"""
+    return (
+        "translations.fact_id = facts.fact_id "
+        "AND translations.source_fact_raw_hash = facts.raw_hash "
+        "AND translations.source_fact_translatable_hash = facts.translatable_hash"
+    )
+
+
 def text_fact_v2_from_row(
     row: aiosqlite.Row,
     *,
