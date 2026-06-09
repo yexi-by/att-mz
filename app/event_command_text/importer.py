@@ -2,11 +2,12 @@
 
 import json
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import cast
 
 import aiofiles
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.json_path_protocol import (
     build_json_string_leaf_path_hint,
     expand_rule_to_leaf_paths,
@@ -22,17 +23,11 @@ from app.rmmz.schema import (
 from app.rmmz.text_rules import JsonValue, coerce_json_value
 
 
-class StrictEventCommandRuleModel(BaseModel):
-    """事件指令规则严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-
-class EventCommandRuleSpec(StrictEventCommandRuleModel):
+class EventCommandRuleSpec(ExternalInputModel):
     """同一类事件指令参数文本规则。"""
 
-    match: dict[str, str] = Field(default_factory=dict)
-    paths: list[str] = Field(default_factory=list)
+    match: dict[ExternalStr, ExternalStr] = Field(default_factory=dict)
+    paths: list[ExternalStr] = Field(default_factory=list)
 
     @field_validator("paths")
     @classmethod
@@ -44,7 +39,7 @@ class EventCommandRuleSpec(StrictEventCommandRuleModel):
         return normalized_paths
 
 
-type EventCommandRuleImportFile = dict[str, list[EventCommandRuleSpec]]
+type EventCommandRuleImportFile = dict[ExternalStr, list[EventCommandRuleSpec]]
 _EVENT_COMMAND_RULE_IMPORT_ADAPTER: TypeAdapter[EventCommandRuleImportFile] = TypeAdapter(
     EventCommandRuleImportFile
 )

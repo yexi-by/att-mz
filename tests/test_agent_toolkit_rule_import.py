@@ -6,10 +6,12 @@ from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 from app.application.flow_gate import count_note_tag_rule_candidates
+from app.event_command_text import parse_event_command_rule_import_text
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import TargetGameSession
 from app.persistence.records import TextFactRecord
+from app.plugin_text import parse_plugin_rule_import_text
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import get_default_text_rules
@@ -27,6 +29,63 @@ def _json_int_for_assert(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise AssertionError(f"{label} 必须是整数")
     return value
+
+
+def test_plugin_rule_import_accepts_integer_string_index() -> None:
+    """插件规则 plugin_index 可以用整数字符串表达。"""
+    import_file = parse_plugin_rule_import_text(
+        """
+        [
+          {
+            "plugin_index": "0",
+            "plugin_name": 123,
+            "paths": [1]
+          }
+        ]
+        """
+    )
+
+    assert import_file[0].plugin_index == 0
+    assert import_file[0].plugin_name == "123"
+    assert import_file[0].paths == ["1"]
+
+
+def test_plugin_rule_import_rejects_boolean_index() -> None:
+    """插件规则 plugin_index 不能用布尔值表达。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_plugin_rule_import_text(
+            """
+            [
+              {
+                "plugin_index": true,
+                "plugin_name": "Plugin",
+                "paths": ["parameters/name"]
+              }
+            ]
+            """
+        )
+
+    assert "bool" in str(error_info.value)
+
+
+def test_event_command_rule_import_normalizes_match_and_paths() -> None:
+    """事件指令规则中的 match 值和路径可以用整数表达字符串。"""
+    import_file = parse_event_command_rule_import_text(
+        """
+        {
+          "357": [
+            {
+              "match": {"0": 123},
+              "paths": [1]
+            }
+          ]
+        }
+        """
+    )
+
+    specs = import_file["357"]
+    assert specs[0].match == {"0": "123"}
+    assert specs[0].paths == ["1"]
 
 
 async def _translation_item_from_text_fact_for_test(

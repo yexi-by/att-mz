@@ -7,27 +7,22 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import cast
 
 import aiofiles
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.regex_contract import validate_source_residual_regex_contract
 from app.rmmz.schema import SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import TextRules, coerce_json_value
 
 
-class StrictSourceResidualRuleModel(BaseModel):
-    """源文残留例外规则严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-
-class PositionSourceResidualRuleSpec(StrictSourceResidualRuleModel):
+class PositionSourceResidualRuleSpec(ExternalInputModel):
     """单个文本位置允许保留的源文片段。"""
 
-    allowed_terms: list[str] = Field(default_factory=list)
-    reason: str
+    allowed_terms: list[ExternalStr] = Field(default_factory=list)
+    reason: ExternalStr
 
     @field_validator("allowed_terms")
     @classmethod
@@ -42,13 +37,13 @@ class PositionSourceResidualRuleSpec(StrictSourceResidualRuleModel):
         return _normalize_reason(value)
 
 
-class StructuralSourceResidualRuleSpec(StrictSourceResidualRuleModel):
+class StructuralSourceResidualRuleSpec(ExternalInputModel):
     """结构性协议词保留规则。"""
 
-    pattern: str
-    allowed_terms: list[str] = Field(default_factory=list)
-    check_group: str
-    reason: str
+    pattern: ExternalStr
+    allowed_terms: list[ExternalStr] = Field(default_factory=list)
+    check_group: ExternalStr
+    reason: ExternalStr
 
     @field_validator("pattern")
     @classmethod
@@ -85,10 +80,10 @@ class StructuralSourceResidualRuleSpec(StrictSourceResidualRuleModel):
         return _normalize_reason(value)
 
 
-class SourceResidualRuleImportFile(StrictSourceResidualRuleModel):
+class SourceResidualRuleImportFile(ExternalInputModel):
     """源文残留例外规则导入文件。"""
 
-    position_rules: dict[str, PositionSourceResidualRuleSpec] = Field(default_factory=dict)
+    position_rules: dict[ExternalStr, PositionSourceResidualRuleSpec] = Field(default_factory=dict)
     structural_rules: list[StructuralSourceResidualRuleSpec] = Field(default_factory=list)
 
 

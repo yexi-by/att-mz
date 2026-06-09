@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, cast
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue
 
 
@@ -164,20 +165,16 @@ class PluginSourceScan:
         ]
 
 
-class PluginSourceRuleImportEntry(BaseModel):
+class PluginSourceRuleImportEntry(ExternalInputModel):
     """插件源码规则导入文件中的单文件规则。"""
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-    file: str
-    selectors: list[str] = Field(default_factory=list)
-    excluded_selectors: list[str] = Field(default_factory=list)
+    file: ExternalStr
+    selectors: list[ExternalStr] = Field(default_factory=list)
+    excluded_selectors: list[ExternalStr] = Field(default_factory=list)
 
 
-class PluginSourceRuleImportFile(BaseModel):
+class PluginSourceRuleImportFile(ExternalInputModel):
     """插件源码规则导入文件。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
     rules: list[PluginSourceRuleImportEntry] = Field(default_factory=list)
 

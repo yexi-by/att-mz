@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import ClassVar, cast
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.json_path_protocol import jsonpath_to_path_parts
 from app.native_scope_index import scan_native_rule_candidates
 from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value, ensure_json_array, ensure_json_object
@@ -17,18 +18,12 @@ from app.rmmz.schema import NonstandardDataTextRuleRecord
 from .scanner import NonstandardDataScan, build_nonstandard_data_file_hash
 
 
-class StrictNonstandardDataRuleModel(BaseModel):
-    """非标准 data 规则文件严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
-
-
-class NonstandardDataRuleSpec(StrictNonstandardDataRuleModel):
+class NonstandardDataRuleSpec(ExternalInputModel):
     """单个非标准 data JSON 文件的文本规则。"""
 
-    file: str
-    paths: list[str] = Field(default_factory=list)
-    excluded_paths: list[str] = Field(default_factory=list)
+    file: ExternalStr
+    paths: list[ExternalStr] = Field(default_factory=list)
+    excluded_paths: list[ExternalStr] = Field(default_factory=list)
     skipped: bool = False
 
     @field_validator("file")

@@ -7,13 +7,14 @@ from typing import cast
 import aiofiles
 from pydantic import TypeAdapter
 
+from app.external_input import ExternalStr
 from app.note_tag_text.parser import iter_note_tag_matches
 from app.note_tag_text.sources import collect_note_tag_sources, matched_note_file_names
 from app.rmmz.schema import GameData, NoteTagTextRuleRecord
 from app.rmmz.text_rules import TextRules, coerce_json_value, get_default_text_rules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
-type NoteTagRuleImportFile = dict[str, list[str]]
+type NoteTagRuleImportFile = dict[ExternalStr, list[ExternalStr]]
 _NOTE_TAG_RULE_IMPORT_ADAPTER: TypeAdapter[NoteTagRuleImportFile] = TypeAdapter(NoteTagRuleImportFile)
 
 MACHINE_NOTE_TAG_NAMES: frozenset[str] = frozenset(

@@ -6,10 +6,11 @@ import json
 import re
 from dataclasses import dataclass
 from string import Formatter
-from typing import ClassVar, cast
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.regex_contract import validate_mv_virtual_namebox_regex_contract
 from app.rmmz.json_types import JsonObject, coerce_json_value
 from app.rmmz.schema import (
@@ -105,21 +106,15 @@ class MvVirtualSpeaker:
         return self.render_template.format_map(values)
 
 
-class StrictMvNameboxRuleModel(BaseModel):
-    """MV 虚拟名字框规则严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
-
-
-class MvVirtualNameboxRuleSpec(StrictMvNameboxRuleModel):
+class MvVirtualNameboxRuleSpec(ExternalInputModel):
     """单条 MV 虚拟名字框外部规则。"""
 
-    name: str
-    pattern: str
-    speaker_group: str
+    name: ExternalStr
+    pattern: ExternalStr
+    speaker_group: ExternalStr
     speaker_policy: MvVirtualNameboxSpeakerPolicy
-    render_template: str
-    body_group: str = ""
+    render_template: ExternalStr
+    body_group: ExternalStr = ""
 
     @field_validator("name", "pattern", "speaker_group", "render_template")
     @classmethod
@@ -137,7 +132,7 @@ class MvVirtualNameboxRuleSpec(StrictMvNameboxRuleModel):
         return value.strip()
 
 
-class MvVirtualNameboxImportFile(StrictMvNameboxRuleModel):
+class MvVirtualNameboxImportFile(ExternalInputModel):
     """MV 虚拟名字框规则导入文件。"""
 
     rules: list[MvVirtualNameboxRuleSpec] = Field(default_factory=list)

@@ -178,28 +178,36 @@ async def test_plugin_rule_import_rejects_paths_without_english_source_text(
         )
 
 
-def test_plugin_rule_import_rejects_non_integer_plugin_index() -> None:
-    """插件索引只接受 JSON 整数，避免字符串或布尔值被隐式转换成下标。"""
-    invalid_payloads = [
-        [
-            {
-                "plugin_index": "0",
-                "plugin_name": "TestPlugin",
-                "paths": ["$['parameters']['Message']"],
-            }
-        ],
-        [
-            {
-                "plugin_index": True,
-                "plugin_name": "TestPlugin",
-                "paths": ["$['parameters']['Message']"],
-            }
-        ],
+def test_plugin_rule_import_accepts_integer_string_plugin_index() -> None:
+    """插件索引可以用整数字符串表达。"""
+    import_file = parse_plugin_rule_import_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": "0",
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Message']"],
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+
+    assert import_file[0].plugin_index == 0
+
+
+def test_plugin_rule_import_rejects_boolean_plugin_index() -> None:
+    """插件索引不能用布尔值表达。"""
+    payload = [
+        {
+            "plugin_index": True,
+            "plugin_name": "TestPlugin",
+            "paths": ["$['parameters']['Message']"],
+        }
     ]
 
-    for payload in invalid_payloads:
-        with pytest.raises(ValidationError):
-            _ = parse_plugin_rule_import_text(json.dumps(payload, ensure_ascii=False))
+    with pytest.raises(ValidationError):
+        _ = parse_plugin_rule_import_text(json.dumps(payload, ensure_ascii=False))
 
 
 def test_plugin_rule_import_rejects_name_mapping_schema() -> None:
