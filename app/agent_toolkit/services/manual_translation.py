@@ -22,13 +22,13 @@ from .common import (
     coerce_json_value,
     current_timestamp_text,
     ensure_json_object,
-    ensure_json_string_list,
     issue,
     json,
     load_setting,
     _noop_quality_progress_callbacks,
     write_back_probe_report_fields,
 )
+from app.external_input import normalize_external_str, normalize_external_str_list
 from app.text_index import (
     collect_text_index_scope_gate_errors,
     detect_text_index_invalidations,
@@ -290,8 +290,11 @@ class ManualTranslationAgentMixin:
                 if not isinstance(raw_entry, dict):
                     continue
                 raw_fact_id = raw_entry.get("fact_id")
-                if isinstance(raw_fact_id, str) and raw_fact_id.strip():
-                    payload_fact_ids[str(location_path)] = raw_fact_id.strip()
+                if raw_fact_id is None:
+                    continue
+                fact_id = normalize_external_str(raw_fact_id, f"{location_path}.fact_id").strip()
+                if fact_id:
+                    payload_fact_ids[str(location_path)] = fact_id
             if payload_fact_ids:
                 scope_mode = "current_text_fact"
             requires_text_index = any(path not in payload_fact_ids for path in payload_paths)
@@ -355,7 +358,9 @@ class ManualTranslationAgentMixin:
                     continue
                 entry = ensure_json_object(raw_entry, f"{location_path}")
                 raw_fact_id = entry.get("fact_id")
-                fact_id = raw_fact_id.strip() if isinstance(raw_fact_id, str) else ""
+                fact_id = ""
+                if raw_fact_id is not None:
+                    fact_id = normalize_external_str(raw_fact_id, f"{location_path}.fact_id").strip()
                 item = active_items_by_fact_id.get(fact_id) if fact_id else active_items.get(location_path)
                 if item is None:
                     if fact_id:
@@ -377,7 +382,7 @@ class ManualTranslationAgentMixin:
                     raw_lines_value = entry.get("translation_lines")
                     if raw_lines_value is None:
                         raise TypeError(f"{resolved_location_path}.translation_lines 必须是字符串数组")
-                    translation_lines = ensure_json_string_list(
+                    translation_lines = normalize_external_str_list(
                         raw_lines_value,
                         f"{resolved_location_path}.translation_lines",
                     )

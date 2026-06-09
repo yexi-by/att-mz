@@ -32,6 +32,7 @@ from app.config import (
     load_structured_placeholder_rules_text,
 )
 from app.config.environment import load_environment_overrides
+from app.external_input import normalize_external_str_list
 from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.llm import ChatMessage, LLMHandler
 from app.native_quality import (
@@ -855,7 +856,7 @@ async def _read_reset_translation_location_paths(input_path: Path) -> list[str]:
     raw_paths = payload.get("location_paths")
     if raw_paths is None:
         raise TypeError("reset-translations.location_paths 必须是字符串数组")
-    location_paths = ensure_json_string_list(raw_paths, "reset-translations.location_paths")
+    location_paths = normalize_external_str_list(raw_paths, "reset-translations.location_paths")
     if not location_paths:
         raise ValueError("location_paths 不能为空")
     duplicate_paths = sorted(
@@ -1352,12 +1353,20 @@ async def _read_feedback_texts(input_path: Path) -> list[str]:
     decoded_raw = cast(object, json.loads(raw_text))
     decoded = coerce_json_value(decoded_raw)
     if isinstance(decoded, list):
-        texts = [item for item in decoded if isinstance(item, str) and item.strip()]
+        texts = [
+            item
+            for item in normalize_external_str_list(decoded, "feedback_texts")
+            if item.strip()
+        ]
     elif isinstance(decoded, dict):
         raw_texts = decoded.get("texts")
-        if not isinstance(raw_texts, list):
+        if raw_texts is None:
             raise TypeError("反馈原文清单对象必须包含 texts 字符串数组")
-        texts = [item for item in raw_texts if isinstance(item, str) and item.strip()]
+        texts = [
+            item
+            for item in normalize_external_str_list(raw_texts, "feedback_texts.texts")
+            if item.strip()
+        ]
     else:
         raise TypeError("反馈原文清单顶层必须是字符串数组或包含 texts 的对象")
     unique_texts: list[str] = []

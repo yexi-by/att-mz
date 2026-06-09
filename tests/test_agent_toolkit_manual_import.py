@@ -605,6 +605,78 @@ async def test_manual_pending_translation_export_and_import(
     translated_by_path = {item.location_path: item for item in translated_items}
     assert translated_by_path[target_path].translation_lines == ["你好"]
     assert quality_errors == []
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_normalizes_integer_translation_line(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动译文导入中的整数译文行按外部文本规范化为字符串。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+    assert export_report.status == "ok"
+
+    payload = load_json_object(pending_path)
+    first_key = next(iter(payload))
+    entry = ensure_json_object(coerce_json_value(payload[first_key]), first_key)
+    entry["translation_lines"] = [1]
+    payload[first_key] = entry
+    _ = pending_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        translated_items = await session.read_translated_items()
+    assert any(item.translation_lines == ["1"] for item in translated_items)
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_rejects_boolean_translation_line(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动译文导入中的布尔译文行无效。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+    assert export_report.status == "ok"
+
+    payload = load_json_object(pending_path)
+    first_key = next(iter(payload))
+    entry = ensure_json_object(coerce_json_value(payload[first_key]), first_key)
+    entry["translation_lines"] = [True]
+    payload[first_key] = entry
+    _ = pending_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert report.status == "error"
+    assert any("bool" in error.message for error in report.errors)
+
+
 @pytest.mark.asyncio
 async def test_manual_quality_fix_import_uses_current_fact_scope_without_full_load(
     minimal_game_dir: Path,

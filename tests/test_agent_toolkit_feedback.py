@@ -9,6 +9,43 @@ from app.text_index import rebuild_text_index_native_storage
 from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
+
+@pytest.mark.asyncio
+async def test_feedback_texts_normalize_integer_entries(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """反馈原文清单中的整数按外部文本规范化。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    input_path = tmp_path / "feedback.json"
+    _ = input_path.write_text(json.dumps([9876543210123456789], ensure_ascii=False), encoding="utf-8")
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=input_path)
+
+    assert report.status == "ok"
+    assert report.summary["feedback_text_count"] == 1
+    assert report.summary["occurrence_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_feedback_texts_reject_boolean_entries(
+    tmp_path: Path,
+) -> None:
+    """反馈原文清单中的布尔值无效。"""
+    service = AgentToolkitService(game_registry=GameRegistry(tmp_path / "db"), setting_path=EXAMPLE_SETTING_PATH)
+    input_path = tmp_path / "feedback.json"
+    _ = input_path.write_text(json.dumps([True], ensure_ascii=False), encoding="utf-8")
+
+    report = await service.verify_feedback_text(game_title="テストゲーム", input_path=input_path)
+
+    assert report.status == "error"
+    assert {error.code for error in report.errors} == {"feedback_text_file"}
+    assert "feedback_texts[0]" in report.errors[0].message
+    assert "bool" in report.errors[0].message
+
+
 @pytest.mark.asyncio
 async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
     minimal_game_dir: Path,
