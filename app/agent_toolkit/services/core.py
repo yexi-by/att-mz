@@ -29,7 +29,7 @@ from app.text_index import (
     rebuild_text_index_native_storage,
 )
 from app.text_facts import (
-    read_current_text_fact_translation_data_map_v2,
+    read_current_text_fact_translation_data_map,
     read_current_text_fact_translation_items_by_paths,
 )
 
@@ -49,7 +49,7 @@ class CoreAgentMixin:
         """按显式视图加载单游戏数据，并在翻译源视图绑定会话。"""
         game_data = await load_game_data_for_view(
             session.game_path,
-            source_view=source_view,
+            view=source_view,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
             run_dialogue_probe_check=run_dialogue_probe_check,
@@ -106,7 +106,7 @@ class CoreAgentMixin:
         text_rules: TextRules,
         plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
-        """兼容旧内部调用点，从当前 v2 文本事实读取正文条目。"""
+        """从当前文本事实读取正文条目。"""
         _ = (game_data, plugin_source_scan)
         return await self._read_active_translation_data_map_from_text_index(
             session=session,
@@ -119,7 +119,7 @@ class CoreAgentMixin:
         session: TargetGameSession,
         text_rules: TextRules,
     ) -> dict[str, TranslationData]:
-        """确认持久索引有效后，读取当前 v2 文本事实正文映射。"""
+        """确认持久索引有效后，读取当前文本事实正文映射。"""
         text_index_invalidations = await detect_text_index_invalidations(
             session=session,
             text_rules=text_rules,
@@ -132,7 +132,7 @@ class CoreAgentMixin:
                 text_rules=text_rules,
                 include_write_probe=False,
             )
-        return await read_current_text_fact_translation_data_map_v2(session)
+        return await read_current_text_fact_translation_data_map(session)
 
     async def _build_source_residual_rule_records(
         self: AgentServiceContext,
@@ -165,7 +165,7 @@ class CoreAgentMixin:
                 if text_index_invalidations:
                     reason_details = "；".join(item.detail for item in text_index_invalidations)
                     message = (
-                        "源文残留例外规则校验前需要当前 Text Fact Contract v2 文本事实；"
+                        "源文残留例外规则校验前需要当前文本事实契约文本事实；"
                         "当前文本范围索引缺失或已过期，请先运行 rebuild-text-index"
                     )
                     if reason_details:

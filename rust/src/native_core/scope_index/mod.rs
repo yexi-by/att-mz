@@ -916,13 +916,13 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
 fn scope_gate_entry_fact_id(entry: &ScopeEntryInput) -> Result<String, String> {
     let Some(fact_id) = &entry.fact_id else {
         return Err(format!(
-            "范围门禁 entry 缺少 v2 fact_id，无法判断当前事实身份: {}",
+            "范围门禁 entry 缺少 current text fact_id，无法判断当前事实身份: {}",
             entry.location_path
         ));
     };
     if fact_id.trim().is_empty() {
         return Err(format!(
-            "范围门禁 entry 的 v2 fact_id 不能为空，无法判断当前事实身份: {}",
+            "范围门禁 entry 的 current text fact_id 不能为空，无法判断当前事实身份: {}",
             entry.location_path
         ));
     }
@@ -1068,8 +1068,8 @@ mod tests {
     #[test]
     fn build_scope_index_scans_system_title_and_event_command_text() {
         let payload = json!({
-            "source_snapshot_fingerprint": "snapshot-v2",
-            "rules_fingerprint": "rules-v2",
+            "source_snapshot_fingerprint": "snapshot-current",
+            "rules_fingerprint": "rules-current",
             "data_files": [
                 {
                     "file_name": "System.json",

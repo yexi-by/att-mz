@@ -156,11 +156,11 @@ from app.text_index import (
     rebuild_text_index_native_storage,
 )
 from app.text_facts import (
-    count_current_text_facts_v2,
-    count_pending_text_facts_v2,
-    count_pending_text_fact_quality_errors_v2,
-    count_stale_translations_outside_writable_text_facts_v2,
-    count_translated_text_facts_v2,
+    count_current_text_facts,
+    count_pending_text_facts,
+    count_pending_text_fact_quality_errors,
+    count_stale_translations_outside_writable_text_facts,
+    count_translated_text_facts,
     read_pending_text_fact_translation_data_map,
 )
 from app.text_scope import TextScopeResult
@@ -223,7 +223,7 @@ def _rule_fact_probes_for_items(
     domain: str,
     items: list[TranslationItem],
 ) -> list[RuleFactProbe]:
-    """把公开规则导入命中转换为当前 v2 fact 解析探针。"""
+    """把公开规则导入命中转换为当前文本事实 解析探针。"""
     return [
         RuleFactProbe(
             domain=domain,
@@ -475,7 +475,7 @@ class TranslationHandler:
         """加载目标游戏数据并绑定到当前命令会话。"""
         game_data = await load_game_data_for_view(
             session.game_path,
-            source_view=GameFileView.TRANSLATION_SOURCE,
+            view=GameFileView.TRANSLATION_SOURCE,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
             run_dialogue_probe_check=run_dialogue_probe_check,
@@ -1019,7 +1019,7 @@ class TranslationHandler:
                 text_index_rebuild_summary=text_index_rebuild_summary,
             )
 
-        total_extracted_items = await count_current_text_facts_v2(session)
+        total_extracted_items = await count_current_text_facts(session)
         if total_extracted_items == 0:
             blocked_reason = "没有提取到任何可翻译正文"
             logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
@@ -1035,7 +1035,7 @@ class TranslationHandler:
                 text_index_status=text_index_status,
                 text_index_rebuild_summary=text_index_rebuild_summary,
             )
-        total_pending_count = await count_pending_text_facts_v2(session)
+        total_pending_count = await count_pending_text_facts(session)
         if total_pending_count == 0:
             logger.info(f"[tag.skip]正文译文已全部存在，跳过翻译[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
             set_progress(total_extracted_items, total_extracted_items)
@@ -1433,17 +1433,17 @@ class TranslationHandler:
         if workflow_gate_errors:
             raise WorkflowGateError(format_workflow_gate_error(workflow_gate_errors))
 
-        stale_translation_count = await count_stale_translations_outside_writable_text_facts_v2(session)
+        stale_translation_count = await count_stale_translations_outside_writable_text_facts(session)
         quality_messages: list[str] = []
         if stale_translation_count:
             quality_messages.append(f"发现 {stale_translation_count} 条已保存译文不在当前可写文本范围内")
         if require_complete_translation:
-            pending_count = await count_pending_text_facts_v2(session)
+            pending_count = await count_pending_text_facts(session)
             if pending_count:
                 quality_messages.append(f"还有 {pending_count} 条文本没有成功保存译文")
             latest_run = await session.read_latest_translation_run()
             if latest_run is not None:
-                quality_error_count = await count_pending_text_fact_quality_errors_v2(
+                quality_error_count = await count_pending_text_fact_quality_errors(
                     session,
                     latest_run.run_id,
                 )
@@ -1458,7 +1458,7 @@ class TranslationHandler:
         if mode == "write_terminology" and await session.read_terminology_registry() is None:
             raise WriteBackGateError("当前游戏数据库中没有已导入术语表，请先执行 import-terminology")
 
-        translated_count = await count_translated_text_facts_v2(session)
+        translated_count = await count_translated_text_facts(session)
         return PreparedWriteOperation(
             game_data=None,
             setting=setting,

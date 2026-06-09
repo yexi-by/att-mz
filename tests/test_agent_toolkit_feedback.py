@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import NoReturn
 
+from app.rmmz.loader import load_translation_source_game_data
+from app.text_index import rebuild_text_index_native_storage
 from tests.agent_toolkit_contract_fixtures import *
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 @pytest.mark.asyncio
 async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
@@ -98,7 +100,6 @@ async def test_feedback_verification_and_plugin_source_scan_are_structural_only(
 async def test_verify_feedback_text_uses_warm_text_index_without_full_scope_build(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """反馈反查缺口分类必须消费 warm text_index，不能临时构建完整文本范围。"""
     registry = GameRegistry(tmp_path / "db")
@@ -107,12 +108,6 @@ async def test_verify_feedback_text_uses_warm_text_index_without_full_scope_buil
     _ = await _rebuild_text_index_for_test(service)
     feedback_path = tmp_path / "feedback-texts.json"
     _ = feedback_path.write_text(json.dumps(["こんにちは"], ensure_ascii=False), encoding="utf-8")
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("verify-feedback-text must classify gaps from warm text_index")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
 
@@ -132,11 +127,11 @@ async def test_verify_feedback_text_uses_warm_text_index_without_full_scope_buil
 
 
 @pytest.mark.asyncio
-async def test_verify_feedback_text_classifies_from_v2_fact_translatable_text(
+async def test_verify_feedback_text_classifies_from_current_fact_translatable_text(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """反馈归类必须读取 v2 fact identity，不能被旧 text_index original_lines 污染。"""
+    """反馈归类必须读取当前文本事实正文。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -147,7 +142,7 @@ async def test_verify_feedback_text_classifies_from_v2_fact_translatable_text(
             """
 --sql
             SELECT facts.location_path
-            FROM text_facts_v2 AS facts
+            FROM text_facts AS facts
             INNER JOIN text_index_items AS indexed
                 ON indexed.location_path = facts.location_path
             WHERE indexed.writable = 1
@@ -201,11 +196,11 @@ async def test_verify_feedback_text_classifies_from_v2_fact_translatable_text(
 
 
 @pytest.mark.asyncio
-async def test_verify_feedback_text_fails_when_current_index_record_lacks_v2_fact(
+async def test_verify_feedback_text_fails_when_current_index_record_lacks_current_fact(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """反馈归类遇到当前索引条目缺 v2 fact 时必须显式失败，不能回退旧 original_lines。"""
+    """反馈归类遇到当前索引条目缺少当前文本事实时必须显式失败。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -216,7 +211,7 @@ async def test_verify_feedback_text_fails_when_current_index_record_lacks_v2_fac
             """
 --sql
             SELECT facts.location_path
-            FROM text_facts_v2 AS facts
+            FROM text_facts AS facts
             INNER JOIN text_index_items AS indexed
                 ON indexed.location_path = facts.location_path
             WHERE indexed.writable = 1
@@ -229,7 +224,7 @@ async def test_verify_feedback_text_fails_when_current_index_record_lacks_v2_fac
         assert row is not None
         target_path = cast(str, row["location_path"])
         _ = await session.connection.execute(
-            "DELETE FROM text_facts_v2 WHERE location_path = ?",
+            "DELETE FROM text_facts WHERE location_path = ?",
             (target_path,),
         )
         await session.connection.commit()
@@ -239,7 +234,8 @@ async def test_verify_feedback_text_fails_when_current_index_record_lacks_v2_fac
     report = await service.verify_feedback_text(game_title="テストゲーム", input_path=feedback_path)
 
     assert report.status == "error"
-    assert "text_fact_v2_missing" in {error.code for error in report.errors}
+    assert "current_text_fact_missing" in {error.code for error in report.errors}
+    assert "当前文本事实与当前文本索引不一致" in report.errors[0].message
     assert "rebuild-text-index" in report.errors[0].message
 
 
@@ -248,14 +244,14 @@ async def test_verify_feedback_text_returns_report_when_text_fact_scope_is_missi
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """反馈归类遇到损坏的 v2 scope 时返回结构化报告，而不是抛出异常。"""
+    """反馈归类遇到缺失的当前文本事实 scope 时返回结构化报告。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     rebuild_report = await _rebuild_text_index_for_test(service)
     assert rebuild_report.status == "ok"
     async with await registry.open_game("テストゲーム") as session:
-        _ = await session.connection.execute("DELETE FROM text_fact_scope_v2")
+        _ = await session.connection.execute("DELETE FROM text_fact_scope")
         await session.connection.commit()
     feedback_path = tmp_path / "feedback-texts.json"
     _ = feedback_path.write_text(json.dumps(["こんにちは"], ensure_ascii=False), encoding="utf-8")
@@ -279,7 +275,7 @@ async def test_verify_feedback_text_uses_runtime_literal_scan_for_plugin_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """反馈反查源码残留必须走 Rust runtime literal scan，不能回退旧 regex 候选扫描。"""
+    """反馈反查源码残留必须走 Rust runtime literal scan。"""
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
     plugin_source_dir.mkdir(exist_ok=True)
     _ = (plugin_source_dir / "HardcodedText.js").write_text(
@@ -304,13 +300,13 @@ async def test_verify_feedback_text_uses_runtime_literal_scan_for_plugin_source(
     feedback_path = tmp_path / "feedback-texts.json"
     _ = feedback_path.write_text(json.dumps(["プラグイン直書き"], ensure_ascii=False), encoding="utf-8")
 
-    async def forbidden_legacy_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+    async def forbidden_direct_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
         raise AssertionError("feedback plugin source lookup must use Rust runtime literal scan")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.common._collect_plugin_source_text_candidates",
-        forbidden_legacy_plugin_source_scan,
+        forbidden_direct_plugin_source_scan,
         raising=False,
     )
 
@@ -407,7 +403,7 @@ async def test_default_active_runtime_audit_skips_plugin_source_text_branch(
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -427,7 +423,7 @@ async def test_default_active_runtime_audit_skips_plugin_source_text_branch(
             for item in scope.active_items()
             if item.location_path in scope.writable_paths
         ]
-        await write_v2_test_translation_items(session, translated_items)
+        await write_current_translation_items_for_test(session, translated_items)
 
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     quality_report = await service.quality_report(game_title="テストゲーム")
@@ -604,7 +600,10 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         active_game_data = await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=True,
@@ -626,7 +625,22 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
             source_line_paths=[location_path],
             translation_lines=["努力忍耐着的\nn[0]君…真棒哦♥"],
         )
-        await write_v2_test_translation_items(session, [translation_item])
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="BadSource.js",
+                    file_hash=source_file_scan.file_hash,
+                    selectors=[source_candidate.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await write_current_translation_items_for_test(session, [translation_item])
         await session.replace_plugin_source_runtime_write_maps(
             [
                 PluginSourceRuntimeWriteMapRecord(
@@ -670,7 +684,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
     assert "无法反推" not in json.dumps(diagnosis, ensure_ascii=False)
 
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=location_path,
@@ -751,17 +765,29 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         active_game_data = await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=True,
         )
         source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         translation_items: list[TranslationItem] = []
+        plugin_source_rule_records: list[PluginSourceTextRuleRecord] = []
         runtime_maps: list[PluginSourceRuntimeWriteMapRecord] = []
         for index, file_name in enumerate(sorted(origin_sources)):
             source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == file_name)
             source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == file_name)
+            plugin_source_rule_records.append(
+                PluginSourceTextRuleRecord(
+                    file_name=file_name,
+                    file_hash=source_file_scan.file_hash,
+                    selectors=[source_candidate.selector],
+                    excluded_selectors=[],
+                )
+            )
             runtime_source = active_game_data.plugin_source_files[file_name]
             runtime_literal = iter_plugin_source_string_literals(
                 file_name=file_name,
@@ -793,7 +819,13 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
                     created_at=f"2026-05-24T00:00:0{index}",
                 )
             )
-        await write_v2_test_translation_items(session, translation_items)
+        await session.replace_plugin_source_text_rules(plugin_source_rule_records)
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await write_current_translation_items_for_test(session, translation_items)
         await session.replace_plugin_source_runtime_write_maps(runtime_maps)
 
     batch_calls: list[tuple[str, ...]] = []
@@ -810,13 +842,13 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
             active_file_names=active_file_names,
         )
 
-    def forbidden_legacy_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
+    def forbidden_direct_source_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
         _ = (args, kwargs)
         raise AssertionError("diagnose-active-runtime 不应调用翻译源 strict scan")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.quality.scan_plugin_source_files_text_strict",
-        forbidden_legacy_strict_scan,
+        forbidden_direct_source_strict_scan,
         raising=False,
     )
     monkeypatch.setattr(
@@ -872,7 +904,10 @@ async def test_diagnose_active_runtime_skips_translation_source_scan_when_source
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         active_game_data = await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=True,
@@ -894,7 +929,22 @@ async def test_diagnose_active_runtime_skips_translation_source_scan_when_source
             source_line_paths=[location_path],
             translation_lines=[runtime_literal.text],
         )
-        await write_v2_test_translation_items(session, [translation_item])
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="BadSource.js",
+                    file_hash=source_file_scan.file_hash,
+                    selectors=[source_candidate.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await write_current_translation_items_for_test(session, [translation_item])
         await session.replace_plugin_source_runtime_write_maps(
             [
                 PluginSourceRuntimeWriteMapRecord(
@@ -978,11 +1028,30 @@ async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtim
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
+        source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
-        await write_v2_test_translation_items(session,
+        await session.replace_plugin_source_text_rules(
+            [
+                PluginSourceTextRuleRecord(
+                    file_name="BadSource.js",
+                    file_hash=source_file_scan.file_hash,
+                    selectors=[source_candidate.selector],
+                    excluded_selectors=[],
+                )
+            ]
+        )
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=location_path,
@@ -1066,7 +1135,10 @@ async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
@@ -1124,7 +1196,10 @@ async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         active_game_data = await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=True,
@@ -1204,7 +1279,10 @@ async def test_active_runtime_audit_reports_unmapped_residual_when_other_runtime
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        source_game_data = await load_game_data(session.game_path)
+        source_game_data = await load_translation_source_game_data(
+            session.game_path,
+            include_plugin_source_files=True,
+        )
         active_game_data = await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=True,

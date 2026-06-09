@@ -64,7 +64,7 @@ async def collect_write_back_quality_errors(
 ) -> list[WriteBackQualityIssue]:
     """收集当前已保存译文是否允许写入游戏文件的质量错误。"""
     if scope is None:
-        raise RuntimeError("collect_write_back_quality_errors 需要调用者传入 Rust/index 生成的文本范围，不能回退构建 Python 完整文本范围")
+        raise RuntimeError("collect_write_back_quality_errors 缺少当前文本范围，不能继续；请重新生成当前文本索引，并从当前入口传入文本范围")
     errors: list[WriteBackQualityIssue] = []
     active_items = scope.active_items()
     active_items_by_identity = _translation_items_by_required_identity(
@@ -189,12 +189,12 @@ def _translation_items_by_required_identity(
     *,
     label: str,
 ) -> dict[TranslationFactIdentity, TranslationItem]:
-    """按完整 v2 identity 索引译文条目；缺失或重复说明当前事实身份不可判定。"""
+    """按完整当前文本事实 identity 索引译文条目；缺失或重复说明当前事实身份不可判定。"""
     items_by_identity: dict[TranslationFactIdentity, TranslationItem] = {}
     for item in items:
         identity = translation_item_fact_identity(item, label=label)
         if identity in items_by_identity:
-            raise ValueError(f"{label}包含重复 v2 fact identity，无法判断已翻译事实身份: {identity[0]}")
+            raise ValueError(f"{label}包含重复当前文本事实身份，无法判断已翻译事实身份: {identity[0]}")
         items_by_identity[identity] = item
     return items_by_identity
 

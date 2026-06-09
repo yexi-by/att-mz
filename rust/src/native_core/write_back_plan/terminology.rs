@@ -532,13 +532,13 @@ pub(super) fn collect_mv_virtual_speaker_name_writes_from_commands(
             })
             .ok_or_else(|| {
                 format!(
-                    "MV 虚拟名字框术语写回缺少当前 v2 文本事实，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
+                    "MV 虚拟名字框术语写回缺少当前文本事实，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
                     speaker_line_path
                 )
             })?;
         if fact_template.role != virtual_speaker.speaker {
             return Err(format!(
-                "MV 虚拟名字框术语写回 v2 文本事实 speaker 不一致，不能写入 speaker_names；请重新运行 rebuild-text-index: 文本路径={}; 触发路径={}; fact_speaker={}; 当前_speaker={}",
+                "MV 虚拟名字框术语写回 当前文本事实 speaker 不一致，不能写入 speaker_names；请重新运行 rebuild-text-index: 文本路径={}; 触发路径={}; fact_speaker={}; 当前_speaker={}",
                 fact_template.location_path,
                 speaker_line_path,
                 fact_template.role,
@@ -558,7 +558,7 @@ fn render_mv_virtual_speaker_line_from_fact_template(
 ) -> Result<String, String> {
     if fact_template.render_parts.is_empty() {
         return Err(format!(
-            "MV 虚拟名字框 v2 文本事实缺少 render parts，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
+            "MV 虚拟名字框当前文本事实缺少写回所需源文结构，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
             fact_template.location_path
         ));
     }
@@ -585,7 +585,7 @@ fn render_mv_virtual_speaker_line_from_fact_template(
     }
     if !has_speaker_part {
         return Err(format!(
-            "MV 虚拟名字框 v2 文本事实 render parts 缺少 speaker，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
+            "MV 虚拟名字框当前文本事实缺少说话人片段，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
             fact_template.location_path
         ));
     }

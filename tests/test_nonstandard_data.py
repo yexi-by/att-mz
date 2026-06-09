@@ -33,7 +33,7 @@ from app.rmmz.text_rules import JsonObject, TextRules
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import write_data_text
 from tests.conftest import EXAMPLE_SETTING_PATH, write_json
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 
 def _forbid_python_nonstandard_data_leaf_resolver(value: object) -> object:
@@ -400,7 +400,7 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        before_scope = await rebuild_current_v2_scope_for_test(
+        before_scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -430,7 +430,7 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
         ),
     )
     async with await registry.open_game("テストゲーム") as session:
-        after_scope = await rebuild_current_v2_scope_for_test(
+        after_scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -463,7 +463,7 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -516,7 +516,7 @@ async def test_nonstandard_data_rules_enter_unified_text_scope(
     text_rules = TextRules.from_setting(setting.text_rules)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -575,7 +575,7 @@ async def test_nonstandard_data_text_scope_uses_native_leaves_for_imported_rules
     text_rules = TextRules.from_setting(setting.text_rules)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -633,7 +633,7 @@ async def test_nonstandard_data_text_scope_reuses_native_leaves_within_build(
     text_rules = TextRules.from_setting(setting.text_rules)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,

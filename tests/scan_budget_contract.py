@@ -1,6 +1,6 @@
 """Rust Scope/Index Engine 扫描预算测试契约。
 
-只供测试验证 P0/P1 命令不会重复全量扫描，也不会把旧 Python
+只供测试验证 P0/P1 命令不会重复全量扫描，也不会把 Python
 重型路径继续作为默认生产事实来源。
 """
 
@@ -26,7 +26,7 @@ class ScanBudget:
     quality_gate_count: int
     write_plan_count: int
     authoritative_source: str
-    old_path_action: str
+    current_path_requirement: str
     evidence: str
 
 
@@ -103,7 +103,7 @@ def _scope_budget(
     quality_gate_count: int = 0,
     write_plan_count: int = 0,
     authoritative_source: str = "Rust build_scope_index / SQLite text index",
-    old_path_action: str = "删除或改为薄适配层",
+    current_path_requirement: str = "使用当前主路径或薄适配层",
     evidence: str,
 ) -> ScanBudget:
     """构造默认 scope/index 命令预算。"""
@@ -117,7 +117,7 @@ def _scope_budget(
         quality_gate_count=quality_gate_count,
         write_plan_count=write_plan_count,
         authoritative_source=authoritative_source,
-        old_path_action=old_path_action,
+        current_path_requirement=current_path_requirement,
         evidence=evidence,
     )
 
@@ -140,7 +140,7 @@ def _candidate_budget(
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source=authoritative_source,
-        old_path_action="删除 Python 候选扫描主路径或改为薄适配层",
+        current_path_requirement="使用当前候选扫描主路径或薄适配层",
         evidence=evidence,
     )
 
@@ -161,10 +161,10 @@ def _source_residual_rule_budget(
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source=(
-            "SQLite text_facts_v2 / typed v2 adapter 精确路径查询 / "
+            "SQLite text_facts / current text fact adapter 精确路径查询 / "
             "Python source_residual 规则解析 / Rust regex contract / Rust quality"
         ),
-        old_path_action="删除命令内 Python 全量文本范围构建和全量译文读取",
+        current_path_requirement="命令内使用精确路径查询，避免全量文本范围构建和全量译文读取",
         evidence=evidence,
     )
 
@@ -173,8 +173,8 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
     "export-pending-translations --limit": _scope_budget(
         "export-pending-translations --limit",
         "P0",
-        authoritative_source="SQLite text_facts_v2 pending 快路径 / typed v2 adapter",
-        old_path_action="删除 Python 全量 pending 筛选",
+        authoritative_source="SQLite text_facts pending 快路径 / current text fact adapter",
+        current_path_requirement="pending limit 必须走 SQLite 快路径",
         evidence="有效索引下 limit 必须在 SQLite 查询中生效；索引失效时最多触发一次 Rust rebuild。",
     ),
     "rebuild-text-index": _scope_budget(
@@ -201,16 +201,16 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         "quality-report",
         "P1-A",
         quality_gate_count=1,
-        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text_facts_v2 / typed v2 adapter",
-        old_path_action="删除 Python 重复质量门禁和大规模筛选",
+        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text_facts / current text fact adapter",
+        current_path_requirement="质量门禁和大规模筛选只保留当前主路径",
         evidence="质量报告最多执行一次质量 gate，并复用当前范围事实。",
     ),
     "export-quality-fix-template": _scope_budget(
         "export-quality-fix-template",
         "P1-A",
         quality_gate_count=1,
-        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text_facts_v2 / typed v2 adapter",
-        old_path_action="删除 Python 重复质量明细筛选",
+        authoritative_source="Rust evaluate_scope_gate / Rust quality / SQLite text_facts / current text fact adapter",
+        current_path_requirement="质量明细筛选复用当前质量报告结果",
         evidence="修复表导出消费 quality-report 同源结果，不另建范围事实。",
     ),
     "import-manual-translations": ScanBudget(
@@ -222,8 +222,8 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         plugin_source_ast_scan_count=0,
         quality_gate_count=0,
         write_plan_count=0,
-        authoritative_source="SQLite text_facts_v2 / typed v2 adapter 路径归属校验",
-        old_path_action="删除 Python 全量路径归属筛选",
+        authoritative_source="SQLite text_facts / current text fact adapter 路径归属校验",
+        current_path_requirement="路径归属校验走当前 text fact 查询",
         evidence="手动导入只验证路径属于当前范围，不执行候选扫描和质量 gate。",
     ),
     "reset-translations": ScanBudget(
@@ -235,15 +235,15 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         plugin_source_ast_scan_count=0,
         quality_gate_count=0,
         write_plan_count=0,
-        authoritative_source="SQLite text_facts_v2 / typed v2 adapter 路径归属校验",
-        old_path_action="删除 Python 全量路径归属筛选",
+        authoritative_source="SQLite text_facts / current text fact adapter 路径归属校验",
+        current_path_requirement="路径归属校验走当前 text fact 查询",
         evidence="精确重置输入只做路径归属校验，不能全量构建再筛选。",
     ),
     "translate": _scope_budget(
         "translate",
         "P1-A",
         authoritative_source="SQLite pending 快路径 / Rust evaluate_scope_gate",
-        old_path_action="删除 translate --max-items 前置全量 Python scope",
+        current_path_requirement="translate --max-items 前置 gate 使用当前索引事实",
         evidence="正文翻译的 --max-items 前置 gate 和批次准备消费同一索引事实。",
     ),
     "run-all": _scope_budget(
@@ -252,7 +252,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=1,
         write_plan_count=1,
         authoritative_source="Rust build_scope_index / evaluate_scope_gate / write plan",
-        old_path_action="删除翻译与写回阶段的重复范围构建",
+        current_path_requirement="翻译与写回阶段复用当前范围事实",
         evidence="run-all 翻译限制和写回阶段应复用同一命令内已建立的当前范围事实。",
     ),
     "write-back": _scope_budget(
@@ -261,7 +261,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=1,
         write_plan_count=1,
         authoritative_source="Rust evaluate_scope_gate / Rust write plan",
-        old_path_action="删除 Python 可写路径重复推导",
+        current_path_requirement="可写路径推导统一进入当前写回计划",
         evidence="写回 gate、字体副作用、插件源码映射和文件计划统一进入 Rust WritePlan。",
     ),
     "rebuild-active-runtime": _scope_budget(
@@ -270,7 +270,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=1,
         write_plan_count=1,
         authoritative_source="Rust evaluate_scope_gate / Rust write plan",
-        old_path_action="删除 Python 可写路径重复推导",
+        current_path_requirement="可写路径推导统一进入当前写回计划",
         evidence="重建当前运行文件和 write-back 共用 Rust WritePlan 边界。",
     ),
     "write-terminology": _scope_budget(
@@ -279,7 +279,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=1,
         write_plan_count=1,
         authoritative_source="Rust evaluate_scope_gate / Rust write plan",
-        old_path_action="删除写术语前重复范围构建",
+        current_path_requirement="写术语前检查复用当前可写范围",
         evidence="术语写入前检查复用写回可写范围和质量 gate。",
     ),
     "prepare-agent-workspace": _candidate_budget(
@@ -394,31 +394,31 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         "export-event-commands-json",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(event_commands) samples_by_code",
-        evidence="已迁移: 事件指令导出消费 Rust samples_by_code，并维持公开 JSON 输出形状。",
+        evidence="已收束: 事件指令导出消费 Rust samples_by_code，并维持公开 JSON 输出形状。",
     ),
     "validate-event-command-rules": _candidate_budget(
         "validate-event-command-rules",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(event_commands) rule_summaries/hit_details",
-        evidence="已迁移: 事件指令规则校验报告消费 Rust rule_summaries 与 hit_details。",
+        evidence="已收束: 事件指令规则校验报告消费 Rust rule_summaries 与 hit_details。",
     ),
     "import-event-command-rules": _candidate_budget(
         "import-event-command-rules",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(event_commands) rule_summaries/hit_details",
-        evidence="已迁移: 事件指令规则导入前覆盖检查和旧译文清理消费 Rust rule_summaries 与 hit_details。",
+        evidence="已收束: 事件指令规则导入前覆盖检查和当前译文清理消费 Rust rule_summaries 与 hit_details。",
     ),
     "validate-plugin-rules": _candidate_budget(
         "validate-plugin-rules",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(plugin_config) rule_summaries/hit_details",
-        evidence="已迁移: 插件参数规则校验报告消费 Rust rule_summaries 与 hit_details。",
+        evidence="已收束: 插件参数规则校验报告消费 Rust rule_summaries 与 hit_details。",
     ),
     "import-plugin-rules": _candidate_budget(
         "import-plugin-rules",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(plugin_config) rule_summaries/hit_details",
-        evidence="已迁移: 插件参数规则导入前覆盖检查和旧译文清理消费 Rust rule_summaries 与 hit_details。",
+        evidence="已收束: 插件参数规则导入前覆盖检查和当前译文清理消费 Rust rule_summaries 与 hit_details。",
     ),
     "validate-plugin-source-rules": _candidate_budget(
         "validate-plugin-source-rules",
@@ -436,23 +436,23 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         "export-mv-virtual-namebox-candidates",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(mv_virtual_namebox) candidate_details",
-        evidence="已迁移: MV 虚拟名字框候选导出消费 Rust candidate_details。",
+        evidence="已收束: MV 虚拟名字框候选导出消费 Rust candidate_details。",
     ),
     "validate-mv-virtual-namebox-rules": _candidate_budget(
         "validate-mv-virtual-namebox-rules",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(mv_virtual_namebox) rule_summaries/hit_details",
-        evidence="已迁移: MV 虚拟名字框规则校验报告消费 Rust rule_summaries 与 hit_details。",
+        evidence="已收束: MV 虚拟名字框规则校验报告消费 Rust rule_summaries 与 hit_details。",
     ),
     "import-mv-virtual-namebox-rules": _candidate_budget(
         "import-mv-virtual-namebox-rules",
         plugin_source_ast_scan_count=0,
         authoritative_source="Rust scan_rule_candidates(mv_virtual_namebox) rule_summaries/hit_details",
-        evidence="已迁移: MV 虚拟名字框规则导入前覆盖检查消费 Rust rule_summaries 与 hit_details。",
+        evidence="已收束: MV 虚拟名字框规则导入前覆盖检查消费 Rust rule_summaries 与 hit_details。",
     ),
     "validate-source-residual-rules": _source_residual_rule_budget(
         "validate-source-residual-rules",
-        evidence="已收束: 规则校验只按 position_rules 路径读取 text_facts_v2 当前事实和对应译文；结构规则只做输入与 Rust regex 契约校验。",
+        evidence="已收束: 规则校验只按 position_rules 路径读取 text_facts 当前事实和对应译文；结构规则只做输入与 Rust regex 契约校验。",
     ),
     "import-source-residual-rules": _source_residual_rule_budget(
         "import-source-residual-rules",
@@ -468,7 +468,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="active runtime audit cache / Rust plugin source scan",
-        old_path_action="真实 active runtime I/O 成本保留，不归入 scope/index 重复扫描",
+        current_path_requirement="真实 active runtime I/O 成本保留，不归入 scope/index 重复扫描",
         evidence="当前运行审计加载 active runtime GameData 并消费 Rust runtime scan cache，不构建文本范围。",
     ),
     "diagnose-active-runtime": ScanBudget(
@@ -481,7 +481,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="active runtime audit cache / Rust plugin source scan",
-        old_path_action="保留 active runtime 和 translation source 真实 I/O；source hash 未变时不再扫描翻译源 AST",
+        current_path_requirement="保留 active runtime 和 translation source 真实 I/O；source hash 未变时不再扫描翻译源 AST",
         evidence="诊断消费当前运行审计结果和写回映射；只在 source_file_hash 变化时批量扫描涉及的翻译源插件源码。",
     ),
     "verify-feedback-text": ScanBudget(
@@ -494,7 +494,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="SQLite text_index_items / Rust plugin source runtime scan",
-        old_path_action="移除临时 TextScopeService 构建和旧插件源码 regex 候选扫描",
+        current_path_requirement="反馈定位使用当前索引和 Rust runtime scan",
         evidence="反馈文本残留定位读取 active runtime；缺口分类消费 SQLite text_index_items，不构建完整文本范围。",
     ),
     "export-terminology": ScanBudget(
@@ -507,7 +507,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="terminology repository / terminology context",
-        old_path_action="静态审计术语上下文成本，不新增独立 scope 抽象",
+        current_path_requirement="静态审计术语上下文成本，不新增独立 scope 抽象",
         evidence="术语导出不需要构建当前可写范围。",
     ),
     "import-terminology": ScanBudget(
@@ -520,7 +520,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="terminology repository / current terminology registry shape",
-        old_path_action="保留当前 GameData 形状校验；导入不生成导出上下文",
+        current_path_requirement="保留当前 GameData 形状校验；导入不生成导出上下文",
         evidence="术语导入读取输入文件和当前字段表形状，使用 extract_registry 校验，不构建 speaker/database context 输出。",
     ),
     "probe-source-language": ScanBudget(
@@ -533,7 +533,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="raw JSON visible-text sampler",
-        old_path_action="静态审计源语言探测真实 I/O 成本，不归入 GameData/scope/index",
+        current_path_requirement="静态审计源语言探测真实 I/O 成本，不归入 GameData/scope/index",
         evidence="源语言探测读取标准 data JSON 并采样玩家可见文本，不构建 GameData 或文本范围。",
     ),
     "export-plugins-json": ScanBudget(
@@ -546,7 +546,7 @@ _SCAN_BUDGETS: dict[str, ScanBudget] = {
         quality_gate_count=0,
         write_plan_count=0,
         authoritative_source="plugins.js parser / plugin config reader",
-        old_path_action="静态审计插件配置导出成本",
+        current_path_requirement="静态审计插件配置导出成本",
         evidence="插件 JSON 导出只读取插件配置，不构建完整文本范围。",
     ),
 }

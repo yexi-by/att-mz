@@ -18,7 +18,7 @@ from app.llm import LLMHandler
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import GameRegistry
 from app.plugin_text import build_plugin_hash
-from app.rmmz import load_game_data
+from app.rmmz.loader import load_translation_source_game_data
 from app.rmmz.schema import EventCommandParameterFilter, EventCommandTextRuleRecord, PluginTextRuleRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rule_review import (
@@ -28,7 +28,7 @@ from app.rule_review import (
     note_tag_rule_scope_hash_for_candidates,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
-from app.text_facts import read_current_text_fact_translation_data_map_v2
+from app.text_facts import read_current_text_fact_translation_data_map
 from app.text_index import rebuild_text_index_native_storage
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +83,7 @@ async def _install_non_plugin_source_gate_prerequisites(
     game_dir: Path,
 ) -> None:
     """安装除插件源码支线外的最小 workflow gate 前置状态。"""
-    game_data = await load_game_data(game_dir)
+    game_data = await load_translation_source_game_data(game_dir)
     first_plugin = ensure_json_object(game_data.plugins_js[0], "plugins[0]")
     plugin_name_value = first_plugin.get("name")
     if not isinstance(plugin_name_value, str):
@@ -128,7 +128,7 @@ async def _install_non_plugin_source_gate_prerequisites(
             setting=setting,
             text_rules=text_rules,
         )
-        translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
+        translation_data_map = await read_current_text_fact_translation_data_map(session)
         await session.replace_rule_review_state(
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=normal_placeholder_scope_hash(
@@ -209,7 +209,7 @@ async def test_rebuild_text_index_records_high_risk_plugin_source_without_python
     tmp_path: Path,
     app_home_with_example_setting: Path,
 ) -> None:
-    """重建索引不再回退旧 Python 高风险插件源码 gate。"""
+    """重建索引使用当前插件源码风险 gate。"""
     _ = app_home_with_example_setting
     _add_high_risk_plugin_source(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
@@ -229,7 +229,7 @@ async def test_rebuild_text_index_records_high_risk_nonstandard_data_without_pyt
     tmp_path: Path,
     app_home_with_example_setting: Path,
 ) -> None:
-    """重建索引不再回退旧 Python 高风险非标准 data gate。"""
+    """重建索引使用当前非标准 data 风险 gate。"""
     _ = app_home_with_example_setting
     _add_high_risk_nonstandard_data(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")

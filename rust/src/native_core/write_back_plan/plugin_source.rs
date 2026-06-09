@@ -125,19 +125,19 @@ pub(super) fn write_single_plugin_source_file(
             .clone();
         if item.raw_text.is_empty() {
             return Err(format!(
-                "插件源码缺少 v2 raw_text，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                "插件源码缺少当前写回所需源文信息，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
                 item.location_path
             ));
         }
         if item.visible_text.is_empty() {
             return Err(format!(
-                "插件源码缺少 v2 visible_text，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                "插件源码缺少当前写回所需可见文本，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
                 item.location_path
             ));
         }
         if item.raw_hash.is_empty() {
             return Err(format!(
-                "插件源码缺少 v2 raw_hash，不能生成 runtime map；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                "插件源码缺少当前写回所需源文校验信息，不能生成 runtime map；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
                 item.location_path
             ));
         }
@@ -611,7 +611,7 @@ mod tests {
         }
     }
 
-    fn translation_item_with_v2_identity(
+    fn translation_item_with_current_identity(
         file_name: &str,
         selector: &str,
         raw_text: &str,
@@ -667,7 +667,7 @@ mod tests {
     fn write_single_plugin_source_file_rejects_original_text_mismatch() {
         let source = "const a = \"現在の本文\";";
         let selector = selector_for_visible_text(source, "現在の本文");
-        let item = translation_item_with_v2_identity(
+        let item = translation_item_with_current_identity(
             "Sample.js",
             &selector,
             "古い本文",
@@ -693,7 +693,7 @@ mod tests {
     fn write_single_plugin_source_file_rejects_missing_v2_raw_or_visible_identity() {
         let source = "const a = \"現在の本文\";";
         let selector = selector_for_visible_text(source, "現在の本文");
-        let mut item = translation_item_with_v2_identity(
+        let mut item = translation_item_with_current_identity(
             "Sample.js",
             &selector,
             "現在の本文",
@@ -710,13 +710,14 @@ mod tests {
             None,
             "2026-06-06T00:00:00Z",
         ) {
-            Ok(_) => panic!("插件源码缺少 v2 raw/visible 身份时必须失败"),
+            Ok(_) => panic!("插件源码缺少当前写回所需源文信息时必须失败"),
             Err(error) => error,
         };
 
         assert!(
-            error.contains("缺少 v2 raw_text") || error.contains("缺少 v2 visible_text"),
-            "错误文案应说明缺少 v2 raw/visible 身份: {error}",
+            error.contains("缺少当前写回所需源文信息")
+                || error.contains("缺少当前写回所需可见文本"),
+            "错误文案应说明缺少当前写回所需源文信息: {error}",
         );
     }
 
@@ -724,7 +725,7 @@ mod tests {
     fn write_single_plugin_source_file_rejects_missing_v2_raw_hash() {
         let source = "const a = \"現在の本文\";";
         let selector = selector_for_visible_text(source, "現在の本文");
-        let mut item = translation_item_with_v2_identity(
+        let mut item = translation_item_with_current_identity(
             "Sample.js",
             &selector,
             "現在の本文",
@@ -740,13 +741,13 @@ mod tests {
             None,
             "2026-06-06T00:00:00Z",
         ) {
-            Ok(_) => panic!("插件源码缺少 v2 raw_hash 时必须失败"),
+            Ok(_) => panic!("插件源码缺少当前写回所需源文校验信息时必须失败"),
             Err(error) => error,
         };
 
         assert!(
-            error.contains("缺少 v2 raw_hash"),
-            "错误文案应说明缺少 v2 raw_hash: {error}",
+            error.contains("缺少当前写回所需源文校验信息"),
+            "错误文案应说明缺少当前写回所需源文校验信息: {error}",
         );
     }
 }

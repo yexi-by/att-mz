@@ -837,14 +837,12 @@ fn build_virtual_speaker(
 ) -> Result<VirtualSpeaker, String> {
     let raw_source_speaker = capture_group(captures, &rule.speaker_group)
         .unwrap_or_default()
-        .trim()
         .to_string();
     let raw_body_text = if rule.body_group.is_empty() {
         String::new()
     } else {
         capture_group(captures, &rule.body_group)
             .unwrap_or_default()
-            .trim()
             .to_string()
     };
     let Some(semantic_parts) = weak_split_colon_speaker(&raw_source_speaker, &raw_body_text) else {
@@ -1132,8 +1130,49 @@ fn integer_field(object: &serde_json::Map<String, Value>, field_name: &str) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{MvVirtualNameboxFactPartsInput, build_mv_virtual_namebox_fact_parts};
+    use super::{
+        MvVirtualNameboxDataFileInput, MvVirtualNameboxFactPartsInput, MvVirtualNameboxRuleInput,
+        build_mv_virtual_namebox_fact_parts, scan_mv_virtual_namebox_rule_candidates,
+    };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn mv_virtual_namebox_rule_scan_preserves_raw_body_spacing_for_template_rebuild() {
+        let scan = scan_mv_virtual_namebox_rule_candidates(
+            &[MvVirtualNameboxDataFileInput {
+                file_name: "CommonEvents.json".to_string(),
+                data: serde_json::json!([
+                    null,
+                    {
+                        "id": 1,
+                        "list": [
+                            {"code": 101, "parameters": [0, 0, 0, 2]},
+                            {"code": 401, "parameters": [r"\n<Prof Cal:> Ah, thank you."]},
+                            {"code": 0, "parameters": []}
+                        ]
+                    }
+                ]),
+            }],
+            &[],
+            &[MvVirtualNameboxRuleInput {
+                rule_order: 0,
+                rule_name: "angle-bracket-namebox-inline".to_string(),
+                pattern_text: r"\\n<(?P<speaker>[^:]+):>(?P<body>.*)".to_string(),
+                speaker_group: "speaker".to_string(),
+                body_group: "body".to_string(),
+                speaker_policy: "translate".to_string(),
+                render_template: r"\n<{speaker}:>{body}".to_string(),
+            }],
+        )
+        .expect("MV 虚拟名字框规则扫描应成功");
+
+        assert!(scan.errors.is_empty(), "{:?}", scan.errors);
+        assert_eq!(scan.hit_details.len(), 1);
+        assert_eq!(
+            scan.speaker_requirements[0].sample_body_lines,
+            ["Ah, thank you."]
+        );
+    }
 
     #[test]
     fn mv_virtual_namebox_fact_parts_preserve_raw_visible_translatable_split_and_spacing() {

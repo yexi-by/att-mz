@@ -18,7 +18,7 @@ from app.plugin_text import (
     parse_plugin_rule_import_text,
     resolve_plugin_leaves,
 )
-from app.rmmz import load_game_data
+from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import GameData, PluginTextRuleRecord
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
@@ -48,7 +48,7 @@ def _write_current_plugins_js(game_data: GameData) -> None:
 @pytest.mark.asyncio
 async def test_plugin_json_export_writes_raw_plugins_array(minimal_game_dir: Path, tmp_path: Path) -> None:
     """插件配置导出文件的顶层结构是原始 `$plugins` 数组。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     output_path = tmp_path / "plugins.json"
 
     await export_plugins_json_file(game_data=game_data, output_path=output_path)
@@ -64,7 +64,7 @@ async def test_plugin_json_export_writes_raw_plugins_array(minimal_game_dir: Pat
 @pytest.mark.asyncio
 async def test_plugin_rule_import_validates_external_file(minimal_game_dir: Path, tmp_path: Path) -> None:
     """外部插件规则文件使用插件索引、插件名和路径数组定位插件。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "plugin-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -95,7 +95,7 @@ async def test_plugin_rule_import_validates_external_file(minimal_game_dir: Path
 @pytest.mark.asyncio
 async def test_plugin_rule_import_ignores_duplicate_names_outside_referenced_index(minimal_game_dir: Path) -> None:
     """重复插件名不再阻断校验，规则只按显式 plugin_index 定位。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     duplicate_plugin: dict[str, JsonValue] = {
         "name": "DuplicatePlugin",
         "status": False,
@@ -132,7 +132,7 @@ async def test_plugin_rule_import_ignores_duplicate_names_outside_referenced_ind
 @pytest.mark.asyncio
 async def test_plugin_rule_import_rejects_plugin_index_name_mismatch(minimal_game_dir: Path) -> None:
     """插件索引和插件名必须同时匹配当前 plugins.js，避免规则写到错误插件。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     import_file = parse_plugin_rule_import_text(
         json.dumps(
             [
@@ -155,7 +155,7 @@ async def test_plugin_rule_import_rejects_paths_without_english_source_text(
     minimal_english_game_dir: Path,
 ) -> None:
     """英文插件规则不能把协议值当成可导入的可见文本路径。"""
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     import_file = parse_plugin_rule_import_text(
         json.dumps(
             [
@@ -215,7 +215,7 @@ def test_plugin_rule_import_rejects_name_mapping_schema() -> None:
 @pytest.mark.asyncio
 async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) -> None:
     """插件文本提取只使用已确认的规则路径，不扫描无关资源路径。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     leaves = resolve_plugin_leaves(game_data.plugins_js[0])
     leaf_paths = {leaf.path for leaf in leaves}
     assert "$['parameters']['Message']" in leaf_paths
@@ -249,7 +249,7 @@ async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) 
 @pytest.mark.asyncio
 async def test_plugin_text_extraction_rejects_stale_rule_hash(minimal_game_dir: Path) -> None:
     """插件配置变化后，提取阶段不能把过期规则当成空命中继续执行。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
@@ -264,7 +264,7 @@ async def test_plugin_text_extraction_rejects_stale_rule_hash(minimal_game_dir: 
 @pytest.mark.asyncio
 async def test_plugin_text_extraction_rejects_missing_plugin_index(minimal_game_dir: Path) -> None:
     """插件下标失效时，提取阶段必须显式报错。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=len(game_data.plugins_js),
         plugin_name="RemovedPlugin",
@@ -281,7 +281,7 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
     minimal_english_game_dir: Path,
 ) -> None:
     """英文插件规则命中的短 UI 文本不能被协议噪音过滤静默跳过。"""
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     plugin = ensure_json_object(game_data.plugins_js[0], "plugins[0]")
     parameters = ensure_json_object(plugin["parameters"], "plugins[0].parameters")
     parameters["AutoSaveLabel"] = "AutoSave"
@@ -329,7 +329,7 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
 @pytest.mark.asyncio
 async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_dir: Path) -> None:
     """插件文本回写能更新普通参数，也能更新 JSON 字符串里的嵌套文本。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
@@ -364,7 +364,7 @@ async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_di
 @pytest.mark.asyncio
 async def test_plugin_text_write_back_rejects_internal_placeholder_leak(minimal_game_dir: Path) -> None:
     """插件文本写回前必须拒绝项目内部占位符。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
@@ -385,7 +385,7 @@ async def test_plugin_text_write_back_rejects_internal_placeholder_leak(minimal_
 @pytest.mark.asyncio
 async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_game_dir: Path) -> None:
     """插件 JSON 容器里的 JSON 字符串叶子按玩家可见文本提取和写回。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     parameters = game_data.plugins_js[0]["parameters"]
     assert isinstance(parameters, dict)
     source_note = "\n　" + r"\C[2]目標人物の場所\C[0]\n村の中央へ向かう。" + "　\n"

@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
+from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
 
 from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import TextRulesSetting
@@ -18,7 +18,7 @@ from app.plugin_source_text import (
     build_plugin_source_rule_records_from_import,
     parse_plugin_source_rule_import_text,
 )
-from app.rmmz import load_game_data
+from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import PluginSourceRuntimeWriteMapRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array
 
@@ -60,7 +60,12 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
     text_rules = TextRules.from_setting(TextRulesSetting())
     scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     old_candidate = next(candidate for candidate in scan.candidates if candidate.text == "古い本文")
@@ -106,7 +111,7 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
     rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session, [old_item])
+        await write_current_translation_items_for_test(session, [old_item])
         await session.replace_plugin_source_runtime_write_maps([runtime_map])
 
     async def failing_clear_runtime_maps(

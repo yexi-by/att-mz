@@ -242,7 +242,7 @@ def build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(
 
 
 def build_native_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> PluginSourceScan:
-    """用 Rust 候选入口构造现有插件源码规则链路需要的扫描对象。"""
+    """用 Rust 候选入口构造当前插件源码规则扫描对象。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
     if not game_data.plugin_source_files:
         risk_json = _native_plugin_source_risk_from_file_payloads(
@@ -423,7 +423,7 @@ def _native_plugin_source_risk_from_file_payloads(
     ignored_file_count: int,
     syntax_error_file_count: int,
 ) -> JsonObject:
-    """按旧风险阈值从 AST map 文件摘要构造风险对象。"""
+    """按当前风险阈值从 AST map 文件摘要构造风险对象。"""
     active_files = [
         file_payload
         for file_payload in files
@@ -467,7 +467,7 @@ def _native_plugin_source_risk_from_file_payloads(
 
 
 def _plugin_source_risk_from_json(risk: JsonObject) -> PluginSourceRisk:
-    """把 Rust 风险 JSON 转回旧规则链路使用的风险对象。"""
+    """把 Rust 风险 JSON 转换为当前插件源码风险对象。"""
     return PluginSourceRisk(
         high_risk=_json_bool(risk, "high_risk", "plugin-source-risk-report.risk"),
         risk_score=_summary_int(risk, "risk_score"),
@@ -487,7 +487,7 @@ def _empty_native_plugin_source_ast_map_payload(
     enabled_plugin_files: frozenset[str],
     read_error_file_count: int,
 ) -> JsonObject:
-    """构造没有可读插件源码文件时的旧语义空 AST 地图。"""
+    """构造没有可读插件源码文件时的当前空 AST 地图。"""
     risk = _native_plugin_source_risk_from_file_payloads(
         [],
         read_error_file_count=read_error_file_count,
@@ -541,7 +541,7 @@ def _native_plugin_source_file_ast_map_json(
 
 
 def _native_plugin_source_candidate_to_ast_map_json(candidate: JsonObject, label: str) -> JsonObject:
-    """把 Rust 插件源码候选压成旧 AST map 候选 JSON。"""
+    """把 Rust 插件源码候选压成当前 AST map 候选 JSON。"""
     ast_context = ensure_json_object(candidate["ast_context"], f"{label}.ast_context")
     return {
         "file": _native_plugin_source_candidate_file(candidate, label),
@@ -559,7 +559,7 @@ def _native_plugin_source_candidate_to_ast_map_json(candidate: JsonObject, label
 
 
 def _native_plugin_source_candidate_to_scan_candidate(candidate: JsonObject, label: str) -> PluginSourceCandidate:
-    """把 Rust 插件源码候选转换成旧规则链路使用的候选对象。"""
+    """把 Rust 插件源码候选转换成当前规则扫描候选对象。"""
     ast_context = ensure_json_object(candidate["ast_context"], f"{label}.ast_context")
     return PluginSourceCandidate(
         file_name=_native_plugin_source_candidate_file(candidate, label),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 @pytest.mark.asyncio
 async def test_native_write_back_helper_saves_runtime_map_after_post_write_audit(
@@ -206,7 +206,12 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     _ = broken_source_path.write_bytes(b"\xff\xfe\xff")
     async with await registry.open_game("テストゲーム") as session:
-        game_data = await load_game_data(minimal_game_dir)
+        game_data = await load_translation_source_game_data(
+            minimal_game_dir,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
+        )
         placeholder_record = PlaceholderRuleRecord(
             pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
@@ -254,7 +259,7 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
             ),
             reviewed_empty=True,
         )
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -267,7 +272,7 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
             ),
             reviewed_empty=True,
         )
-        await write_v2_test_translation_items(
+        await write_current_translation_items_for_test(
             session,
             [
                 TranslationItem(

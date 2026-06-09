@@ -19,15 +19,15 @@ from .common import (
     issue,
     load_setting,
 )
-from app.persistence.records import TextFactV2Record, TextIndexItemRecord
+from app.persistence.records import TextFactRecord, TextIndexItemRecord
 from app.text_index import detect_text_index_invalidations
-from app.text_fact_counts import read_current_matching_translation_fact_ids_v2
-from app.text_facts import TextFactContractError, read_current_text_fact_records_v2
+from app.text_fact_counts import read_current_matching_translation_fact_ids
+from app.text_facts import TextFactContractError, read_current_text_fact_records
 
 
 @dataclass(frozen=True, slots=True)
 class _FeedbackFactEntry:
-    """反馈归类所需的 v2 文本事实投影。"""
+    """反馈归类所需的 当前文本事实投影。"""
 
     location_path: str
     original_lines: list[str]
@@ -110,7 +110,7 @@ class FeedbackAgentMixin:
                     )
             index_records = await session.read_text_index_items()
             try:
-                current_facts = await read_current_text_fact_records_v2(session, limit=None)
+                current_facts = await read_current_text_fact_records(session, limit=None)
             except TextFactContractError as error:
                 return AgentReport.from_parts(
                     errors=[issue("text_fact_contract", str(error))],
@@ -127,7 +127,7 @@ class FeedbackAgentMixin:
                         "text_fact_contract_error": str(error),
                     },
                 )
-            facts_by_path: dict[str, list[TextFactV2Record]] = {}
+            facts_by_path: dict[str, list[TextFactRecord]] = {}
             for fact in current_facts:
                 facts_by_path.setdefault(fact.location_path, []).append(fact)
             missing_fact_paths = sorted(
@@ -137,14 +137,14 @@ class FeedbackAgentMixin:
             )
             if missing_fact_paths:
                 missing_message = (
-                    f"当前文本索引有 {len(missing_fact_paths)} 条记录缺少 text fact v2，"
-                    + "不能继续使用旧索引正文；请运行 rebuild-text-index 重新生成当前文本索引"
+                    f"当前文本索引有 {len(missing_fact_paths)} 条记录缺少当前文本事实，"
+                    + "当前文本事实与当前文本索引不一致，不能继续执行；请运行 rebuild-text-index 重新生成当前文本索引"
                 )
                 missing_fact_path_details = cast(JsonArray, missing_fact_paths[:20])
                 return AgentReport.from_parts(
                     errors=[
                         issue(
-                            "text_fact_v2_missing",
+                            "current_text_fact_missing",
                             missing_message,
                         )
                     ],
@@ -161,8 +161,8 @@ class FeedbackAgentMixin:
                         "missing_text_fact_location_paths": missing_fact_path_details,
                     },
                 )
-            matched_translation_fact_ids = await read_current_matching_translation_fact_ids_v2(session)
-            feedback_entries = _feedback_fact_entries_from_v2(
+            matched_translation_fact_ids = await read_current_matching_translation_fact_ids(session)
+            feedback_entries = _feedback_fact_entries_from_current_facts(
                 index_records=index_records,
                 facts_by_path=facts_by_path,
                 matched_translation_fact_ids=matched_translation_fact_ids,
@@ -197,19 +197,19 @@ class FeedbackAgentMixin:
         )
 
 
-def _feedback_fact_entries_from_v2(
+def _feedback_fact_entries_from_current_facts(
     *,
     index_records: list[TextIndexItemRecord],
-    facts_by_path: dict[str, list[TextFactV2Record]],
+    facts_by_path: dict[str, list[TextFactRecord]],
     matched_translation_fact_ids: set[str],
 ) -> list[_FeedbackFactEntry]:
-    """用 v2 facts 和当前 text index 可写状态构造反馈归类输入。"""
+    """用 current text facts 和当前 text index 可写状态构造反馈归类输入。"""
     entries: list[_FeedbackFactEntry] = []
     for record in index_records:
         facts = facts_by_path.get(record.location_path, [])
         if not facts:
             raise RuntimeError(
-                "当前文本索引记录缺少 text fact v2，不能继续使用旧索引正文。"
+                "当前文本索引记录缺少当前文本事实，当前文本事实与当前文本索引不一致。"
                 + "下一步：请运行 rebuild-text-index 重新生成当前文本索引。"
             )
         for fact in facts:
@@ -232,7 +232,7 @@ def _classify_feedback_occurrences(
     occurrences: JsonArray,
     entries: list[_FeedbackFactEntry],
 ) -> JsonArray:
-    """按 v2 文本事实把反馈反查结果归类为结构性缺口。"""
+    """按 当前文本事实把反馈反查结果归类为结构性缺口。"""
     classified: JsonArray = []
     for occurrence in occurrences:
         if not isinstance(occurrence, dict):
@@ -269,7 +269,7 @@ def _feedback_entries_containing_text(
     entries: list[_FeedbackFactEntry],
     text: str,
 ) -> list[_FeedbackFactEntry]:
-    """查找 v2 文本事实中包含反馈原文的位置。"""
+    """查找 当前文本事实中包含反馈原文的位置。"""
     return [
         entry
         for entry in entries
@@ -278,7 +278,7 @@ def _feedback_entries_containing_text(
 
 
 def _feedback_gap_from_entries(entries: list[_FeedbackFactEntry]) -> tuple[str, str]:
-    """根据 v2 事实命中情况判断反馈原文残留的结构性原因。"""
+    """根据 当前事实命中情况判断反馈原文残留的结构性原因。"""
     if not entries:
         return "rule_gap", "规则缺口"
     if any(not entry.can_write_back for entry in entries):
@@ -289,7 +289,7 @@ def _feedback_gap_from_entries(entries: list[_FeedbackFactEntry]) -> tuple[str, 
 
 
 def _feedback_fact_lines(text: str, *, item_type: str) -> list[str]:
-    """把 v2 fact 的可译正文转换成反馈归类使用的行模型。"""
+    """把 current text fact 的可译正文转换成反馈归类使用的行模型。"""
     if item_type in {"long_text", "array"}:
         return text.split("\n")
     return [text]

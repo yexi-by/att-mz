@@ -76,8 +76,8 @@ def _collect_plugin_source_write_back_probe_reasons(
         )
     affected = ", ".join(sorted(source_files))
     raise WriteBackProbeError(
-        "插件源码写入探针缺少当前 text fact v2 生成的源码扫描结果，"
-        + f"当前命令不能临时回退扫描插件源码: {affected}。"
+        "插件源码写入探针缺少当前文本索引中的源码扫描结果，"
+        + f"当前插件源码扫描结果缺失，不能继续执行: {affected}。"
         + "下一步：请运行 rebuild-text-index；如果插件源码规则来自导出文件，请重新导出并导入插件源码规则。"
     )
 

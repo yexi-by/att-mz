@@ -95,7 +95,7 @@ def _translation_items_matching_note_rules(
     translated_items: list[TranslationItem],
     rule_records: list[NoteTagTextRuleRecord],
 ) -> list[TranslationItem]:
-    """按旧 Note 标签规则筛出实际属于规则范围的已保存译文。"""
+    """按 Note 标签规则筛出实际属于规则范围的已保存译文。"""
     return [
         item
         for item in translated_items
@@ -119,7 +119,7 @@ async def _resolve_rule_hit_metrics(
     domain: str,
     grouped_hits: list[list[_RuleHitMetric]],
 ) -> list[list[_RuleHitMetric]]:
-    """把 native 规则命中补齐当前 v2 fact_id，保留未解析命中供报告展示。"""
+    """把 native 规则命中补齐当前文本事实 fact_id，保留未解析命中供报告展示。"""
     probes = [
         RuleFactProbe(
             domain=domain,
@@ -162,7 +162,7 @@ async def _resolve_plugin_source_hit_metrics(
     session: TargetGameSession,
     grouped_hits: dict[str, list[_RuleHitMetric]],
 ) -> dict[str, list[_RuleHitMetric]]:
-    """把插件源码命中补齐当前 v2 fact_id。"""
+    """把插件源码命中补齐当前文本事实 fact_id。"""
     resolved_groups = await _resolve_rule_hit_metrics(
         session=session,
         domain="plugin_source",
@@ -179,7 +179,7 @@ async def _resolve_plugin_rule_validation_context(
     session: TargetGameSession,
     context: NativePluginRuleValidationContext,
 ) -> NativePluginRuleValidationContext:
-    """把插件参数 native 命中回填当前 v2 fact_id。"""
+    """把插件参数 native 命中回填当前文本事实 fact_id。"""
     resolved_items = await resolve_current_rule_translation_items(
         session,
         domain="plugin_config",
@@ -208,7 +208,7 @@ async def _resolve_event_command_rule_validation_context(
     session: TargetGameSession,
     context: NativeEventCommandRuleValidationContext,
 ) -> NativeEventCommandRuleValidationContext:
-    """把事件指令 native 命中回填当前 v2 fact_id。"""
+    """把事件指令 native 命中回填当前文本事实 fact_id。"""
     resolved_items = await resolve_current_rule_translation_items(
         session,
         domain="event_command",
@@ -571,13 +571,13 @@ class RuleValidationAgentMixin:
                         rule_label="Note 标签规则",
                         confirm_empty=confirm_empty,
                     )
-                old_records = await session.read_note_tag_text_rules()
-                old_note_items = await session.read_translated_items_by_prefixes(
-                    _note_tag_rule_prefixes(game_data=game_data, rule_records=old_records)
+                prior_records = await session.read_note_tag_text_rules()
+                prior_note_items = await session.read_translated_items_by_prefixes(
+                    _note_tag_rule_prefixes(game_data=game_data, rule_records=prior_records)
                 )
-                old_note_rule_items = _translation_items_matching_note_rules(
-                    translated_items=old_note_items,
-                    rule_records=old_records,
+                prior_note_rule_items = _translation_items_matching_note_rules(
+                    translated_items=prior_note_items,
+                    rule_records=prior_records,
                 )
                 new_note_hit_metrics = _note_tag_rule_hits_from_native_details(
                     records=records,
@@ -594,7 +594,7 @@ class RuleValidationAgentMixin:
                 ]
                 new_note_hits = await resolve_current_rule_fact_hits(session, new_note_probes)
                 stale_fact_ids = stale_translation_fact_ids(
-                    old_items=old_note_rule_items,
+                    old_items=prior_note_rule_items,
                     current_rule_hits=new_note_hits,
                 )
                 deleted_translation_items = 0
@@ -895,17 +895,17 @@ class RuleValidationAgentMixin:
             import_file = parse_plugin_source_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 metadata = await session.read_text_index_metadata()
-                old_records = await session.read_plugin_source_text_rules()
+                prior_records = await session.read_plugin_source_text_rules()
                 if (
                     metadata is not None
                     and text_index_source_branch_gates_prechecked(metadata)
                     and _plugin_source_import_matches_current_exclusions(
                         import_file=import_file,
-                        current_records=old_records,
+                        current_records=prior_records,
                     )
                 ):
                     return _plugin_source_current_exclusions_report(
-                        records=old_records,
+                        records=prior_records,
                         deleted_translation_items=0,
                         deleted_translation_backup_path="",
                     )
@@ -937,7 +937,7 @@ class RuleValidationAgentMixin:
                     len(record.selectors) + len(record.excluded_selectors)
                     for record in records
                 )
-                if unreviewed_count and (scan.risk.high_risk or records or old_records):
+                if unreviewed_count and (scan.risk.high_risk or records or prior_records):
                     return AgentReport.from_parts(
                         errors=[
                             issue(
@@ -964,8 +964,8 @@ class RuleValidationAgentMixin:
                         rule_label="插件源码规则",
                         confirm_empty=confirm_empty,
                     )
-                old_translated_items = await session.read_translated_items_by_prefixes(
-                    _plugin_source_rule_prefixes(old_records)
+                prior_translated_items = await session.read_translated_items_by_prefixes(
+                    _plugin_source_rule_prefixes(prior_records)
                 )
                 new_plugin_source_hit_metrics = _plugin_source_rule_hits_from_scan(
                     records=records,
@@ -982,7 +982,7 @@ class RuleValidationAgentMixin:
                 ]
                 new_plugin_source_hits = await resolve_current_rule_fact_hits(session, new_plugin_source_probes)
                 stale_fact_ids = stale_translation_fact_ids(
-                    old_items=old_translated_items,
+                    old_items=prior_translated_items,
                     current_rule_hits=new_plugin_source_hits,
                 )
                 deleted_translation_items = 0

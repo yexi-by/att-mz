@@ -4,14 +4,14 @@ use super::models::{
 };
 use super::utils::collect_python_named_groups;
 use crate::native_core::models::NativeSourceResidualRule;
+use crate::native_core::text_facts::CURRENT_TEXT_FACT_CONTRACT_VERSION;
 use fancy_regex::Regex as FancyRegex;
 use rusqlite::{Connection, OpenFlags, params_from_iter};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const SQLITE_IN_CLAUSE_CHUNK_SIZE: usize = 500;
-const TEXT_FACT_SCHEMA_VERSION: i64 = 2;
-const MIGRATED_WRITE_BACK_DOMAINS: &[&str] = &[
+const WRITE_BACK_TEXT_FACT_DOMAINS: &[&str] = &[
     "standard_data",
     "mv_virtual_namebox",
     "plugin_config",
@@ -105,7 +105,7 @@ fn read_translation_items_for_paths(
                     facts.selector, facts.raw_text, facts.visible_text, \
                     facts.translatable_text, facts.raw_hash, indexed.source_line_paths \
              FROM translation_items AS translations \
-             INNER JOIN text_facts_v2 AS facts \
+             INNER JOIN text_facts AS facts \
                 ON facts.fact_id = translations.fact_id \
                AND facts.raw_hash = translations.source_fact_raw_hash \
                AND facts.translatable_hash = translations.source_fact_translatable_hash \
@@ -116,9 +116,9 @@ fn read_translation_items_for_paths(
              WHERE facts.location_path IN ({placeholders}) \
              ORDER BY facts.location_path, facts.domain, facts.fact_id"
         );
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|error| format!("按 v2 fact 可写范围读取译文记录 SQL 准备失败: {error}"))?;
+        let mut statement = connection.prepare(&sql).map_err(|error| {
+            format!("按 current text fact 可写范围读取译文记录 SQL 准备失败: {error}")
+        })?;
         let parameters = std::iter::once(scope_key).chain(chunk.iter().map(String::as_str));
         let rows = statement
             .query_map(params_from_iter(parameters), |row| {
@@ -149,22 +149,23 @@ fn read_translation_items_for_paths(
                     source_line_paths_text,
                 })
             })
-            .map_err(|error| format!("按 v2 fact 可写范围读取译文记录失败: {error}"))?;
+            .map_err(|error| format!("按 current text fact 可写范围读取译文记录失败: {error}"))?;
         for row in rows {
-            let fact_row = row.map_err(|error| format!("读取 v2 fact 译文记录行失败: {error}"))?;
+            let fact_row =
+                row.map_err(|error| format!("读取 current text fact 译文记录行失败: {error}"))?;
             resolved_fact_ids.insert(fact_row.fact_id.clone());
             fact_rows.push(fact_row);
         }
     }
     match read_scope {
         TranslationReadScope::FullWritableIndex => {
-            assert_all_translations_resolved_to_v2_facts_for_full_write_back(
+            assert_all_translations_resolved_to_text_facts_for_full_write_back(
                 connection,
                 &resolved_fact_ids,
             )?;
         }
         TranslationReadScope::AllowedPaths => {
-            assert_all_translations_resolved_to_v2_facts(
+            assert_all_translations_resolved_to_text_facts(
                 connection,
                 allowed_paths,
                 &resolved_fact_ids,
@@ -184,7 +185,7 @@ fn read_translation_items_for_paths(
             .get(&row.fact_id)
             .cloned()
             .unwrap_or_default();
-        items.push(translation_item_from_v2_fact_row(row, render_parts)?);
+        items.push(translation_item_from_text_fact_row(row, render_parts)?);
     }
     items.sort_by(|left, right| {
         left.location_path
@@ -201,7 +202,7 @@ fn read_writable_text_index_location_paths_for_scope(
     let mut statement = connection
         .prepare(
             "SELECT DISTINCT facts.location_path \
-             FROM text_facts_v2 AS facts \
+             FROM text_facts AS facts \
              INNER JOIN text_index_items AS indexed \
                 ON indexed.location_path = facts.location_path \
                AND indexed.writable = 1 \
@@ -218,10 +219,10 @@ fn read_writable_text_index_location_paths_for_scope(
             let location_path: String = row.get(0)?;
             Ok(location_path)
         })
-        .map_err(|error| format!("读取 v2 text fact 可写范围失败: {error}"))?;
+        .map_err(|error| format!("读取 current text fact 可写范围失败: {error}"))?;
     let mut paths: Vec<String> = Vec::new();
     for row in rows {
-        paths.push(row.map_err(|error| format!("读取 v2 text fact 可写范围行失败: {error}"))?);
+        paths.push(row.map_err(|error| format!("读取 current text fact 可写范围行失败: {error}"))?);
     }
     Ok(paths)
 }
@@ -234,14 +235,14 @@ pub(super) fn read_mv_virtual_namebox_fact_templates(
         .prepare(
             "SELECT facts.location_path, facts.fact_id, facts.domain, facts.role, \
                     facts.raw_text, facts.translatable_text, indexed.source_line_paths \
-             FROM text_facts_v2 AS facts \
+             FROM text_facts AS facts \
              INNER JOIN text_index_items AS indexed \
                 ON indexed.location_path = facts.location_path \
              WHERE facts.scope_key = ? \
                 AND facts.domain = 'mv_virtual_namebox' \
              ORDER BY facts.location_path, facts.fact_id",
         )
-        .map_err(|error| format!("读取 MV 虚拟名字框 v2 facts SQL 准备失败: {error}"))?;
+        .map_err(|error| format!("读取 MV 虚拟名字框 current text facts SQL 准备失败: {error}"))?;
     let rows = statement
         .query_map([scope_key.as_str()], |row| {
             Ok(FactTemplateRow {
@@ -254,10 +255,12 @@ pub(super) fn read_mv_virtual_namebox_fact_templates(
                 source_line_paths_text: row.get(6)?,
             })
         })
-        .map_err(|error| format!("读取 MV 虚拟名字框 v2 facts 失败: {error}"))?;
+        .map_err(|error| format!("读取 MV 虚拟名字框 current text facts 失败: {error}"))?;
     let mut fact_rows: Vec<FactTemplateRow> = Vec::new();
     for row in rows {
-        fact_rows.push(row.map_err(|error| format!("读取 MV 虚拟名字框 v2 fact 行失败: {error}"))?);
+        fact_rows.push(
+            row.map_err(|error| format!("读取 MV 虚拟名字框 current text fact 行失败: {error}"))?,
+        );
     }
     let render_parts_by_fact = read_render_parts_by_fact_id(
         connection,
@@ -312,7 +315,7 @@ fn assert_no_disallowed_translation_items(
                 .prepare(
                     "SELECT facts.location_path \
                      FROM translation_items AS translations \
-                     INNER JOIN text_facts_v2 AS facts \
+                     INNER JOIN text_facts AS facts \
                         ON facts.fact_id = translations.fact_id \
                        AND facts.raw_hash = translations.source_fact_raw_hash \
                        AND facts.translatable_hash = translations.source_fact_translatable_hash \
@@ -341,7 +344,7 @@ fn assert_no_disallowed_translation_items(
                 let sql = format!(
                     "SELECT facts.location_path \
                      FROM translation_items AS translations \
-                     INNER JOIN text_facts_v2 AS facts \
+                     INNER JOIN text_facts AS facts \
                         ON facts.fact_id = translations.fact_id \
                        AND facts.raw_hash = translations.source_fact_raw_hash \
                        AND facts.translatable_hash = translations.source_fact_translatable_hash \
@@ -393,60 +396,61 @@ fn read_current_text_fact_scope_key(connection: &Connection) -> Result<String, S
     let mut statement = connection
         .prepare(
             "SELECT scope_key, schema_version \
-             FROM text_fact_scope_v2 \
+             FROM text_fact_scope \
              ORDER BY created_at DESC, scope_key",
         )
         .map_err(|error| {
             format!(
-                "当前数据库缺少 text fact v2 scope，请重新运行 rebuild-text-index 后再写进游戏文件: {error}"
+                "当前数据库缺少 当前文本事实 scope，请重新运行 rebuild-text-index 后再写进游戏文件: {error}"
             )
         })?;
     let mut rows = statement
         .query([])
-        .map_err(|error| format!("读取 text fact v2 scope 失败: {error}"))?;
+        .map_err(|error| format!("读取 当前文本事实 scope 失败: {error}"))?;
     let first = rows
         .next()
-        .map_err(|error| format!("读取 text fact v2 scope 行失败: {error}"))?
+        .map_err(|error| format!("读取 当前文本事实 scope 行失败: {error}"))?
         .ok_or_else(|| {
-            "当前数据库缺少 text fact v2 scope，请重新运行 rebuild-text-index 后再写进游戏文件"
+            "当前数据库缺少 当前文本事实 scope，请重新运行 rebuild-text-index 后再写进游戏文件"
                 .to_string()
         })?;
     let scope_key: String = first
         .get(0)
-        .map_err(|error| format!("读取 text fact v2 scope_key 失败: {error}"))?;
+        .map_err(|error| format!("读取 当前文本事实 scope_key 失败: {error}"))?;
     let schema_version: i64 = first
         .get(1)
-        .map_err(|error| format!("读取 text fact v2 schema_version 失败: {error}"))?;
-    if schema_version != TEXT_FACT_SCHEMA_VERSION {
-        return Err(format!(
-            "text fact v2 schema version 不受支持: 数据库是 {schema_version}，当前工具支持 {TEXT_FACT_SCHEMA_VERSION}；请重新运行 rebuild-text-index"
-        ));
+        .map_err(|error| format!("读取 当前文本事实 schema_version 失败: {error}"))?;
+    if schema_version != CURRENT_TEXT_FACT_CONTRACT_VERSION {
+        return Err(
+            "当前文本事实范围不符合当前要求，不能写进游戏文件；请重新运行 rebuild-text-index"
+                .to_string(),
+        );
     }
     if rows
         .next()
-        .map_err(|error| format!("读取 text fact v2 scope 额外行失败: {error}"))?
+        .map_err(|error| format!("读取 当前文本事实 scope 额外行失败: {error}"))?
         .is_some()
     {
         return Err(
-            "当前数据库存在多个 text fact v2 scope，请重新运行 rebuild-text-index".to_string(),
+            "当前数据库存在多个 当前文本事实 scope，请重新运行 rebuild-text-index".to_string(),
         );
     }
     let mismatch_count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM text_facts_v2 WHERE scope_key <> ?",
+            "SELECT COUNT(*) FROM text_facts WHERE scope_key <> ?",
             [scope_key.as_str()],
             |row| row.get(0),
         )
-        .map_err(|error| format!("确认 text fact v2 scope 一致性失败: {error}"))?;
+        .map_err(|error| format!("确认 当前文本事实 scope 一致性失败: {error}"))?;
     if mismatch_count > 0 {
         return Err(format!(
-            "text fact v2 scope 不一致: {mismatch_count} 条文本事实不属于当前 scope {scope_key}；请重新运行 rebuild-text-index"
+            "当前文本事实 scope 不一致: {mismatch_count} 条文本事实不属于当前 scope {scope_key}；请重新运行 rebuild-text-index"
         ));
     }
     Ok(scope_key)
 }
 
-fn assert_all_translations_resolved_to_v2_facts(
+fn assert_all_translations_resolved_to_text_facts(
     connection: &Connection,
     allowed_paths: &[String],
     resolved_fact_ids: &HashSet<String>,
@@ -486,7 +490,7 @@ fn assert_all_translations_resolved_to_v2_facts(
     assert_no_unresolved_translation_paths(unresolved_paths)
 }
 
-fn assert_all_translations_resolved_to_v2_facts_for_full_write_back(
+fn assert_all_translations_resolved_to_text_facts_for_full_write_back(
     connection: &Connection,
     resolved_fact_ids: &HashSet<String>,
 ) -> Result<(), String> {
@@ -531,7 +535,7 @@ fn assert_no_unresolved_translation_paths(unresolved_paths: Vec<String>) -> Resu
         String::new()
     };
     Err(format!(
-        "已保存译文不再匹配当前 v2 文本事实身份，请 rebuild-text-index 后重新翻译/手动导入: {samples}{suffix}"
+        "已保存译文不再匹配当前文本事实，不能写进游戏文件；请重新运行 rebuild-text-index 后重新翻译或手动导入: {samples}{suffix}"
     ))
 }
 
@@ -555,13 +559,13 @@ fn read_render_parts_by_fact_id(
             .join(",");
         let sql = format!(
             "SELECT fact_id, part_order, part_kind, raw_text, template_key \
-             FROM text_fact_render_parts_v2 \
+             FROM text_fact_render_parts \
              WHERE fact_id IN ({placeholders}) \
              ORDER BY fact_id, part_order"
         );
         let mut statement = connection
             .prepare(&sql)
-            .map_err(|error| format!("读取 v2 render parts SQL 准备失败: {error}"))?;
+            .map_err(|error| format!("读取写回所需源文结构 SQL 准备失败: {error}"))?;
         let rows = statement
             .query_map(params_from_iter(chunk.iter().map(String::as_str)), |row| {
                 Ok(TextFactRenderPart {
@@ -572,9 +576,9 @@ fn read_render_parts_by_fact_id(
                     template_key: row.get(4)?,
                 })
             })
-            .map_err(|error| format!("读取 v2 render parts 失败: {error}"))?;
+            .map_err(|error| format!("读取写回所需源文结构失败: {error}"))?;
         for row in rows {
-            let part = row.map_err(|error| format!("读取 v2 render part 行失败: {error}"))?;
+            let part = row.map_err(|error| format!("读取写回所需源文结构行失败: {error}"))?;
             parts_by_fact
                 .entry(part.fact_id.clone())
                 .or_default()
@@ -587,7 +591,7 @@ fn read_render_parts_by_fact_id(
     Ok(parts_by_fact)
 }
 
-fn translation_item_from_v2_fact_row(
+fn translation_item_from_text_fact_row(
     row: TranslationFactRow,
     render_parts: Vec<TextFactRenderPart>,
 ) -> Result<TranslationItem, String> {
@@ -640,12 +644,12 @@ fn validate_text_fact_render_parts_for_domain(
     raw_text: &str,
     render_parts: &[TextFactRenderPart],
 ) -> Result<(), String> {
-    if !MIGRATED_WRITE_BACK_DOMAINS.contains(&domain) {
+    if !WRITE_BACK_TEXT_FACT_DOMAINS.contains(&domain) {
         return Ok(());
     }
     if render_parts.is_empty() {
         return Err(format!(
-            "当前 v2 文本事实缺少 render parts，不能写进游戏文件，请重新运行 rebuild-text-index: {}",
+            "当前文本事实缺少写回所需源文结构，不能写进游戏文件；请重新运行 rebuild-text-index: {}",
             location_path
         ));
     }
@@ -655,7 +659,7 @@ fn validate_text_fact_render_parts_for_domain(
         .collect::<String>();
     if rendered_raw != raw_text {
         return Err(format!(
-            "当前 v2 文本事实 render parts 与 raw_text 不一致，不能写进游戏文件，请重新运行 rebuild-text-index: {}",
+            "当前文本事实写回所需源文结构不一致，不能写进游戏文件；请重新运行 rebuild-text-index: {}",
             location_path
         ));
     }
@@ -664,7 +668,7 @@ fn validate_text_fact_render_parts_for_domain(
         .any(|part| part.part_kind == "translated_body" || part.template_key == "body")
     {
         return Err(format!(
-            "当前 v2 文本事实 render parts 缺少 translated_body，不能写进游戏文件，请重新运行 rebuild-text-index: {}",
+            "当前文本事实缺少译文写入位置，不能写进游戏文件；请重新运行 rebuild-text-index: {}",
             location_path
         ));
     }
@@ -676,7 +680,7 @@ fn text_fact_lines(text: &str, item_type: &str) -> Result<Vec<String>, String> {
         "long_text" | "array" => Ok(text.split('\n').map(str::to_string).collect()),
         "short_text" => Ok(vec![text.to_string()]),
         _ => Err(format!(
-            "text fact v2 item_type 不受支持: {item_type}；请重新运行 rebuild-text-index"
+            "当前文本事实 item_type 不受支持: {item_type}；请重新运行 rebuild-text-index"
         )),
     }
 }

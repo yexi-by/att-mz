@@ -12,7 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::native_core::text_facts::{
-    TEXT_FACT_SCHEMA_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart, TextFactScope,
+    CURRENT_TEXT_FACT_CONTRACT_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart,
+    TextFactScope,
 };
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
@@ -233,7 +234,7 @@ pub(crate) fn write_scope_index_storage_direct(
         domain_payload_count: payload.text_fact_domain_payloads.len(),
         scope_key: text_fact_scope.scope_key,
         scope_hash: text_fact_scope.scope_hash,
-        text_fact_schema_version: TEXT_FACT_SCHEMA_VERSION,
+        text_fact_schema_version: CURRENT_TEXT_FACT_CONTRACT_VERSION,
     })
 }
 
@@ -275,7 +276,7 @@ fn validate_schema_version(connection: &Connection) -> Result<(), String> {
             structured_error(
                 "scope_index_storage_schema_version_unreadable",
                 format!(
-                    "数据库 schema_version 不可读取: {error}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册或迁移数据库后运行 rebuild-text-index"
+                    "当前数据库结构不满足要求，schema_version 不可读取: {error}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册游戏并重新生成当前文本索引。"
                 ),
             )
         })?;
@@ -283,7 +284,7 @@ fn validate_schema_version(connection: &Connection) -> Result<(), String> {
         return Err(structured_error(
             "scope_index_storage_schema_version_mismatch",
             format!(
-                "数据库 schema_version={version}，当前要求 {CURRENT_SCHEMA_VERSION}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册或迁移数据库后运行 rebuild-text-index"
+                "当前数据库结构不满足要求，schema_version={version}，当前要求 {CURRENT_SCHEMA_VERSION}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册游戏并重新生成当前文本索引。"
             ),
         ));
     }
@@ -552,7 +553,7 @@ fn validate_text_fact_write_payload(
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
                 format!(
-                    "text fact v2 scope_key 与当前 scope 不一致: fact_id={}",
+                    "当前文本事实 scope_key 与当前 scope 不一致: fact_id={}",
                     fact.fact_id
                 ),
             ));
@@ -561,7 +562,7 @@ fn validate_text_fact_write_payload(
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
                 format!(
-                    "text fact v2 schema_version 与当前 scope 不一致: fact_id={}",
+                    "当前文本事实 schema_version 与当前 scope 不一致: fact_id={}",
                     fact.fact_id
                 ),
             ));
@@ -569,7 +570,7 @@ fn validate_text_fact_write_payload(
         if !fact_ids.insert(fact.fact_id.clone()) {
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
-                format!("text fact v2 fact_id 重复: {}", fact.fact_id),
+                format!("当前文本事实 fact_id 重复: {}", fact.fact_id),
             ));
         }
         facts_by_id.insert(fact.fact_id.clone(), fact);
@@ -584,7 +585,7 @@ fn validate_text_fact_write_payload(
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
                 format!(
-                    "text fact v2 render part 引用了未知 fact_id: {}",
+                    "当前文本事实 render part 引用了未知 fact_id: {}",
                     part.fact_id
                 ),
             ));
@@ -594,7 +595,7 @@ fn validate_text_fact_write_payload(
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
                 format!(
-                    "text fact v2 render part 重复: fact_id={}, part_order={}",
+                    "当前文本事实 render part 重复: fact_id={}, part_order={}",
                     part.fact_id, part.part_order
                 ),
             ));
@@ -620,7 +621,7 @@ fn validate_text_fact_write_payload(
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
                 format!(
-                    "text fact v2 domain payload 引用了未知 fact_id: {}",
+                    "当前文本事实 domain payload 引用了未知 fact_id: {}",
                     domain_payload.fact_id
                 ),
             ));
@@ -629,7 +630,7 @@ fn validate_text_fact_write_payload(
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
                 format!(
-                    "text fact v2 domain payload 重复: fact_id={}",
+                    "当前文本事实 domain payload 重复: fact_id={}",
                     domain_payload.fact_id
                 ),
             ));
@@ -708,7 +709,7 @@ fn validate_text_fact_raw_identity_overrides(
 fn text_fact_identity_mismatch_error() -> String {
     structured_error(
         "scope_index_storage_text_fact_identity_mismatch",
-        "warm index rows 与 v2 facts 的文本身份不一致，拒绝写入混合来源数据".to_string(),
+        "warm index rows 与 current text facts 的文本身份不一致，拒绝写入混合来源数据".to_string(),
     )
 }
 
@@ -785,7 +786,7 @@ fn validate_render_parts_rebuild_raw_text(
                 return Err(structured_error(
                     "scope_index_storage_text_fact_invalid",
                     format!(
-                        "text fact v2 render part_order 必须从 0 连续: fact_id={fact_id}, expected={expected_order}, actual={}",
+                        "当前文本事实 render part_order 必须从 0 连续: fact_id={fact_id}, expected={expected_order}, actual={}",
                         part.part_order
                     ),
                 ));
@@ -798,13 +799,13 @@ fn validate_render_parts_rebuild_raw_text(
         let Some(fact) = facts_by_id.get(fact_id) else {
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
-                format!("text fact v2 render part 引用了未知 fact_id: {fact_id}"),
+                format!("当前文本事实 render part 引用了未知 fact_id: {fact_id}"),
             ));
         };
         if rebuilt_raw_text != fact.raw_text {
             return Err(structured_error(
                 "scope_index_storage_text_fact_invalid",
-                format!("text fact v2 render parts 无法重建 raw_text: fact_id={fact_id}"),
+                format!("当前文本事实 render parts 无法重建 raw_text: fact_id={fact_id}"),
             ));
         }
     }
@@ -823,10 +824,10 @@ fn write_text_index_storage(
         )
     })?;
     for table_name in [
-        "text_fact_domain_payloads_v2",
-        "text_fact_render_parts_v2",
-        "text_facts_v2",
-        "text_fact_scope_v2",
+        "text_fact_domain_payloads",
+        "text_fact_render_parts",
+        "text_facts",
+        "text_fact_scope",
         "text_index_invalidations",
         "text_index_rule_hit_summary",
         "text_index_domain_summary",
@@ -846,7 +847,7 @@ fn write_text_index_storage(
 
     transaction
         .execute(
-            "INSERT OR REPLACE INTO text_fact_scope_v2 \
+            "INSERT OR REPLACE INTO text_fact_scope \
              (scope_key, schema_version, scope_hash, source_snapshot_hash, rule_hash, text_rules_hash, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -862,21 +863,21 @@ fn write_text_index_storage(
         .map_err(|error| {
             structured_error(
                 "scope_index_storage_write_failed",
-                format!("写入 text_fact_scope_v2 失败: {error}"),
+                format!("写入 text_fact_scope 失败: {error}"),
             )
         })?;
 
     {
         let mut insert_fact_statement = transaction
             .prepare_cached(
-                "INSERT INTO text_facts_v2 \
+                "INSERT INTO text_facts \
                  (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )
             .map_err(|error| {
                 structured_error(
                     "scope_index_storage_write_failed",
-                    format!("准备 text_facts_v2 写入语句失败: {error}"),
+                    format!("准备 text_facts 写入语句失败: {error}"),
                 )
             })?;
         for fact in &payload.text_facts {
@@ -902,7 +903,7 @@ fn write_text_index_storage(
                 .map_err(|error| {
                     structured_error(
                         "scope_index_storage_write_failed",
-                        format!("写入 text_facts_v2 失败 {}: {error}", fact.fact_id),
+                        format!("写入 text_facts 失败 {}: {error}", fact.fact_id),
                     )
                 })?;
         }
@@ -911,14 +912,14 @@ fn write_text_index_storage(
     {
         let mut insert_render_part_statement = transaction
             .prepare_cached(
-                "INSERT INTO text_fact_render_parts_v2 \
+                "INSERT INTO text_fact_render_parts \
                  (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|error| {
                 structured_error(
                     "scope_index_storage_write_failed",
-                    format!("准备 text_fact_render_parts_v2 写入语句失败: {error}"),
+                    format!("准备 text_fact_render_parts 写入语句失败: {error}"),
                 )
             })?;
         for part in &payload.text_fact_render_parts {
@@ -935,7 +936,7 @@ fn write_text_index_storage(
                     structured_error(
                         "scope_index_storage_write_failed",
                         format!(
-                            "写入 text_fact_render_parts_v2 失败 {}/{}: {error}",
+                            "写入 text_fact_render_parts 失败 {}/{}: {error}",
                             part.fact_id, part.part_order
                         ),
                     )
@@ -946,14 +947,14 @@ fn write_text_index_storage(
     {
         let mut insert_payload_statement = transaction
             .prepare_cached(
-                "INSERT INTO text_fact_domain_payloads_v2 \
+                "INSERT INTO text_fact_domain_payloads \
                  (fact_id, payload_json) \
                  VALUES (?1, ?2)",
             )
             .map_err(|error| {
                 structured_error(
                     "scope_index_storage_write_failed",
-                    format!("准备 text_fact_domain_payloads_v2 写入语句失败: {error}"),
+                    format!("准备 text_fact_domain_payloads 写入语句失败: {error}"),
                 )
             })?;
         for domain_payload in &payload.text_fact_domain_payloads {
@@ -963,7 +964,7 @@ fn write_text_index_storage(
                     structured_error(
                         "scope_index_storage_write_failed",
                         format!(
-                            "写入 text_fact_domain_payloads_v2 失败 {}: {error}",
+                            "写入 text_fact_domain_payloads 失败 {}: {error}",
                             domain_payload.fact_id
                         ),
                     )
@@ -1304,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn write_scope_index_storage_writes_text_fact_v2_rows() {
+    fn write_scope_index_storage_writes_text_fact_rows() {
         let fixture = std::env::temp_dir().join(format!(
             "att_mz_text_fact_storage_{}",
             SystemTime::now()
@@ -1388,7 +1389,8 @@ mod tests {
             )],
         );
 
-        let output = write_scope_index_storage_direct(&payload).expect("写入 v2 fact 应成功");
+        let output =
+            write_scope_index_storage_direct(&payload).expect("写入 current text fact 应成功");
         assert_eq!(output.text_fact_count, 1);
         assert_eq!(output.render_part_count, 4);
         assert_eq!(output.scope_key, fact.scope_key);
@@ -1396,22 +1398,20 @@ mod tests {
         {
             let connection = Connection::open(&db_path).expect("测试数据库应可重新打开");
             let fact_count: i64 = connection
-                .query_row("SELECT COUNT(*) FROM text_facts_v2", [], |row| row.get(0))
-                .expect("text_facts_v2 应可读取");
+                .query_row("SELECT COUNT(*) FROM text_facts", [], |row| row.get(0))
+                .expect("text_facts 应可读取");
             let render_part_count: i64 = connection
-                .query_row(
-                    "SELECT COUNT(*) FROM text_fact_render_parts_v2",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("text_fact_render_parts_v2 应可读取");
+                .query_row("SELECT COUNT(*) FROM text_fact_render_parts", [], |row| {
+                    row.get(0)
+                })
+                .expect("text_fact_render_parts 应可读取");
             let payload_count: i64 = connection
                 .query_row(
-                    "SELECT COUNT(*) FROM text_fact_domain_payloads_v2",
+                    "SELECT COUNT(*) FROM text_fact_domain_payloads",
                     [],
                     |row| row.get(0),
                 )
-                .expect("text_fact_domain_payloads_v2 应可读取");
+                .expect("text_fact_domain_payloads 应可读取");
             assert_eq!(fact_count, 1);
             assert_eq!(render_part_count, 4);
             assert_eq!(payload_count, 1);
@@ -1458,7 +1458,7 @@ mod tests {
         payload.text_index_rows.push(dummy_text_index_row());
 
         let output = write_scope_index_storage_direct(&payload)
-            .expect("同一路径存在更多 v2 facts 时 warm index 子集应可写入");
+            .expect("同一路径存在更多 current text facts 时 warm index 子集应可写入");
         assert_eq!(output.written_item_count, 1);
         assert_eq!(output.text_fact_count, 2);
 
@@ -1525,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn write_scope_index_storage_replaces_old_text_fact_v2_scope_atomically() {
+    fn write_scope_index_storage_replaces_text_fact_scope_atomically() {
         let fixture = std::env::temp_dir().join(format!(
             "att_mz_text_fact_replace_{}",
             SystemTime::now()
@@ -1557,13 +1557,13 @@ mod tests {
                 item_type: "short_text".to_string(),
                 role: String::new(),
                 selector: "gameTitle".to_string(),
-                raw_text: "旧标题".to_string(),
-                visible_text: "旧标题".to_string(),
-                translatable_text: "旧标题".to_string(),
+                raw_text: "先前标题".to_string(),
+                visible_text: "先前标题".to_string(),
+                translatable_text: "先前标题".to_string(),
             },
             first_scope.scope_key.clone(),
         )
-        .expect("旧 fact 应可创建");
+        .expect("先前 fact 应可创建");
         let first_payload = text_fact_payload(
             db_path.to_string_lossy().to_string(),
             first_scope,
@@ -1574,9 +1574,9 @@ mod tests {
         write_scope_index_storage_direct(&first_payload).expect("第一次写入应成功");
 
         let second_scope = TextFactScope::from_hashes(
-            "snapshot-v2".to_string(),
-            "rules-v2".to_string(),
-            "text-rules-v2".to_string(),
+            "snapshot-current".to_string(),
+            "rules-current".to_string(),
+            "text-rules-current".to_string(),
             "2026-06-05T00:01:00".to_string(),
         );
         let second_payload = text_fact_payload(
@@ -1591,13 +1591,13 @@ mod tests {
         {
             let connection = Connection::open(&db_path).expect("测试数据库应可重新打开");
             let fact_count: i64 = connection
-                .query_row("SELECT COUNT(*) FROM text_facts_v2", [], |row| row.get(0))
-                .expect("text_facts_v2 应可读取");
+                .query_row("SELECT COUNT(*) FROM text_facts", [], |row| row.get(0))
+                .expect("text_facts 应可读取");
             let scope_key: String = connection
-                .query_row("SELECT scope_key FROM text_fact_scope_v2", [], |row| {
+                .query_row("SELECT scope_key FROM text_fact_scope", [], |row| {
                     row.get(0)
                 })
-                .expect("text_fact_scope_v2 应可读取");
+                .expect("text_fact_scope 应可读取");
             assert_eq!(fact_count, 0);
             assert_eq!(scope_key, second_scope.scope_key);
         }
@@ -1640,7 +1640,7 @@ mod tests {
         payload.text_index_rows[0].location_path = "System.json/currencyUnit".to_string();
 
         let error = write_scope_index_storage_direct(&payload)
-            .expect_err("warm index 与 v2 fact 身份不一致必须拒绝");
+            .expect_err("warm index 与 current text fact 身份不一致必须拒绝");
         assert!(error.contains("scope_index_storage_text_fact_identity_mismatch"));
 
         fs::remove_dir_all(fixture).expect("测试目录应可清理");

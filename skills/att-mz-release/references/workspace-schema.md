@@ -4,7 +4,7 @@
 
 ## 常见文件
 
-- `manifest.json`：本轮工作区的唯一交换边界，记录 `files`、`generated`、`layout` 和 `workflow`。目录里存在但未列入 `manifest.files` 的旧文件不属于本轮输入，`validate-agent-workspace` 不会据此启用插件源码或非标准 data 支线，`cleanup-agent-workspace` 也只清理 `manifest.files` 记录的文件并提示旧文件不会参与本轮验收。
+- `manifest.json`：本轮工作区的唯一交换边界，记录 `files`、`generated`、`layout` 和 `workflow`。目录里存在但未列入 `manifest.files` 的文件不属于本轮输入，`validate-agent-workspace` 不会据此启用插件源码或非标准 data 支线，`cleanup-agent-workspace` 也只清理 `manifest.files` 记录的文件并提示未列入文件不会参与本轮验收。
 - `mv-virtual-namebox-candidates.json`：MV 专用候选摘要，列出 `101` 后首条非空 `401` 文本；MZ 工作区没有此文件。
 - `mv-virtual-namebox-rules.json`：MV 专用虚拟名字框规则。合法空结构是 `{ "rules": [] }`。
 - `placeholder-candidates.json`：初始候选控制符报告，只供主代理参考。
@@ -36,7 +36,7 @@
 
 `prepare-agent-workspace` 会优先把 CLI 已保存到当前游戏状态里的字段译名表、正文术语表、MV 虚拟名字框规则、插件规则、事件指令规则、Note 标签规则、非标准 data 规则、普通占位符规则和结构化占位符规则回填到工作区。插件源码规则和非标准 data 规则只在高风险或支线已启动时回填。
 
-工作区目录本身不是事实来源；本轮 `manifest.files` 才是 Agent、CLI 校验和清理命令共同认可的输入集合。复用旧工作区时，旧的 `plugin-source-rules.json`、`nonstandard-data-rules.json` 或 `nonstandard-data/` 只有在当前 manifest 明确列出时才参与本轮验收。
+工作区目录本身不是事实来源；本轮 `manifest.files` 才是 Agent、CLI 校验和清理命令共同认可的输入集合。复用已有工作区时，`plugin-source-rules.json`、`nonstandard-data-rules.json` 或 `nonstandard-data/` 只有在当前 manifest 明确列出时才参与本轮验收。
 
 新增的 `agent-scratch/`、`agent-reports/`、`review-reports/` 和 `review-decisions/` 是 Agent 审计材料。它们可以证明工作过程、审查结论和主代理裁决，但不能单独让文本进入翻译范围，也不能替代规则文件、validate/import 命令或当前游戏已保存状态。
 
@@ -70,7 +70,7 @@ Note 标签规则的文件键是 `fnmatch` 风格文件通配模式，例如 `Ma
 
 `placeholder-rules.json` 顶层必须是 `{正则表达式: 占位符模板}`。占位符模板必须生成形如 `[CUSTOM_NAME_1]` 的方括号占位符，推荐使用 `{index}`。禁止写成 `{占位符名: 正则表达式}`，禁止把 RPG Maker 标准控制符当自定义规则硬写。
 
-工作区验收会报告普通占位符空规则和未覆盖候选 warning，但不要求数据库里已经存在确认状态。真正的空规则确认、未覆盖候选风险确认和过期判断由 `import-placeholder-rules` 保存到当前游戏状态；不要为了消除工作区 warning 编造规则。
+工作区验收会报告普通占位符空规则和未覆盖候选 warning，但不要求当前游戏状态里已经存在确认状态。空规则确认和未覆盖候选风险确认由 `import-placeholder-rules` 保存到当前游戏状态；已保存确认只在当前候选范围一致时有效，候选范围变化时重新审查并导入当前规则；不要为了消除工作区 warning 编造规则。
 
 ### 结构化占位符规则
 
@@ -84,7 +84,7 @@ Note 标签规则的文件键是 `fnmatch` 风格文件通配模式，例如 `Ma
 
 每条规则必须声明 `name`、`pattern`、`translatable_group` 和 `protected_groups`。`pattern` 必须使用 Python 风格命名分组，`translatable_group` 指向继续交给模型翻译的分组，`protected_groups` 只保护固定协议外壳。
 
-工作区验收会报告结构化占位符空规则和未覆盖候选 warning，但不要求数据库里已经存在确认状态。真正的空规则确认、未覆盖候选风险确认和过期判断由 `import-structured-placeholder-rules` 保存到当前游戏状态；不要为了消除工作区 warning 编造结构化规则。
+工作区验收会报告结构化占位符空规则和未覆盖候选 warning，但不要求当前游戏状态里已经存在确认状态。空规则确认和未覆盖候选风险确认由 `import-structured-placeholder-rules` 保存到当前游戏状态；已保存确认只在当前候选范围一致时有效，候选范围变化时重新审查并导入当前规则；不要为了消除工作区 warning 编造结构化规则。
 
 ### 字段译名表
 

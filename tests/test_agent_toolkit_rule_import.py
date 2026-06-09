@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 from app.application.flow_gate import count_note_tag_rule_candidates
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
 from app.note_tag_text.exporter import collect_note_tag_candidates
+from app.persistence import TargetGameSession
+from app.persistence.records import TextFactRecord
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
-from app.rmmz.schema import ItemType
+from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
 from app.agent_toolkit.services.rule_identity import RuleFactProbe, resolve_current_rule_fact_hits
 from app.text_facts import (
-    read_current_text_fact_records_v2,
-    read_current_text_fact_scope_v2,
+    read_current_text_fact_records,
+    read_current_text_fact_scope,
     text_fact_record_to_translation_item,
 )
 
@@ -27,24 +29,14 @@ def _json_int_for_assert(value: object, label: str) -> int:
     return value
 
 
-def _rule_test_translation_item(
-    *,
-    location_path: str,
-    original_lines: list[str],
-    translation_lines: list[str],
-    item_type: ItemType = "short_text",
+async def _translation_item_from_text_fact_for_test(
+    session: TargetGameSession,
+    fact: TextFactRecord,
 ) -> TranslationItem:
-    """构造符合当前 v2 保存译文表形状的规则测试译文。"""
-    return TranslationItem(
-        fact_id=f"test-fact:{location_path}",
-        source_fact_raw_hash=f"test-raw:{location_path}",
-        source_fact_translatable_hash=f"test-translatable:{location_path}",
-        location_path=location_path,
-        item_type=item_type,
-        original_lines=original_lines,
-        source_line_paths=[location_path],
-        translation_lines=translation_lines,
-    )
+    """用当前文本索引定位记录构造测试译文项。"""
+    index_records = await session.read_text_index_items_by_paths([fact.location_path])
+    index_record = index_records[0] if index_records else None
+    return text_fact_record_to_translation_item(fact, index_record=index_record)
 
 @pytest.mark.asyncio
 async def test_agent_translation_source_load_skips_writable_copies_by_default(
@@ -109,7 +101,7 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
 
     _ = await handler.import_plugin_rules(game_title="テストゲーム", input_path=rules_path)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Message",
@@ -137,7 +129,7 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     assert summary.deleted_translation_backup_path
     assert translated_items == []
     assert state is not None
-    assert state.scope_hash == plugin_rule_scope_hash(await load_game_data(minimal_game_dir))
+    assert state.scope_hash == plugin_rule_scope_hash(await load_active_runtime_game_data(minimal_game_dir))
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("app_home_with_example_setting")
 async def test_import_plugin_rules_rejects_english_protocol_value_paths(
@@ -240,7 +232,7 @@ async def test_import_plugin_rules_uses_native_plugin_config_context(
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
 
     def forbidden_old_record_builder(**_kwargs: object) -> list[PluginTextRuleRecord]:
-        raise AssertionError("import-plugin-rules 不能调用旧 Python 插件参数规则扫描构建入口")
+        raise AssertionError("import-plugin-rules 必须消费 Rust 插件参数规则候选输出")
 
     monkeypatch.setattr(
         "app.application.handler.build_plugin_rule_records_from_import",
@@ -250,7 +242,7 @@ async def test_import_plugin_rules_uses_native_plugin_config_context(
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     old_rule = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
@@ -259,7 +251,7 @@ async def test_import_plugin_rules_uses_native_plugin_config_context(
     )
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_text_rules([old_rule])
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Message",
@@ -312,7 +304,7 @@ async def test_import_plugin_rules_deletes_only_stale_fact_id_for_same_path(
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_text_rules(
             [
@@ -330,8 +322,8 @@ async def test_import_plugin_rules_deletes_only_stale_fact_id_for_same_path(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
     async with await registry.open_game("テストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        scope = await read_current_text_fact_scope(session)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -358,10 +350,10 @@ async def test_import_plugin_rules_deletes_only_stale_fact_id_for_same_path(
             translatable_hash=f"{current_fact.translatable_hash}:stale",
             scope_key=current_fact.scope_key,
         )
-        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
-        current_item = text_fact_record_to_translation_item(current_fact)
+        await session.replace_text_facts(scope=scope, facts=[*facts, stale_fact])
+        current_item = await _translation_item_from_text_fact_for_test(session, current_fact)
         current_item.translation_lines = ["当前插件正文"]
-        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item = await _translation_item_from_text_fact_for_test(session, stale_fact)
         stale_item.translation_lines = ["旧插件正文"]
         await session.write_translation_items([current_item, stale_item])
 
@@ -434,7 +426,7 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
 
     _ = await handler.import_event_command_rules(game_title="テストゲーム", input_path=rules_path)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="CommonEvents.json/1/4/parameters/3/message",
@@ -460,7 +452,7 @@ async def test_import_empty_event_command_rules_requires_explicit_empty_confirma
         translated_items = await session.read_translated_items()
         state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     assert summary.imported_rule_group_count == 0
     assert summary.imported_path_rule_count == 0
     assert summary.deleted_translation_items == 1
@@ -488,7 +480,7 @@ async def test_import_empty_event_command_rules_records_cli_code_scope(
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
     empty_rules_path = tmp_path / "event-command-rules-empty.json"
     _ = empty_rules_path.write_text("{}\n", encoding="utf-8")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     _ = await handler.import_event_command_rules(
         game_title="テストゲーム",
@@ -540,7 +532,7 @@ async def test_import_event_command_rules_uses_native_hit_details_for_stale_clea
                 )
             ]
         )
-        await write_v2_test_translation_items(session, [stale_item])
+        await write_current_translation_items_for_test(session, [stale_item])
 
     rules_path = tmp_path / "event-command-rules.json"
     _ = rules_path.write_text(
@@ -564,14 +556,14 @@ async def test_import_event_command_rules_uses_native_hit_details_for_stale_clea
     def forbidden_iter_all_commands(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("事件指令规则导入必须消费 native hit details")
 
-    def forbidden_legacy_prefixes(*_args: object, **_kwargs: object) -> NoReturn:
+    def forbidden_python_prefix_builder(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("事件指令规则导入必须消费 native command prefixes")
 
     monkeypatch.setattr("app.event_command_text.importer.iter_all_commands", forbidden_iter_all_commands)
     monkeypatch.setattr(
         TranslationHandler,
         "_event_command_rule_prefixes",
-        forbidden_legacy_prefixes,
+        forbidden_python_prefix_builder,
         raising=False,
     )
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
@@ -633,8 +625,8 @@ async def test_import_event_command_rules_deletes_only_stale_fact_id_for_same_pa
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
     async with await registry.open_game("テストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        scope = await read_current_text_fact_scope(session)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -661,10 +653,10 @@ async def test_import_event_command_rules_deletes_only_stale_fact_id_for_same_pa
             translatable_hash=f"{current_fact.translatable_hash}:stale",
             scope_key=current_fact.scope_key,
         )
-        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
-        current_item = text_fact_record_to_translation_item(current_fact)
+        await session.replace_text_facts(scope=scope, facts=[*facts, stale_fact])
+        current_item = await _translation_item_from_text_fact_for_test(session, current_fact)
         current_item.translation_lines = ["当前事件指令译文"]
-        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item = await _translation_item_from_text_fact_for_test(session, stale_fact)
         stale_item.translation_lines = ["旧事件指令译文"]
         await session.write_translation_items([current_item, stale_item])
 
@@ -720,16 +712,21 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
     empty_rules_path = tmp_path / "note-tag-rules-empty.json"
     _ = empty_rules_path.write_text("{}\n", encoding="utf-8")
-    stale_item = _rule_test_translation_item(
-        location_path="Items.json/1/note/MissingTag",
-        original_lines=["古いタグ"],
-        translation_lines=["旧标签"],
-    )
+    missing_tag_path = "Items.json/1/note/MissingTag"
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_note_tag_text_rules(
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
-        await write_v2_test_translation_items(session, [stale_item])
+        await insert_invalid_fact_translation_row_for_test(
+            session,
+            fact_id="invalid-current-note-tag:missing-tag",
+            location_path=missing_tag_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["古いタグ"],
+            source_line_paths=[missing_tag_path],
+            translation_lines=["待清理标签"],
+        )
 
     async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
         raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
@@ -754,12 +751,12 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
         }
         state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     assert summary.imported_file_count == 0
     assert summary.imported_tag_count == 0
     assert summary.deleted_translation_items == 1
-    assert stale_item.location_path not in remaining_paths
+    assert missing_tag_path not in remaining_paths
     assert state is not None
     assert state.scope_hash == note_tag_rule_scope_hash_for_text_rules(
         game_data=game_data,
@@ -776,28 +773,32 @@ async def test_import_note_tag_rules_keeps_same_file_non_note_translation_when_r
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    stale_note_item = _rule_test_translation_item(
-        location_path="Items.json/1/note/MissingTag",
-        original_lines=["古いタグ"],
-        translation_lines=["旧标签"],
-    )
-    ordinary_item = TranslationItem(
-        location_path="Items.json/1/name",
-        item_type="short_text",
-        original_lines=["回復薬"],
-        source_line_paths=["Items.json/1/name"],
-        translation_lines=["回复药"],
-    )
+    missing_tag_path = "Items.json/1/note/MissingTag"
+    ordinary_path = "Items.json/1/name"
+    ordinary_fact_id = "invalid-current-standard-data:item-name"
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_note_tag_text_rules(
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
-        await write_v2_test_translation_items(session, [stale_note_item, ordinary_item])
-        before_items = await session.read_translated_items()
-        ordinary_fact_id = next(
-            item.fact_id
-            for item in before_items
-            if item.location_path == ordinary_item.location_path
+        await insert_invalid_fact_translation_row_for_test(
+            session,
+            fact_id="invalid-current-note-tag:missing-tag",
+            location_path=missing_tag_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["古いタグ"],
+            source_line_paths=[missing_tag_path],
+            translation_lines=["待清理标签"],
+        )
+        await insert_invalid_fact_translation_row_for_test(
+            session,
+            fact_id=ordinary_fact_id,
+            location_path=ordinary_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["回復薬"],
+            source_line_paths=[ordinary_path],
+            translation_lines=["回复药"],
         )
 
     report = await service.import_note_tag_rules(
@@ -883,7 +884,7 @@ async def test_mv_virtual_namebox_rule_commands_use_native_candidate_context(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """MV 名字框三条命令消费 native 候选和命中事实，不再调用旧 Python 候选扫描。"""
+    """MV 名字框三条命令必须消费 native 候选和命中事实。"""
     mv_common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
     mv_common_events = ensure_json_array(
         coerce_json_value(cast(object, json.loads(mv_common_events_path.read_text(encoding="utf-8")))),
@@ -945,7 +946,7 @@ async def test_validate_placeholder_rules_blocks_translatable_text_loss() -> Non
     assert "placeholder_rule_loses_translatable_text" in unsafe_error_codes
     assert "placeholder_rule_loses_translatable_text" not in safe_error_codes
 @pytest.mark.asyncio
-async def test_validate_placeholder_rules_rejects_rust_incompatible_regex() -> None:
+async def test_validate_placeholder_rules_rejects_rust_unsupported_regex() -> None:
     """普通占位符规则不能先通过 Python 校验、再到 Rust 质检阶段失败。"""
     service = AgentToolkitService(setting_path=EXAMPLE_SETTING_PATH)
 
@@ -962,7 +963,7 @@ async def test_validate_placeholder_rules_rejects_rust_incompatible_regex() -> N
     assert "placeholder_rules_invalid" in {error.code for error in report.errors}
     assert "Rust fancy-regex" in report.errors[0].message
 @pytest.mark.asyncio
-async def test_validate_structured_placeholder_rules_rejects_rust_incompatible_regex(
+async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_regex(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
@@ -1000,23 +1001,16 @@ async def test_validate_structured_placeholder_rules_rejects_rust_incompatible_r
 
 
 @pytest.mark.asyncio
-async def test_structured_placeholder_rule_commands_use_warm_text_index_without_full_scope_build(
+async def test_structured_placeholder_rule_commands_use_warm_text_index_coverage(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """warm index 可用时，结构化占位符规则命令不再构建完整文本范围。"""
+    """warm index 可用时，结构化占位符规则命令复用当前索引覆盖结果。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
     rules_text = '{"paired_shell_rules": []}'
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("结构化占位符规则命令命中 warm index 时不应构建完整文本范围")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     validate_report = await service.validate_structured_placeholder_rules(
         game_title="テストゲーム",
@@ -1092,7 +1086,7 @@ async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_fi
             active_file_names=active_file_names,
         )
 
-    def forbidden_legacy_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
+    def forbidden_translation_source_strict_scan(*args: object, **kwargs: object) -> PluginSourceBatchTextScan:
         _ = (args, kwargs)
         raise AssertionError("当前运行扫描缓存不应调用翻译源 strict scan")
 
@@ -1100,7 +1094,7 @@ async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_fi
         monkeypatch.setattr(
             runtime_audit_module,
             "scan_plugin_source_files_text_strict",
-            forbidden_legacy_strict_scan,
+            forbidden_translation_source_strict_scan,
         )
     monkeypatch.setattr(
         runtime_audit_module,
@@ -1125,18 +1119,18 @@ async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_fi
 
 
 @pytest.mark.asyncio
-async def test_audit_active_runtime_rebuilds_legacy_literal_cache(
+async def test_audit_active_runtime_rebuilds_incomplete_literal_cache(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧版运行源码 literal cache 缺少 native 分类字段时应重扫，而不是报缓存损坏。"""
+    """当前运行源码 literal cache 缺少 native 分类字段时应重扫。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
         coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
         "plugins",
     )
-    plugins.append({"name": "LegacyRuntimeCache", "status": True, "description": "", "parameters": {}})
+    plugins.append({"name": "IncompleteRuntimeCache", "status": True, "description": "", "parameters": {}})
     _ = plugins_path.write_text(
         f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
         encoding="utf-8",
@@ -1144,14 +1138,14 @@ async def test_audit_active_runtime_rebuilds_legacy_literal_cache(
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
     plugin_source_dir.mkdir(exist_ok=True)
     source_text = "const Messages = { title: 'カテゴリ' };\n"
-    _ = (plugin_source_dir / "LegacyRuntimeCache.js").write_text(source_text, encoding="utf-8")
+    _ = (plugin_source_dir / "IncompleteRuntimeCache.js").write_text(source_text, encoding="utf-8")
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    legacy_literals = [
+    incomplete_literals = [
         {
-            "selector": "ast:string:0:0:legacy",
+            "selector": "ast:string:0:0:incomplete-cache",
             "text": "カテゴリ",
             "raw_text": "'カテゴリ'",
             "line": 1,
@@ -1168,10 +1162,10 @@ async def test_audit_active_runtime_rebuilds_legacy_literal_cache(
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                "LegacyRuntimeCache.js",
+                "IncompleteRuntimeCache.js",
                 build_plugin_source_file_hash(source_text),
                 "",
-                json.dumps(legacy_literals, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(incomplete_literals, ensure_ascii=False, separators=(",", ":")),
                 "2026-06-07T00:00:00",
             ),
         )
@@ -1186,8 +1180,8 @@ async def test_audit_active_runtime_rebuilds_legacy_literal_cache(
     assert rescan_file_count >= 1
     async with await registry.open_game("テストゲーム") as session:
         refreshed_records = await session.read_plugin_source_runtime_scan_cache()
-    legacy_record = next(record for record in refreshed_records if record.file_name == "LegacyRuntimeCache.js")
-    assert legacy_record.literals[0].literal_kind == "user_visible_candidate"
+    incomplete_record = next(record for record in refreshed_records if record.file_name == "IncompleteRuntimeCache.js")
+    assert incomplete_record.literals[0].literal_kind == "user_visible_candidate"
 
 
 @pytest.mark.asyncio
@@ -1211,12 +1205,12 @@ async def test_import_placeholder_rules_runs_validation_before_save(
         records = await session.read_placeholder_rules()
     assert records == []
 @pytest.mark.asyncio
-async def test_import_placeholder_rules_uses_text_fact_v2_without_full_source_load(
+async def test_import_placeholder_rules_uses_current_text_fact_without_full_source_load(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """普通占位符规则导入使用 v2 facts，不再加载完整翻译源或构建旧范围。"""
+    """普通占位符规则导入必须使用当前文本事实范围。"""
     common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
     raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
     common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
@@ -1228,12 +1222,12 @@ async def test_import_placeholder_rules_uses_text_fact_v2_without_full_source_lo
     async def forbidden_load_game_data_for_view(
         game_path: str | Path,
         *,
-        source_view: GameFileView,
+        view: GameFileView,
         include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
         run_dialogue_probe_check: bool = False,
     ) -> NoReturn:
-        _ = (game_path, source_view, include_plugin_source_files, include_writable_copies, run_dialogue_probe_check)
+        _ = (game_path, view, include_plugin_source_files, include_writable_copies, run_dialogue_probe_check)
         raise AssertionError("import-placeholder-rules 不应加载完整翻译源")
 
     class V2OnlyPlaceholderService(AgentToolkitService):
@@ -1247,7 +1241,7 @@ async def test_import_placeholder_rules_uses_text_fact_v2_without_full_source_lo
             plugin_source_scan: PluginSourceScan | None = None,
         ) -> NoReturn:
             _ = (session, game_data, text_rules, plugin_source_scan)
-            raise AssertionError("import-placeholder-rules 不应构建旧 Python 正文范围")
+            raise AssertionError("import-placeholder-rules 必须使用当前文本事实范围")
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -1268,22 +1262,15 @@ async def test_import_placeholder_rules_uses_text_fact_v2_without_full_source_lo
     assert _json_int_for_assert(coverage_summary["candidate_count"], "coverage.summary.candidate_count") >= 1
     assert _json_int_for_assert(coverage_summary["uncovered_count"], "coverage.summary.uncovered_count") == uncovered_count
 @pytest.mark.asyncio
-async def test_validate_placeholder_rules_uses_warm_text_index_without_full_scope_build(
+async def test_validate_placeholder_rules_uses_warm_text_index_coverage(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """warm index 可用时，占位符规则校验不再构建完整文本范围。"""
+    """warm index 可用时，占位符规则校验复用当前索引覆盖结果。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("validate-placeholder-rules 命中 warm index 时不应构建完整文本范围")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.validate_placeholder_rules(
         game_title="テストゲーム",
@@ -1294,22 +1281,15 @@ async def test_validate_placeholder_rules_uses_warm_text_index_without_full_scop
     assert report.status in {"ok", "warning"}
     assert report.summary["rule_count"] == 0
 @pytest.mark.asyncio
-async def test_import_placeholder_rules_uses_warm_text_index_without_full_scope_build(
+async def test_import_placeholder_rules_uses_warm_text_index_coverage(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """warm index 可用时，占位符规则导入复用索引完成验证和覆盖检查。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("import-placeholder-rules 命中 warm index 时不应构建完整文本范围")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.import_placeholder_rules(
         game_title="テストゲーム",
@@ -1322,7 +1302,7 @@ async def test_import_placeholder_rules_uses_warm_text_index_without_full_scope_
 
 
 @pytest.mark.asyncio
-async def test_source_residual_rule_commands_use_warm_text_index_without_full_scope_build(
+async def test_source_residual_rule_commands_use_warm_text_index_fact_lookup(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1340,7 +1320,7 @@ async def test_source_residual_rule_commands_use_warm_text_index_without_full_sc
         if "こんにちは" in "\n".join(item.original_lines)
     )
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=target_item.location_path,
@@ -1365,15 +1345,10 @@ async def test_source_residual_rule_commands_use_warm_text_index_without_full_sc
         ensure_ascii=False,
     )
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("源文残留规则命令命中 warm index 时不应构建完整文本范围")
-
     async def forbidden_full_translation_read(self: TargetGameSession) -> NoReturn:
         _ = self
         raise AssertionError("源文残留规则命令不应全量读取所有已保存译文")
 
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr(TargetGameSession, "read_translated_items", forbidden_full_translation_read)
 
     validate_report = await service.validate_source_residual_rules(
@@ -1445,12 +1420,12 @@ async def test_import_structured_placeholder_rules_saves_separate_records(
         )
     ]
 @pytest.mark.asyncio
-async def test_import_structured_placeholder_rules_uses_text_fact_v2_without_old_index_wrapper(
+async def test_import_structured_placeholder_rules_uses_current_text_fact_without_text_index_wrapper(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """结构化占位符规则导入使用 v2 facts，不走旧 text-index wrapper。"""
+    """结构化占位符规则导入使用 current text facts，不走旧 text-index wrapper。"""
     common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
     raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
     common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
@@ -1462,12 +1437,12 @@ async def test_import_structured_placeholder_rules_uses_text_fact_v2_without_old
     async def forbidden_load_game_data_for_view(
         game_path: str | Path,
         *,
-        source_view: GameFileView,
+        view: GameFileView,
         include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
         run_dialogue_probe_check: bool = False,
     ) -> NoReturn:
-        _ = (game_path, source_view, include_plugin_source_files, include_writable_copies, run_dialogue_probe_check)
+        _ = (game_path, view, include_plugin_source_files, include_writable_copies, run_dialogue_probe_check)
         raise AssertionError("import-structured-placeholder-rules 不应加载完整翻译源")
 
     class V2OnlyStructuredPlaceholderService(AgentToolkitService):
@@ -1524,11 +1499,11 @@ async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
         confirm_empty=True,
     )
     doctor_report = await service.doctor(game_title="テストゲーム", check_llm=False)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1586,7 +1561,7 @@ async def test_import_empty_placeholder_rules_uses_full_candidate_hash(
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1597,13 +1572,13 @@ async def test_import_empty_placeholder_rules_uses_full_candidate_hash(
         text_rules=text_rules,
         rule_count=0,
     )
-    legacy_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
+    sampled_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
 
     assert report.status == "warning"
     assert coverage.candidate_count > 100
     assert state is not None
     assert state.scope_hash == coverage.scope_hash
-    assert state.scope_hash != legacy_hash
+    assert state.scope_hash != sampled_hash
 @pytest.mark.asyncio
 async def test_confirmed_empty_placeholder_risk_allows_quality_warning_and_write_back(
     minimal_game_dir: Path,
@@ -1707,11 +1682,11 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
         game_title="テストゲーム",
         rules_text=json.dumps({"NO_MATCH": "[CUSTOM_NO_MATCH_{index}]"}, ensure_ascii=False),
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1765,11 +1740,11 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
         confirm_empty=True,
     )
     doctor_report = await service.doctor(game_title="English Fixture Game", check_llm=False)
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1866,7 +1841,7 @@ async def test_import_empty_structured_placeholder_rules_uses_full_candidate_has
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1877,13 +1852,13 @@ async def test_import_empty_structured_placeholder_rules_uses_full_candidate_has
         structured_rules=text_rules.structured_placeholder_rules,
         rule_count=0,
     )
-    legacy_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
+    sampled_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
 
     assert report.status == "warning"
     assert coverage.candidate_count > 100
     assert state is not None
     assert state.scope_hash == coverage.scope_hash
-    assert state.scope_hash != legacy_hash
+    assert state.scope_hash != sampled_hash
 @pytest.mark.asyncio
 async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_uncovered_candidates(
     minimal_english_game_dir: Path,
@@ -1920,11 +1895,11 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
         game_title="English Fixture Game",
         rules_text=rules_text,
     )
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1953,14 +1928,14 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
     assert state.scope_hash == coverage.scope_hash
     assert "structured_placeholder_uncovered" not in {error.code for error in errors}
 @pytest.mark.asyncio
-async def test_placeholder_candidate_review_rejects_legacy_sampled_hash(
+async def test_placeholder_candidate_review_rejects_sampled_hash(
     minimal_english_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧版前 100 候选 hash 不再兼容放行，必须按完整候选范围重新审查。"""
+    """前 100 候选 hash 不能代表当前完整候选范围。"""
     _insert_common_event_texts(
         minimal_english_game_dir,
-        [fr"\ZZLegacy{index}[Face{index}] Line {index}" for index in range(120)],
+        [fr"\ZZSample{index}[Face{index}] Line {index}" for index in range(120)],
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -1969,11 +1944,11 @@ async def test_placeholder_candidate_review_rejects_legacy_sampled_hash(
         game_title="English Fixture Game",
         game_dir=minimal_english_game_dir,
     )
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1983,10 +1958,10 @@ async def test_placeholder_candidate_review_rejects_legacy_sampled_hash(
             text_rules=text_rules,
             rule_count=0,
         )
-        legacy_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
+        sampled_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
         await session.replace_rule_review_state(
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
-            scope_hash=legacy_hash,
+            scope_hash=sampled_hash,
             reviewed_empty=True,
         )
         decisions = await collect_placeholder_candidate_review_decisions(
@@ -2012,14 +1987,14 @@ async def test_placeholder_candidate_review_rejects_legacy_sampled_hash(
     assert placeholder_decision.code == "placeholder_uncovered"
     assert "placeholder_uncovered" in {error.code for error in errors}
 @pytest.mark.asyncio
-async def test_structured_placeholder_candidate_review_rejects_legacy_sampled_hash(
+async def test_structured_placeholder_candidate_review_rejects_sampled_hash(
     minimal_english_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """结构化占位符旧版前 100 候选 hash 不再兼容放行。"""
+    """结构化占位符前 100 候选 hash 不能代表当前完整候选范围。"""
     _insert_common_event_texts(
         minimal_english_game_dir,
-        [f"<Legacy{index}: Alice{index}>" for index in range(120)],
+        [f"<Sample{index}: Alice{index}>" for index in range(120)],
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -2028,11 +2003,11 @@ async def test_structured_placeholder_candidate_review_rejects_legacy_sampled_ha
         game_title="English Fixture Game",
         game_dir=minimal_english_game_dir,
     )
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     async with await registry.open_game("English Fixture Game") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -2042,10 +2017,10 @@ async def test_structured_placeholder_candidate_review_rejects_legacy_sampled_ha
             structured_rules=text_rules.structured_placeholder_rules,
             rule_count=0,
         )
-        legacy_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
+        sampled_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
         await session.replace_rule_review_state(
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-            scope_hash=legacy_hash,
+            scope_hash=sampled_hash,
             reviewed_empty=True,
         )
         decisions = await collect_placeholder_candidate_review_decisions(
@@ -2150,11 +2125,11 @@ async def test_placeholder_candidate_review_state_mismatch_blocks_workflow(
         game_title="テストゲーム",
         game_dir=minimal_game_dir,
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -2316,7 +2291,7 @@ async def test_placeholder_rule_draft_requires_external_rules_and_uses_active_so
     tmp_path: Path,
 ) -> None:
     """占位符草稿必须等外部规则完成后再基于完整文本集合生成。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     plugin_parameters = ensure_json_object(game_data.plugins_js[0]["parameters"], "plugins[0].parameters")
     plugin_parameters["Message"] = r"\PX[PluginFace]プラグイン本文"
     plugins_text = f"var $plugins = {json.dumps(game_data.plugins_js, ensure_ascii=False, indent=2)};\n"
@@ -2348,7 +2323,7 @@ async def test_placeholder_rule_draft_requires_external_rules_and_uses_active_so
 
     blocked_report = await service.build_placeholder_rules(game_title="テストゲーム", output_path=before_rules_path)
 
-    fresh_game_data = await load_game_data(minimal_game_dir)
+    fresh_game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_text_rules(
             [
@@ -2442,20 +2417,27 @@ async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    fresh_game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(fresh_game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Nested']['text']"],
+                )
+            ]
+        )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Nested/text",
                     item_type="short_text",
                     original_lines=["ネスト本文"],
                     translation_lines=["嵌套正文"],
-                ),
-                TranslationItem(
-                    location_path="Actors.json/1/name",
-                    item_type="short_text",
-                    original_lines=["関係ない名前"],
-                    translation_lines=["无关名字"],
                 ),
             ]
         )
@@ -2488,12 +2470,25 @@ async def test_validate_plugin_rules_uses_native_plugin_config_hit_details(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件规则校验报告消费 native hit_details，不再调用旧提取器。"""
+    """插件规则校验报告必须消费 native hit_details。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    fresh_game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await session.replace_plugin_text_rules(
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name="TestPlugin",
+                    plugin_hash=build_plugin_hash(fresh_game_data.plugins_js[0]),
+                    path_templates=["$['parameters']['Nested']['text']"],
+                )
+            ]
+        )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="plugins.js/0/Nested/text",
@@ -2506,10 +2501,10 @@ async def test_validate_plugin_rules_uses_native_plugin_config_hit_details(
 
     class ForbiddenPluginTextExtraction:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            raise AssertionError("validate-plugin-rules 不能构造旧 PluginTextExtraction")
+            raise AssertionError("validate-plugin-rules 必须使用当前插件规则命中事实")
 
     def forbidden_old_record_builder(**_kwargs: object) -> list[PluginTextRuleRecord]:
-        raise AssertionError("validate-plugin-rules 不能调用旧 Python 插件参数规则扫描构建入口")
+        raise AssertionError("validate-plugin-rules 必须消费 Rust 插件参数规则候选输出")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.common.PluginTextExtraction",
@@ -2584,7 +2579,7 @@ async def test_plain_rule_validation_skips_plugin_source_file_loading(
     async def counting_load_game_data_for_view(
         game_path: str | Path,
         *,
-        source_view: GameFileView,
+        view: GameFileView,
         include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
         run_dialogue_probe_check: bool = False,
@@ -2594,7 +2589,7 @@ async def test_plain_rule_validation_skips_plugin_source_file_loading(
             raise AssertionError("普通规则校验不应读取插件源码文件")
         return await real_load_game_data_for_view(
             game_path,
-            source_view=source_view,
+            view=view,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
             run_dialogue_probe_check=run_dialogue_probe_check,
@@ -2625,7 +2620,7 @@ async def test_mv_namebox_rule_validation_skips_plugin_source_file_loading(
     async def counting_load_game_data_for_view(
         game_path: str | Path,
         *,
-        source_view: GameFileView,
+        view: GameFileView,
         include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
         run_dialogue_probe_check: bool = False,
@@ -2635,7 +2630,7 @@ async def test_mv_namebox_rule_validation_skips_plugin_source_file_loading(
             raise AssertionError("MV 虚拟名字框规则校验不应读取插件源码文件")
         return await real_load_game_data_for_view(
             game_path,
-            source_view=source_view,
+            view=view,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
             run_dialogue_probe_check=run_dialogue_probe_check,
@@ -2669,7 +2664,12 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(
+        await session.replace_note_tag_text_rules(
+            [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
+        )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        await write_current_translation_items_for_test(
             session,
             [
                 TranslationItem(
@@ -2677,11 +2677,6 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
                     item_type="short_text",
                     original_lines=["一行目"],
                     translation_lines=["第一行"],
-                ),
-                _rule_test_translation_item(
-                    location_path="Actors.json/1/name",
-                    original_lines=["関係ない名前"],
-                    translation_lines=["无关名字"],
                 ),
             ]
         )
@@ -2720,8 +2715,8 @@ async def test_validate_note_tag_rules_does_not_count_same_path_stale_fact_as_tr
         )
     _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
     async with await registry.open_game("MVテストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        scope = await read_current_text_fact_scope(session)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -2747,8 +2742,8 @@ async def test_validate_note_tag_rules_does_not_count_same_path_stale_fact_as_tr
             translatable_hash=f"{current_fact.translatable_hash}:stale",
             scope_key=current_fact.scope_key,
         )
-        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
-        stale_item = text_fact_record_to_translation_item(stale_fact)
+        await session.replace_text_facts(scope=scope, facts=[*facts, stale_fact])
+        stale_item = await _translation_item_from_text_fact_for_test(session, stale_fact)
         stale_item.translation_lines = ["旧说明"]
         await session.write_translation_items([stale_item])
 
@@ -2783,8 +2778,8 @@ async def test_import_note_tag_rules_deletes_only_stale_fact_id_for_same_path(
         )
     _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
     async with await registry.open_game("MVテストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        scope = await read_current_text_fact_scope(session)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -2811,10 +2806,10 @@ async def test_import_note_tag_rules_deletes_only_stale_fact_id_for_same_path(
             translatable_hash=f"{current_fact.translatable_hash}:stale",
             scope_key=current_fact.scope_key,
         )
-        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
-        current_item = text_fact_record_to_translation_item(current_fact)
+        await session.replace_text_facts(scope=scope, facts=[*facts, stale_fact])
+        current_item = await _translation_item_from_text_fact_for_test(session, current_fact)
         current_item.translation_lines = ["当前说明"]
-        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item = await _translation_item_from_text_fact_for_test(session, stale_fact)
         stale_item.translation_lines = ["旧说明"]
         await session.write_translation_items([current_item, stale_item])
 
@@ -2852,8 +2847,8 @@ async def test_import_note_tag_rules_expands_map_file_pattern_for_stale_fact_cle
         )
     _ = await _rebuild_text_index_for_test(service)
     async with await registry.open_game("テストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        scope = await read_current_text_fact_scope(session)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -2881,10 +2876,10 @@ async def test_import_note_tag_rules_expands_map_file_pattern_for_stale_fact_cle
             translatable_hash=f"{current_fact.translatable_hash}:stale",
             scope_key=current_fact.scope_key,
         )
-        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
-        current_item = text_fact_record_to_translation_item(current_fact)
+        await session.replace_text_facts(scope=scope, facts=[*facts, stale_fact])
+        current_item = await _translation_item_from_text_fact_for_test(session, current_fact)
         current_item.translation_lines = ["向导"]
-        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item = await _translation_item_from_text_fact_for_test(session, stale_fact)
         stale_item.translation_lines = ["旧向导"]
         await session.write_translation_items([current_item, stale_item])
 
@@ -2913,7 +2908,7 @@ async def test_import_plugin_source_rules_deletes_only_stale_fact_id_for_same_pa
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    game_data = await load_game_data(
+    game_data = await load_active_runtime_game_data(
         minimal_mv_game_dir,
         include_plugin_source_files=True,
         run_dialogue_probe_check=False,
@@ -2943,8 +2938,8 @@ async def test_import_plugin_source_rules_deletes_only_stale_fact_id_for_same_pa
         )
     _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
     async with await registry.open_game("MVテストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        scope = await read_current_text_fact_scope(session)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -2971,10 +2966,10 @@ async def test_import_plugin_source_rules_deletes_only_stale_fact_id_for_same_pa
             translatable_hash=f"{current_fact.translatable_hash}:stale",
             scope_key=current_fact.scope_key,
         )
-        await session.replace_text_facts_v2(scope=scope, facts=[*facts, stale_fact])
-        current_item = text_fact_record_to_translation_item(current_fact)
+        await session.replace_text_facts(scope=scope, facts=[*facts, stale_fact])
+        current_item = await _translation_item_from_text_fact_for_test(session, current_fact)
         current_item.translation_lines = ["当前插件正文"]
-        stale_item = text_fact_record_to_translation_item(stale_fact)
+        stale_item = await _translation_item_from_text_fact_for_test(session, stale_fact)
         stale_item.translation_lines = ["旧插件正文"]
         await session.write_translation_items([current_item, stale_item])
 
@@ -3179,7 +3174,7 @@ async def test_import_empty_note_tag_rules_allows_confirmed_empty_with_candidate
         confirm_empty=True,
     )
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
@@ -3248,7 +3243,7 @@ async def test_note_tag_scope_hash_and_count_use_native_candidate_scan(
         raising=False,
     )
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     text_rules = get_default_text_rules()
 
     assert count_note_tag_rule_candidates(game_data=game_data, text_rules=text_rules) == 2
@@ -3270,7 +3265,7 @@ async def test_native_note_tag_candidates_match_python_scope_hash_input(
     item["note"] = "<拡張説明:薬草の詳細>\n<PrivateProtocol:内部コード>\n<upgrade:1,2,3>"
     _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     text_rules = get_default_text_rules()
     python_candidates = collect_note_tag_candidates(game_data=game_data, text_rules=text_rules)
     native_candidates = collect_native_note_tag_candidate_details(game_data=game_data, text_rules=text_rules)
@@ -3289,16 +3284,21 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    stale_item = _rule_test_translation_item(
-        location_path="Items.json/1/note/MissingTag",
-        original_lines=["古いタグ"],
-        translation_lines=["旧标签"],
-    )
+    missing_tag_path = "Items.json/1/note/MissingTag"
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_note_tag_text_rules(
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
-        await write_v2_test_translation_items(session, [stale_item])
+        await insert_invalid_fact_translation_row_for_test(
+            session,
+            fact_id="invalid-current-note-tag:missing-tag",
+            location_path=missing_tag_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["古いタグ"],
+            source_line_paths=[missing_tag_path],
+            translation_lines=["待清理标签"],
+        )
 
     async def forbidden_full_translation_read(_self: TargetGameSession) -> list[TranslationItem]:
         raise AssertionError("Note 标签规则导入不能全量读取已保存译文")
@@ -3321,28 +3321,28 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
     assert report.status == "warning"
     assert report.summary["deleted_translation_items"] == 1
     assert rules == []
-    assert stale_item.location_path not in paths
+    assert missing_tag_path not in paths
 
 
 @pytest.mark.asyncio
-async def test_public_rule_validation_and_import_skip_python_extractor_fallbacks(
+async def test_public_rule_validation_and_import_use_native_candidate_paths(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件源码和 Note 标签公共规则命令不再构造 Python 全量提取器或完整文本范围。"""
+    """插件源码和 Note 标签公共规则命令使用当前 native 候选路径。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
     plugins = ensure_json_array(coerce_json_value(cast(object, json.loads(plugins_json_text))), "plugins")
-    plugins.append({"name": "RuleFallbackGuard", "status": True, "description": "", "parameters": {}})
+    plugins.append({"name": "RuleNativeGuard", "status": True, "description": "", "parameters": {}})
     _ = plugins_path.write_text(
         f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
         encoding="utf-8",
     )
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
     plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "RuleFallbackGuard.js").write_text(
+    _ = (plugin_source_dir / "RuleNativeGuard.js").write_text(
         "Window_Base.prototype.drawText('ガード対象本文', 0, 0, 320);\n",
         encoding="utf-8",
     )
@@ -3359,23 +3359,24 @@ async def test_public_rule_validation_and_import_skip_python_extractor_fallbacks
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        game_data = await load_game_data(
+        game_data = await load_active_runtime_game_data(
             minimal_game_dir,
+            include_plugin_source_files=True,
             include_writable_copies=False,
             run_dialogue_probe_check=False,
         )
         scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "RuleFallbackGuard.js")
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "RuleNativeGuard.js")
     plugin_rules_text = json.dumps(
         [
             {
-                "file": "RuleFallbackGuard.js",
+                "file": "RuleNativeGuard.js",
                 "selectors": [candidate.selector],
                 "excluded_selectors": [
                     other.selector
                     for other in scan.candidates
                     if other.active
-                    and other.file_name == "RuleFallbackGuard.js"
+                    and other.file_name == "RuleNativeGuard.js"
                     and other.selector != candidate.selector
                 ],
             }
@@ -3392,10 +3393,6 @@ async def test_public_rule_validation_and_import_skip_python_extractor_fallbacks
         _ = (args, kwargs)
         raise AssertionError("公共 Note 标签规则命令不应构造 NoteTagTextExtraction")
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("公共规则命令不应构建完整 TextScopeService 范围")
-
     monkeypatch.setattr(
         "app.plugin_source_text.extraction.PluginSourceTextExtraction",
         forbidden_plugin_source_extractor,
@@ -3404,7 +3401,6 @@ async def test_public_rule_validation_and_import_skip_python_extractor_fallbacks
         "app.note_tag_text.extraction.NoteTagTextExtraction",
         forbidden_note_tag_extractor,
     )
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     plugin_validate_report = await service.validate_plugin_source_rules(
         game_title="テストゲーム",
@@ -3559,12 +3555,12 @@ async def test_validate_placeholder_rules_warns_unicode_control_boundary() -> No
 
 
 @pytest.mark.asyncio
-async def test_scan_placeholder_candidates_reads_text_fact_v2_in_warm_index(
+async def test_scan_placeholder_candidates_reads_current_text_fact_in_warm_index(
     minimal_english_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """普通占位符候选扫描命中 warm index 时也必须读取 v2 facts。"""
+    """普通占位符候选扫描命中 warm index 时也必须读取 current text facts。"""
     common_events_path = minimal_english_game_dir / "data" / "CommonEvents.json"
     raw_value = coerce_json_value(cast(object, json.loads(common_events_path.read_text(encoding="utf-8"))))
     common_events = ensure_json_array(raw_value, "CommonEvents.json")
@@ -3577,18 +3573,18 @@ async def test_scan_placeholder_candidates_reads_text_fact_v2_in_warm_index(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await service.rebuild_text_index(game_title="English Fixture Game")
 
-    def forbidden_legacy_text_index_adapter(*args: object, **kwargs: object) -> NoReturn:
+    def forbidden_text_index_adapter(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
-        raise AssertionError("scan-placeholder-candidates 不应把旧 text_index_items 转回正文范围")
+        raise AssertionError("scan-placeholder-candidates 不应把 text_index_items 转回正文范围")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.placeholder_rules.text_index_items_to_translation_data_map",
-        forbidden_legacy_text_index_adapter,
+        forbidden_text_index_adapter,
         raising=False,
     )
     monkeypatch.setattr(
         "app.agent_toolkit.services.core.text_index_items_to_translation_data_map",
-        forbidden_legacy_text_index_adapter,
+        forbidden_text_index_adapter,
         raising=False,
     )
 
@@ -3603,12 +3599,12 @@ async def test_scan_placeholder_candidates_reads_text_fact_v2_in_warm_index(
 
 
 @pytest.mark.asyncio
-async def test_scan_structured_placeholder_candidates_reads_text_fact_v2_and_preserves_coverage(
+async def test_scan_structured_placeholder_candidates_reads_current_text_fact_and_preserves_coverage(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """结构化占位符覆盖扫描使用 v2 facts，并保留 standard/custom/structured 覆盖分类。"""
+    """结构化占位符覆盖扫描使用 current text facts，并保留 standard/custom/structured 覆盖分类。"""
     common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
     raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
     common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
@@ -3622,13 +3618,13 @@ async def test_scan_structured_placeholder_candidates_reads_text_fact_v2_and_pre
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await service.rebuild_text_index(game_title="テストゲーム")
 
-    def forbidden_legacy_text_index_adapter(*args: object, **kwargs: object) -> NoReturn:
+    def forbidden_text_index_adapter(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
-        raise AssertionError("scan-structured-placeholder-candidates 不应把旧 text_index_items 转回正文范围")
+        raise AssertionError("scan-structured-placeholder-candidates 不应把 text_index_items 转回正文范围")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.placeholder_rules.text_index_items_to_translation_data_map",
-        forbidden_legacy_text_index_adapter,
+        forbidden_text_index_adapter,
         raising=False,
     )
     rules_text = json.dumps(
@@ -3773,19 +3769,27 @@ async def test_validate_event_command_rules_uses_precise_hit_paths_for_translate
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
+        await session.replace_event_command_text_rules(
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[
+                        EventCommandParameterFilter(index=0, value="TestPlugin"),
+                        EventCommandParameterFilter(index=1, value="Show"),
+                    ],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="CommonEvents.json/1/4/parameters/3/message",
                     item_type="short_text",
                     original_lines=["プラグイン台詞"],
                     translation_lines=["事件指令译文"],
-                ),
-                TranslationItem(
-                    location_path="Actors.json/1/name",
-                    item_type="short_text",
-                    original_lines=["関係ない名前"],
-                    translation_lines=["无关名字"],
                 ),
             ]
         )
@@ -3874,15 +3878,15 @@ async def test_structured_placeholder_rule_with_standard_control_passes_validati
     )
     _ = await _rebuild_text_index_for_test(service)
     async with await registry.open_game("テストゲーム") as session:
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        facts = await read_current_text_fact_records(session, limit=None)
         target_fact = next(
             fact
             for fact in facts
             if "決定ボタンを連打しろ" in fact.translatable_text
         )
-        target_item = text_fact_record_to_translation_item(target_fact)
+        target_item = await _translation_item_from_text_fact_for_test(session, target_fact)
         target_item.translation_lines = [r"D_TEXT \c[17]狂按决定键！ 48"]
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 target_item
             ]

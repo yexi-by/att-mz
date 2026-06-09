@@ -205,7 +205,7 @@ class RunRecordSessionMixin(SessionMixinBase):
         run_id: str,
         fact_ids: set[str],
     ) -> list[TranslationErrorItem]:
-        """按 v2 fact_id 读取指定运行中没通过项目检查的译文。"""
+        """按 current text fact_id 读取指定运行中没通过项目检查的译文。"""
         sorted_fact_ids = sorted(fact_ids)
         if not sorted_fact_ids:
             return []
@@ -269,7 +269,7 @@ class RunRecordSessionMixin(SessionMixinBase):
         return max(cursor.rowcount, 0)
 
     async def delete_translation_quality_errors_by_fact_ids(self, fact_ids: set[str]) -> int:
-        """按 v2 fact_id 清理已经修好的译文检查失败明细。"""
+        """按 current text fact_id 清理已经修好的译文检查失败明细。"""
         sorted_fact_ids = sorted(fact_ids)
         if not sorted_fact_ids:
             return 0

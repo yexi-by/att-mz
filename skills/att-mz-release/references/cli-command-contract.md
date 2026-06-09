@@ -26,17 +26,18 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 - 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传必需定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`，以及已满足前置条件的确认参数。
 - 用户明确指定值、CLI 输出说明默认配置缺失或不适合当前阶段，或 CLI 契约要求显式传入时，才做最小范围覆盖。一次性差异用 CLI 参数，运行时性能差异用环境变量，长期稳定差异再调整本地配置。
-- 模型地址和 API Key 只使用 `ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。旧项目前缀的模型环境变量不再作为成功配置入口。
+- 模型地址和 API Key 使用 `ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。
 - Rust 热路径线程数由 `ATT_MZ_RUST_THREADS` 控制；不设置或设为 `0` 时使用默认线程池。不要把性能基线里的 `4` 当运行上限。
 - 需要解释重建索引或翻译阶段耗时时，使用 `--debug --debug-timings`，读取 `summary.diagnostics` 或完整诊断 JSON 中的 `text_index.rebuild.*` 计时与 `runtime.native_thread_count` 计数。普通 summary 只作为业务结果。
 
-## Text Fact Contract v2
+## 当前文本索引
 
-- 当前文本事实契约是 Text Fact Contract v2。`rebuild-text-index --game <游戏标题>` 会生成 v2 facts，后续翻译、质量检查、手动补译、覆盖审计、反馈定位和写进游戏文件都读取当前 v2 facts。
-- v2 facts 区分原始片段、玩家可见文本、模型翻译正文、写回结构片段和 hash；不要从旧索引、旧工作区或旧 runtime map 反推当前文本范围。
-- 旧数据库缺少 v2 facts、v2 scope 或当前 schema version 时，命令必须按错误提示回到 `rebuild-text-index --game <游戏标题>`，不能继续按旧文本范围运行。
-- 旧工作区缺少 Text Fact Contract v2 范围信息时，重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`；不要手补 manifest 或复用旧候选文件。
-- 旧 runtime map 缺少 v2 hash 时，先运行 `rebuild-text-index --game <游戏标题>`，再按需要运行 `rebuild-active-runtime --game <游戏标题>` 重建当前运行文件；不要把旧映射当作反馈定位或当前运行审计依据。
+- `rebuild-text-index --game <游戏标题>` 会生成当前文本索引，后续翻译、质量检查、手动补译、覆盖审计、反馈定位和写进游戏文件都读取当前文本索引。
+- 当前文本索引区分原始片段、玩家可见文本、模型翻译正文、写回结构片段和 hash；不要从工作区文件、当前运行文件或诊断输出反推当前文本范围。
+- 索引缺失、范围不一致或不满足当前契约时，命令必须按错误提示回到 `rebuild-text-index --game <游戏标题>`。
+- 工作区校验失败、manifest 不匹配、范围信息不可用或不满足当前契约时，重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`；不要手补 manifest 或复用未列入 manifest 的候选文件。
+- 当前运行文件审计或反馈定位缺少可用写回映射时，先运行 `rebuild-text-index --game <游戏标题>`，再按需要运行 `rebuild-active-runtime --game <游戏标题>` 重建当前运行文件；不要把当前运行文件当作翻译源。
+- 不满足当前契约的输入只作为无效输入处理；按错误提示重新生成当前索引、当前工作区、当前运行文件或重新导入当前规则。
 
 ## 阶段命令
 
@@ -49,7 +50,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 注册日文游戏 | `add-game --path <游戏目录> --source-language ja` | `summary.game_title` 是后续 `--game` 值；目录已有可信源快照时换干净原始目录。 |
 | 注册英文游戏 | `add-game --path <游戏目录> --source-language en` | 同上；`add-game` 不读取探测报告，也不会替用户决定源语言。 |
 | 游戏状态检查 | `doctor --game <游戏标题> --no-check-llm` | 当前游戏源语言只看 `summary.source_language`；缺规则时只能继续准备工作区，不启动翻译或写回。 |
-| 查看注册列表 | `list` | 坏库或旧库进入 warning；需要继续使用被跳过游戏时，按 warning 重新注册或修复。 |
+| 查看注册列表 | `list` | 不符合当前 schema 的游戏进入 warning；需要继续使用被跳过游戏时，按 warning 重新注册或修复。 |
 | 危险回溯预演 | `reset-game --game <游戏标题> --dry-run` | 只转述恢复和删除计划，不修改文件。 |
 | 危险回溯执行 | `reset-game --game <游戏标题> --confirm-game-title <游戏标题>` | 只能在用户明确要求注销、重置或恢复注册前状态时使用；禁止手动删库绕过恢复。 |
 
@@ -65,7 +66,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 ### 2. 规则导入
 
-所有规则都遵循同一顺序：先导出或读取候选，再编辑规则文件，再运行对应 validate，最后 import。空规则只有在已审查当前候选并能说明空结果理由时才加 `--confirm-empty`。导入后若出现 `deleted_translations_backed_up` warning，表示旧译文因规则变化被清理；确认导错时，先导入正确规则，再用备份文件运行 `import-manual-translations` 恢复。
+所有规则都遵循同一顺序：先导出或读取候选，再编辑规则文件，再运行对应 validate，最后 import。空规则只有在已审查当前候选并能说明空结果理由时才加 `--confirm-empty`。导入后若出现 `deleted_translations_backed_up` warning，表示已保存译文因规则变化被清理；确认导错时，先导入正确规则，再用备份文件运行 `import-manual-translations` 恢复。
 
 | 领域 | 命令组 | 关键判断 |
 | --- | --- | --- |

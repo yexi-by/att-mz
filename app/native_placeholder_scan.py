@@ -25,7 +25,7 @@ def collect_native_placeholder_candidate_details(
     translation_data_map: dict[str, TranslationData],
     text_rules: TextRules,
 ) -> JsonArray:
-    """调用 native 普通占位符候选入口并返回旧报告同形明细。"""
+    """调用 native 普通占位符候选入口并返回当前候选明细。"""
     payload = build_native_placeholder_candidates_payload(translation_data_map, text_rules)
     result = scan_native_rule_candidates(payload)
     summary_value = result.scan_summary.get("placeholders")

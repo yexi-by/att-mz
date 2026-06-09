@@ -70,7 +70,7 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
     async with await registry.open_game("テストゲーム") as session:
@@ -106,19 +106,19 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
     parameters = ensure_json_array(command["parameters"], "CommonEvents[1].list[4].parameters")
     parameters[2] = "追加参数"
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_report = await service.doctor(game_title="テストゲーム", check_llm=False)
+    changed_report = await service.doctor(game_title="テストゲーム", check_llm=False)
 
     fresh_warning_codes = {warning.code for warning in fresh_report.warnings}
-    stale_warning_codes = {warning.code for warning in stale_report.warnings}
+    changed_warning_codes = {warning.code for warning in changed_report.warnings}
     assert "plugin_rules" not in fresh_warning_codes
     assert "event_command_rules" not in fresh_warning_codes
     assert "note_tag_rules" not in fresh_warning_codes
     assert fresh_report.summary["plugin_rules_reviewed_empty"] is True
     assert fresh_report.summary["event_command_rules_reviewed_empty"] is True
     assert fresh_report.summary["note_tag_rules_reviewed_empty"] is True
-    assert stale_report.summary["event_command_rules_reviewed_empty"] is True
-    assert stale_report.summary["event_command_rules_review_state_stale"] is False
-    assert "event_command_rules_review_state_stale" not in stale_warning_codes
+    assert changed_report.summary["event_command_rules_reviewed_empty"] is True
+    assert changed_report.summary["event_command_rules_review_state_stale"] is False
+    assert "event_command_rules_review_state_stale" not in changed_warning_codes
 @pytest.mark.asyncio
 async def test_doctor_reports_mv_virtual_namebox_rule_state(
     minimal_mv_game_dir: Path,
@@ -151,11 +151,11 @@ async def test_doctor_reports_mv_virtual_namebox_rule_state(
         }
     )
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
+    changed_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
 
     missing_warning_codes = {warning.code for warning in missing_report.warnings}
     confirmed_warning_codes = {warning.code for warning in confirmed_report.warnings}
-    stale_warning_codes = {warning.code for warning in stale_report.warnings}
+    changed_warning_codes = {warning.code for warning in changed_report.warnings}
     assert empty_report.status == "warning"
     assert "mv_virtual_namebox_rules" in missing_warning_codes
     assert missing_report.summary["mv_virtual_namebox_rule_count"] == 0
@@ -164,15 +164,15 @@ async def test_doctor_reports_mv_virtual_namebox_rule_state(
     assert confirmed_report.summary["mv_virtual_namebox_rule_count"] == 0
     assert confirmed_report.summary["mv_virtual_namebox_rules_reviewed_empty"] is True
     assert confirmed_report.summary["mv_virtual_namebox_rules_review_state_stale"] is False
-    assert stale_report.summary["mv_virtual_namebox_rules_reviewed_empty"] is True
-    assert stale_report.summary["mv_virtual_namebox_rules_review_state_stale"] is False
-    assert "mv_virtual_namebox_rules_review_state_stale" not in stale_warning_codes
+    assert changed_report.summary["mv_virtual_namebox_rules_reviewed_empty"] is True
+    assert changed_report.summary["mv_virtual_namebox_rules_review_state_stale"] is False
+    assert "mv_virtual_namebox_rules_review_state_stale" not in changed_warning_codes
 @pytest.mark.asyncio
-async def test_current_game_reports_incompatible_saved_placeholder_rules(
+async def test_current_game_reports_invalid_saved_placeholder_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧数据库里的不兼容普通占位符规则必须在公开命令中显式报错。"""
+    """当前数据库里的无效普通占位符规则必须在公开命令中显式报错。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -196,11 +196,11 @@ async def test_current_game_reports_incompatible_saved_placeholder_rules(
         assert "placeholder_rules_invalid" in {error.code for error in report.errors}
         assert "Rust fancy-regex" in report.errors[0].message
 @pytest.mark.asyncio
-async def test_current_game_reports_incompatible_saved_mv_virtual_namebox_rules(
+async def test_current_game_reports_invalid_saved_mv_virtual_namebox_rules(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧数据库里的不兼容 MV 虚拟名字框规则必须在公开命令中显式报错。"""
+    """当前数据库里的无效 MV 虚拟名字框规则必须在公开命令中显式报错。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -233,7 +233,7 @@ async def test_current_game_reports_saved_mv_virtual_namebox_non_python_named_gr
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧 MV 虚拟名字框规则使用非 Python 命名分组时也必须返回稳定错误码。"""
+    """MV 虚拟名字框规则使用非 Python 命名分组时也必须返回稳定错误码。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)

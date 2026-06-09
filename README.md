@@ -73,7 +73,7 @@ timeout = 600
 
 `base_url`、`api_key`、`model` 这三个值你的 API 服务商会提供。常用的服务商有阿里云百炼、DeepSeek、硅基流动、OpenRouter 等。不知道填什么的话，直接问你的 Agent：「我的 API 服务商是 xxx，帮我填好 A.T.T MZ 的模型配置」。
 
-临时覆盖模型地址和 Key 时，只使用当前环境变量：`ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。旧项目前缀的环境变量不会作为成功配置入口。
+临时覆盖模型地址和 Key 时，使用当前环境变量：`ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。
 
 > 💡 如果你习惯用源码运行，看仓库里的 [进阶教学与源码编译](https://github.com/yexi-by/att-mz/blob/main/docs/guides/advanced-usage.md)。普通使用不需要。
 
@@ -105,9 +105,9 @@ Agent 收到任务后，会自己完成整个流程：
 
 过程中 Agent 会一步步向你报告进度。遇到需要确认的事情（比如要不要换游戏字体），它会主动问你。你只需要回答"可以"或"不行"。
 
-### 当前文本事实契约
+### 当前文本索引与恢复动作
 
-A.T.T MZ 当前使用 **Text Fact Contract v2**。工具会把游戏文本拆成 v2 facts：原始片段、玩家可见文本、真正送模型翻译的正文、写进游戏文件时要保留的结构片段和对应 hash。大型游戏或源文件、规则变化后，Agent 会先建立当前文本索引。
+A.T.T MZ 用当前文本索引统一翻译、质量检查、手动补译、覆盖审计和写进游戏文件的文本范围。大型游戏或源文件、规则变化后，Agent 会先建立当前文本索引。
 
 源码运行：
 
@@ -121,9 +121,9 @@ uv run python main.py rebuild-text-index --game <游戏标题>
 .\att-mz.exe rebuild-text-index --game <游戏标题>
 ```
 
-旧数据库没有 v2 facts、索引缺失或范围不一致时，后续翻译、质量检查和写进游戏文件会失败并要求重建索引，不会继续使用旧文本范围。
+索引缺失、过期或范围不一致时，后续翻译、质量检查和写进游戏文件会失败并要求重建当前文本索引。
 
-旧工作区缺少当前 v2 范围信息时，工作区验收会失败。让 Agent 重新准备工作区即可。
+当前工作区校验失败、manifest 不匹配或范围信息不可用时，让 Agent 重新准备工作区。
 
 源码运行：
 
@@ -137,7 +137,7 @@ uv run python main.py prepare-agent-workspace --game <游戏标题> --output-dir
 .\att-mz.exe prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
 ```
 
-旧 runtime map 缺少 v2 hash 时，当前运行文件审计或反馈定位会提示无法继续信任旧映射。先重建文本索引，再按需要重建当前运行文件。
+当前运行文件审计或反馈定位缺少可用写回映射时，先重建当前文本索引，再按需要重建当前运行文件。
 
 源码运行：
 

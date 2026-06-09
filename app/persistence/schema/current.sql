@@ -379,7 +379,7 @@
 ;
 
 --sql
-    CREATE TABLE IF NOT EXISTS [text_facts_v2] (
+    CREATE TABLE IF NOT EXISTS [text_facts] (
         fact_id            TEXT PRIMARY KEY,
         schema_version     INTEGER NOT NULL,
         domain             TEXT NOT NULL,
@@ -400,7 +400,7 @@
 ;
 
 --sql
-    CREATE TABLE IF NOT EXISTS [text_fact_render_parts_v2] (
+    CREATE TABLE IF NOT EXISTS [text_fact_render_parts] (
         fact_id       TEXT NOT NULL,
         part_order    INTEGER NOT NULL,
         part_kind     TEXT NOT NULL,
@@ -408,20 +408,20 @@
         semantic_text TEXT NOT NULL,
         template_key  TEXT NOT NULL,
         PRIMARY KEY (fact_id, part_order),
-        FOREIGN KEY (fact_id) REFERENCES [text_facts_v2](fact_id) ON DELETE CASCADE
+        FOREIGN KEY (fact_id) REFERENCES [text_facts](fact_id) ON DELETE CASCADE
     )
 ;
 
 --sql
-    CREATE TABLE IF NOT EXISTS [text_fact_domain_payloads_v2] (
+    CREATE TABLE IF NOT EXISTS [text_fact_domain_payloads] (
         fact_id      TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL,
-        FOREIGN KEY (fact_id) REFERENCES [text_facts_v2](fact_id) ON DELETE CASCADE
+        FOREIGN KEY (fact_id) REFERENCES [text_facts](fact_id) ON DELETE CASCADE
     )
 ;
 
 --sql
-    CREATE TABLE IF NOT EXISTS [text_fact_scope_v2] (
+    CREATE TABLE IF NOT EXISTS [text_fact_scope] (
         scope_key            TEXT PRIMARY KEY,
         schema_version       INTEGER NOT NULL,
         scope_hash           TEXT NOT NULL,
@@ -433,33 +433,33 @@
 ;
 
 --sql
-    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_domain_location]
-    ON [text_facts_v2](domain, location_path)
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_domain_location]
+    ON [text_facts](domain, location_path)
 ;
 
 --sql
-    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_domain_source_file]
-    ON [text_facts_v2](domain, source_file)
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_domain_source_file]
+    ON [text_facts](domain, source_file)
 ;
 
 --sql
-    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_selector]
-    ON [text_facts_v2](selector)
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_selector]
+    ON [text_facts](selector)
 ;
 
 --sql
-    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_visible_hash]
-    ON [text_facts_v2](visible_hash)
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_visible_hash]
+    ON [text_facts](visible_hash)
 ;
 
 --sql
-    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_translatable_hash]
-    ON [text_facts_v2](translatable_hash)
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_translatable_hash]
+    ON [text_facts](translatable_hash)
 ;
 
 --sql
-    CREATE INDEX IF NOT EXISTS [idx_text_facts_v2_scope_key]
-    ON [text_facts_v2](scope_key)
+    CREATE INDEX IF NOT EXISTS [idx_text_facts_scope_key]
+    ON [text_facts](scope_key)
 ;
 
 INSERT OR REPLACE INTO [schema_version] (schema_key, version)

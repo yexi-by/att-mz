@@ -3,9 +3,30 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 from app.agent_toolkit import AgentToolkitService
 from app.text_index import text_index_item_to_translation_item
+
+
+async def _load_active_runtime_test_game_data(game_dir: Path) -> GameData:
+    """加载当前运行文件，并启用写回测试需要的完整能力。"""
+    return await load_active_runtime_game_data(
+        game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
+
+
+async def _load_translation_source_test_game_data(game_dir: Path) -> GameData:
+    """加载当前翻译来源快照，并启用写回测试需要的完整能力。"""
+    return await load_translation_source_game_data(
+        game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
+
 
 @pytest.mark.asyncio
 async def test_english_visible_401_short_fragment_is_extracted(
@@ -32,7 +53,7 @@ async def test_english_visible_401_short_fragment_is_extracted(
             source_text_exclusion_profile="english_protocol_noise",
         )
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_active_runtime_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
     items_by_path = {
         item.location_path: item
@@ -69,7 +90,7 @@ async def test_english_visible_401_control_only_letters_do_not_extract_chinese_t
             source_text_exclusion_profile="english_protocol_noise",
         )
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_active_runtime_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
     items_by_path = {
         item.location_path: item
@@ -94,7 +115,7 @@ async def test_english_description_with_this_is_extracted(minimal_english_game_d
             source_text_exclusion_profile="english_protocol_noise",
         )
     )
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await _load_active_runtime_test_game_data(minimal_english_game_dir)
     extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
     items_by_path = {
         item.location_path: item
@@ -135,7 +156,7 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="en")
     async with await registry.open_game("テストゲーム") as session:
-        game_data = await load_game_data(minimal_game_dir)
+        game_data = await _load_translation_source_test_game_data(minimal_game_dir)
         placeholder_record = PlaceholderRuleRecord(
             pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
@@ -183,7 +204,7 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
             ),
             reviewed_empty=True,
         )
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -197,7 +218,7 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
             reviewed_empty=True,
         )
         active_items = scope.active_items()
-        await write_v2_test_translation_items(
+        await write_current_translation_items_for_test(
             session,
             [
                 TranslationItem(
@@ -235,7 +256,7 @@ async def test_write_back_keeps_english_visible_401_short_fragment(
                 ]
             )
             indexed_translation_items.append(item)
-        await write_v2_test_translation_items(session, indexed_translation_items)
+        await write_current_translation_items_for_test(session, indexed_translation_items)
 
     handler = TranslationHandler(registry, LLMHandler())
     try:
@@ -273,7 +294,7 @@ def test_empty_metadata_title_falls_back_to_game_directory_name(minimal_mv_game_
 @pytest.mark.asyncio
 async def test_data_extraction_covers_core_text_sources(minimal_game_dir: Path) -> None:
     """正文提取覆盖正文文本，并排除术语表直接写回字段。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_active_runtime_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     paths = {
         item.location_path
@@ -333,7 +354,7 @@ async def test_data_extraction_strips_outer_whitespace_from_core_sources(minimal
     item["description"] = "　体力を回復する。　"
     _rewrite_json(items_path, items)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_active_runtime_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     items_by_path = {
         item.location_path: item
@@ -354,7 +375,7 @@ async def test_fixture_custom_control_sequences_can_be_protected(minimal_game_di
             CustomPlaceholderRule.create(r"\\F\[[^\]]+\]", "[CUSTOM_FACE_PORTRAIT_{index}]"),
         ),
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_active_runtime_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, text_rules).extract_all_text()
     item = next(
         candidate
@@ -370,7 +391,7 @@ async def test_fixture_custom_control_sequences_can_be_protected(minimal_game_di
 async def test_write_data_text_updates_writable_copy(minimal_game_dir: Path) -> None:
     """正文回写修改可写副本，原始加载数据保持不变。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -392,7 +413,7 @@ async def test_write_data_text_updates_writable_copy(minimal_game_dir: Path) -> 
 async def test_write_data_text_rejects_internal_placeholder_leak(minimal_game_dir: Path) -> None:
     """正文写回前必须拒绝项目内部占位符。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -416,7 +437,7 @@ async def test_name_text_write_back_uses_real_401_paths(minimal_game_dir: Path) 
     _rewrite_json(common_events_path, raw_events)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -446,7 +467,7 @@ async def test_name_text_write_back_uses_real_401_paths(minimal_game_dir: Path) 
 async def test_name_text_write_back_inserts_extra_401_lines(minimal_game_dir: Path) -> None:
     """名字框正文译文行数增加时，在原文本块末尾插入新的 401。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -490,7 +511,7 @@ async def test_write_back_inserts_401_without_shifting_later_name_block(minimal_
     _rewrite_json(common_events_path, raw_events)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     common_items = extracted["CommonEvents.json"].translation_items
     first_item = next(item for item in common_items if item.location_path == "CommonEvents.json/1/0")
@@ -529,7 +550,7 @@ async def test_write_back_deletes_401_without_shifting_later_name_block(minimal_
     _rewrite_json(common_events_path, raw_events)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     common_items = extracted["CommonEvents.json"].translation_items
     first_item = next(item for item in common_items if item.location_path == "CommonEvents.json/1/0")
@@ -553,7 +574,7 @@ async def test_write_back_deletes_401_without_shifting_later_name_block(minimal_
 async def test_write_data_text_splits_overwide_long_text_before_write_back(minimal_game_dir: Path) -> None:
     """写回阶段按当前行宽配置再次切分已有长译文。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -583,7 +604,7 @@ async def test_write_data_text_splits_overwide_long_text_before_write_back(minim
 async def test_write_data_text_indents_wrapping_punctuation_continuation_lines(minimal_game_dir: Path) -> None:
     """写回阶段清理译文外层空白，并为跨行引号续行补视觉缩进。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -620,7 +641,7 @@ async def test_scroll_text_commands_are_grouped_by_adjacent_405(minimal_game_dir
     _rewrite_json(common_events_path, raw_events)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     first_scroll_item = next(
         candidate
@@ -667,7 +688,7 @@ async def test_long_text_write_back_deletes_extra_original_lines(minimal_game_di
     _rewrite_json(common_events_path, raw_events)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     scroll_item = next(
         candidate
@@ -700,7 +721,7 @@ async def test_long_text_write_back_ignores_trailing_empty_translation_lines(min
     _rewrite_json(common_events_path, raw_events)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     scroll_item = next(
         candidate
@@ -721,7 +742,7 @@ async def test_long_text_write_back_ignores_trailing_empty_translation_lines(min
 async def test_written_game_reads_complete_origin_without_mutating_snapshot(minimal_game_dir: Path) -> None:
     """已有完整原始 data 备份时，后续写回不修改 `data_origin/`。"""
     _create_test_source_snapshot(minimal_game_dir)
-    first_game_data = await load_game_data(minimal_game_dir)
+    first_game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     extracted = DataTextExtraction(first_game_data, get_default_text_rules()).extract_all_text()
     common_item = next(
         candidate
@@ -738,7 +759,7 @@ async def test_written_game_reads_complete_origin_without_mutating_snapshot(mini
         for path in sorted(origin_data_dir.glob("*.json"), key=lambda candidate: candidate.name)
     }
 
-    reloaded_game_data = await load_game_data(minimal_game_dir)
+    reloaded_game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     reloaded_extracted = DataTextExtraction(reloaded_game_data, get_default_text_rules()).extract_all_text()
     reloaded_common_item = next(
         candidate
@@ -770,7 +791,7 @@ async def test_written_game_reads_complete_origin_without_mutating_snapshot(mini
     assert origin_actor["profile"] == "プロフィール"
     assert active_actor["profile"] == "角色简介译文"
 
-    plugin_game_data = await load_game_data(minimal_game_dir)
+    plugin_game_data = await _load_translation_source_test_game_data(minimal_game_dir)
     reset_writable_copies(plugin_game_data)
     plugin_text = plugin_game_data.writable_data[PLUGINS_FILE_NAME]
     assert isinstance(plugin_text, str)

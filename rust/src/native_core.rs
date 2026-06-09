@@ -356,7 +356,7 @@ mod tests {
                         "location_path": "plugins.js",
                         "item_type": "short_text",
                         "role": null,
-                        "original_lines": ["旧"],
+                        "original_lines": ["原文"],
                         "translation_lines": ["新"]
                     },
                     "mode": "none",
@@ -387,7 +387,7 @@ mod tests {
                         "location_path": "plugins.js",
                         "item_type": "short_text",
                         "role": null,
-                        "original_lines": ["旧"],
+                        "original_lines": ["原文"],
                         "translation_lines": ["新"]
                     },
                     "mode": "none",
@@ -474,9 +474,9 @@ mod tests {
                     null,
                     {
                         "id": 1,
-                        "note": "<说明:旧文本>",
+                        "note": "<说明:原文>",
                         "effects": [
-                            {"note": "<效果:旧文本>"}
+                            {"note": "<效果:原文>"}
                         ]
                     }
                 ],

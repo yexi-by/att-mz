@@ -34,7 +34,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
             serialized_items: list[tuple[str, str, str, str | None, str, str, str, str, str]] = []
             for translation_item in items:
                 fact_id, source_fact_raw_hash, source_fact_translatable_hash = (
-                    _require_v2_translation_identity(translation_item)
+                    _require_current_translation_identity(translation_item)
                 )
                 serialized_items.append(
                     (
@@ -128,7 +128,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
         self,
         fact_ids: Sequence[str],
     ) -> list[TranslationItem]:
-        """按 v2 fact_id 批量读取已保存译文。"""
+        """按当前 fact_id 批量读取已保存译文。"""
         unique_fact_ids = sorted(set(fact_ids))
         if not unique_fact_ids:
             return []
@@ -199,7 +199,7 @@ class TranslationRecordSessionMixin(SessionMixinBase):
         self,
         fact_ids: Sequence[str],
     ) -> int:
-        """按 v2 fact_id 批量删除已保存译文。"""
+        """按当前 fact_id 批量删除已保存译文。"""
         unique_fact_ids = sorted(set(fact_ids))
         if not unique_fact_ids:
             return 0
@@ -244,11 +244,11 @@ class TranslationRecordSessionMixin(SessionMixinBase):
         )
 
 
-def _require_v2_translation_identity(item: TranslationItem) -> tuple[str, str, str]:
-    """校验保存译文必须携带当前 v2 fact 身份。"""
+def _require_current_translation_identity(item: TranslationItem) -> tuple[str, str, str]:
+    """校验保存译文必须携带当前文本事实身份。"""
     if not item.fact_id or not item.source_fact_raw_hash or not item.source_fact_translatable_hash:
         raise ValueError(
-            "已保存译文缺少 v2 fact identity；请从 text_facts_v2 adapter 构造 TranslationItem 后再保存"
+            "已保存译文缺少当前文本事实身份；请从当前文本事实构造 TranslationItem 后再保存"
         )
     return item.fact_id, item.source_fact_raw_hash, item.source_fact_translatable_hash
 

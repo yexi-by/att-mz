@@ -370,7 +370,7 @@ def filter_pending_translation_data(
     translation_data_map: dict[str, TranslationData],
     translated_identities: set[TranslationFactIdentity],
 ) -> dict[str, TranslationData]:
-    """按完整 v2 fact identity 过滤掉数据库中已经存在译文的条目。"""
+    """按完整当前文本事实身份过滤掉数据库中已经存在译文的条目。"""
     pending_translation_data_map: dict[str, TranslationData] = {}
     for file_name, translation_data in translation_data_map.items():
         pending_items: list[TranslationItem] = []

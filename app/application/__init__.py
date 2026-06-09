@@ -1,12 +1,8 @@
-"""应用层公共导出入口。
-
-包级导出只在被直接访问时加载，避免原生适配层导入应用层子模块时触发 handler
-循环导入。
-"""
+"""应用层当前公开入口的懒加载导出。"""
 
 from typing import cast
 
-_HANDLER_EXPORTS = {
+_APPLICATION_EXPORTS = {
     "EventCommandJsonExportSummary",
     "EventCommandRuleImportSummary",
     "PluginJsonExportSummary",
@@ -19,8 +15,8 @@ _HANDLER_EXPORTS = {
 
 
 def __getattr__(name: str) -> object:
-    """按需返回 handler 中的历史包级导出。"""
-    if name not in _HANDLER_EXPORTS:
+    """按需返回 handler 中的当前公开入口。"""
+    if name not in _APPLICATION_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from . import handler
 

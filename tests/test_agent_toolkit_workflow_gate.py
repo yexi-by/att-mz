@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 
 from tests.agent_toolkit_contract_fixtures import *
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 from app.llm.schemas import ChatMessage
+from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.terminology import TerminologyPromptIndex
 
@@ -21,10 +22,10 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("MVテストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
-        game_data = await load_game_data(minimal_mv_game_dir)
+        game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -48,10 +49,10 @@ async def test_mv_workflow_gate_requires_namebox_rules_or_confirmed_empty(
     )
     async with await registry.open_game("MVテストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
-        game_data = await load_game_data(minimal_mv_game_dir)
+        game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
         session.set_game_data(game_data)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -81,7 +82,7 @@ async def test_workflow_gate_blocks_external_rule_hits_outside_writable_scope(
     """规则命中文本没有进入可写文本范围时，翻译前置硬闸必须报错。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
     scope = TextScopeResult(
@@ -351,11 +352,6 @@ async def test_translate_max_items_warm_index_does_not_build_full_scope_before_s
     _ = app_home_with_example_setting
     captured: dict[str, int] = {}
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 翻译前置检查不应构建完整 Python scope。"""
-        _ = (args, kwargs)
-        raise AssertionError("translate --max-items warm index 不应构建完整 TextScopeService")
-
     async def run_batches_with_prepared_state(*args: object, **kwargs: object) -> TranslationRunState:
         """截断到模型前，不消耗真实模型额度。"""
         _ = args
@@ -379,7 +375,6 @@ async def test_translate_max_items_warm_index_does_not_build_full_scope_before_s
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", run_batches_with_prepared_state)
 
     handler = TranslationHandler(registry, LLMHandler())
@@ -640,9 +635,6 @@ async def test_translate_max_items_warm_index_uses_text_scope_gate_metadata(
     rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
     monkeypatch.setattr("app.application.flow_gate._text_scope_gate_errors", forbidden_text_scope_gate)
-    import app.application.handler as handler_module
-
-    assert not hasattr(handler_module, "text_index_items_to_scope")
     _ = forbidden_text_scope_restore
     monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", run_batches_with_prepared_state)
 
@@ -711,7 +703,7 @@ async def test_translate_max_items_warm_index_uses_sql_pending_count_without_ful
     assert isinstance(indexed_count, int)
     async with await registry.open_game("テストゲーム") as session:
         existing_item = (await session.read_pending_text_index_items(limit=1))[0]
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=existing_item.location_path,
@@ -777,7 +769,7 @@ async def test_translate_max_items_warm_index_skips_pending_rows_when_sql_pendin
     async with await registry.open_game("テストゲーム") as session:
         pending_items = await session.read_pending_text_index_items(limit=None)
         assert pending_items
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,

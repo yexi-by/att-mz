@@ -3,19 +3,39 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
+import app.rmmz as rmmz_package
+import app.rmmz.loader as rmmz_loader
+from app.rmmz.loader import load_translation_source_game_data
 from app.rmmz.source_snapshot import validate_plugin_source_snapshot_manifest
 
 @pytest.mark.asyncio
 async def test_loader_only_keeps_standard_rmmz_data_files(minimal_game_dir: Path) -> None:
     """加载器接收官方 data 文件，并跳过未知插件衍生 JSON。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
 
+    assert game_data.view == GameFileView.ACTIVE_RUNTIME
     assert "UnknownPluginData.json" not in game_data.data
     assert "System.json" in game_data.data
     assert "Map001.json" in game_data.map_data
     assert "Map002.json" in game_data.map_data
     assert game_data.plugins_js[0]["name"] == "TestPlugin"
     assert game_data.plugins_js[1]["name"] == "ComplexPlugin"
+
+
+def test_rmmz_public_loader_exports_are_explicit_views() -> None:
+    """RMMZ 包级公开 loader 只暴露当前显式文件视图入口。"""
+    public_names = set(rmmz_package.__all__)
+
+    assert "load_translation_source_game_data" in public_names
+    assert "load_active_runtime_game_data" in public_names
+    assert "load_game_data_for_view" in public_names
+    assert "load_game_data" not in public_names
+    assert not hasattr(rmmz_loader, "load_game_data")
 @pytest.mark.asyncio
 async def test_direct_write_back_rejects_missing_source_snapshot_manifest(
     minimal_game_dir: Path,
@@ -84,8 +104,9 @@ async def test_source_snapshot_manifest_ignores_active_plugin_source_drift(
     )
     game_data = await load_game_data_for_view(
         minimal_game_dir,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        view=GameFileView.TRANSLATION_SOURCE,
     )
+    assert game_data.view == GameFileView.TRANSLATION_SOURCE
     assert "ExtraRuntimeOnly.js" not in game_data.plugin_source_files
 
 
@@ -119,11 +140,11 @@ async def test_add_game_rejects_existing_source_snapshot_artifacts(
         _ = await registry.register_game(minimal_game_dir, source_language="ja")
 @pytest.mark.asyncio
 async def test_translation_source_view_requires_source_snapshot(minimal_game_dir: Path) -> None:
-    """显式翻译源视图缺少可信源快照时必须 fail-fast。"""
-    with pytest.raises(FileNotFoundError, match="原始 data 备份"):
+    """显式翻译源视图缺少当前翻译来源快照时必须 fail-fast。"""
+    with pytest.raises(FileNotFoundError, match="当前翻译来源快照"):
         _ = await load_game_data_for_view(
             minimal_game_dir,
-            source_view=GameFileView.TRANSLATION_SOURCE,
+            view=GameFileView.TRANSLATION_SOURCE,
         )
 @pytest.mark.asyncio
 async def test_translation_source_view_ignores_damaged_active_data_when_snapshot_valid(
@@ -137,9 +158,10 @@ async def test_translation_source_view_ignores_damaged_active_data_when_snapshot
 
     game_data = await load_game_data_for_view(
         minimal_game_dir,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        view=GameFileView.TRANSLATION_SOURCE,
     )
 
+    assert game_data.view == GameFileView.TRANSLATION_SOURCE
     assert game_data.system.gameTitle == "テストゲーム"
 @pytest.mark.asyncio
 async def test_active_runtime_loader_skips_writable_copies_by_default(minimal_game_dir: Path) -> None:
@@ -155,6 +177,8 @@ async def test_active_runtime_loader_skips_writable_copies_by_default(minimal_ga
     assert read_only_game_data.writable_data == {}
     assert read_only_game_data.writable_plugins_js == []
     assert read_only_game_data.writable_plugin_source_files == {}
+    assert read_only_game_data.view == GameFileView.ACTIVE_RUNTIME
+    assert writable_game_data.view == GameFileView.ACTIVE_RUNTIME
     assert writable_game_data.writable_data
     assert writable_game_data.writable_plugins_js
     assert writable_game_data.writable_data["System.json"] is not writable_game_data.data["System.json"]
@@ -177,9 +201,10 @@ async def test_translation_source_view_uses_lightweight_defaults(
 
     game_data = await load_game_data_for_view(
         minimal_game_dir,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        view=GameFileView.TRANSLATION_SOURCE,
     )
 
+    assert game_data.view == GameFileView.TRANSLATION_SOURCE
     assert game_data.plugin_source_files == {}
     assert game_data.plugin_source_read_errors == {}
     assert game_data.writable_data == {}
@@ -206,12 +231,13 @@ async def test_translation_source_view_keeps_heavy_capabilities_explicit(
 
     game_data = await load_game_data_for_view(
         minimal_game_dir,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        view=GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=True,
         include_writable_copies=True,
         run_dialogue_probe_check=True,
     )
 
+    assert game_data.view == GameFileView.TRANSLATION_SOURCE
     assert probe_calls == 1
     assert set(game_data.plugin_source_files) == {"ComplexPlugin.js", "TestPlugin.js"}
     assert game_data.writable_data
@@ -243,7 +269,7 @@ async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapsho
 
     game_data = await load_game_data_for_view(
         minimal_game_dir,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        view=GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=True,
         include_writable_copies=True,
     )
@@ -264,7 +290,12 @@ async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapsho
 async def test_write_data_text_restores_converted_outer_quote_before_indent(minimal_game_dir: Path) -> None:
     """写回阶段先修复被模型改写的外层引号，再补跨行视觉缩进。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -287,7 +318,12 @@ async def test_write_data_text_restores_converted_outer_quote_before_indent(mini
 async def test_write_data_text_restores_mismatched_source_quote_slots(minimal_game_dir: Path) -> None:
     """写回阶段按源文真实引号槽位修复错配引号。"""
     _create_test_source_snapshot(minimal_game_dir)
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -325,7 +361,7 @@ async def test_loader_rejects_missing_fixed_active_data_file(minimal_game_dir: P
     (minimal_game_dir / "data" / "Animations.json").unlink()
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        _ = await load_game_data(minimal_game_dir)
+        _ = await load_active_runtime_game_data(minimal_game_dir)
 
     message = str(exc_info.value)
     assert "激活数据目录" in message
@@ -349,14 +385,14 @@ async def test_loader_rejects_map_infos_with_missing_map_file(minimal_game_dir: 
     _rewrite_json(map_infos_path, map_infos)
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        _ = await load_game_data(minimal_game_dir)
+        _ = await load_active_runtime_game_data(minimal_game_dir)
 
     message = str(exc_info.value)
     assert "MapInfos.json" in message
     assert "Map014.json" in message
 @pytest.mark.asyncio
 async def test_loader_rejects_incomplete_data_origin(minimal_game_dir: Path) -> None:
-    """data_origin 必须是完整原始 data 备份。"""
+    """当前翻译来源快照 data 目录必须完整。"""
     origin_data_dir = minimal_game_dir / "data_origin"
     origin_data_dir.mkdir()
     _ = shutil.copy2(
@@ -365,10 +401,10 @@ async def test_loader_rejects_incomplete_data_origin(minimal_game_dir: Path) -> 
     )
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        _ = await load_game_data(minimal_game_dir)
+        _ = await load_translation_source_game_data(minimal_game_dir)
 
     message = str(exc_info.value)
-    assert "原始 data 备份" in message
+    assert "当前翻译来源快照" in message
     assert "Animations.json" in message
 @pytest.mark.asyncio
 async def test_loader_separates_translation_source_and_active_runtime_data(minimal_game_dir: Path) -> None:
@@ -379,15 +415,16 @@ async def test_loader_separates_translation_source_and_active_runtime_data(minim
 
     translation_source_data = await load_game_data_for_view(
         minimal_game_dir,
-        source_view=GameFileView.TRANSLATION_SOURCE,
+        view=GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=False,
     )
 
+    assert translation_source_data.view == GameFileView.TRANSLATION_SOURCE
     assert translation_source_data.system.gameTitle == "テストゲーム"
     with pytest.raises(FileNotFoundError) as exc_info:
         _ = await load_game_data_for_view(
             minimal_game_dir,
-            source_view=GameFileView.ACTIVE_RUNTIME,
+            view=GameFileView.ACTIVE_RUNTIME,
         )
 
     message = str(exc_info.value)

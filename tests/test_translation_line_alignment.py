@@ -38,7 +38,7 @@ def _build_model_response(
     *,
     item: TranslationItem,
     translation_lines: list[str],
-    prompt_id: str | int = "1",
+    prompt_id: object = "1",
     source_lines: list[str] | None = None,
     extra_fields: dict[str, object] | None = None,
 ) -> str:
@@ -55,7 +55,7 @@ def _build_model_response(
 
 
 def _ensure_test_fact_id(item: TranslationItem) -> None:
-    """让校验器单元测试显式带上 v2 fact identity。"""
+    """让校验器单元测试显式带上当前文本事实身份。"""
     if not item.fact_id:
         item.fact_id = "fact-under-test"
 
@@ -474,10 +474,11 @@ async def test_translation_response_accepts_minimal_output_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_translation_response_accepts_numeric_prompt_id() -> None:
-    """模型把短 ID 返回为 JSON 数字时，仍按字符串 ID 匹配译文。"""
+async def test_translation_response_rejects_non_string_prompt_id() -> None:
+    """模型响应 ID 类型不符合当前契约时整批进入解析错误。"""
     text_rules = _build_text_rules(width_limit=40)
     item = TranslationItem(
+        fact_id="fact-non-string-id",
         location_path="Map001.json/1/0/0",
         item_type="long_text",
         role="村人",
@@ -500,10 +501,11 @@ async def test_translation_response_accepts_numeric_prompt_id() -> None:
         text_rules=text_rules,
     )
 
-    assert error_queue.empty()
-    result = await right_queue.get()
-    assert result is not None
-    assert result[0].translation_lines == ["你好"]
+    assert right_queue.empty()
+    error_items = await error_queue.get()
+    assert error_items is not None
+    assert error_items[0].error_type == "模型返回不可解析"
+    assert "id" in "\n".join(error_items[0].error_detail)
 
 
 @pytest.mark.asyncio

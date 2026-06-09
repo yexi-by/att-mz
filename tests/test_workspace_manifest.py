@@ -10,7 +10,7 @@ from app.agent_toolkit.service import AgentToolkitService
 
 @pytest.mark.asyncio
 async def test_cleanup_agent_workspace_reports_manifest_unlisted_files(tmp_path: Path) -> None:
-    """cleanup 只清理 manifest.files，manifest 外旧文件必须保留并说明不参与本轮。"""
+    """cleanup 只清理 manifest.files，manifest 外文件必须保留并说明不参与本轮。"""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     current_file = workspace / "plugin-rules.json"
@@ -29,4 +29,5 @@ async def test_cleanup_agent_workspace_reports_manifest_unlisted_files(tmp_path:
     assert not current_file.exists()
     assert stale_file.exists()
     assert {warning.code for warning in report.warnings} == {"workspace_unlisted_files_ignored"}
-    assert "旧文件不会参与本轮" in report.warnings[0].message
+    assert "manifest 外文件" in report.warnings[0].message
+    assert "不会参与本轮验收" in report.warnings[0].message

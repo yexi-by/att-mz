@@ -1,20 +1,20 @@
 # 更新日志
 
-## 未发布 - Text Fact Contract v2 契约冻结
+## 未发布 - 当前契约失忆化清理
 
 ### 破坏性变更
 
-- Text Fact Contract v2 成为当前文本事实契约；`rebuild-text-index` 会生成 v2 facts，翻译、质量检查、手动补译、覆盖审计和写进游戏文件不再读取旧文本范围作为成功事实源。
-- 旧数据库缺少 v2 facts、v2 scope 或当前 schema version 时会显式失败；用户需要运行 `rebuild-text-index --game <游戏标题>` 重新生成当前文本索引。
-- 旧工作区缺少 Text Fact Contract v2 范围信息时，`validate-agent-workspace` 会失败；用户需要重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`。
-- 旧 runtime map 缺少 v2 hash 时，当前运行文件审计、诊断或反馈定位不会继续信任旧映射；用户需要先重建索引，必要时运行 `rebuild-active-runtime --game <游戏标题>` 重建当前运行文件。
-- 缺少可信源快照、旧规则短哈希、旧 `RPG_MAKER_TOOLS_*` 环境变量和旧工作区可选文件都不再作为成功入口；用户需要重新注册游戏、重新导出规则或改用当前 `ATT_MZ_*` 配置入口。
-- 写入游戏文件、规则导入、字体替换和质量修复不再保留历史兼容分支；无法满足当前契约时显式失败，避免旧数据被当作当前输入继续运行。
-- 内部测试文件已按业务域拆分，旧的聚合测试文件名不再作为开发文档中的事实来源。
+- 当前文本事实契约成为翻译、质量检查、手动补译、覆盖审计和写进游戏文件的单一成功事实源；`rebuild-text-index` 会生成 current text facts。
+- 索引缺失、过期、范围不一致或 schema version 不匹配时会显式失败；用户需要运行 `rebuild-text-index --game <游戏标题>` 重新生成当前文本索引。
+- 当前工作区缺少范围信息或 manifest 不匹配时，`validate-agent-workspace` 会失败；用户需要重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`。
+- 当前运行文件审计、诊断或反馈定位缺少可用写回映射时不会继续推断；用户需要先重建索引，必要时运行 `rebuild-active-runtime --game <游戏标题>` 重建当前运行文件。
+- 缺少可信源快照、规则哈希不匹配、`RPG_MAKER_TOOLS_*` 环境变量或工作区可选文件不符合当前要求时都不再作为成功入口；用户需要重新注册游戏、重新导出规则或改用当前 `ATT_MZ_*` 配置入口。
+- 写入游戏文件、规则导入、字体替换和质量修复只接受当前契约输入；无法满足当前契约时显式失败，避免无效数据被当作当前输入继续运行。
+- 内部测试文件已按业务域拆分，聚合测试文件名不再作为开发文档中的事实来源。
 
 ### 协议变化
 
-- v2 facts 区分原始片段、玩家可见文本、模型翻译正文、写回结构片段和 hash；迁移后的命令共用这一个文本事实来源。
+- 当前文本事实区分原始片段、玩家可见文本、模型翻译正文、写回结构片段和 hash；相关命令共用这一个文本事实来源。
 - CLI stdout 统一经 Agent JSON 报告封装输出，错误、摘要和详情来自单一报告模型。
 - 工作区 manifest、文本范围快照、质量检查结果、写回计划和原生扩展版本检查成为当前公开流程的强制边界。
 - JSONPath 事件指令协议、插件源码扫描、规则导入事务和写后审计由各自领域模块集中维护，不再由调用方传入第二事实来源。
@@ -23,7 +23,7 @@
 
 - 大型游戏会建立文本范围索引，质量报告、手动补译、当前运行重建和写入审计复用已加载范围，避免同一命令内重复全量扫描。
 - 翻译停止阈值、Rust 线程数和写回计划扫描都通过当前配置真实参与调度；阶段 0 与阶段 7 的基准测试用于防止小样本和当前运行重建路径回退。
-- 性能边界：自动测试和 scan budget 只证明当前实现没有回到旧 Python 全量范围和旧路径身份；真实游戏耗时仍需要维护者在目标样本运行 `rebuild-text-index`、`quality-report`、`export-pending-translations` 和 `write-translated` 的 `--debug-timings` 命令确认。
+- 性能边界：自动测试和 scan budget 只证明当前实现没有回到 Python 全量范围和路径身份推断；真实游戏耗时仍需要维护者在目标样本运行 `rebuild-text-index`、`quality-report`、`export-pending-translations` 和 `write-translated` 的 `--debug-timings` 命令确认。
 
 ### 验证命令
 
@@ -51,7 +51,7 @@
 ### 协议与文档
 
 - 项目级 `AGENTS.md` 同步当前 CLI 入口：开发版使用 `uv run python main.py <命令> ...`，发行版使用 `.\att-mz.exe <命令> ...`，不再要求 `--agent-mode` 或 `--json`。
-- 自定义正文提示词保留旧用法：缺少输出协议模板占位符时自动追加本轮输出协议；只写了部分模板占位符时显式报错。
+- 自定义正文提示词允许不写输出协议模板占位符：缺少时自动追加本轮输出协议；只写了部分模板占位符时显式报错。
 - `--system-prompt` 帮助文案和配置模板补充了输出协议模板说明。
 - README 和开发文档补充 RGSS 系列引擎后续适配范围说明。
 - 发布工作流改为从 `CHANGELOG.md` 提取当前 tag 的版本段落作为 GitHub Release 正文，避免空泛自动发布说明。

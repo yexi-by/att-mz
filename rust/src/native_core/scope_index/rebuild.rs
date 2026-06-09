@@ -39,8 +39,8 @@ use super::structured_placeholders::{
 };
 use super::{RuleCandidateOutput, RuleCandidateTextRules};
 use crate::native_core::text_facts::{
-    TEXT_FACT_SCHEMA_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart, TextFactScope,
-    build_fact_id, domains,
+    CURRENT_TEXT_FACT_CONTRACT_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart,
+    TextFactScope, build_fact_id, domains,
 };
 use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
 
@@ -53,7 +53,7 @@ const TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: &str =
     "workflow_gate_prechecked:plugin_source_text";
 const TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: &str =
     "workflow_gate_prechecked:nonstandard_data";
-const TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE: &str = "passed_v2";
+const TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE: &str = "passed";
 const TEXT_INDEX_PLACEHOLDER_GATE_PREFIX: &str = "workflow_gate:placeholder_rules";
 const TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX: &str =
     "workflow_gate:structured_placeholder_rules";
@@ -2359,6 +2359,8 @@ fn plugin_parameter_row(
         "source_type": "plugin_parameter",
         "location_path": candidate.location_path,
         "source_line_paths": [],
+        "terminology_owner_terms": [],
+        "display_name": null,
         "json_path": candidate.json_path,
         "rule_key": candidate.rule_key,
     }))
@@ -3671,7 +3673,7 @@ fn build_text_fact_from_content(
     let visible_hash = sha256_text(&content.visible_text);
     let translatable_hash = sha256_text(&content.translatable_text);
     let fact_id = build_fact_id(
-        TEXT_FACT_SCHEMA_VERSION,
+        CURRENT_TEXT_FACT_CONTRACT_VERSION,
         &content.domain,
         &row.location_path,
         &content.selector,
@@ -3679,7 +3681,7 @@ fn build_text_fact_from_content(
     );
     let fact = TextFact {
         fact_id,
-        schema_version: TEXT_FACT_SCHEMA_VERSION,
+        schema_version: CURRENT_TEXT_FACT_CONTRACT_VERSION,
         domain: content.domain.clone(),
         location_path: row.location_path.clone(),
         source_file: row.source_file.clone(),
@@ -3698,7 +3700,7 @@ fn build_text_fact_from_content(
     fact.validate().map_err(|message| {
         structured_error(
             "scope_index_rebuild_text_fact_invalid",
-            format!("v2 文本事实构造失败 {}: {message}", row.location_path),
+            format!("当前文本事实构造失败 {}: {message}", row.location_path),
         )
     })?;
     Ok(fact)

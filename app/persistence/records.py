@@ -136,8 +136,8 @@ class TextIndexInvalidationRecord:
 
 
 @dataclass(slots=True)
-class TextFactV2Record:
-    """Text Fact Contract v2 的单条文本事实。"""
+class TextFactRecord:
+    """当前文本事实契约 的单条文本事实。"""
 
     fact_id: str
     schema_version: int
@@ -158,8 +158,8 @@ class TextFactV2Record:
 
 
 @dataclass(slots=True)
-class TextFactRenderPartV2Record:
-    """Text Fact Contract v2 的写回渲染片段。"""
+class TextFactRenderPartRecord:
+    """当前文本事实契约 的写回渲染片段。"""
 
     fact_id: str
     part_order: int
@@ -170,16 +170,16 @@ class TextFactRenderPartV2Record:
 
 
 @dataclass(slots=True)
-class TextFactDomainPayloadV2Record:
-    """Text Fact Contract v2 的领域小扩展 JSON。"""
+class TextFactDomainPayloadRecord:
+    """当前文本事实契约 的领域小扩展 JSON。"""
 
     fact_id: str
     payload_json: str
 
 
 @dataclass(slots=True)
-class TextFactScopeV2Record:
-    """Text Fact Contract v2 的当前索引 scope 元数据。"""
+class TextFactScopeRecord:
+    """当前文本事实契约 的当前索引 scope 元数据。"""
 
     scope_key: str
     schema_version: int
@@ -191,8 +191,8 @@ class TextFactScopeV2Record:
 
 
 @dataclass(slots=True)
-class TextFactV2ReadFilter:
-    """读取 v2 文本事实时使用的最小筛选条件。"""
+class TextFactReadFilter:
+    """读取 当前文本事实时使用的最小筛选条件。"""
 
     domain: str | None = None
     source_file: str | None = None

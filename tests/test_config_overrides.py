@@ -320,7 +320,7 @@ def test_load_setting_configures_native_runtime_threads(
     assert configured_values == ["auto"]
 
 
-def test_load_setting_rejects_rust_incompatible_text_rule_regex(
+def test_load_setting_rejects_rust_unsupported_text_rule_regex(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """会进入 Rust 原生质检的配置正则必须在加载配置时提前失败。"""
@@ -420,7 +420,7 @@ def test_custom_prompt_without_template_appends_output_protocol(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """自定义提示词缺少模板时自动追加输出协议，保留旧 CLI 用法。"""
+    """自定义提示词缺少模板时自动追加当前输出协议。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
     setting_path = _write_minimal_setting(
@@ -457,11 +457,11 @@ def test_custom_prompt_partial_template_fails_fast(
         _ = load_setting(setting_path=setting_path)
 
 
-def test_obsolete_single_prompt_file_setting_fails_fast(
+def test_unknown_text_translation_setting_key_fails_fast(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧的单提示词配置必须显式报错，避免默认日文提示词伪装成当前游戏事实。"""
+    """当前配置模型遇到未知正文翻译字段时必须显式失败。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
     setting_path = tmp_path / "setting.toml"
@@ -483,7 +483,11 @@ worker_count = 1
 rpm = 10
 retry_count = 1
 retry_delay = 1
-system_prompt_file = "prompt.txt"
+unknown_prompt_key = "prompt.txt"
+
+[text_translation.system_prompt_files]
+ja = "prompt.txt"
+en = "prompt.txt"
 
 [event_command_text.default_command_codes_by_engine]
 mv = [356]
@@ -491,9 +495,13 @@ mz = [357]
 """,
         encoding="utf-8",
     )
+    _ = (tmp_path / "prompt.txt").write_text(MINIMAL_PROMPT_TEMPLATE, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="text_translation.system_prompt_file 已废弃"):
+    with pytest.raises(ValidationError) as exc_info:
         _ = load_setting(setting_path=setting_path)
+    message = str(exc_info.value)
+    assert "unknown_prompt_key" in message
+    assert "Extra inputs are not permitted" in message or "额外输入" in message
 
 
 def test_custom_prompt_template_can_enable_source_lines_protocol(
@@ -579,18 +587,28 @@ mz = [357]
     assert setting.llm.model == "file-model"
 
 
-def test_load_setting_rejects_legacy_llm_environment_names(
+def test_unknown_llm_setting_key_is_reported_as_current_invalid_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧模型环境变量不再作为成功配置入口。"""
+    """当前配置模型遇到未知 LLM 字段时必须显式失败。"""
     setting_path = _write_minimal_setting(tmp_path, request_body_extra_text="")
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
-    monkeypatch.setenv("RPG_MAKER_TOOLS_LLM_BASE_URL", "https://legacy.example.com")
+    text = setting_path.read_text(encoding="utf-8")
+    _ = setting_path.write_text(
+        text.replace(
+            'timeout = 10\n',
+            'timeout = 10\nunknown_key = "value"\n',
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ValueError, match="ATT_MZ_LLM_BASE_URL.*ATT_MZ_LLM_API_KEY"):
+    with pytest.raises(ValidationError) as exc_info:
         _ = load_setting(setting_path=setting_path)
+    message = str(exc_info.value)
+    assert "unknown_key" in message
+    assert "Extra inputs are not permitted" in message or "额外输入" in message
 
 
 def test_load_setting_accepts_llm_request_body_extra_json(

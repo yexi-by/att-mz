@@ -139,12 +139,6 @@ def _inject_text_translation_prompt_text(
 ) -> None:
     """注入正文翻译提示词文本。"""
     text_translation = _read_config_section(raw_config, "text_translation")
-    if "system_prompt_file" in text_translation:
-        message = (
-            "配置项 text_translation.system_prompt_file 已废弃，请改用 "
-            "[text_translation.system_prompt_files] 下的 ja/en 显式提示词配置"
-        )
-        raise ValueError(message)
     if overrides is not None and overrides.text_translation_system_prompt is not None:
         text_translation["selected_system_prompt_file"] = "<cli>"
         text_translation["system_prompt"] = overrides.text_translation_system_prompt

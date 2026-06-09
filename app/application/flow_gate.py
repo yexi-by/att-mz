@@ -88,7 +88,7 @@ async def collect_workflow_gate_errors(
     """收集当前游戏不能继续翻译或写入的全部硬闸错误。"""
     if scope is None:
         _ = translated_items
-        raise RuntimeError("collect_workflow_gate_errors 需要调用者传入 Rust/index 生成的文本范围，不能回退构建 Python 完整文本范围")
+        raise RuntimeError("collect_workflow_gate_errors 缺少当前文本范围，不能继续；请重新生成当前文本索引，并从当前入口传入文本范围")
     errors: list[WorkflowGateIssue] = []
     if plugin_source_rule_gate_errors is None:
         errors.extend(
@@ -266,14 +266,8 @@ def ensure_empty_rule_import_allowed(
     *,
     rule_label: str,
     confirm_empty: bool,
-    candidate_count: int | None = None,
 ) -> None:
-    """校验空规则导入是否经过显式确认。
-
-    candidate_count 仅保留给旧调用点传入报告上下文；启发式候选可能需要人工确认风险，
-    不能再要求候选数量为 0 才允许保存空规则。
-    """
-    _ = candidate_count
+    """校验空规则导入是否经过显式确认。"""
     ensure_empty_rule_confirmed(rule_label=rule_label, confirm_empty=confirm_empty)
 
 

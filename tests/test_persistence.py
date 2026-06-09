@@ -10,11 +10,11 @@ import pytest
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
 from app.persistence.records import (
-    TextFactDomainPayloadV2Record,
-    TextFactRenderPartV2Record,
-    TextFactScopeV2Record,
-    TextFactV2ReadFilter,
-    TextFactV2Record,
+    TextFactDomainPayloadRecord,
+    TextFactRenderPartRecord,
+    TextFactScopeRecord,
+    TextFactReadFilter,
+    TextFactRecord,
     TextIndexDomainSummaryRecord,
     TextIndexInvalidationRecord,
     TextIndexItemRecord,
@@ -25,7 +25,7 @@ from app.persistence.records import (
 from app.persistence.sql import (
     CURRENT_SCHEMA_VERSION,
     EXPECTED_STATIC_TABLE_NAMES,
-    TEXT_FACT_SCHEMA_VERSION,
+    CURRENT_TEXT_FACT_CONTRACT_VERSION,
     current_schema_fingerprint,
     current_schema_sql,
 )
@@ -59,14 +59,14 @@ def read_sqlite_table_names(db_path: Path) -> set[str]:
     return {row[0] for row in table_rows}
 
 
-def make_text_fact_v2_scope(
+def make_text_fact_scope(
     *,
-    scope_key: str = "scope-v2",
-) -> TextFactScopeV2Record:
-    """构造测试用 v2 文本事实 scope。"""
-    return TextFactScopeV2Record(
+    scope_key: str = "scope-current",
+) -> TextFactScopeRecord:
+    """构造测试用 当前文本事实 scope。"""
+    return TextFactScopeRecord(
         scope_key=scope_key,
-        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
         scope_hash="scope-hash",
         source_snapshot_hash="source-snapshot-hash",
         rule_hash="rule-hash",
@@ -75,18 +75,18 @@ def make_text_fact_v2_scope(
     )
 
 
-def make_text_fact_v2_record(
+def make_text_fact_record(
     index: int,
     *,
-    scope_key: str = "scope-v2",
+    scope_key: str = "scope-current",
     domain: str = "event_command",
-) -> TextFactV2Record:
-    """构造测试用 v2 文本事实。"""
+) -> TextFactRecord:
+    """构造测试用 当前文本事实。"""
     suffix = f"{index:04d}"
     raw_text = f"  Text {suffix}  "
-    return TextFactV2Record(
+    return TextFactRecord(
         fact_id=f"fact-{suffix}",
-        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
         domain=domain,
         location_path=f"Map001.json/events/1/pages/0/list/{suffix}",
         source_file="Map001.json",
@@ -116,7 +116,7 @@ def make_saved_translation_item(
     source_fact_raw_hash: str | None = None,
     source_fact_translatable_hash: str | None = None,
 ) -> TranslationItem:
-    """构造带 v2 fact identity 的已保存译文测试对象。"""
+    """构造带当前文本事实身份的已保存译文测试对象。"""
     return TranslationItem(
         fact_id=fact_id,
         source_fact_raw_hash=source_fact_raw_hash or f"raw:{fact_id}",
@@ -130,13 +130,13 @@ def make_saved_translation_item(
     )
 
 
-def make_text_fact_v2_render_part(
+def make_text_fact_render_part(
     fact_id: str,
     *,
     part_order: int = 0,
-) -> TextFactRenderPartV2Record:
-    """构造测试用 v2 渲染片段。"""
-    return TextFactRenderPartV2Record(
+) -> TextFactRenderPartRecord:
+    """构造测试用 当前渲染片段。"""
+    return TextFactRenderPartRecord(
         fact_id=fact_id,
         part_order=part_order,
         part_kind="translated_body",
@@ -146,9 +146,9 @@ def make_text_fact_v2_render_part(
     )
 
 
-def make_text_fact_v2_domain_payload(fact_id: str) -> TextFactDomainPayloadV2Record:
-    """构造测试用 v2 领域 payload。"""
-    return TextFactDomainPayloadV2Record(
+def make_text_fact_domain_payload(fact_id: str) -> TextFactDomainPayloadRecord:
+    """构造测试用 当前领域 payload。"""
+    return TextFactDomainPayloadRecord(
         fact_id=fact_id,
         payload_json='{"command_code":401}',
     )
@@ -215,13 +215,13 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
                 "SELECT version FROM schema_version WHERE schema_key = 'current'"
             ).fetchone(),
         )
-        text_fact_columns = read_sqlite_table_columns(connection, "text_facts_v2")
-        render_part_columns = read_sqlite_table_columns(connection, "text_fact_render_parts_v2")
-        domain_payload_columns = read_sqlite_table_columns(connection, "text_fact_domain_payloads_v2")
-        scope_columns = read_sqlite_table_columns(connection, "text_fact_scope_v2")
-        render_part_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_render_parts_v2")
-        domain_payload_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_domain_payloads_v2")
-        text_fact_declared_indexes = read_sqlite_declared_index_columns(connection, "text_facts_v2")
+        text_fact_columns = read_sqlite_table_columns(connection, "text_facts")
+        render_part_columns = read_sqlite_table_columns(connection, "text_fact_render_parts")
+        domain_payload_columns = read_sqlite_table_columns(connection, "text_fact_domain_payloads")
+        scope_columns = read_sqlite_table_columns(connection, "text_fact_scope")
+        render_part_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_render_parts")
+        domain_payload_foreign_keys = read_sqlite_foreign_keys(connection, "text_fact_domain_payloads")
+        text_fact_declared_indexes = read_sqlite_declared_index_columns(connection, "text_facts")
         translation_item_columns = read_sqlite_table_columns(connection, "translation_items")
         translation_item_declared_indexes = read_sqlite_declared_index_columns(connection, "translation_items")
 
@@ -285,18 +285,18 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
         (6, "created_at", "TEXT", 1, None, 0),
     )
     assert render_part_foreign_keys == (
-        (0, 0, "text_facts_v2", "fact_id", "fact_id", "NO ACTION", "CASCADE", "NONE"),
+        (0, 0, "text_facts", "fact_id", "fact_id", "NO ACTION", "CASCADE", "NONE"),
     )
     assert domain_payload_foreign_keys == (
-        (0, 0, "text_facts_v2", "fact_id", "fact_id", "NO ACTION", "CASCADE", "NONE"),
+        (0, 0, "text_facts", "fact_id", "fact_id", "NO ACTION", "CASCADE", "NONE"),
     )
     assert text_fact_declared_indexes == {
-        "idx_text_facts_v2_domain_location": ("domain", "location_path"),
-        "idx_text_facts_v2_domain_source_file": ("domain", "source_file"),
-        "idx_text_facts_v2_scope_key": ("scope_key",),
-        "idx_text_facts_v2_selector": ("selector",),
-        "idx_text_facts_v2_translatable_hash": ("translatable_hash",),
-        "idx_text_facts_v2_visible_hash": ("visible_hash",),
+        "idx_text_facts_domain_location": ("domain", "location_path"),
+        "idx_text_facts_domain_source_file": ("domain", "source_file"),
+        "idx_text_facts_scope_key": ("scope_key",),
+        "idx_text_facts_selector": ("selector",),
+        "idx_text_facts_translatable_hash": ("translatable_hash",),
+        "idx_text_facts_visible_hash": ("visible_hash",),
     }
 
 
@@ -365,14 +365,14 @@ def create_database_with_invalid_table_shapes(db_path: Path, tmp_path: Path) -> 
             _ = connection.execute(f"CREATE TABLE [{table_name}] (wrong_column TEXT)")
 
 
-def create_legacy_registry_database(
+def create_incomplete_registry_database(
     *,
     db_path: Path,
     game_title: str,
     game_path: Path,
     content_root: Path,
 ) -> None:
-    """创建能读取 metadata 但缺少新表的旧版注册库。"""
+    """创建能读取 metadata 但缺少当前必需表的无效注册库。"""
     with sqlite3.connect(db_path) as connection:
         _ = connection.execute("CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)")
         _ = connection.execute(
@@ -433,7 +433,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         await session.write_translation_items(
             [
                 make_saved_translation_item(
-                    fact_id="tfv2:rawhash:system-title",
+                    fact_id="tf:rawhash:system-title",
                     location_path="System.json/gameTitle",
                     item_type="short_text",
                     role=None,
@@ -449,7 +449,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         await session.write_translation_items(
             [
                 make_saved_translation_item(
-                    fact_id="tfv2:rawhash:common-event",
+                    fact_id="tf:rawhash:common-event",
                     location_path="CommonEvents.json/1/0",
                     item_type="long_text",
                     role="アリス",
@@ -468,7 +468,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         await session.write_translation_items(
             [
                 make_saved_translation_item(
-                    fact_id="tfv2:rawhash:plugin-title",
+                    fact_id="tf:rawhash:plugin-title",
                     location_path="plugins.js/0/Title",
                     item_type="short_text",
                     role=None,
@@ -714,7 +714,7 @@ async def test_translation_quality_errors_require_fact_id(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """质量错误属于当前 v2 fact，缺 fact_id 必须显式失败。"""
+    """质量错误属于当前文本事实，缺 fact_id 必须显式失败。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
@@ -793,14 +793,14 @@ async def test_translation_quality_errors_by_paths_preserve_same_path_facts(
 
 
 @pytest.mark.asyncio
-async def test_translation_items_require_v2_fact_identity(minimal_game_dir: Path, tmp_path: Path) -> None:
-    """已保存译文必须以 v2 fact identity 作为主身份。"""
+async def test_translation_items_require_current_fact_identity(minimal_game_dir: Path, tmp_path: Path) -> None:
+    """已保存译文必须以当前文本事实身份作为主身份。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
 
     async with await registry.open_game(record.game_title) as session:
         item = TranslationItem(
-            fact_id="tfv2:rawhash:identity",
+            fact_id="tf:rawhash:identity",
             source_fact_raw_hash="rawhash",
             source_fact_translatable_hash="transhash",
             location_path="System.json/gameTitle",
@@ -813,7 +813,7 @@ async def test_translation_items_require_v2_fact_identity(minimal_game_dir: Path
 
         saved_items = await session.read_translated_items()
 
-        assert [saved.fact_id for saved in saved_items] == ["tfv2:rawhash:identity"]
+        assert [saved.fact_id for saved in saved_items] == ["tf:rawhash:identity"]
         assert saved_items[0].source_fact_raw_hash == "rawhash"
         assert saved_items[0].source_fact_translatable_hash == "transhash"
 
@@ -823,48 +823,48 @@ async def test_translation_items_require_v2_fact_identity(minimal_game_dir: Path
             item.model_copy(update={"source_fact_translatable_hash": None}),
         ]
         for missing_identity_item in missing_identity_items:
-            with pytest.raises(ValueError, match="v2 fact identity"):
+            with pytest.raises(ValueError, match="当前文本事实身份"):
                 await session.write_translation_items([missing_identity_item])
 
 
 @pytest.mark.asyncio
-async def test_list_games_with_issues_skips_legacy_schema_database(
+async def test_list_games_with_issues_skips_invalid_schema_database(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """列注册游戏时旧库进入 warning，不拖死可用游戏。"""
+    """列注册游戏时无效库进入 warning，不拖死可用游戏。"""
     db_dir = tmp_path / "db"
     registry = GameRegistry(db_dir)
     record = await registry.register_game(minimal_game_dir, source_language="ja")
-    create_legacy_registry_database(
-        db_path=db_dir / "AAA旧库.db",
-        game_title="旧库",
-        game_path=tmp_path / "old-game",
-        content_root=tmp_path / "old-game",
+    create_incomplete_registry_database(
+        db_path=db_dir / "AAA-invalid-schema.db",
+        game_title="无效库",
+        game_path=tmp_path / "invalid-game",
+        content_root=tmp_path / "invalid-game",
     )
 
     records, issues = await registry.list_games_with_issues()
 
     assert [item.game_title for item in records] == [record.game_title]
     assert len(issues) == 1
-    assert issues[0].db_path.name == "AAA旧库.db"
+    assert issues[0].db_path.name == "AAA-invalid-schema.db"
     assert "数据库结构不符合当前版本" in issues[0].message
 
 
 @pytest.mark.asyncio
-async def test_resolve_registered_title_by_path_ignores_unrelated_legacy_database(
+async def test_resolve_registered_title_by_path_ignores_unrelated_invalid_database(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """--game-path 定位目标游戏时，不被无关旧库 schema 拖死。"""
+    """--game-path 定位目标游戏时，不被无关无效库 schema 拖死。"""
     db_dir = tmp_path / "db"
     registry = GameRegistry(db_dir)
     record = await registry.register_game(minimal_game_dir, source_language="ja")
-    create_legacy_registry_database(
-        db_path=db_dir / "AAA旧库.db",
-        game_title="旧库",
-        game_path=tmp_path / "old-game",
-        content_root=tmp_path / "old-game",
+    create_incomplete_registry_database(
+        db_path=db_dir / "AAA-invalid-schema.db",
+        game_title="无效库",
+        game_path=tmp_path / "invalid-game",
+        content_root=tmp_path / "invalid-game",
     )
 
     game_title = await registry.resolve_registered_title_by_path(minimal_game_dir)
@@ -884,19 +884,19 @@ async def test_register_game_creates_declared_static_table_set(minimal_game_dir:
 
 
 @pytest.mark.asyncio
-async def test_text_fact_v2_records_replace_read_and_require_scope(
+async def test_text_fact_records_replace_read_and_require_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """v2 文本事实支持整批替换、稳定读取和当前 scope 显式校验。"""
+    """当前文本事实支持整批替换、稳定读取和当前 scope 显式校验。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
-    assert TEXT_FACT_SCHEMA_VERSION == 2
+    assert CURRENT_TEXT_FACT_CONTRACT_VERSION == 2
     assert CURRENT_SCHEMA_VERSION == 17
-    scope = make_text_fact_v2_scope()
-    namebox_fact = TextFactV2Record(
+    scope = make_text_fact_scope()
+    namebox_fact = TextFactRecord(
         fact_id="fact-namebox",
-        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
         domain="mv_virtual_namebox",
         location_path="Map001.json/events/1/pages/0/list/0",
         source_file="Map001.json",
@@ -912,9 +912,9 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
         translatable_hash="translatable-namebox",
         scope_key=scope.scope_key,
     )
-    event_fact = TextFactV2Record(
+    event_fact = TextFactRecord(
         fact_id="fact-event",
-        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
         domain="event_command",
         location_path="Map001.json/events/1/pages/0/list/1",
         source_file="Map001.json",
@@ -931,7 +931,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
         scope_key=scope.scope_key,
     )
     render_parts = [
-        TextFactRenderPartV2Record(
+        TextFactRenderPartRecord(
             fact_id=namebox_fact.fact_id,
             part_order=3,
             part_kind="translated_body",
@@ -939,7 +939,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
             semantic_text="Hello",
             template_key="body",
         ),
-        TextFactRenderPartV2Record(
+        TextFactRenderPartRecord(
             fact_id=namebox_fact.fact_id,
             part_order=0,
             part_kind="literal",
@@ -947,7 +947,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
             semantic_text="\n<",
             template_key="prefix",
         ),
-        TextFactRenderPartV2Record(
+        TextFactRenderPartRecord(
             fact_id=namebox_fact.fact_id,
             part_order=2,
             part_kind="literal",
@@ -955,7 +955,7 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
             semantic_text=":> ",
             template_key="separator",
         ),
-        TextFactRenderPartV2Record(
+        TextFactRenderPartRecord(
             fact_id=namebox_fact.fact_id,
             part_order=1,
             part_kind="speaker",
@@ -965,11 +965,11 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
         ),
     ]
     payloads = [
-        TextFactDomainPayloadV2Record(
+        TextFactDomainPayloadRecord(
             fact_id=namebox_fact.fact_id,
             payload_json='{"speaker_policy":"translate"}',
         ),
-        TextFactDomainPayloadV2Record(
+        TextFactDomainPayloadRecord(
             fact_id=event_fact.fact_id,
             payload_json='{"command_code":401}',
         ),
@@ -977,100 +977,100 @@ async def test_text_fact_v2_records_replace_read_and_require_scope(
 
     async with await registry.open_game(record.game_title) as session:
         with pytest.raises(RuntimeError, match="rebuild-text-index") as missing_scope_error:
-            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
+            _ = await session.require_current_text_fact_scope(scope.scope_key)
         assert "当前命令" in str(missing_scope_error.value)
         assert "下一步" in str(missing_scope_error.value)
 
-        await session.replace_text_facts_v2(
+        await session.replace_text_facts(
             scope=scope,
             facts=[namebox_fact, event_fact],
             render_parts=render_parts,
             domain_payloads=payloads,
         )
 
-        assert await session.count_text_facts_v2() == 2
-        assert await session.read_text_fact_scope_v2(scope.scope_key) == scope
-        assert await session.require_current_text_fact_scope_v2(scope.scope_key) == scope
-        assert await session.read_text_fact_scope_v2("missing-scope") is None
-        assert await session.read_text_facts_v2() == [event_fact, namebox_fact]
-        assert await session.read_text_facts_v2(
-            TextFactV2ReadFilter(domain="mv_virtual_namebox")
+        assert await session.count_text_facts() == 2
+        assert await session.read_text_fact_scope(scope.scope_key) == scope
+        assert await session.require_current_text_fact_scope(scope.scope_key) == scope
+        assert await session.read_text_fact_scope("missing-scope") is None
+        assert await session.read_text_facts() == [event_fact, namebox_fact]
+        assert await session.read_text_facts(
+            TextFactReadFilter(domain="mv_virtual_namebox")
         ) == [namebox_fact]
-        assert await session.read_text_facts_v2(
-            TextFactV2ReadFilter(source_file="Map001.json", scope_key=scope.scope_key)
+        assert await session.read_text_facts(
+            TextFactReadFilter(source_file="Map001.json", scope_key=scope.scope_key)
         ) == [event_fact, namebox_fact]
-        assert await session.read_text_facts_v2(
-            TextFactV2ReadFilter(
+        assert await session.read_text_facts(
+            TextFactReadFilter(
                 location_paths=(namebox_fact.location_path, event_fact.location_path),
             )
         ) == [event_fact, namebox_fact]
-        assert await session.read_text_fact_render_parts_v2([namebox_fact.fact_id]) == [
+        assert await session.read_text_fact_render_parts([namebox_fact.fact_id]) == [
             render_parts[1],
             render_parts[3],
             render_parts[2],
             render_parts[0],
         ]
-        assert await session.read_text_fact_domain_payloads_v2(
+        assert await session.read_text_fact_domain_payloads(
             [namebox_fact.fact_id, event_fact.fact_id]
         ) == [payloads[1], payloads[0]]
 
         _ = await session.connection.execute(
-            "UPDATE text_fact_scope_v2 SET schema_version = ? WHERE scope_key = ?",
-            (TEXT_FACT_SCHEMA_VERSION + 1, scope.scope_key),
+            "UPDATE text_fact_scope SET schema_version = ? WHERE scope_key = ?",
+            (CURRENT_TEXT_FACT_CONTRACT_VERSION + 1, scope.scope_key),
         )
         await session.connection.commit()
         with pytest.raises(RuntimeError, match="rebuild-text-index") as unsupported_version_error:
-            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
-        assert "schema version" in str(unsupported_version_error.value)
+            _ = await session.require_current_text_fact_scope(scope.scope_key)
+            assert "当前文本事实范围不符合当前要求" in str(unsupported_version_error.value)
         assert "当前命令" in str(unsupported_version_error.value)
         assert "下一步" in str(unsupported_version_error.value)
 
         _ = await session.connection.execute(
-            "UPDATE text_fact_scope_v2 SET schema_version = ? WHERE scope_key = ?",
-            (TEXT_FACT_SCHEMA_VERSION, scope.scope_key),
+            "UPDATE text_fact_scope SET schema_version = ? WHERE scope_key = ?",
+            (CURRENT_TEXT_FACT_CONTRACT_VERSION, scope.scope_key),
         )
         _ = await session.connection.execute(
-            "UPDATE text_facts_v2 SET scope_key = ? WHERE fact_id = ?",
+            "UPDATE text_facts SET scope_key = ? WHERE fact_id = ?",
             ("other-scope", event_fact.fact_id),
         )
         await session.connection.commit()
         with pytest.raises(RuntimeError, match="rebuild-text-index") as mismatched_scope_error:
-            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
+            _ = await session.require_current_text_fact_scope(scope.scope_key)
         assert "scope 不一致" in str(mismatched_scope_error.value)
         assert "当前命令" in str(mismatched_scope_error.value)
         assert "下一步" in str(mismatched_scope_error.value)
 
-        _ = await session.connection.execute("DROP TABLE text_fact_scope_v2")
+        _ = await session.connection.execute("DROP TABLE text_fact_scope")
         await session.connection.commit()
         with pytest.raises(RuntimeError, match="rebuild-text-index") as missing_table_error:
-            _ = await session.require_current_text_fact_scope_v2(scope.scope_key)
-        assert "text_fact_scope_v2" in str(missing_table_error.value)
+            _ = await session.require_current_text_fact_scope(scope.scope_key)
+        assert "text_fact_scope" in str(missing_table_error.value)
         assert "当前命令" in str(missing_table_error.value)
         assert "下一步" in str(missing_table_error.value)
 
 
 @pytest.mark.asyncio
-async def test_text_fact_v2_large_filter_reads_are_batched(
+async def test_text_fact_large_filter_reads_are_batched(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """v2 大批量 fact/path 读取按 500 分块，并保持稳定排序。"""
+    """current 大批量 fact/path 读取按 500 分块，并保持稳定排序。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
-    scope = make_text_fact_v2_scope()
-    facts = [make_text_fact_v2_record(index, scope_key=scope.scope_key) for index in range(620)]
+    scope = make_text_fact_scope()
+    facts = [make_text_fact_record(index, scope_key=scope.scope_key) for index in range(620)]
     render_parts = [
-        make_text_fact_v2_render_part(fact.fact_id, part_order=1)
+        make_text_fact_render_part(fact.fact_id, part_order=1)
         for fact in facts
     ] + [
-        make_text_fact_v2_render_part(fact.fact_id, part_order=0)
+        make_text_fact_render_part(fact.fact_id, part_order=0)
         for fact in facts
     ]
-    payloads = [make_text_fact_v2_domain_payload(fact.fact_id) for fact in facts]
+    payloads = [make_text_fact_domain_payload(fact.fact_id) for fact in facts]
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_text_facts_v2(
+        await session.replace_text_facts(
             scope=scope,
             facts=list(reversed(facts)),
             render_parts=list(reversed(render_parts)),
@@ -1082,9 +1082,9 @@ async def test_text_fact_v2_large_filter_reads_are_batched(
         def recording_execute(sql: str, parameters: object = None) -> object:
             """记录读取 SQL 的参数数量，证明 IN 查询被分块。"""
             if isinstance(parameters, tuple) and (
-                "text_facts_v2" in sql
-                or "text_fact_render_parts_v2" in sql
-                or "text_fact_domain_payloads_v2" in sql
+                "text_facts" in sql
+                or "text_fact_render_parts" in sql
+                or "text_fact_domain_payloads" in sql
             ):
                 tuple_parameters = cast(tuple[object, ...], parameters)
                 parameter_counts.append(len(tuple_parameters))
@@ -1094,15 +1094,15 @@ async def test_text_fact_v2_large_filter_reads_are_batched(
 
         monkeypatch.setattr(session.connection, "execute", recording_execute)
 
-        filtered_facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(
+        filtered_facts = await session.read_text_facts(
+            TextFactReadFilter(
                 location_paths=[fact.location_path for fact in reversed(facts)],
             )
         )
-        read_render_parts = await session.read_text_fact_render_parts_v2(
+        read_render_parts = await session.read_text_fact_render_parts(
             [fact.fact_id for fact in reversed(facts)]
         )
-        read_payloads = await session.read_text_fact_domain_payloads_v2(
+        read_payloads = await session.read_text_fact_domain_payloads(
             [fact.fact_id for fact in reversed(facts)]
         )
 
@@ -1115,35 +1115,35 @@ async def test_text_fact_v2_large_filter_reads_are_batched(
 
 
 @pytest.mark.asyncio
-async def test_text_fact_v2_replace_rejects_duplicate_payloads(
+async def test_text_fact_replace_rejects_duplicate_payloads(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """v2 整批替换在写库前拒绝会被 OR REPLACE 静默覆盖的重复输入。"""
+    """当前整批替换在写库前拒绝会被 OR REPLACE 静默覆盖的重复输入。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
-    scope = make_text_fact_v2_scope()
-    fact = make_text_fact_v2_record(0, scope_key=scope.scope_key)
-    duplicate_fact = make_text_fact_v2_record(0, scope_key=scope.scope_key)
-    render_part = make_text_fact_v2_render_part(fact.fact_id)
-    duplicate_render_part = make_text_fact_v2_render_part(fact.fact_id)
-    payload = make_text_fact_v2_domain_payload(fact.fact_id)
-    duplicate_payload = make_text_fact_v2_domain_payload(fact.fact_id)
+    scope = make_text_fact_scope()
+    fact = make_text_fact_record(0, scope_key=scope.scope_key)
+    duplicate_fact = make_text_fact_record(0, scope_key=scope.scope_key)
+    render_part = make_text_fact_render_part(fact.fact_id)
+    duplicate_render_part = make_text_fact_render_part(fact.fact_id)
+    payload = make_text_fact_domain_payload(fact.fact_id)
+    duplicate_payload = make_text_fact_domain_payload(fact.fact_id)
 
     async with await registry.open_game(record.game_title) as session:
         with pytest.raises(ValueError, match="fact_id 重复"):
-            await session.replace_text_facts_v2(
+            await session.replace_text_facts(
                 scope=scope,
                 facts=[fact, duplicate_fact],
             )
         with pytest.raises(ValueError, match="渲染片段重复"):
-            await session.replace_text_facts_v2(
+            await session.replace_text_facts(
                 scope=scope,
                 facts=[fact],
                 render_parts=[render_part, duplicate_render_part],
             )
         with pytest.raises(ValueError, match="领域 payload 重复"):
-            await session.replace_text_facts_v2(
+            await session.replace_text_facts(
                 scope=scope,
                 facts=[fact],
                 domain_payloads=[payload, duplicate_payload],
@@ -1239,7 +1239,7 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
         await session.write_translation_items(
             [
                 make_saved_translation_item(
-                    fact_id="tfv2:rawhash:first-index-item",
+                    fact_id="tf:rawhash:first-index-item",
                     location_path=first_item.location_path,
                     item_type=first_item.item_type,
                     role=first_item.role,
@@ -1262,7 +1262,7 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
         await session.write_translation_items(
             [
                 make_saved_translation_item(
-                    fact_id="tfv2:rawhash:unwritable-index-item",
+                    fact_id="tf:rawhash:unwritable-index-item",
                     location_path=second_item.location_path,
                     item_type=second_item.item_type,
                     role=second_item.role,
@@ -1271,11 +1271,11 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
                     translation_lines=["不可写路径译文"],
                 ),
                 make_saved_translation_item(
-                    fact_id="tfv2:rawhash:stale-index-item",
+                    fact_id="tf:rawhash:index-mismatch-item",
                     location_path="missing/from/current/index",
                     item_type="short_text",
                     role=None,
-                    original_lines=["Stale source"],
+                    original_lines=["Index mismatch source"],
                     source_line_paths=[],
                     translation_lines=["索引外译文"],
                 ),
@@ -1296,8 +1296,8 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
         assert await session.read_text_index_invalidations() == invalidations
 
         rebuilt_metadata = TextIndexMetadata(
-            source_snapshot_fingerprint="snapshot-v2",
-            rules_fingerprint="rules-v2",
+            source_snapshot_fingerprint="snapshot-current-next",
+            rules_fingerprint="rules-current-next",
             item_count=0,
             created_at="2026-06-02T00:02:00",
         )

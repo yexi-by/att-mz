@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
     scan_native_rule_candidates as real_scan_native_rule_candidates,
 )
-from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
 from app.text_facts import (
-    read_current_text_fact_records_v2,
-    read_current_text_fact_scope_v2,
+    read_current_text_fact_records,
+    read_current_text_fact_scope,
     text_fact_record_to_translation_item,
 )
 
@@ -123,11 +123,11 @@ async def test_prepare_agent_workspace_includes_placeholder_rule_draft(
 
 
 @pytest.mark.asyncio
-async def test_prepare_agent_workspace_records_text_fact_v2_scope_metadata(
+async def test_prepare_agent_workspace_records_current_text_fact_scope_metadata(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """工作区 manifest 和候选文件必须固定当前 v2 文本事实范围。"""
+    """工作区 manifest 和候选文件必须固定当前文本事实范围。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -140,7 +140,7 @@ async def test_prepare_agent_workspace_records_text_fact_v2_scope_metadata(
     )
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await read_current_text_fact_scope_v2(session)
+        scope = await read_current_text_fact_scope(session)
     manifest = load_json_object(workspace / "manifest.json")
     generated = ensure_json_object(coerce_json_value(manifest["generated"]), "manifest.generated")
     placeholder_candidates = load_json_object(workspace / "placeholder-candidates.json")
@@ -148,18 +148,18 @@ async def test_prepare_agent_workspace_records_text_fact_v2_scope_metadata(
     assert report.status == "ok"
     assert generated["scope_key"] == scope.scope_key
     assert generated["scope_hash"] == scope.scope_hash
-    assert generated["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert generated["text_fact_schema_version"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
     assert placeholder_candidates["scope_key"] == scope.scope_key
     assert placeholder_candidates["scope_hash"] == scope.scope_hash
-    assert placeholder_candidates["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert placeholder_candidates["text_fact_schema_version"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
 
 
 @pytest.mark.asyncio
-async def test_validate_agent_workspace_rejects_legacy_manifest_without_text_fact_v2_scope(
+async def test_validate_agent_workspace_rejects_manifest_missing_current_text_fact_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧 manifest 没有 v2 scope 时必须显式要求重新准备工作区。"""
+    """manifest 缺少当前文本事实 scope 时必须显式要求重新准备工作区。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -185,11 +185,11 @@ async def test_validate_agent_workspace_rejects_legacy_manifest_without_text_fac
 
 
 @pytest.mark.asyncio
-async def test_validate_agent_workspace_rejects_legacy_placeholder_candidates_without_text_fact_v2_scope(
+async def test_validate_agent_workspace_rejects_placeholder_candidates_missing_current_text_fact_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """旧占位符候选文件没有 v2 scope 时不能继续按当前正文验收。"""
+    """占位符候选文件缺少当前文本事实 scope 时不能继续按当前正文验收。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -219,7 +219,7 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """工作区候选 manifest 和草稿共用 native 明细，不再回到旧 scanner。"""
+    """工作区候选 manifest 和草稿必须消费 native 明细。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -242,9 +242,9 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
             }
         ]
 
-    def forbidden_legacy_placeholder_scan(*args: object, **kwargs: object) -> NoReturn:
+    def forbidden_python_placeholder_scan(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
-        raise AssertionError("prepare-agent-workspace 普通占位符草稿不应再调用旧 Python scanner")
+        raise AssertionError("prepare-agent-workspace 普通占位符草稿不应调用 Python scanner")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_details_from_entries",
@@ -253,7 +253,7 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
     )
     monkeypatch.setattr(
         "app.agent_toolkit.services.workspace.scan_placeholder_candidates",
-        forbidden_legacy_placeholder_scan,
+        forbidden_python_placeholder_scan,
         raising=False,
     )
 
@@ -283,9 +283,8 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
 async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """已有插件源码规则时，工作区准备复用风险扫描结果，不在文本范围构建中二次扫描。"""
+    """已有插件源码规则时，工作区准备复用当前扫描结果生成报告。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -308,8 +307,9 @@ async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        game_data = await load_game_data(
+        game_data = await load_active_runtime_game_data(
             minimal_game_dir,
+            include_plugin_source_files=True,
             include_writable_copies=False,
             run_dialogue_probe_check=False,
         )
@@ -327,16 +327,6 @@ async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
             ]
         )
 
-    def forbidden_scope_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
-        """prepare-agent-workspace 已有扫描结果时，TextScopeService 不应再扫描插件源码。"""
-        _ = (args, kwargs)
-        raise AssertionError("prepare-agent-workspace 不应在文本范围构建中重复扫描插件源码")
-
-    monkeypatch.setattr(
-        "app.text_scope.builder.build_plugin_source_scan",
-        forbidden_scope_plugin_source_scan,
-        raising=False,
-    )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
     report = await service.prepare_agent_workspace(
@@ -348,22 +338,15 @@ async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
     assert report.status == "ok"
     assert report.summary["plugin_source_rule_count"] == 1
 @pytest.mark.asyncio
-async def test_prepare_agent_workspace_uses_warm_text_index_without_full_scope_build(
+async def test_prepare_agent_workspace_uses_warm_text_index_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """warm index 可用时，工作区占位符候选不再触发完整文本范围构建。"""
+    """warm index 可用时，工作区准备复用当前索引文本范围。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("prepare-agent-workspace 命中 warm index 时不应构建完整文本范围")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.prepare_agent_workspace(
         game_title="テストゲーム",
@@ -380,12 +363,11 @@ async def test_prepare_agent_workspace_uses_warm_text_index_without_full_scope_b
 
 
 @pytest.mark.asyncio
-async def test_validate_agent_workspace_uses_warm_text_index_without_full_scope_build(
+async def test_validate_agent_workspace_uses_warm_text_index_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """warm index 可用时，工作区验收不再构建完整文本范围。"""
+    """warm index 可用时，工作区验收复用当前索引文本范围。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -396,12 +378,6 @@ async def test_validate_agent_workspace_uses_warm_text_index_without_full_scope_
         command_codes=None,
     )
     _ = await _rebuild_text_index_for_test(service)
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("validate-agent-workspace 命中 warm index 时不应构建完整文本范围")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
@@ -451,7 +427,7 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件源码支线验收用 Rust 候选事实，不回到旧 Python 插件源码主扫描。"""
+    """插件源码支线验收必须使用 Rust 候选事实。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins = ensure_json_array(
@@ -474,8 +450,9 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        game_data = await load_game_data(
+        game_data = await load_active_runtime_game_data(
             minimal_game_dir,
+            include_plugin_source_files=True,
             include_writable_copies=False,
             run_dialogue_probe_check=False,
         )
@@ -507,10 +484,6 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
         native_scan_count += 1
         return real_scan_native_rule_candidates(payload)
 
-    def forbidden_legacy_plugin_source_scan(*args: object, **kwargs: object) -> PluginSourceScan:
-        _ = (args, kwargs)
-        raise AssertionError("validate-agent-workspace 不应调用旧 Python 插件源码主扫描")
-
     def forbidden_write_probe_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
         raise AssertionError("validate-agent-workspace 写回探针不应二次扫描插件源码 AST")
@@ -518,11 +491,6 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
     monkeypatch.setattr(
         "app.plugin_source_text.native_scan.scan_native_rule_candidates",
         counting_scan_native_rule_candidates,
-    )
-    monkeypatch.setattr(
-        "app.text_scope.builder.build_plugin_source_scan",
-        forbidden_legacy_plugin_source_scan,
-        raising=False,
     )
     monkeypatch.setattr(
         "app.text_scope.write_probe.scan_plugin_source_files_text_strict",
@@ -538,24 +506,24 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
 
 
 @pytest.mark.asyncio
-async def test_validate_agent_workspace_skips_plugin_source_note_tag_python_extractor_fallbacks(
+async def test_validate_agent_workspace_uses_plugin_source_note_tag_native_paths(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """工作区验收规则分支不再构造插件源码/Note 标签 Python 提取器或完整文本范围。"""
+    """工作区验收规则分支使用当前 native 候选路径。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
     plugins = ensure_json_array(coerce_json_value(cast(object, json.loads(plugins_json_text))), "plugins")
-    plugins.append({"name": "WorkspaceFallbackGuard", "status": True, "description": "", "parameters": {}})
+    plugins.append({"name": "WorkspaceNativeGuard", "status": True, "description": "", "parameters": {}})
     _ = plugins_path.write_text(
         f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
         encoding="utf-8",
     )
     plugin_source_dir = minimal_game_dir / "js" / "plugins"
     plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "WorkspaceFallbackGuard.js").write_text(
+    _ = (plugin_source_dir / "WorkspaceNativeGuard.js").write_text(
         "Window_Base.prototype.drawText('ワークスペース検証本文', 0, 0, 320);\n",
         encoding="utf-8",
     )
@@ -572,13 +540,14 @@ async def test_validate_agent_workspace_skips_plugin_source_note_tag_python_extr
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        game_data = await load_game_data(
+        game_data = await load_active_runtime_game_data(
             minimal_game_dir,
+            include_plugin_source_files=True,
             include_writable_copies=False,
             run_dialogue_probe_check=False,
         )
         scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "WorkspaceFallbackGuard.js")
+    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "WorkspaceNativeGuard.js")
 
     workspace = tmp_path / "workspace"
     _ = await service.prepare_agent_workspace(
@@ -628,10 +597,6 @@ async def test_validate_agent_workspace_skips_plugin_source_note_tag_python_extr
         _ = (args, kwargs)
         raise AssertionError("validate-agent-workspace 不应构造 NoteTagTextExtraction")
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("validate-agent-workspace 不应构建完整 TextScopeService 范围")
-
     monkeypatch.setattr(
         "app.plugin_source_text.extraction.PluginSourceTextExtraction",
         forbidden_plugin_source_extractor,
@@ -640,7 +605,6 @@ async def test_validate_agent_workspace_skips_plugin_source_note_tag_python_extr
         "app.note_tag_text.extraction.NoteTagTextExtraction",
         forbidden_note_tag_extractor,
     )
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
@@ -672,7 +636,7 @@ async def test_validate_agent_workspace_note_tag_rules_counts_translations_for_m
         )
     _ = await _rebuild_text_index_for_test(service)
     async with await registry.open_game("テストゲーム") as session:
-        facts = await read_current_text_fact_records_v2(session, limit=None)
+        facts = await read_current_text_fact_records(session, limit=None)
         current_fact = next(
             fact
             for fact in facts
@@ -681,7 +645,9 @@ async def test_validate_agent_workspace_note_tag_rules_counts_translations_for_m
             and fact.location_path.endswith("/note/namePop")
             and fact.translatable_text == "導き手"
         )
-        current_item = text_fact_record_to_translation_item(current_fact)
+        index_records = await session.read_text_index_items_by_paths([current_fact.location_path])
+        assert index_records
+        current_item = text_fact_record_to_translation_item(current_fact, index_record=index_records[0])
         current_item.translation_lines = ["向导"]
         await session.write_translation_items([current_item])
     workspace = tmp_path / "workspace"
@@ -1008,7 +974,7 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
             if translated_text.strip()
         }
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_terminology_bundle(registry=filled_registry, glossary=filled_glossary)
         await session.replace_plugin_text_rules(
@@ -1371,11 +1337,11 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
         rules_text="{}",
         confirm_empty=True,
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1507,7 +1473,7 @@ async def test_validate_agent_workspace_uses_manifest_event_command_codes_for_em
         output_dir=workspace,
         command_codes={999},
     )
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_rule_review_state(
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,

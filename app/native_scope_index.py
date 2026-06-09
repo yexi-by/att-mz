@@ -545,12 +545,12 @@ def _native_storage_error(raw_text: str) -> NativeScopeIndexStorageError:
 
 
 def _validate_text_fact_storage_contract(result: JsonObject, label: str) -> None:
-    """校验 native storage 输出包含当前 v2 fact contract 字段。"""
+    """校验 native storage 输出包含当前文本事实契约字段。"""
     text_fact_schema_version = _text_fact_schema_version()
     schema_version = _read_int(result, "text_fact_schema_version", label)
     if schema_version != text_fact_schema_version:
         raise RuntimeError(
-            "text fact v2 schema_version 不受支持: "
+            "文本事实 schema_version 不满足当前要求: "
             + f"Rust 返回 {schema_version}，Python 支持 {text_fact_schema_version}。"
             + "影响命令: rebuild-text-index。"
             + "下一步：请重新构建 Rust 原生扩展或更新发行包，然后再运行 rebuild-text-index。"
@@ -570,10 +570,10 @@ def _validate_text_fact_storage_contract(result: JsonObject, label: str) -> None
 
 
 def _text_fact_schema_version() -> int:
-    """延迟读取 Python 持久层 v2 fact schema，避免 native adapter 顶层循环导入。"""
-    from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+    """延迟读取 Python 持久层文本事实 schema，避免 native adapter 顶层循环导入。"""
+    from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
 
-    return TEXT_FACT_SCHEMA_VERSION
+    return CURRENT_TEXT_FACT_CONTRACT_VERSION
 
 
 def _read_object_array(result: JsonObject, field_name: str, label: str) -> list[JsonObject]:

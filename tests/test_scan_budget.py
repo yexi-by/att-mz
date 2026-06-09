@@ -1,4 +1,4 @@
-"""Rust Scope/Index Engine 当前扫描预算和旧路径边界测试。"""
+"""Rust Scope/Index Engine 当前扫描预算和主路径边界测试。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from app.json_path_protocol import (
     jsonpath_to_event_command_location_path,
     jsonpath_to_plugin_location_path,
 )
+from app.text_fact_core import translation_matches_fact_sql
 from tests import scan_budget_contract
 from tests.scan_budget_contract import (
     P0_COMMANDS,
@@ -66,25 +67,6 @@ def _exported_names(path: Path) -> set[str]:
     return set()
 
 
-def _python_paths_containing(
-    marker: str,
-    *,
-    roots: tuple[Path, ...] | None = None,
-    excluded_paths: set[str] | None = None,
-) -> set[str]:
-    roots = roots or (Path("app"), Path("tests"))
-    excluded_paths = excluded_paths or set()
-    paths: set[str] = set()
-    for path in roots:
-        for candidate in path.rglob("*.py"):
-            candidate_text_path = candidate.as_posix()
-            if candidate_text_path in excluded_paths:
-                continue
-            if marker in candidate.read_text(encoding="utf-8"):
-                paths.add(candidate_text_path)
-    return paths
-
-
 def test_json_path_protocol_is_neutral_between_plugin_and_event_domains() -> None:
     """插件和事件指令共享中性 JSON path 协议。"""
     assert jsonpath_to_plugin_location_path(
@@ -128,7 +110,7 @@ def test_rust_scope_index_scan_budget_table_covers_current_p0_p1_commands() -> N
         assert budget.quality_gate_count <= 1, command_name
         assert budget.write_plan_count <= 1, command_name
         assert budget.authoritative_source.strip(), command_name
-        assert budget.old_path_action.strip(), command_name
+        assert budget.current_path_requirement.strip(), command_name
         assert budget.evidence.strip(), command_name
 
     for category, commands in required_by_category.items():
@@ -142,9 +124,9 @@ def test_rust_scope_index_scan_budget_table_covers_current_p0_p1_commands() -> N
 def test_budget_facts_keep_single_authoritative_native_or_sqlite_source() -> None:
     """关键命令的事实来源必须落在 Rust/native/SQLite 当前路径。"""
     expected_sources = {
-        "export-pending-translations --limit": "SQLite text_facts_v2 pending 快路径 / typed v2 adapter",
+        "export-pending-translations --limit": "SQLite text_facts pending 快路径 / current text fact adapter",
         "rebuild-text-index": "Rust build_scope_index / SQLite text index",
-        "quality-report": "Rust evaluate_scope_gate / Rust quality / SQLite text_facts_v2 / typed v2 adapter",
+        "quality-report": "Rust evaluate_scope_gate / Rust quality / SQLite text_facts / current text fact adapter",
         "write-back": "Rust evaluate_scope_gate / Rust write plan",
         "prepare-agent-workspace": "Rust build_scope_index / scan_rule_candidates",
         "scan-plugin-source-text": "Rust scan_rule_candidates(plugin_source)",
@@ -155,7 +137,7 @@ def test_budget_facts_keep_single_authoritative_native_or_sqlite_source() -> Non
         "export-event-commands-json": "Rust scan_rule_candidates(event_commands)",
         "validate-plugin-rules": "Rust scan_rule_candidates(plugin_config)",
         "export-mv-virtual-namebox-candidates": "Rust scan_rule_candidates(mv_virtual_namebox)",
-        "validate-source-residual-rules": "SQLite text_facts_v2 / typed v2 adapter",
+        "validate-source-residual-rules": "SQLite text_facts / current text fact adapter",
         "verify-feedback-text": "SQLite text_index_items / Rust plugin source runtime scan",
         "export-terminology": "terminology repository / terminology context",
         "probe-source-language": "raw JSON visible-text sampler",
@@ -165,7 +147,7 @@ def test_budget_facts_keep_single_authoritative_native_or_sqlite_source() -> Non
     for command_name, expected_source in expected_sources.items():
         budget = scan_budget_for_command(command_name)
         assert expected_source in budget.authoritative_source
-        for text in (budget.authoritative_source, budget.old_path_action, budget.evidence):
+        for text in (budget.authoritative_source, budget.current_path_requirement, budget.evidence):
             assert "待复核:" not in text
             assert "目标 Rust scan_rule_candidates" not in text
 
@@ -187,7 +169,7 @@ def test_p1b_candidate_commands_are_closed_over_native_or_sqlite_boundaries() ->
         if command_name in source_residual_commands:
             assert budget.text_scope_build_count == 0
             assert budget.candidate_scan_count == 0
-            assert "SQLite text_facts_v2 / typed v2 adapter" in budget.authoritative_source
+            assert "SQLite text_facts / current text fact adapter" in budget.authoritative_source
         else:
             assert budget.candidate_scan_count == 1
             assert "scan_rule_candidates" in budget.authoritative_source
@@ -195,10 +177,9 @@ def test_p1b_candidate_commands_are_closed_over_native_or_sqlite_boundaries() ->
         assert budget.write_plan_count == 0
 
 
-def test_legacy_plugin_source_scanner_helpers_are_not_public_or_production_paths() -> None:
-    """旧插件源码全量 scanner helper 不能作为公共导出或生产默认路径残留。"""
+def test_plugin_source_package_exposes_current_native_entrypoint() -> None:
+    """插件源码包根入口指向当前 native 扫描能力。"""
     package_exports = _exported_names(Path("app/plugin_source_text/__init__.py"))
-    scanner_source = Path("app/plugin_source_text/scanner.py").read_text(encoding="utf-8")
     native_source = Path("app/plugin_source_text/native_scan.py").read_text(encoding="utf-8")
     scanner_exports = _exported_names(Path("app/plugin_source_text/scanner.py"))
 
@@ -209,14 +190,6 @@ def test_legacy_plugin_source_scanner_helpers_are_not_public_or_production_paths
     assert "scan_plugin_source_file_text" not in scanner_exports
     assert "scan_plugin_source_file_text_strict" not in scanner_exports
     assert "find_candidate_by_selector" not in scanner_exports
-
-    legacy_markers = (
-        "_build_legacy_plugin_source_scan",
-        "_scan_legacy_plugin_source_files_text_strict",
-    )
-    for marker in legacy_markers:
-        assert marker not in scanner_source
-        assert _python_paths_containing(marker, roots=(Path("app"),)) == set()
 
     native_entrypoints = {
         "build_native_plugin_source_risk_report": "build_native_plugin_source_risk_report_from_inputs",
@@ -265,16 +238,11 @@ def test_nonstandard_data_scanner_helpers_are_not_package_root_exports() -> None
 
 
 def test_current_runtime_and_p1c_commands_do_not_rebuild_text_scope_by_default() -> None:
-    """P1-C 保留真实 I/O 成本，但不回退到 TextScopeService 或旧源码候选扫描。"""
-    feedback_source = Path("app/agent_toolkit/services/feedback.py").read_text(encoding="utf-8")
+    """P1-C 保留真实 I/O 成本，并使用当前 runtime scan 和术语入口。"""
     common_source = Path("app/agent_toolkit/services/common.py").read_text(encoding="utf-8")
     quality_source = Path("app/agent_toolkit/services/quality.py").read_text(encoding="utf-8")
     handler_source = Path("app/application/handler.py").read_text(encoding="utf-8")
     probe_source = Path("app/source_language_probe.py").read_text(encoding="utf-8")
-
-    verify_source = _source_for_function(feedback_source, "verify_feedback_text")
-    assert "TextScopeService" not in verify_source
-    assert "text_index_items_to_scope" not in verify_source
 
     collect_calls = _call_names_for_function(common_source, "_collect_feedback_text_occurrences")
     assert "scan_plugin_source_runtime_files_text_strict" in collect_calls
@@ -282,59 +250,43 @@ def test_current_runtime_and_p1c_commands_do_not_rebuild_text_scope_by_default()
     assert "PLUGIN_SOURCE_TEXT_PATTERN" not in common_source
 
     for function_name in ("audit_active_runtime", "diagnose_active_runtime"):
-        runtime_source = _source_for_function(quality_source, function_name)
         runtime_calls = _call_names_for_function(quality_source, function_name)
         assert "audit_active_runtime_plugin_source_with_scan_cache" in runtime_calls
-        assert "TextScopeService" not in runtime_source
 
     export_calls = _call_names_for_function(handler_source, "export_terminology")
-    import_source = _source_for_function(handler_source, "import_terminology")
     import_calls = _call_names_for_function(handler_source, "import_terminology")
     assert "_load_session_game_data" in export_calls
     assert "export_terminology_artifacts" in export_calls
     assert "extract_registry" in import_calls
     assert "extract_registry_and_contexts" not in import_calls
-    assert "TextScopeService" not in import_source
 
-    language_probe = _source_for_function(probe_source, "probe_source_language")
     language_probe_calls = _call_names_for_function(probe_source, "probe_source_language")
     assert "_read_standard_json_files" in language_probe_calls
     assert "_collect_visible_texts" in language_probe_calls
     assert "load_game_data" not in language_probe_calls
-    assert "TextScopeService" not in language_probe
 
 
 def test_agent_toolkit_scope_map_helper_uses_rust_text_index_not_python_scope_build() -> None:
-    """Agent 小命令读取正文事实时不能回退到 Python 完整文本范围构建。"""
+    """Agent 小命令读取正文事实时使用当前 text fact 查询。"""
     core_source = Path("app/agent_toolkit/services/core.py").read_text(encoding="utf-8")
 
-    extract_source = _source_for_function(core_source, "_extract_active_translation_data_map")
-    read_index_source = _source_for_function(core_source, "_read_active_translation_data_map_from_text_index")
     read_index_calls = _call_names_for_function(core_source, "_read_active_translation_data_map_from_text_index")
 
-    assert "TextScopeService" not in extract_source
-    assert "TextScopeService" not in read_index_source
     assert "rebuild_text_index_native_storage" in read_index_calls
-    assert "read_current_text_fact_translation_data_map_v2" in read_index_calls
+    assert "read_current_text_fact_translation_data_map" in read_index_calls
 
 
-def test_task11_agent_production_paths_do_not_rebuild_body_from_v1_index_rows() -> None:
+def test_agent_production_paths_keep_current_text_fact_readers() -> None:
     """Agent 生产路径不能再把 text_index_items.original_lines 当正文事实来源。"""
-    excluded_paths = {"app/text_index.py"}
-    for marker in (
-        "text_index_item_to_translation_item",
-        "text_index_items_to_translation_data_map",
-    ):
-        paths = _python_paths_containing(
-            marker,
-            roots=(Path("app"),),
-            excluded_paths=excluded_paths,
-        )
-        assert paths == set(), marker
+    core_source = Path("app/agent_toolkit/services/core.py").read_text(encoding="utf-8")
+    quality_source = Path("app/agent_toolkit/services/quality.py").read_text(encoding="utf-8")
+
+    assert "read_current_text_fact_translation_data_map" in core_source
+    assert "read_current_text_fact_translation_items_by_paths" in quality_source
 
 
-def test_task11_source_residual_rules_read_v2_facts_without_scope_rebuild() -> None:
-    """源文残留规则校验先检查 freshness，再按路径读当前 v2 fact。"""
+def test_source_residual_rules_read_current_facts_without_scope_rebuild() -> None:
+    """源文残留规则校验先检查 freshness，再按路径读当前文本事实。"""
     core_source = Path("app/agent_toolkit/services/core.py").read_text(encoding="utf-8")
     build_source = _source_for_function(core_source, "_build_source_residual_rule_records")
     build_calls = _call_names_for_function(core_source, "_build_source_residual_rule_records")
@@ -347,8 +299,8 @@ def test_task11_source_residual_rules_read_v2_facts_without_scope_rebuild() -> N
     assert "text_index_item_to_translation_item" not in build_source
 
 
-def test_task11_reset_input_uses_v2_fact_membership_not_index_rows() -> None:
-    """reset --input 的路径归属不能由旧 text_index_items 行决定。"""
+def test_reset_input_uses_current_fact_membership() -> None:
+    """reset --input 的路径归属来自当前 text fact。"""
     quality_source = Path("app/agent_toolkit/services/quality.py").read_text(encoding="utf-8")
     reset_source = _source_for_function(quality_source, "reset_translations")
     reset_calls = _call_names_for_function(quality_source, "reset_translations")
@@ -359,133 +311,66 @@ def test_task11_reset_input_uses_v2_fact_membership_not_index_rows() -> None:
     assert "text_index_items_to_translation_data_map" not in reset_source
 
 
-def test_batch7_production_paths_do_not_keep_python_text_scope_fallbacks() -> None:
-    """批次 7 后核心生产路径不得保留旧 Python 完整文本范围回退入口。"""
-    production_paths = (
-        Path("app/application/handler.py"),
-        Path("app/application/flow_gate.py"),
-        Path("app/application/write_back_gate.py"),
-        Path("app/agent_toolkit/services/coverage.py"),
-        Path("app/agent_toolkit/services/quality.py"),
-        Path("app/agent_toolkit/services/text_index.py"),
-        Path("app/text_index.py"),
-    )
-    for path in production_paths:
-        source = path.read_text(encoding="utf-8")
-        assert "TextScopeService" not in source, path.as_posix()
-
+def test_text_index_service_uses_current_native_rebuild_entry() -> None:
+    """核心 text index 入口使用当前 native rebuild。"""
     text_index_source = Path("app/text_index.py").read_text(encoding="utf-8")
     text_index_service_source = Path("app/agent_toolkit/services/text_index.py").read_text(encoding="utf-8")
     text_index_exports = _exported_names(Path("app/text_index.py"))
     assert "async def rebuild_text_index(" not in text_index_source
     assert "rebuild_text_index" not in text_index_exports
-    assert "TextScopeService" not in _source_for_function(text_index_service_source, "rebuild_text_index")
-    assert "text_index_items_to_scope" not in _source_for_function(
+    assert "rebuild_text_index_native_storage" in _source_for_function(
         text_index_service_source,
         "rebuild_text_index",
     )
     assert "build_text_index_workflow_gate_scope_hashes" not in text_index_source
     assert "build_text_index_workflow_gate_scope_hashes" not in text_index_exports
-    for old_bridge_marker in (
+    for removed_bridge_marker in (
         "_scope_index_payload_from_scope",
         "_text_index_records_from_native_rows",
         "_scope_summary_record_from_native",
         "_domain_summary_records_from_native",
         "_rule_hit_summary_records_from_native",
     ):
-        assert old_bridge_marker not in text_index_source
+        assert removed_bridge_marker not in text_index_source
 
 
-def test_task9_agent_common_does_not_reconstruct_scope_from_v1_index_rows() -> None:
-    """Agent 公共层不能再把 v1 text_index_items 还原成旧 TextScopeResult。"""
+def test_agent_common_reads_current_scope_summary_models() -> None:
+    """Agent 公共层读取当前 scope summary，不重建测试 scope 模型。"""
     common_source = Path("app/agent_toolkit/services/common.py").read_text(encoding="utf-8")
     common_exports = _exported_names(Path("app/agent_toolkit/services/common.py"))
 
-    for old_scope_marker in (
+    for removed_scope_marker in (
         "text_index_records_to_scope",
         "build_text_index_text_scope_report",
         "_text_scope_blocking_errors",
     ):
-        assert old_scope_marker not in common_source
-        assert old_scope_marker not in common_exports
+        assert removed_scope_marker not in common_source
+        assert removed_scope_marker not in common_exports
 
-    for old_model_marker in (
+    for removed_model_marker in (
         "TextScopeResult(",
         "TextScopeEntry(",
         "TranslationData(display_name=None, translation_items=[])",
     ):
-        assert old_model_marker not in common_source
+        assert removed_model_marker not in common_source
 
 
-def test_text_fact_v2_migrated_flows_do_not_use_translated_paths_sets() -> None:
-    """迁移后的生产主流程不得用 location_path 集合作为已翻译事实身份。"""
-    checked_files = [
-        Path("app/application/write_back_gate.py"),
-        Path("app/application/use_cases/translation_run.py"),
-        Path("app/agent_toolkit/services/common.py"),
-        Path("app/agent_toolkit/services/feedback.py"),
-        Path("app/agent_toolkit/services/rule_validation.py"),
-        Path("app/agent_toolkit/services/workspace.py"),
-        Path("app/text_index.py"),
-        Path("app/text_scope/builder.py"),
-        Path("rust/src/native_core/scope_index/mod.rs"),
-    ]
-    forbidden_markers = [
-        "translated_paths",
-        "read_translation_location_paths()",
-        "read_translation_location_paths(",
-        "location_path in translated_paths",
-        "location_path in effective_translated_paths",
-        "translated=record.location_path in",
-        "translated=item.location_path in",
-        "translated=hit.location_path in",
-    ]
-    for path in checked_files:
-        source = path.read_text(encoding="utf-8")
-        for marker in forbidden_markers:
-            assert marker not in source, f"{path.as_posix()} still contains {marker}"
-
-
-def test_text_fact_v2_success_identity_requires_current_hash_match() -> None:
-    """已翻译身份必须由当前 v2 fact 与保存译文完整 identity 匹配得出。"""
-    text_scope_source = Path("app/text_scope/builder.py").read_text(encoding="utf-8")
-    active_entry_source = _source_for_function(text_scope_source, "_active_item_to_scope_entry")
-    for marker in (
-        "item.fact_id is not None and item.fact_id in",
-        "if item.fact_id is not None and item.fact_id in",
-    ):
-        assert marker not in active_entry_source
-
+def test_text_fact_success_identity_requires_current_hash_match() -> None:
+    """已翻译身份必须由当前文本事实 与保存译文完整 identity 匹配得出。"""
     rust_scope_source = Path("rust/src/native_core/scope_index/mod.rs").read_text(encoding="utf-8")
     scope_gate_payload_source = rust_scope_source[
         rust_scope_source.index("struct ScopeGatePayload"):
         rust_scope_source.index("struct ScopeIndexDataFileInput")
     ]
-    assert "translated_fact_ids" not in scope_gate_payload_source
     for field_name in ("matched_translation_fact_ids", "quality_error_fact_ids"):
         field_index = scope_gate_payload_source.index(field_name)
         field_context = scope_gate_payload_source[max(0, field_index - 80):field_index]
         assert "#[serde(default)]" not in field_context
 
-    success_identity_paths = (
-        Path("app/application/use_cases/translation_run.py"),
-        Path("app/agent_toolkit/services/common.py"),
-        Path("app/agent_toolkit/services/feedback.py"),
-        Path("app/agent_toolkit/services/quality.py"),
-        Path("app/agent_toolkit/services/rule_identity.py"),
-        Path("app/agent_toolkit/services/rule_validation.py"),
-        Path("app/agent_toolkit/services/workspace.py"),
-        Path("app/text_index.py"),
-    )
-    for path in success_identity_paths:
-        source = path.read_text(encoding="utf-8")
-        assert "read_translation_fact_ids()" not in source, path.as_posix()
-        assert "require_translation_fact_ids" not in source, path.as_posix()
-        assert "translated_fact_ids: set[str]" not in source, path.as_posix()
-        assert "item.fact_id not in translated_fact_ids" not in source, path.as_posix()
-        assert "item.fact_id is not None and item.fact_id in translated_fact_ids" not in source, path.as_posix()
-        assert "hit.fact_id is not None and hit.fact_id in translated_fact_ids" not in source, path.as_posix()
-        assert "translated_fact_ids = {item.fact_id" not in source, path.as_posix()
+    matching_source = translation_matches_fact_sql()
+    assert "translations.fact_id = facts.fact_id" in matching_source
+    assert "source_fact_raw_hash = facts.raw_hash" in matching_source
+    assert "source_fact_translatable_hash = facts.translatable_hash" in matching_source
 
 
 def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> None:
@@ -493,7 +378,6 @@ def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> N
     workspace_source = Path("app/agent_toolkit/services/workspace.py").read_text(encoding="utf-8")
     mv_native_source = Path("app/rmmz/mv_namebox_native.py").read_text(encoding="utf-8")
     handler_source = Path("app/application/handler.py").read_text(encoding="utf-8")
-    exporter_source = Path("app/plugin_text/exporter.py").read_text(encoding="utf-8")
 
     workspace_index_calls = _call_names_for_function(
         workspace_source,
@@ -503,84 +387,19 @@ def test_workspace_mv_namebox_and_plugin_export_use_current_thin_adapters() -> N
     assert "rebuild_text_index_native_storage" in workspace_index_calls
     assert "rebuild_persistent_text_index" not in workspace_source
     assert "read_text_index_placeholder_texts" not in workspace_source
-    assert "read_current_text_fact_placeholder_entries_v2" in workspace_index_calls
+    assert "read_current_text_fact_placeholder_entries" in workspace_index_calls
     assert "text_index_items_to_translation_data_map" not in workspace_source
 
     assert "scan_native_rule_candidates" in _call_names_for_function(mv_native_source, "scan_native_mv_virtual_namebox")
     assert "collect_mv_virtual_namebox_candidates" not in mv_native_source
 
-    export_plugins_source = _source_for_function(handler_source, "export_plugins_json")
     export_plugins_calls = _call_names_for_function(handler_source, "export_plugins_json")
     assert "_load_session_game_data" in export_plugins_calls
     assert "export_plugins_json_file" in export_plugins_calls
-    for marker in (
-        "TextScopeService",
-        "scan_plugin_source_runtime_files_text_strict",
-        "build_native_plugin_source_scan",
-        "detect_text_index_invalidations",
-    ):
-        assert marker not in export_plugins_source
-        assert marker not in exporter_source
-
-
-def test_task6_rule_validation_production_paths_do_not_keep_python_extractor_fallbacks() -> None:
-    """Task 6 公共规则校验和工作区验收不得保留 Python 全量 extractor fallback。"""
-    production_paths = (
-        Path("app/agent_toolkit/services/common.py"),
-        Path("app/agent_toolkit/services/rule_validation.py"),
-        Path("app/agent_toolkit/services/workspace.py"),
-    )
-    forbidden_markers = (
-        "PluginSourceTextExtraction(",
-        "NoteTagTextExtraction(",
-        "TextScopeService().build(",
-        "TextScopeService(",
-    )
-    for path in production_paths:
-        source = path.read_text(encoding="utf-8")
-        for marker in forbidden_markers:
-            assert marker not in source, f"{path.as_posix()} still contains {marker}"
-
-
-def test_task7_text_fact_v2_identity_paths_do_not_fallback_to_location_or_python_scope() -> None:
-    """Text Fact v2 译文身份路径不能退回 location_path join 或 Python 全量范围。"""
-    identity_paths = (
-        Path("app/text_facts.py"),
-        Path("app/text_fact_counts.py"),
-        Path("app/text_fact_readers.py"),
-        Path("app/text_fact_quality.py"),
-        Path("app/persistence/translation_records.py"),
-        Path("app/agent_toolkit/services/rule_identity.py"),
-        Path("rust/src/native_core/write_back_plan/repository.rs"),
-    )
-    identity_forbidden_markers = (
-        "translations.location_path = facts.location_path",
-        "ON facts.location_path = translations.location_path",
-        "当前 v2 文本事实出现重复 location_path",
-    )
-    for path in identity_paths:
-        source = path.read_text(encoding="utf-8")
-        for marker in identity_forbidden_markers:
-            assert marker not in source, f"{path.as_posix()} still contains {marker}"
-
-    rule_validation_paths = (
-        Path("app/agent_toolkit/services/common.py"),
-        Path("app/agent_toolkit/services/rule_validation.py"),
-        Path("app/agent_toolkit/services/workspace.py"),
-    )
-    full_scope_markers = (
-        "TextScopeService().build(",
-        "PluginSourceTextExtraction(",
-        "NoteTagTextExtraction(",
-    )
-    for path in rule_validation_paths:
-        source = path.read_text(encoding="utf-8")
-        for marker in full_scope_markers:
-            assert marker not in source, f"{path.as_posix()} still contains {marker}"
 
 
 def test_task7_fact_id_helpers_use_batched_in_queries() -> None:
-    """fact_id helper 必须批量查询，避免按行读取 v2 facts 或 saved translations。"""
+    """fact_id helper 必须批量查询，避免按行读取 current text facts 或 saved translations。"""
     translation_source = Path("app/persistence/translation_records.py").read_text(encoding="utf-8")
     run_source = Path("app/persistence/run_records.py").read_text(encoding="utf-8")
     text_fact_readers_source = Path("app/text_fact_readers.py").read_text(encoding="utf-8")

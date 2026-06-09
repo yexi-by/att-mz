@@ -19,7 +19,7 @@ from app import (
 )
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
-from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION, current_schema_fingerprint, current_schema_sql
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION, current_schema_fingerprint, current_schema_sql
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, ensure_json_object
 from app.text_scope.models import WriteBackProbeError
@@ -87,7 +87,7 @@ class _FakeJavaScriptAstModule:
 
 
 class _FakeJavaScriptAstModuleWithoutContract:
-    """模拟旧版 JS AST 扩展：有 AST 入口但没有契约版本函数。"""
+    """模拟缺少当前契约函数的 JS AST 扩展。"""
 
     _payload: dict[str, object]
 
@@ -106,12 +106,12 @@ class _FakeJavaScriptAstModuleWithoutContract:
         return json.dumps({"files": [{"file_name": "test.js", **self._payload}]}, ensure_ascii=False)
 
 
-class _FakeJavaScriptAstModuleWithOldContract(_FakeJavaScriptAstModule):
-    """模拟旧版 JS AST 扩展：AST 入口存在但契约版本过低。"""
+class _FakeJavaScriptAstModuleWithMismatchedContract(_FakeJavaScriptAstModule):
+    """模拟契约版本不满足当前要求的 JS AST 扩展。"""
 
     @override
     def native_contract_version(self) -> int:
-        """返回旧契约版本。"""
+        """返回不满足当前要求的契约版本。"""
         return 1
 
 
@@ -179,9 +179,9 @@ class _FakeScopeIndexModule:
             "written_item_count": 0,
             "text_fact_count": 0,
             "render_part_count": 0,
-            "scope_key": "tfv2-scope:fixture",
+            "scope_key": "tf-scope:fixture",
             "scope_hash": "0" * 64,
-            "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION,
+            "text_fact_schema_version": CURRENT_TEXT_FACT_CONTRACT_VERSION,
         }
         self.calls = 0
 
@@ -253,14 +253,14 @@ class _FakeRuntimeThreadModule(_FakeQualityModule):
 
 
 class _MissingNativeContractModule:
-    """模拟旧版 Rust 扩展：没有契约版本函数。"""
+    """模拟缺少当前契约函数的 Rust 扩展。"""
 
 
-class _OldNativeContractModule:
-    """模拟旧版 Rust 扩展：契约版本过低。"""
+class _UnsupportedNativeContractModule:
+    """模拟契约版本不满足当前要求的 Rust 扩展。"""
 
     def native_contract_version(self) -> int:
-        """返回旧契约版本。"""
+        """返回不满足当前要求的契约版本。"""
         return 1
 
 
@@ -281,30 +281,30 @@ def _sample_game_data_for_note_tag_payload() -> GameData:
 
 
 def _import_missing_native_contract(_name: str) -> object:
-    """返回缺少契约版本函数的旧扩展替身。"""
+    """返回缺少契约版本函数的扩展替身。"""
     return _MissingNativeContractModule()
 
 
-def _import_old_native_contract(_name: str) -> object:
-    """返回契约版本过低的旧扩展替身。"""
-    return _OldNativeContractModule()
+def _import_unsupported_native_contract(_name: str) -> object:
+    """返回契约版本不满足当前要求的扩展替身。"""
+    return _UnsupportedNativeContractModule()
 
 
-def test_native_quality_rejects_stale_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """质检入口不能让旧 Rust 扩展静默忽略新文本规则字段。"""
+def test_native_quality_requires_current_python_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """质检入口要求 Rust 扩展满足当前 Python 契约。"""
     monkeypatch.setattr(native_quality, "import_module", _import_missing_native_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    with pytest.raises(RuntimeError, match="不满足当前 Python 契约"):
         _ = native_quality.native_thread_count()
 
-    monkeypatch.setattr(native_quality, "import_module", _import_old_native_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    monkeypatch.setattr(native_quality, "import_module", _import_unsupported_native_contract)
+    with pytest.raises(RuntimeError, match="不满足当前 Python 契约"):
         _ = native_quality.native_thread_count()
 
 
-def test_native_write_plan_rejects_stale_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """写回计划入口不能让旧 Rust 扩展继续执行旧质量 gate。"""
+def test_native_write_plan_requires_current_python_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """写回计划入口要求 Rust 扩展满足当前 Python 契约。"""
     monkeypatch.setattr(native_write_plan, "import_module", _import_missing_native_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    with pytest.raises(RuntimeError, match="不满足当前 Python 契约"):
         _ = native_write_plan.build_native_write_back_plan(
             game_path=Path("."),
             content_root=Path("."),
@@ -313,8 +313,8 @@ def test_native_write_plan_rejects_stale_native_contract(monkeypatch: pytest.Mon
             confirm_font_overwrite=False,
         )
 
-    monkeypatch.setattr(native_write_plan, "import_module", _import_old_native_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    monkeypatch.setattr(native_write_plan, "import_module", _import_unsupported_native_contract)
+    with pytest.raises(RuntimeError, match="不满足当前 Python 契约"):
         _ = native_write_plan.build_native_write_back_plan(
             game_path=Path("."),
             content_root=Path("."),
@@ -324,24 +324,24 @@ def test_native_write_plan_rejects_stale_native_contract(monkeypatch: pytest.Mon
         )
 
 
-def test_native_javascript_ast_rejects_stale_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """JS AST 入口必须和其它 Rust 热路径一样拒绝旧原生契约。"""
+def test_native_javascript_ast_requires_current_python_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """JS AST 入口必须和其它 Rust 热路径一样要求当前原生契约。"""
     valid_payload: dict[str, object] = {"has_error": False, "spans": list[object]()}
 
     def import_missing_contract(_name: str) -> object:
-        """返回缺少契约版本函数的旧 JS AST 扩展。"""
+        """返回缺少契约版本函数的 JS AST 扩展。"""
         return _FakeJavaScriptAstModuleWithoutContract(valid_payload)
 
     monkeypatch.setattr(native_javascript_ast, "import_module", import_missing_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    with pytest.raises(RuntimeError, match="不满足当前 Python 契约"):
         _ = native_javascript_ast.parse_native_javascript_string_spans("'文本'")
 
     def import_old_contract(_name: str) -> object:
-        """返回契约版本过低的旧 JS AST 扩展。"""
-        return _FakeJavaScriptAstModuleWithOldContract(valid_payload)
+        """返回契约版本不满足当前要求的 JS AST 扩展。"""
+        return _FakeJavaScriptAstModuleWithMismatchedContract(valid_payload)
 
     monkeypatch.setattr(native_javascript_ast, "import_module", import_old_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    with pytest.raises(RuntimeError, match="不满足当前 Python 契约"):
         _ = native_javascript_ast.parse_native_javascript_string_spans("'文本'")
 
 
@@ -884,36 +884,36 @@ def test_native_rule_candidates_requires_contract_metrics(
         _ = native_scope_index.scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
 
 
-def test_shared_schema_fingerprint_requires_text_fact_v2_tables_and_indexes() -> None:
-    """共享 schema 指纹必须覆盖 text fact v2 表和关键索引。"""
+def test_shared_schema_fingerprint_requires_current_text_fact_tables_and_indexes() -> None:
+    """共享 schema 指纹必须覆盖 当前文本事实 表和关键索引。"""
     schema_sql = current_schema_sql()
     for marker in (
-        "text_facts_v2",
-        "text_fact_render_parts_v2",
-        "text_fact_domain_payloads_v2",
-        "text_fact_scope_v2",
-        "idx_text_facts_v2_domain_location",
-        "idx_text_facts_v2_domain_source_file",
-        "idx_text_facts_v2_selector",
-        "idx_text_facts_v2_visible_hash",
-        "idx_text_facts_v2_translatable_hash",
-        "idx_text_facts_v2_scope_key",
+        "text_facts",
+        "text_fact_render_parts",
+        "text_fact_domain_payloads",
+        "text_fact_scope",
+        "idx_text_facts_domain_location",
+        "idx_text_facts_domain_source_file",
+        "idx_text_facts_selector",
+        "idx_text_facts_visible_hash",
+        "idx_text_facts_translatable_hash",
+        "idx_text_facts_scope_key",
     ):
         assert marker in schema_sql
     assert len(current_schema_fingerprint()) == 64
 
 
-def test_native_schema_fingerprint_rejects_stale_v1_schema(
+def test_native_schema_fingerprint_rejects_mismatched_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Python adapter 不能接受旧 Rust 扩展编译进来的 v1 schema 指纹。"""
+    """Python adapter 不能接受不满足当前要求的 schema 指纹。"""
     fake_module = _FakeScopeIndexModule(
         {
             "candidates": [],
             "candidate_summary": [],
             "scan_summary": {},
         },
-        schema_fingerprint="legacy-v1-fingerprint",
+        schema_fingerprint="invalid-schema-fingerprint",
     )
 
     def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
@@ -929,7 +929,7 @@ def test_native_schema_fingerprint_rejects_stale_v1_schema(
 def test_native_storage_contract_error_names_rebuild_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """storage 返回旧 text fact schema 时，错误必须告诉用户重建当前索引。"""
+    """storage 返回不满足当前 text fact 契约的结果时提示重建当前索引。"""
     fake_module = _FakeScopeIndexModule(
         {
             "candidates": [],
@@ -941,9 +941,9 @@ def test_native_storage_contract_error_names_rebuild_command(
             "written_item_count": 0,
             "text_fact_count": 0,
             "render_part_count": 0,
-            "scope_key": "legacy-scope",
+            "scope_key": "invalid-scope",
             "scope_hash": "0" * 64,
-            "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION - 1,
+            "text_fact_schema_version": CURRENT_TEXT_FACT_CONTRACT_VERSION - 1,
         },
     )
 
@@ -965,7 +965,7 @@ def test_native_storage_contract_error_names_rebuild_command(
 def test_write_probe_requires_precomputed_plugin_source_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件源码写回探针不能再临时调用旧 Python runtime scanner。"""
+    """插件源码写回探针必须由当前预计算扫描提供上下文。"""
 
     def successful_native_probe(
         *,
@@ -980,7 +980,7 @@ def test_write_probe_requires_precomputed_plugin_source_scan(
     def forbidden_runtime_scan(*args: object, **kwargs: object) -> object:
         """生产写回探针不应再临时扫描插件源码。"""
         _ = (args, kwargs)
-        raise AssertionError("旧写回探针不应临时扫描插件源码")
+        raise AssertionError("当前写回探针不应临时扫描插件源码")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
@@ -1172,7 +1172,7 @@ def test_collect_native_note_tag_source_details_returns_source_summary(
 def test_collect_native_note_tag_source_details_requires_source_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧 Rust 扩展缺少 source_details 时不能静默当作无来源。"""
+    """native Note 标签结果缺少 source_details 时不能静默当作无来源。"""
     fake_module = _FakeScopeIndexModule(
         {
             "candidates": [],

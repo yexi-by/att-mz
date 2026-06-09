@@ -10,10 +10,10 @@ from typing import cast
 
 from app.agent_toolkit import AgentToolkitService
 from app.native_write_plan import build_native_write_back_plan, build_native_write_back_setting_payload
-from app.persistence.records import TextFactV2ReadFilter
+from app.persistence.records import TextFactReadFilter
 from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME
 from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_lines
-from app.text_scope import TextScopeService
+from app.rmmz.loader import load_active_runtime_game_data
 from app.text_index import (
     TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
     TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
@@ -24,15 +24,15 @@ from tests._native_write_plan_helper import (
     _text_fact_domain_for_helper,
     _translation_item_row_for_temp_db,
 )
-from tests.current_v2_scope import (
-    read_current_v2_scope_for_test,
-    rebuild_current_v2_scope_for_test,
+from tests.current_text_fact_scope import (
+    read_current_text_fact_scope_for_test,
+    rebuild_current_text_fact_scope_for_test,
 )
 from tests.rmmz_writeback_contract_fixtures import *
 
 
 def test_native_write_plan_helper_serializes_temp_rows_by_item_index() -> None:
-    """测试临时译文行必须按 item 身份取 v2 fact，不能按 path 合并。"""
+    """测试临时译文行必须按 item 身份取 current text fact，不能按 path 合并。"""
     location_path = "CommonEvents.json/1/0"
     first_item = TranslationItem(
         location_path=location_path,
@@ -76,9 +76,9 @@ def test_native_write_plan_helper_rejects_unknown_current_fact_path() -> None:
 
 
 async def _current_fact_id_for_path(session: TargetGameSession, location_path: str) -> str:
-    """读取当前 v2 fact_id，供写回质量错误测试使用。"""
+    """读取当前文本事实 fact_id，供写回质量错误测试使用。"""
     async with session.connection.execute(
-        "SELECT fact_id FROM text_facts_v2 WHERE location_path = ? ORDER BY fact_id LIMIT 1",
+        "SELECT fact_id FROM text_facts WHERE location_path = ? ORDER BY fact_id LIMIT 1",
         (location_path,),
     ) as cursor:
         row = await cursor.fetchone()
@@ -93,7 +93,7 @@ async def _write_translations_from_rebuilt_text_index(
     setting_path: Path,
     text_rules: TextRules,
 ) -> None:
-    """按 Rust 持久文本索引写入测试译文，避免旧 Python scope 成为第二事实源。"""
+    """按 Rust 持久文本索引写入测试译文，避免 Python scope 成为第二事实源。"""
     rebuild_report = await AgentToolkitService(
         game_registry=registry,
         setting_path=setting_path,
@@ -101,7 +101,7 @@ async def _write_translations_from_rebuilt_text_index(
     assert rebuild_report.status == "ok"
     async with await registry.open_game(game_title) as session:
         indexed_items = await session.read_text_index_items()
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -162,9 +162,9 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
                 else None
             ),
         )
-        scope = await read_current_v2_scope_for_test(session=session)
+        scope = await read_current_text_fact_scope_for_test(session=session)
         if mode != "write_terminology":
-            await write_v2_test_translation_items(session,
+            await write_current_translation_items_for_test(session,
                 [
                     TranslationItem(
                         location_path=item.location_path,
@@ -186,11 +186,6 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
         setting_path=setting_path,
     ).rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """写回前检查应复用持久索引，不应重新构建 Python 全量文本范围。"""
-        _ = (args, kwargs)
-        raise AssertionError("写回相关命令不应重新构建 Python 全量文本范围")
 
     async def forbidden_full_index_rows(*args: object, **kwargs: object) -> NoReturn:
         """写回前检查应使用 SQL 摘要，不应读取全部 text index rows。"""
@@ -235,7 +230,6 @@ async def test_write_related_commands_reuse_text_index_scope_gate_without_python
             timings_ms={"total": 1},
         )
 
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr(
         "app.persistence.text_index_records.TextIndexRecordSessionMixin.read_text_index_items",
         forbidden_full_index_rows,
@@ -297,8 +291,8 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await read_current_v2_scope_for_test(session=session)
-        await write_v2_test_translation_items(session,
+        scope = await read_current_text_fact_scope_for_test(session=session)
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -322,30 +316,21 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
     assert rebuild_report.status == "ok"
 
     async with await registry.open_game("テストゲーム") as session:
-        await write_v2_test_translation_items(session,
-            [
-                TranslationItem(
-                    location_path="System.json/staleTranslation",
-                    item_type="short_text",
-                    role=None,
-                    original_lines=["古いテキスト"],
-                    source_line_paths=[],
-                    translation_lines=["索引外旧译文"],
-                )
-            ]
+        await insert_invalid_fact_translation_row_for_test(
+            session,
+            location_path="System.json/invalidFactTranslation",
+            item_type="short_text",
+            role=None,
+            original_lines=["無効なテキスト"],
+            source_line_paths=[],
+            translation_lines=["当前无效 fact 译文"],
         )
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """stale gate 应使用索引 SQL 摘要，不应重建 Python 全量文本范围。"""
-        _ = (args, kwargs)
-        raise AssertionError("warm index stale gate 不应重建 Python 全量文本范围")
-
     def forbidden_native_plan(**kwargs: object) -> NoReturn:
-        """stale gate 失败时不应继续生成 Rust 写回计划。"""
+        """当前 fact 检查失败时不应继续生成 Rust 写回计划。"""
         _ = kwargs
-        raise AssertionError("stale gate 失败时不应继续生成 Rust 写回计划")
+        raise AssertionError("当前 fact 检查失败时不应继续生成 Rust 写回计划")
 
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr("app.application.handler.build_native_write_back_plan", forbidden_native_plan)
 
     handler = TranslationHandler(registry, LLMHandler())
@@ -360,11 +345,11 @@ async def test_write_back_warm_index_rejects_saved_translation_outside_writable_
 
 
 @pytest.mark.asyncio
-async def test_write_back_allowed_paths_do_not_scan_unrelated_stale_translations(
+async def test_write_back_allowed_paths_do_not_scan_unrelated_mismatched_translations(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """显式允许路径写回只检查本次候选范围，不被范围外旧译文阻断。"""
+    """显式允许路径写回只检查本次候选范围，不被范围外无效 fact 译文阻断。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     first_path = "System.json/gameTitle"
@@ -383,7 +368,7 @@ async def test_write_back_allowed_paths_do_not_scan_unrelated_stale_translations
         second_item = indexed_by_path[second_path]
         assert first_item.writable
         assert second_item.writable
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=first_item.location_path,
@@ -403,17 +388,14 @@ async def test_write_back_allowed_paths_do_not_scan_unrelated_stale_translations
                 ),
             ]
         )
-        await write_v2_test_translation_items(session,
-            [
-                TranslationItem(
-                    location_path="System.json/staleTranslation",
-                    item_type="short_text",
-                    role=None,
-                    original_lines=["古いテキスト"],
-                    source_line_paths=[],
-                    translation_lines=["索引外旧译文"],
-                )
-            ]
+        await insert_invalid_fact_translation_row_for_test(
+            session,
+            location_path="System.json/invalidFactTranslation",
+            item_type="short_text",
+            role=None,
+            original_lines=["無効なテキスト"],
+            source_line_paths=[],
+            translation_lines=["当前无效 fact 译文"],
         )
         setting_payload, _font_path, _font_names = build_native_write_back_setting_payload(
             setting=setting,
@@ -435,7 +417,7 @@ async def test_write_back_allowed_paths_do_not_scan_unrelated_stale_translations
     assert planned.summary.data_item_count + planned.summary.plugin_item_count == 1
     assert "允许路径译文" in planned_content
     assert "未允许路径译文" not in planned_content
-    assert "索引外旧译文" not in planned_content
+    assert "当前无效 fact 译文" not in planned_content
 
 
 @pytest.mark.asyncio
@@ -453,14 +435,14 @@ async def test_write_back_allowed_paths_do_not_scan_unrelated_stale_translations
         ("write_terminology", "precheck_missing"),
     ],
 )
-async def test_write_related_commands_rebuild_missing_or_stale_text_index_before_fast_gate(
+async def test_write_related_commands_rebuild_missing_or_mismatched_text_index_before_fast_gate(
     mode: str,
     index_state: str,
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写回相关入口索引缺失或过期时应先重建，再走索引快路径。"""
+    """写回相关入口索引缺失或不匹配时应先重建，再走索引快路径。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_path = app_home / "setting.toml"
@@ -479,8 +461,8 @@ async def test_write_related_commands_rebuild_missing_or_stale_text_index_before
             registry=TerminologyRegistry(speaker_names={"アリス": "爱丽丝"}),
             glossary=TerminologyGlossary(terms={"アリス": "爱丽丝"}),
         )
-        scope = await read_current_v2_scope_for_test(session=session)
-        await write_v2_test_translation_items(session,
+        scope = await read_current_text_fact_scope_for_test(session=session)
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -602,13 +584,13 @@ async def test_write_related_commands_rebuild_missing_or_stale_text_index_before
         "write_terminology",
     ],
 )
-async def test_write_related_commands_stop_when_text_index_rebuild_fails_without_fallback(
+async def test_write_related_commands_stop_when_text_index_rebuild_fails_without_python_scan(
     mode: str,
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """写回索引自动重建失败时必须显式停止，不应继续旧慢路径或写文件计划。"""
+    """写回索引自动重建失败时必须显式停止，不应继续 Python 重型路径或写文件计划。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_path = app_home / "setting.toml"
@@ -703,10 +685,10 @@ async def test_write_back_warm_index_rejects_quality_errors_without_python_scope
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await read_current_v2_scope_for_test(session=session)
+        scope = await read_current_text_fact_scope_for_test(session=session)
         active_items = scope.active_items()
         failed_item = active_items[0]
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -752,11 +734,6 @@ async def test_write_back_warm_index_rejects_quality_errors_without_python_scope
     ).rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 写回质量 gate 不应重建 Python 全量文本范围。"""
-        _ = (args, kwargs)
-        raise AssertionError("warm index 写回质量 gate 不应重建 Python 全量文本范围")
-
     async def forbidden_quality_error_object_read(*args: object, **kwargs: object) -> NoReturn:
         """warm index 写回质量 gate 不应读取完整质量错误对象。"""
         _ = (args, kwargs)
@@ -767,7 +744,6 @@ async def test_write_back_warm_index_rejects_quality_errors_without_python_scope
         _ = kwargs
         raise AssertionError("质量 gate 失败时不应继续生成写回计划")
 
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr(
         "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors_by_paths",
         forbidden_quality_error_object_read,
@@ -791,7 +767,7 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """warm index 写回不应被已经保存译文修复的旧质量错误阻断。"""
+    """warm index 写回不应被已经保存译文修复的失效质量错误阻断。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_path = app_home / "setting.toml"
@@ -808,10 +784,10 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await read_current_v2_scope_for_test(session=session)
+        scope = await read_current_text_fact_scope_for_test(session=session)
         active_items = scope.active_items()
         failed_item = active_items[0]
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
@@ -856,11 +832,6 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
     ).rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 写回不应为了已修复质量错误重建 Python 全量文本范围。"""
-        _ = (args, kwargs)
-        raise AssertionError("warm index 写回不应重建 Python 全量文本范围")
-
     async def forbidden_quality_error_object_read(*args: object, **kwargs: object) -> NoReturn:
         """warm index 写回不应读取完整质量错误对象来判断已修复路径。"""
         _ = (args, kwargs)
@@ -889,7 +860,6 @@ async def test_write_back_warm_index_ignores_quality_error_after_translation_sav
             timings_ms={"total": 1},
         )
 
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr(
         "app.persistence.run_records.RunRecordSessionMixin.read_translation_quality_errors_by_paths",
         forbidden_quality_error_object_read,
@@ -931,7 +901,7 @@ async def test_direct_write_back_delegates_native_quality_to_rust_plan(
             session=session,
             game_dir=minimal_game_dir,
         )
-        scope = await read_current_v2_scope_for_test(session=session)
+        scope = await read_current_text_fact_scope_for_test(session=session)
         translated_items: list[TranslationItem] = []
         for item in scope.active_items():
             translation_lines = [
@@ -950,7 +920,7 @@ async def test_direct_write_back_delegates_native_quality_to_rust_plan(
                     translation_lines=translation_lines,
                 )
             )
-        await write_v2_test_translation_items(session, translated_items)
+        await write_current_translation_items_for_test(session, translated_items)
 
     def forbidden_python_native_check(*args: object, **kwargs: object) -> NoReturn:
         """Python 写回前置不应再重复执行 Rust 已覆盖的 native 质量检查。"""
@@ -1108,7 +1078,12 @@ async def test_direct_write_back_rejects_latest_quality_errors(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data = await load_game_data(minimal_game_dir)
+        game_data = await load_active_runtime_game_data(
+            minimal_game_dir,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
+        )
         placeholder_record = PlaceholderRuleRecord(
             pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
@@ -1156,7 +1131,7 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             ),
             reviewed_empty=True,
         )
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1277,7 +1252,12 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data = await load_game_data(minimal_game_dir)
+        game_data = await load_active_runtime_game_data(
+            minimal_game_dir,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
+        )
         placeholder_record = PlaceholderRuleRecord(
             pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
@@ -1325,7 +1305,7 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
             ),
             reviewed_empty=True,
         )
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1465,7 +1445,12 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        game_data = await load_game_data(minimal_game_dir)
+        game_data = await load_active_runtime_game_data(
+            minimal_game_dir,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
+        )
         placeholder_record = PlaceholderRuleRecord(
             pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
@@ -1535,7 +1520,7 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             ),
             reviewed_empty=True,
         )
-        scope = await rebuild_current_v2_scope_for_test(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -1574,7 +1559,7 @@ async def test_native_write_back_reads_mv_namebox_render_parts_not_saved_source_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MV 写回必须用 v2 fact/render parts 重建源文本，不能信任旧译文记录源字段。"""
+    """MV 写回必须用 current text fact/render parts 重建源文本，不能信任保存译文记录源字段。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_path = app_home / "setting.toml"
@@ -1616,25 +1601,25 @@ async def test_native_write_back_reads_mv_namebox_render_parts_not_saved_source_
     scope_key = str(rebuild_report.summary["scope_key"])
 
     async with await registry.open_game(record.game_title) as session:
-        facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        facts = await session.read_text_facts(
+            TextFactReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
         )
         fact = next(item for item in facts if item.location_path == "CommonEvents.json/2/0")
-        render_parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+        render_parts = await session.read_text_fact_render_parts([fact.fact_id])
         assert "".join(part.raw_text for part in render_parts) == r"\n<Dan:> Hello"
         indexed_items = await session.read_text_index_items()
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=(
-                        "旧译文记录里的错误说话人"
+                        "保存译文记录里的不匹配说话人"
                         if item.location_path == fact.location_path
                         else item.role
                     ),
                     original_lines=(
-                        ["OLD_SOURCE_FIELD_SHOULD_NOT_BE_USED"]
+                        ["MISMATCHED_SOURCE_FIELD_SHOULD_NOT_BE_USED"]
                         if item.location_path == fact.location_path
                         else [line for line in item.original_lines]
                     ),
@@ -1690,7 +1675,7 @@ async def test_native_plugin_source_runtime_maps_use_v2_fact_hashes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """插件源码 runtime map 的源文本 hash 必须来自 v2 fact raw_hash。"""
+    """插件源码 runtime map 的源文本 hash 必须来自 current text fact raw_hash。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_path = app_home / "setting.toml"
@@ -1754,11 +1739,11 @@ async def test_native_plugin_source_runtime_maps_use_v2_fact_hashes(
     scope_key = str(rebuild_report.summary["scope_key"])
 
     async with await registry.open_game(record.game_title) as session:
-        facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(scope_key=scope_key, domain="plugin_source")
+        facts = await session.read_text_facts(
+            TextFactReadFilter(scope_key=scope_key, domain="plugin_source")
         )
         fact = next(item for item in facts if item.source_file == "HashEscapedText.js")
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=fact.location_path,
@@ -1799,7 +1784,7 @@ async def test_native_plugin_source_runtime_maps_use_v2_fact_hashes(
 
 
 @pytest.mark.asyncio
-async def test_native_write_back_blocks_stale_plugin_source_raw_selector(
+async def test_native_write_back_blocks_mismatched_plugin_source_raw_selector(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1871,11 +1856,11 @@ async def test_native_write_back_blocks_stale_plugin_source_raw_selector(
     scope_key = str(rebuild_report.summary["scope_key"])
 
     async with await registry.open_game(record.game_title) as session:
-        facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(scope_key=scope_key, domain="plugin_source")
+        facts = await session.read_text_facts(
+            TextFactReadFilter(scope_key=scope_key, domain="plugin_source")
         )
         fact = next(item for item in facts if item.source_file == "RawSelectorChanged.js")
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=fact.location_path,

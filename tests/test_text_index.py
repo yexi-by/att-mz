@@ -16,10 +16,10 @@ from app.native_scope_index import build_native_plugin_source_candidates_payload
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
 from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
 from app.persistence import GameRegistry
-from app.persistence.records import TextIndexMetadata
+from app.persistence.records import TextFactRecord, TextIndexMetadata
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rule_review import EVENT_COMMAND_TEXT_RULE_DOMAIN, PLUGIN_TEXT_RULE_DOMAIN
-from app.rmmz import load_game_data
+from app.rmmz.loader import load_translation_source_game_data
 from app.rmmz.schema import (
     MvVirtualNameboxRuleRecord,
     NonstandardDataTextRuleRecord,
@@ -40,13 +40,50 @@ from app.text_index import (
     evaluate_text_index_scope_gate,
     text_index_source_branch_gates_prechecked,
 )
-from app.text_fact_readers import read_current_text_fact_records_v2
+from app.text_fact_readers import read_current_text_fact_records
+from app.text_fact_core import TextFactContractError
 from app.text_fact_quality import text_fact_record_to_translation_item
-from app.text_scope import TextScopeService
 from app.utils.config_loader_utils import load_setting
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+def make_current_text_fact_record(
+    *,
+    fact_id: str = "fact-current-1",
+    location_path: str = "Map001.json/events/1/pages/0/list/0/parameters/0",
+    translatable_text: str = "こんにちは",
+) -> TextFactRecord:
+    """构造当前文本事实测试记录。"""
+    return TextFactRecord(
+        fact_id=fact_id,
+        schema_version=2,
+        domain="event_command",
+        location_path=location_path,
+        source_file="Map001.json",
+        source_type="event_command",
+        item_type="short_text",
+        role="",
+        selector="event:1/page:0/list:0",
+        raw_text=translatable_text,
+        visible_text=translatable_text,
+        translatable_text=translatable_text,
+        raw_hash=f"raw:{fact_id}",
+        visible_hash=f"visible:{fact_id}",
+        translatable_hash=f"translatable:{fact_id}",
+        scope_key="scope-current",
+    )
+
+
+def test_text_fact_translation_item_requires_current_index_locator() -> None:
+    """当前文本事实转换翻译条目时必须有当前索引定位记录。"""
+    fact = make_current_text_fact_record()
+
+    with pytest.raises(TextFactContractError) as exc_info:
+        _ = text_fact_record_to_translation_item(fact, index_record=None)
+
+    assert "当前文本事实与当前文本索引不一致" in str(exc_info.value)
 
 
 def build_english_text_rules() -> TextRules:
@@ -177,7 +214,7 @@ async def test_prompt_context_version_change_invalidates_text_index(
 
     async with await registry.open_game(record.game_title) as session:
         text_rules = build_english_text_rules()
-        monkeypatch.setattr("app.text_index.TEXT_INDEX_PROMPT_CONTEXT_VERSION", "legacy-prompt-context-test")
+        monkeypatch.setattr("app.text_index.TEXT_INDEX_PROMPT_CONTEXT_VERSION", "previous-prompt-context-test")
     report = await service.rebuild_text_index(game_title=record.game_title)
     assert report.status == "ok"
 
@@ -200,35 +237,19 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
 ) -> None:
     """Agent 服务重建文本范围索引后，数据库可读取同一份元信息。"""
 
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """生产 rebuild-text-index 冷路径不应构建 Python 完整 scope。"""
-        _ = (args, kwargs)
-        raise AssertionError("rebuild-text-index 冷路径不应调用 TextScopeService.build")
-
     async def forbidden_game_data_load(*args: object, **kwargs: object) -> NoReturn:
         """首次冷重建不应为了 gate 加载 Python GameData。"""
         _ = (args, kwargs)
         raise AssertionError("rebuild-text-index 冷路径不应加载 Python GameData")
 
-    def forbidden_scope_restore(*args: object, **kwargs: object) -> NoReturn:
-        """首次冷重建不应把 text_index_items 还原成完整 scope 只为补 gate。"""
-        _ = (args, kwargs)
-        raise AssertionError("rebuild-text-index 冷路径不应还原完整 scope")
-
     from app.agent_toolkit.services import text_index as text_index_service_module
 
     assert not hasattr(text_index_service_module, "collect_workflow_gate_errors")
     assert not hasattr(text_index_service_module, "refresh_text_index_external_rule_gate_metadata")
-    assert not hasattr(text_index_service_module, "text_index_items_to_scope")
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
     monkeypatch.setattr(
         AgentToolkitService,
         "_load_translation_source_game_data",
         forbidden_game_data_load,
-    )
-    monkeypatch.setattr(
-        "app.text_index.text_index_items_to_scope",
-        forbidden_scope_restore,
     )
 
     registry = GameRegistry(tmp_path / "db")
@@ -256,7 +277,7 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
     assert isinstance(report.summary["render_part_count"], int)
     assert report.summary["render_part_count"] >= indexed_count
     assert isinstance(report.summary["scope_key"], str)
-    assert str(report.summary["scope_key"]).startswith("tfv2-scope:")
+    assert str(report.summary["scope_key"]).startswith("tf-scope:")
     assert isinstance(report.summary["scope_hash"], str)
     assert len(str(report.summary["scope_hash"])) == 64
     assert isinstance(report.summary["source_snapshot_hash"], str)
@@ -305,7 +326,7 @@ async def test_agent_service_rebuild_text_index_writes_database_index(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_text_index_recomputes_gate_metadata_without_python_fallback(
+async def test_rebuild_text_index_recomputes_gate_metadata_without_python_scan(
     minimal_english_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -394,7 +415,12 @@ async def test_rebuild_text_index_event_command_scope_hash_matches_current_confi
     ).rebuild_text_index(game_title=record.game_title)
 
     assert report.status == "ok"
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
     expected_hash = event_command_rule_scope_hash_for_command_codes(
         game_data=game_data,
         command_codes=frozenset({101}),
@@ -649,7 +675,7 @@ async def test_rebuild_text_index_allows_plugin_source_file_hash_drift_when_sele
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
-                    file_hash="stale-diagnostic-hash",
+                    file_hash="mismatch-diagnostic-hash",
                     selectors=[selector],
                     excluded_selectors=[],
                 )
@@ -743,13 +769,13 @@ async def test_rebuild_text_index_reads_only_plugin_source_rule_files(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stale_mode", ["file_missing", "selector_missing"])
-async def test_rebuild_text_index_rejects_stale_plugin_source_rules_in_rust_path(
+@pytest.mark.parametrize("mismatch_mode", ["file_missing", "selector_missing"])
+async def test_rebuild_text_index_rejects_mismatched_plugin_source_rules_in_rust_path(
     minimal_game_dir: Path,
     tmp_path: Path,
-    stale_mode: str,
+    mismatch_mode: str,
 ) -> None:
-    """Rust 冷重建遇到过期插件源码规则时返回稳定业务错误码。"""
+    """Rust 冷重建遇到插件源码规则与当前候选不匹配时返回稳定业务错误码。"""
     source = "\n".join(
         [
             "(() => {",
@@ -788,14 +814,14 @@ async def test_rebuild_text_index_rejects_stale_plugin_source_rules_in_rust_path
                     file_hash=build_plugin_source_file_hash(source_for_rules),
                     selectors=[
                         f"{selector}-missing"
-                        if stale_mode == "selector_missing"
+                        if mismatch_mode == "selector_missing"
                         else selector
                     ],
                     excluded_selectors=[],
                 )
             ]
         )
-    if stale_mode == "file_missing":
+    if mismatch_mode == "file_missing":
         source_for_rules_path.unlink()
 
     report = await AgentToolkitService(
@@ -866,11 +892,11 @@ async def test_rebuild_text_index_rejects_incomplete_plugin_source_review_for_re
 
 
 @pytest.mark.asyncio
-async def test_rebuild_text_index_rejects_stale_nonstandard_data_rules_in_rust_path(
+async def test_rebuild_text_index_rejects_mismatched_nonstandard_data_rules_in_rust_path(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Rust 冷重建遇到过期非标准 data 规则时返回稳定业务错误码。"""
+    """Rust 冷重建遇到非标准 data 规则与当前文件不匹配时返回稳定业务错误码。"""
     recipes_path = minimal_game_dir / "data" / "PluginCache.json"
     recipes_raw = json.dumps([{"name": "古い本文"}], ensure_ascii=False)
     _ = recipes_path.write_text(recipes_raw, encoding="utf-8")
@@ -882,7 +908,7 @@ async def test_rebuild_text_index_rejects_stale_nonstandard_data_rules_in_rust_p
             [
                 NonstandardDataTextRuleRecord(
                     file_name="PluginCache.json",
-                    file_hash="stale-hash",
+                    file_hash="mismatch-hash",
                     path_templates=["$[*]['name']"],
                 )
             ]
@@ -935,11 +961,11 @@ async def test_rebuild_text_index_rejects_incomplete_nonstandard_data_review_for
 
 
 @pytest.mark.asyncio
-async def test_external_rule_gate_rejects_missing_current_scope_hash_even_with_old_confirmation(
+async def test_external_rule_gate_rejects_missing_current_scope_hash_even_with_unrelated_confirmation(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """metadata 缺少当前 scope hash 时不能复用旧空规则确认。"""
+    """metadata 缺少当前 scope hash 时不能复用无关空规则确认。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(
@@ -952,7 +978,7 @@ async def test_external_rule_gate_rejects_missing_current_scope_hash_even_with_o
     async with await registry.open_game(record.game_title) as session:
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            scope_hash="legacy-confirmed-scope",
+            scope_hash="unrelated-confirmed-scope",
             reviewed_empty=True,
         )
         metadata = await session.read_text_index_metadata()
@@ -971,7 +997,7 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_fact_ids_witho
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Rust scope gate 的质量错误输入按当前 v2 fact_id 读取，不加载完整错误对象。"""
+    """Rust scope gate 的质量错误输入按当前文本事实 fact_id 读取，不加载完整错误对象。"""
 
     async def forbidden_quality_error_records(*args: object, **kwargs: object) -> NoReturn:
         """scope gate 不应读取完整质量错误对象。"""
@@ -990,7 +1016,7 @@ async def test_evaluate_text_index_scope_gate_reads_quality_error_fact_ids_witho
     async with await registry.open_game(record.game_title) as session:
         index_items = await session.read_text_index_items()
         indexed_error_path = index_items[0].location_path
-        current_facts = await read_current_text_fact_records_v2(session, limit=None)
+        current_facts = await read_current_text_fact_records(session, limit=None)
         indexed_error_fact = next(
             fact
             for fact in current_facts
@@ -1045,7 +1071,7 @@ async def test_evaluate_text_index_scope_gate_ignores_saved_translation_with_mis
     minimal_english_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """同 fact_id 但 hash 不匹配的保存译文不能算作当前 v2 fact 已翻译。"""
+    """同 fact_id 但 hash 不匹配的保存译文不能算作当前文本事实 已翻译。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_english_game_dir, source_language="en")
     service = AgentToolkitService(
@@ -1057,12 +1083,16 @@ async def test_evaluate_text_index_scope_gate_ignores_saved_translation_with_mis
 
     async with await registry.open_game(record.game_title) as session:
         index_items = await session.read_text_index_items()
-        current_facts = await read_current_text_fact_records_v2(session, limit=None)
+        index_by_path = {item.location_path: item for item in index_items}
+        current_facts = await read_current_text_fact_records(session, limit=None)
         target_fact = next(fact for fact in current_facts if fact.location_path == index_items[0].location_path)
-        stale_item = text_fact_record_to_translation_item(target_fact)
-        stale_item.source_fact_translatable_hash = f"{target_fact.translatable_hash}:stale"
-        stale_item.translation_lines = ["已保存但不匹配当前事实"]
-        await session.write_translation_items([stale_item])
+        mismatched_item = text_fact_record_to_translation_item(
+            target_fact,
+            index_record=index_by_path[target_fact.location_path],
+        )
+        mismatched_item.source_fact_translatable_hash = f"{target_fact.translatable_hash}:mismatch"
+        mismatched_item.translation_lines = ["已保存但不匹配当前事实"]
+        await session.write_translation_items([mismatched_item])
 
         result = await evaluate_text_index_scope_gate(session=session, records=index_items)
 

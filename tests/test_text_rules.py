@@ -528,7 +528,7 @@ def test_structural_source_residual_rule_rejects_corrupt_records() -> None:
         _ = SourceResidualRuleSet.from_records(
             [
                 SourceResidualRuleRecord(
-                    rule_id="structural:rust_incompatible",
+                    rule_id="structural:rust_unsupported",
                     rule_type="structural",
                     pattern_text=r"(?<=<label>)(?P<visible>[^<]+)(?=</label>)",
                     allowed_terms=["label"],

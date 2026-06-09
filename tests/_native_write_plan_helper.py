@@ -27,18 +27,18 @@ from app.persistence.sql import (
     CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
-    CREATE_TEXT_FACT_RENDER_PARTS_V2_TABLE,
-    CREATE_TEXT_FACT_SCOPE_V2_TABLE,
-    CREATE_TEXT_FACTS_V2_TABLE,
+    CREATE_TEXT_FACT_RENDER_PARTS_TABLE,
+    CREATE_TEXT_FACT_SCOPE_TABLE,
+    CREATE_TEXT_FACTS_TABLE,
     CREATE_TEXT_INDEX_ITEMS_TABLE,
     CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
     CREATE_TRANSLATION_RUNS_TABLE,
     CREATE_TRANSLATION_TABLE,
-    INSERT_TEXT_FACT_RENDER_PART_V2,
-    INSERT_TEXT_FACT_SCOPE_V2,
-    INSERT_TEXT_FACT_V2,
+    INSERT_TEXT_FACT_RENDER_PART,
+    INSERT_TEXT_FACT_SCOPE,
+    INSERT_TEXT_FACT,
     INSERT_TEXT_INDEX_ITEM,
-    TEXT_FACT_SCHEMA_VERSION,
+    CURRENT_TEXT_FACT_CONTRACT_VERSION,
 )
 from app.rmmz.schema import (
     Code,
@@ -255,13 +255,13 @@ def _write_temp_db(
                     CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
                     CREATE_SOURCE_RESIDUAL_RULES_TABLE,
                     CREATE_TEXT_INDEX_ITEMS_TABLE,
-                    CREATE_TEXT_FACTS_V2_TABLE,
-                    CREATE_TEXT_FACT_RENDER_PARTS_V2_TABLE,
-                    CREATE_TEXT_FACT_SCOPE_V2_TABLE,
+                    CREATE_TEXT_FACTS_TABLE,
+                    CREATE_TEXT_FACT_RENDER_PARTS_TABLE,
+                    CREATE_TEXT_FACT_SCOPE_TABLE,
                 ]
             )
         )
-        fact_identity_by_item_index = _insert_text_fact_v2_contract(
+        fact_identity_by_item_index = _insert_current_text_fact_contract(
             connection,
             items,
             game_data,
@@ -300,7 +300,7 @@ def _write_temp_db(
     return db_path
 
 
-def _insert_text_fact_v2_contract(
+def _insert_current_text_fact_contract(
     connection: sqlite3.Connection,
     items: list[TranslationItem],
     game_data: GameData,
@@ -308,13 +308,13 @@ def _insert_text_fact_v2_contract(
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
 ) -> dict[int, tuple[str, str, str]]:
-    """让测试临时库满足 Rust 写回的 v2 fact scope 契约。"""
+    """让测试临时库满足 Rust 写回的 current text fact scope 契约。"""
     scope_key = "test-helper-current"
     _ = connection.execute(
-        INSERT_TEXT_FACT_SCOPE_V2,
+        INSERT_TEXT_FACT_SCOPE,
         (
             scope_key,
-            TEXT_FACT_SCHEMA_VERSION,
+            CURRENT_TEXT_FACT_CONTRACT_VERSION,
             "test-helper-scope-hash",
             "test-helper-source-snapshot-hash",
             "test-helper-rule-hash",
@@ -391,7 +391,7 @@ def _insert_text_fact_v2_contract(
         fact_rows.append(
             (
                 fact_id,
-                TEXT_FACT_SCHEMA_VERSION,
+                CURRENT_TEXT_FACT_CONTRACT_VERSION,
                 domain,
                 item.location_path,
                 source_file,
@@ -422,9 +422,9 @@ def _insert_text_fact_v2_contract(
     if index_rows:
         _ = connection.executemany(INSERT_TEXT_INDEX_ITEM, index_rows)
     if fact_rows:
-        _ = connection.executemany(INSERT_TEXT_FACT_V2, fact_rows)
+        _ = connection.executemany(INSERT_TEXT_FACT, fact_rows)
     if render_rows:
-        _ = connection.executemany(INSERT_TEXT_FACT_RENDER_PART_V2, render_rows)
+        _ = connection.executemany(INSERT_TEXT_FACT_RENDER_PART, render_rows)
     return fact_identity_by_item_index
 
 
@@ -433,10 +433,10 @@ def _translation_item_row_for_temp_db(
     item_index: int,
     fact_identity_by_item_index: dict[int, tuple[str, str, str]],
 ) -> tuple[str, str, str, str | None, str, str, str, str, str]:
-    """按测试临时 v2 fact 身份序列化保存译文行。"""
+    """按测试临时 current text fact 身份序列化保存译文行。"""
     identity = fact_identity_by_item_index.get(item_index)
     if identity is None:
-        raise AssertionError(f"测试临时库缺少当前 v2 fact: index={item_index}, path={item.location_path}")
+        raise AssertionError(f"测试临时库缺少当前文本事实: index={item_index}, path={item.location_path}")
     fact_id, raw_hash, translatable_hash = identity
     return (
         fact_id,
@@ -469,7 +469,7 @@ def _text_fact_domain_for_helper(location_path: str) -> str:
 
 
 def _helper_domain_requires_render_parts(domain: str) -> bool:
-    """测试 helper 中已迁移到 v2 render parts 的写回域。"""
+    """测试 helper 中需要当前写回所需源文结构的写回域。"""
     return domain in {
         "standard_data",
         "plugin_config",
@@ -511,7 +511,7 @@ def _is_json_data_location_path(location_path: str) -> bool:
 
 
 def _plugin_source_literals_by_location_path(game_data: GameData) -> dict[str, tuple[str, str]]:
-    """从测试插件源码 AST 字符串节点构造 v2 fact 的 raw/visible 身份。"""
+    """从测试插件源码 AST 字符串节点构造 current text fact 的 raw/visible 身份。"""
     if not game_data.plugin_source_files:
         return {}
     scan = scan_plugin_source_runtime_files_text_strict(
@@ -538,7 +538,7 @@ def _append_mv_virtual_namebox_fact_rows(
     mv_virtual_namebox_items_by_location_path: dict[str, list[tuple[int, TranslationItem]]],
     fact_identity_by_item_index: dict[int, tuple[str, str, str]],
 ) -> None:
-    """为 MV 虚拟名字框术语写回补当前 v2 fact/render parts 测试契约。"""
+    """为 MV 虚拟名字框术语写回补当前文本事实/render parts 测试契约。"""
     next_fact_index = first_fact_index
     for source_file, location_path, source_line_path, raw_text, virtual_speaker in candidates:
         pending_items = mv_virtual_namebox_items_by_location_path.get(location_path) or []
@@ -647,7 +647,7 @@ def _append_single_mv_virtual_namebox_fact_row(
     render_rows: list[tuple[str, int, str, str, str, str]],
     fact_identity_by_item_index: dict[int, tuple[str, str, str]],
 ) -> None:
-    """追加单条 MV virtual namebox v2 fact 测试行。"""
+    """追加单条 MV virtual namebox current text fact 测试行。"""
     render_parts = _mv_virtual_namebox_render_parts(raw_text, virtual_speaker)
     translatable_text = virtual_speaker.body_text
     raw_hash = _sha256_text(raw_text)
@@ -672,7 +672,7 @@ def _append_single_mv_virtual_namebox_fact_row(
     fact_rows.append(
         (
             fact_id,
-            TEXT_FACT_SCHEMA_VERSION,
+            CURRENT_TEXT_FACT_CONTRACT_VERSION,
             "mv_virtual_namebox",
             location_path,
             source_file,
@@ -706,7 +706,7 @@ def _mv_virtual_namebox_render_parts(
     raw_text: str,
     virtual_speaker: MvVirtualSpeaker,
 ) -> list[tuple[str, str, str, str]]:
-    """按 v2 fact render parts 形状拆分 MV 虚拟名字框源文本。"""
+    """按 current text fact render parts 形状拆分 MV 虚拟名字框源文本。"""
     parts: list[tuple[str, str, str, str]] = []
     formatter = Formatter()
     for literal_text, field_name, _format_spec, _conversion in formatter.parse(virtual_speaker.render_template):
@@ -767,7 +767,7 @@ def _reconcile_mv_virtual_namebox_render_parts(
 
 
 def _text_fact_translatable_text(item: TranslationItem) -> str:
-    """按 v2 fact 的 item_type 语义序列化可译正文。"""
+    """按 current text fact 的 item_type 语义序列化可译正文。"""
     if item.item_type == "short_text":
         return item.original_lines[0] if item.original_lines else ""
     return "\n".join(item.original_lines)
@@ -795,7 +795,7 @@ def _selector_for_helper(location_path: str) -> str:
 
 
 def _sha256_text(text: str) -> str:
-    """计算与 Rust v2 fact 一致的 UTF-8 SHA-256。"""
+    """计算与 Rust current text fact 一致的 UTF-8 SHA-256。"""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

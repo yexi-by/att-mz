@@ -145,11 +145,11 @@ from app.text_index import (
     rebuild_text_index_native_storage,
 )
 from app.text_facts import (
-    read_current_text_fact_placeholder_entries_v2,
-    read_current_text_fact_scope_v2,
+    read_current_text_fact_placeholder_entries,
+    read_current_text_fact_scope,
 )
-from app.persistence.records import TextFactScopeV2Record
-from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+from app.persistence.records import TextFactScopeRecord
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
 from .rule_identity import (
     RuleFactProbe,
     resolve_current_rule_fact_hits,
@@ -198,7 +198,7 @@ async def _resolve_workspace_rule_hit_metrics(
     domain: str,
     grouped_hits: list[list[_RuleHitMetric]],
 ) -> list[list[_RuleHitMetric]]:
-    """把 workspace 规则命中解析到当前 v2 fact_id。"""
+    """把 workspace 规则命中解析到当前文本事实 fact_id。"""
     probes = [
         RuleFactProbe(
             domain=domain,
@@ -241,7 +241,7 @@ async def _resolve_workspace_plugin_source_hit_metrics(
     session: TargetGameSession,
     grouped_hits: dict[str, list[_RuleHitMetric]],
 ) -> dict[str, list[_RuleHitMetric]]:
-    """把 workspace 插件源码命中解析到当前 v2 fact_id。"""
+    """把 workspace 插件源码命中解析到当前文本事实 fact_id。"""
     resolved_groups = await _resolve_workspace_rule_hit_metrics(
         session=session,
         domain="plugin_source",
@@ -258,7 +258,7 @@ async def _resolve_workspace_plugin_rule_validation_context(
     session: TargetGameSession,
     context: NativePluginRuleValidationContext,
 ) -> NativePluginRuleValidationContext:
-    """把 workspace 插件参数命中回填当前 v2 fact_id。"""
+    """把 workspace 插件参数命中回填当前文本事实 fact_id。"""
     resolved_items = await resolve_current_rule_translation_items(
         session,
         domain="plugin_config",
@@ -287,7 +287,7 @@ async def _resolve_workspace_event_command_rule_validation_context(
     session: TargetGameSession,
     context: NativeEventCommandRuleValidationContext,
 ) -> NativeEventCommandRuleValidationContext:
-    """把 workspace 事件指令命中回填当前 v2 fact_id。"""
+    """把 workspace 事件指令命中回填当前文本事实 fact_id。"""
     resolved_items = await resolve_current_rule_translation_items(
         session,
         domain="event_command",
@@ -359,11 +359,11 @@ async def _read_workspace_placeholder_entries_from_text_index(
         )
     else:
         text_index_status = "used"
-    return await read_current_text_fact_placeholder_entries_v2(session), text_index_status
+    return await read_current_text_fact_placeholder_entries(session), text_index_status
 
 
-def _text_fact_scope_metadata(scope: TextFactScopeV2Record) -> JsonObject:
-    """生成工作区 JSON 里固定当前 v2 事实范围的最小元数据。"""
+def _text_fact_scope_metadata(scope: TextFactScopeRecord) -> JsonObject:
+    """生成工作区 JSON 里固定当前文本事实范围的最小元数据。"""
     return {
         "scope_key": scope.scope_key,
         "scope_hash": scope.scope_hash,
@@ -658,7 +658,7 @@ class WorkspaceAgentMixin:
                 setting=setting,
                 text_rules=text_rules,
             )
-            text_fact_scope = await read_current_text_fact_scope_v2(session)
+            text_fact_scope = await read_current_text_fact_scope(session)
             text_index_metadata = await session.read_text_index_metadata()
             mv_virtual_namebox_review_required = game_data.layout.engine_kind == "mv"
             if text_index_metadata is not None:
@@ -1032,7 +1032,7 @@ class WorkspaceAgentMixin:
                 setting=setting,
                 text_rules=text_rules,
             )
-            current_text_fact_scope = await read_current_text_fact_scope_v2(session)
+            current_text_fact_scope = await read_current_text_fact_scope(session)
             errors.extend(
                 _validate_workspace_scope_metadata(
                     payload=manifest_generated,
@@ -1458,7 +1458,7 @@ class WorkspaceAgentMixin:
             warnings.append(
                 issue(
                     "workspace_unlisted_files_ignored",
-                    f"发现 {len(unlisted_paths)} 个 manifest 外旧文件，旧文件不会参与本轮验收；"
+                    f"发现 {len(unlisted_paths)} 个 manifest 外文件，这些文件不会参与本轮验收；"
                     + "请确认后手动删除或重新生成工作区",
                 )
             )
@@ -1481,7 +1481,7 @@ def _validate_workspace_mv_virtual_namebox_rules(
     game_data: GameData,
     existing_records: list[MvVirtualNameboxRuleRecord],
     candidate_path: Path,
-    current_scope: TextFactScopeV2Record,
+    current_scope: TextFactScopeRecord,
 ) -> AgentReport:
     """复用工作区候选文件校验 MV 虚拟名字框规则。"""
     errors: list[AgentIssue] = []
@@ -2040,17 +2040,17 @@ def _workspace_manifest_generated(manifest: JsonObject | None) -> JsonObject:
 def _validate_workspace_json_file_scope_metadata(
     *,
     path: Path,
-    current_scope: TextFactScopeV2Record,
+    current_scope: TextFactScopeRecord,
     missing_code: str,
     stale_code: str,
     label: str,
 ) -> list[AgentIssue]:
-    """读取工作区 JSON 文件并校验其中的 v2 scope 元数据。"""
+    """读取工作区 JSON 文件并校验其中的 当前文本事实 scope 元数据。"""
     if not path.exists():
         return [
             issue(
                 missing_code,
-                f"{label} 缺少当前 Text Fact Contract v2 范围信息，请重新运行 prepare-agent-workspace",
+                f"{label} 缺少当前文本事实契约范围信息，请重新运行 prepare-agent-workspace",
             )
         ]
     try:
@@ -2062,7 +2062,7 @@ def _validate_workspace_json_file_scope_metadata(
         return [
             issue(
                 missing_code,
-                f"{label} 无法读取 v2 范围信息: {type(error).__name__}: {error}；请重新运行 prepare-agent-workspace",
+                f"{label} 无法读取当前文本事实范围信息: {type(error).__name__}: {error}；请重新运行 prepare-agent-workspace",
             )
         ]
     return _validate_workspace_scope_metadata(
@@ -2077,12 +2077,12 @@ def _validate_workspace_json_file_scope_metadata(
 def _validate_workspace_scope_metadata(
     *,
     payload: JsonObject,
-    current_scope: TextFactScopeV2Record,
+    current_scope: TextFactScopeRecord,
     missing_code: str,
     stale_code: str,
     label: str,
 ) -> list[AgentIssue]:
-    """校验工作区记录的 v2 scope 是否等于当前数据库 scope。"""
+    """校验工作区记录的 当前文本事实 scope 是否等于当前数据库 scope。"""
     scope_key = payload.get("scope_key")
     scope_hash = payload.get("scope_hash")
     schema_version = payload.get("text_fact_schema_version")
@@ -2097,10 +2097,10 @@ def _validate_workspace_scope_metadata(
         return [
             issue(
                 missing_code,
-                f"{label} 缺少当前 Text Fact Contract v2 范围信息，请重新运行 prepare-agent-workspace",
+                f"{label} 缺少当前文本事实契约范围信息，请重新运行 prepare-agent-workspace",
             )
         ]
-    if schema_version != TEXT_FACT_SCHEMA_VERSION:
+    if schema_version != CURRENT_TEXT_FACT_CONTRACT_VERSION:
         return [
             issue(
                 stale_code,
@@ -2111,7 +2111,7 @@ def _validate_workspace_scope_metadata(
         return [
             issue(
                 stale_code,
-                f"{label} 的 v2 文本范围已不是当前数据库内容，请重新运行 prepare-agent-workspace",
+                f"{label} 的当前文本事实范围已不是当前数据库内容，请重新运行 prepare-agent-workspace",
             )
         ]
     return []
@@ -2123,7 +2123,7 @@ def _collect_workspace_unlisted_paths(
     manifest_path: Path,
     manifest_files: JsonArray,
 ) -> list[Path]:
-    """列出 manifest.files 之外的工作区旧文件，供 cleanup 报告但不自动删除。"""
+    """列出 manifest.files 之外的工作区文件，供 cleanup 报告但不自动删除。"""
     workspace_root = workspace.resolve()
     manifest_resolved = manifest_path.resolve()
     listed_paths: list[Path] = []

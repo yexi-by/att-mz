@@ -17,7 +17,7 @@ from app.event_command_text import (
     resolve_event_command_codes,
 )
 from app.native_scope_index import NativeRuleCandidatesResult
-from app.rmmz import load_game_data
+from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationData, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
@@ -42,7 +42,7 @@ async def test_event_command_json_export_uses_configured_command_codes(
     tmp_path: Path,
 ) -> None:
     """事件指令导出使用配置数组解析出的编码集合。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     output_path = tmp_path / "event-commands.json"
 
     command_count = await export_event_commands_json_file(
@@ -81,7 +81,7 @@ async def test_event_command_json_export_uses_native_samples(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令导出消费 Rust samples_by_code，不再执行 Python 全量指令遍历。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     output_path = tmp_path / "event-commands-native.json"
     captured_payloads: list[JsonObject] = []
 
@@ -139,7 +139,7 @@ async def test_mv_event_command_json_export_uses_engine_default_356(
     tmp_path: Path,
 ) -> None:
     """MV 未显式传入编码时使用引擎默认的 356 插件命令。"""
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
     setting = EventCommandTextSetting.model_validate(
         {
             "default_command_codes_by_engine": {"mv": [356], "mz": [357]},
@@ -272,7 +272,7 @@ async def test_event_command_rule_import_extracts_and_writes_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令文本由外部规则导入后按数据库规则提取并写回。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -341,7 +341,7 @@ async def test_event_command_extraction_rejects_stale_command_match(
     tmp_path: Path,
 ) -> None:
     """事件指令参数变化后，已保存规则不能静默变成空命中。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -374,7 +374,7 @@ async def test_event_command_extraction_rejects_stale_command_match(
     parameters = ensure_json_array(command["parameters"], "CommonEvents[1].list[4].parameters")
     parameters[1] = "RenamedAction"
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="事件指令规则已过期"):
         _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
@@ -386,7 +386,7 @@ async def test_event_command_extraction_rejects_stale_path_template(
     tmp_path: Path,
 ) -> None:
     """事件指令嵌套字段消失后，已保存路径规则必须显式失败。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -420,7 +420,7 @@ async def test_event_command_extraction_rejects_stale_path_template(
     payload = ensure_json_object(parameters[3], "CommonEvents[1].list[4].parameters[3]")
     _ = payload.pop("message")
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
         _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
@@ -432,7 +432,7 @@ async def test_event_command_extraction_rejects_path_changed_to_non_string_leaf(
     tmp_path: Path,
 ) -> None:
     """事件指令路径仍存在但不再是字符串叶子时，规则必须显式过期。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -466,7 +466,7 @@ async def test_event_command_extraction_rejects_path_changed_to_non_string_leaf(
     payload = ensure_json_object(parameters[3], "CommonEvents[1].list[4].parameters[3]")
     payload["message"] = {"text": "イベントコマンド"}
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
         _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
@@ -478,7 +478,7 @@ async def test_event_command_nested_write_error_reports_location_path(
     tmp_path: Path,
 ) -> None:
     """事件指令嵌套参数写回失败时报告当前文本路径。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -539,7 +539,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
     payload["message"] = json.dumps(source_message, ensure_ascii=False)
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -603,7 +603,7 @@ async def test_event_command_direct_parameter_string_writes_back(
     parameters[2] = "トップパラメータ"
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(

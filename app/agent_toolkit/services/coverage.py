@@ -21,21 +21,21 @@ from .common import (
     write_back_probe_report_fields,
 )
 from app.persistence import TargetGameSession
-from app.persistence.records import TextFactV2Record, TextIndexItemRecord, TextIndexMetadata
+from app.persistence.records import TextFactRecord, TextIndexItemRecord, TextIndexMetadata
 from app.regex_contract import RegexContractValidationError, validate_mv_virtual_namebox_regex_contract
 from app.rmmz.schema import NonstandardDataTextRuleRecord
 from app.text_facts import (
     TextFactContractError,
-    count_current_text_facts_v2,
-    count_pending_text_facts_v2,
-    count_rule_hit_text_facts_v2,
-    count_stale_translations_outside_writable_text_facts_v2,
-    count_translated_text_facts_v2,
-    count_writable_text_facts_v2,
-    read_current_text_fact_records_v2,
-    read_pending_text_fact_path_samples_v2,
-    read_stale_translation_path_samples_outside_writable_text_facts_v2,
-    read_unwritable_text_fact_records_v2,
+    count_current_text_facts,
+    count_pending_text_facts,
+    count_rule_hit_text_facts,
+    count_stale_translations_outside_writable_text_facts,
+    count_translated_text_facts,
+    count_writable_text_facts,
+    read_current_text_fact_records,
+    read_pending_text_fact_path_samples,
+    read_stale_translation_path_samples_outside_writable_text_facts,
+    read_unwritable_text_fact_records,
 )
 from app.text_index import (
     collect_text_index_placeholder_gate_decisions,
@@ -381,14 +381,14 @@ async def _build_text_fact_text_scope_report(
     include_write_probe: bool,
     detail_limit: int | None,
 ) -> AgentReport:
-    """用当前 v2 facts 生成文本清单报告，明细可完整输出或按上限取样。"""
+    """用当前文本事实 生成文本清单报告，明细可完整输出或按上限取样。"""
     if detail_limit is not None and detail_limit <= 0:
         raise ValueError("detail_limit 必须是正整数或 None")
-    text_fact_count = await count_current_text_facts_v2(session)
-    translated_count = await count_translated_text_facts_v2(session)
-    writable_count = await count_writable_text_facts_v2(session)
+    text_fact_count = await count_current_text_facts(session)
+    translated_count = await count_translated_text_facts(session)
+    writable_count = await count_writable_text_facts(session)
     unwritable_count = max(0, text_fact_count - writable_count)
-    facts = await read_current_text_fact_records_v2(
+    facts = await read_current_text_fact_records(
         session,
         limit=detail_limit,
     )
@@ -449,23 +449,23 @@ async def _build_text_fact_coverage_report(
     session: TargetGameSession,
     include_write_probe: bool,
 ) -> AgentReport:
-    """用当前 v2 facts 和 SQL 计数生成覆盖审计报告。"""
-    text_fact_count = await count_current_text_facts_v2(session)
-    translated_count = await count_translated_text_facts_v2(session)
-    writable_count = await count_writable_text_facts_v2(session)
-    rule_hit_count = await count_rule_hit_text_facts_v2(session)
-    pending_count = await count_pending_text_facts_v2(session)
-    stale_count = await count_stale_translations_outside_writable_text_facts_v2(session)
+    """用当前文本事实 和 SQL 计数生成覆盖审计报告。"""
+    text_fact_count = await count_current_text_facts(session)
+    translated_count = await count_translated_text_facts(session)
+    writable_count = await count_writable_text_facts(session)
+    rule_hit_count = await count_rule_hit_text_facts(session)
+    pending_count = await count_pending_text_facts(session)
+    stale_count = await count_stale_translations_outside_writable_text_facts(session)
     unwritable_count = max(0, text_fact_count - writable_count)
-    unwritable_facts = await read_unwritable_text_fact_records_v2(
+    unwritable_facts = await read_unwritable_text_fact_records(
         session,
         limit=TEXT_FACT_COVERAGE_DETAIL_SAMPLE_LIMIT,
     )
-    pending_samples = await read_pending_text_fact_path_samples_v2(
+    pending_samples = await read_pending_text_fact_path_samples(
         session,
         limit=TEXT_FACT_COVERAGE_DETAIL_SAMPLE_LIMIT,
     )
-    stale_samples = await read_stale_translation_path_samples_outside_writable_text_facts_v2(
+    stale_samples = await read_stale_translation_path_samples_outside_writable_text_facts(
         session,
         limit=TEXT_FACT_COVERAGE_DETAIL_SAMPLE_LIMIT,
     )
@@ -535,11 +535,11 @@ async def _build_text_fact_coverage_report(
 
 
 def _text_fact_scope_entry(
-    fact: TextFactV2Record,
+    fact: TextFactRecord,
     *,
     index_record: TextIndexItemRecord | None,
 ) -> JsonObject:
-    """把 v2 fact 转成 text-scope 兼容 entry。"""
+    """把 current text fact 转成 text-scope 兼容 entry。"""
     can_write_back = index_record.writable if index_record is not None else False
     return {
         "location_path": fact.location_path,
@@ -561,11 +561,11 @@ def _text_fact_scope_entry(
 
 
 def _text_fact_sample(
-    fact: TextFactV2Record,
+    fact: TextFactRecord,
     *,
     index_record: TextIndexItemRecord | None,
 ) -> JsonObject:
-    """把 v2 fact 转成 bounded coverage 样本。"""
+    """把 current text fact 转成 bounded coverage 样本。"""
     entry = _text_fact_scope_entry(fact, index_record=index_record)
     entry["raw_text_sample"] = _short_sample(fact.raw_text)
     entry["visible_text_sample"] = _short_sample(fact.visible_text)
@@ -574,7 +574,7 @@ def _text_fact_sample(
 
 
 def _text_fact_lines(text: str, *, item_type: str) -> JsonArray:
-    """把 v2 单字符串正文转换成报告行数组。"""
+    """把当前单字符串正文转换成报告行数组。"""
     if item_type in {"long_text", "array"}:
         return [line for line in text.split("\n")]
     return [text]

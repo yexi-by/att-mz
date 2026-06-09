@@ -67,7 +67,7 @@ async def test_translate_warm_index_uses_v2_fact_translatable_text_for_prompt(
     app_home_with_example_setting: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """translate warm index 路径的模型正文必须来自 v2 fact，而不是旧索引原文。"""
+    """translate warm index 路径的模型正文必须来自 current text fact，而不是旧索引原文。"""
     _ = app_home_with_example_setting
     captured_prompts: list[str] = []
     captured_items: list[TranslationItem] = []
@@ -102,7 +102,7 @@ async def test_translate_warm_index_uses_v2_fact_translatable_text_for_prompt(
             """
 --sql
             SELECT facts.translatable_text
-            FROM text_facts_v2 AS facts
+            FROM text_facts AS facts
             INNER JOIN text_index_items AS indexed
                 ON indexed.location_path = facts.location_path
             LEFT JOIN translation_items AS translations

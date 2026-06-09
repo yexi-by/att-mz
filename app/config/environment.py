@@ -7,7 +7,6 @@ from typing import cast
 
 LLM_BASE_URL_ENV_NAME = "ATT_MZ_LLM_BASE_URL"
 LLM_API_KEY_ENV_NAME = "ATT_MZ_LLM_API_KEY"
-_LEGACY_ENV_PREFIX = "RPG_MAKER_TOOLS" + "_"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,9 +35,6 @@ def load_environment_overrides(
 ) -> EnvironmentOverrides:
     """读取模型连接相关环境变量。"""
     source = os.environ if environ is None else environ
-    legacy_names = _collect_legacy_environment_names(source)
-    if legacy_names:
-        raise ValueError(_format_legacy_environment_error(legacy_names))
     return EnvironmentOverrides(
         llm_base_url=_read_non_empty_env(source, LLM_BASE_URL_ENV_NAME),
         llm_api_key=_read_non_empty_env(source, LLM_API_KEY_ENV_NAME),
@@ -69,32 +65,6 @@ def _read_non_empty_env(source: Mapping[str, str], name: str) -> str | None:
     if not stripped_value:
         return None
     return stripped_value
-
-
-def _collect_legacy_environment_names(source: Mapping[str, str]) -> list[str]:
-    """收集旧模型环境变量名；旧前缀不再作为成功配置入口。"""
-    legacy_names: list[str] = []
-    for legacy_name in (
-        _legacy_env_name("LLM_BASE_URL"),
-        _legacy_env_name("LLM_API_KEY"),
-    ):
-        if _read_non_empty_env(source, legacy_name) is not None:
-            legacy_names.append(legacy_name)
-    return legacy_names
-
-
-def _legacy_env_name(suffix: str) -> str:
-    """生成旧环境变量名。"""
-    return f"{_LEGACY_ENV_PREFIX}{suffix}"
-
-
-def _format_legacy_environment_error(legacy_names: list[str]) -> str:
-    """生成旧环境变量的恢复提示。"""
-    legacy_label = "、".join(legacy_names)
-    return (
-        f"旧模型环境变量 {legacy_label} 已停用，不能继续作为成功配置入口；"
-        f"请改用 {LLM_BASE_URL_ENV_NAME} 和 {LLM_API_KEY_ENV_NAME} 后重新运行"
-    )
 
 
 def _read_or_create_section(

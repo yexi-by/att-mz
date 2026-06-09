@@ -110,7 +110,7 @@ def _schema_mismatch_error(db_path: Path, detail: str) -> RuntimeError:
     )
 
 
-async def ensure_schema_compatible(connection: aiosqlite.Connection, db_path: Path) -> None:
+async def ensure_current_schema(connection: aiosqlite.Connection, db_path: Path) -> None:
     """确认已有数据库完整匹配当前 schema。"""
     table_names = await read_table_names(connection)
     expected_table_names = set(EXPECTED_STATIC_TABLE_NAMES)
@@ -421,7 +421,7 @@ async def find_registered_game_by_path(
             metadata = await read_metadata(connection=connection, db_path=db_path)
             if metadata.game_path != game_path and metadata.content_root != content_root:
                 continue
-            await ensure_schema_compatible(connection=connection, db_path=db_path)
+            await ensure_current_schema(connection=connection, db_path=db_path)
             return db_path, metadata
         finally:
             await connection.close()
@@ -467,7 +467,7 @@ class GameRegistry:
                         )
                     )
                     continue
-                await ensure_schema_compatible(connection=connection, db_path=db_path)
+                await ensure_current_schema(connection=connection, db_path=db_path)
                 metadata = await read_metadata(connection=connection, db_path=db_path)
                 language_settings = await read_language_settings(connection=connection, db_path=db_path)
                 records.append(
@@ -516,7 +516,7 @@ class GameRegistry:
         try:
             if db_already_exists:
                 await check_connection_readable(connection=connection, db_path=db_path)
-                await ensure_schema_compatible(connection=connection, db_path=db_path)
+                await ensure_current_schema(connection=connection, db_path=db_path)
                 snapshot_records = await read_source_snapshot_records(
                     connection=connection,
                     db_path=db_path,
@@ -598,7 +598,7 @@ class GameRegistry:
         connection = await open_connection(db_path)
         try:
             await check_connection_readable(connection=connection, db_path=db_path)
-            await ensure_schema_compatible(connection=connection, db_path=db_path)
+            await ensure_current_schema(connection=connection, db_path=db_path)
             metadata = await read_metadata(
                 connection=connection,
                 db_path=db_path,

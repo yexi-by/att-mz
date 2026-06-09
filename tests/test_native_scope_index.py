@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
+from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
 
 from app import native_scope_index
 from app.native_scope_index import (
@@ -24,7 +24,7 @@ from app.native_scope_index import (
     write_native_scope_index_storage,
 )
 from app.persistence import GameRegistry
-from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION, current_schema_fingerprint
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION, current_schema_fingerprint
 from app.config.schemas import TextRulesSetting
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
 from app.plugin_source_text.scanner import (
@@ -33,6 +33,7 @@ from app.plugin_source_text.scanner import (
 )
 from app.plugin_text import build_plugin_hash
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
+from app.rmmz.game_file_view import GameFileView
 from app.rmmz.game_data import System, Terms
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
@@ -83,7 +84,7 @@ def _read_test_json_from_plugins_js(plugins_path: Path) -> JsonValue:
 
 
 def _payload_without_core_fields(row: sqlite3.Row) -> JsonObject:
-    """读取 domain payload，并断言它没有重复 v2 fact 核心字段。"""
+    """读取 domain payload，并断言它没有重复 current text fact 核心字段。"""
     payload_text = _sqlite_row_str(row, "payload_json")
     payload = ensure_json_object(
         coerce_json_value(cast(object, json.loads(payload_text))),
@@ -238,6 +239,7 @@ def _note_tag_game_data() -> GameData:
         equipTypes=[],
     )
     return GameData(
+        view=GameFileView.TRANSLATION_SOURCE,
         layout=layout,
         data=data,
         writable_data=data,
@@ -441,7 +443,7 @@ async def test_inspect_native_scope_index_storage_reads_db_and_game_files(
                 )
             ]
         )
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path="System.json/gameTitle",
@@ -555,7 +557,7 @@ async def test_write_native_scope_index_storage_writes_python_readable_index(
     assert result["render_part_count"] == 0
     assert isinstance(result["scope_key"], str) and result["scope_key"]
     assert isinstance(result["scope_hash"], str) and len(result["scope_hash"]) == 64
-    assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert result["text_fact_schema_version"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
     async with await registry.open_game(record.game_title) as session:
         metadata = await session.read_text_index_metadata()
         assert metadata is not None
@@ -576,7 +578,7 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Rust 冷重建必须继承旧范围服务的插件规则新鲜度语义。"""
+    """Rust 冷重建必须保持当前插件规则新鲜度语义。"""
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
@@ -620,7 +622,7 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     )
     assert isinstance(result["scope_key"], str) and result["scope_key"]
     assert isinstance(result["scope_hash"], str) and len(result["scope_hash"]) == 64
-    assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert result["text_fact_schema_version"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
     internal_timings = ensure_json_object(
         result["internal_stage_timings"],
         "native_scope_index_storage_rebuild.internal_stage_timings",
@@ -638,11 +640,11 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1_domains(
+async def test_rebuild_native_scope_index_storage_writes_current_text_facts_for_batch1_domains(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Rust 冷重建同时写出 standard/event_command/MV 虚拟名字框 v2 facts。"""
+    """Rust 冷重建同时写出 standard/event_command/MV 虚拟名字框 current text facts。"""
     common_events_path = minimal_mv_game_dir / "www" / "data" / "CommonEvents.json"
     common_events = cast(list[object], json.loads(common_events_path.read_text(encoding="utf-8")))
     common_events.append(
@@ -708,9 +710,9 @@ async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1
     assert result["source_snapshot_hash"] == "snapshot-v1"
     assert result["rule_hash"] == "rules-v1"
     assert isinstance(result["text_rules_hash"], str) and len(str(result["text_rules_hash"])) == 64
-    assert isinstance(result["scope_key"], str) and str(result["scope_key"]).startswith("tfv2-scope:")
+    assert isinstance(result["scope_key"], str) and str(result["scope_key"]).startswith("tf-scope:")
     assert isinstance(result["scope_hash"], str) and len(str(result["scope_hash"])) == 64
-    assert result["text_fact_schema_version"] == TEXT_FACT_SCHEMA_VERSION
+    assert result["text_fact_schema_version"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
     assert _json_int(result["scan_file_count"], "scan_file_count") >= 1
     domain_fact_counts = ensure_json_object(
         result["domain_fact_counts"],
@@ -727,7 +729,7 @@ async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1
             connection.execute(
                 """
                 SELECT domain, raw_text, visible_text, translatable_text, role
-                FROM text_facts_v2
+                FROM text_facts
                 WHERE domain = 'mv_virtual_namebox'
                 """
             ).fetchone(),
@@ -742,9 +744,9 @@ async def test_rebuild_native_scope_index_storage_writes_text_fact_v2_for_batch1
             connection.execute(
                 """
                 SELECT part_kind, raw_text, semantic_text, template_key
-                FROM text_fact_render_parts_v2
+                FROM text_fact_render_parts
                 WHERE fact_id = (
-                    SELECT fact_id FROM text_facts_v2 WHERE domain = 'mv_virtual_namebox'
+                    SELECT fact_id FROM text_facts WHERE domain = 'mv_virtual_namebox'
                 )
                 ORDER BY part_order
                 """
@@ -765,7 +767,7 @@ async def test_rebuild_native_scope_index_storage_keeps_same_path_note_tag_facts
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """同一路径不同 NoteTag fact 必须同时进入 text_facts_v2。"""
+    """同一路径不同 NoteTag fact 必须同时进入 text_facts。"""
     items_path = minimal_mv_game_dir / "www" / "data" / "Items.json"
     items = cast(list[object], json.loads(items_path.read_text(encoding="utf-8")))
     item = ensure_json_object(coerce_json_value(items[1]), "Items.json[1]")
@@ -809,7 +811,7 @@ async def test_rebuild_native_scope_index_storage_keeps_same_path_note_tag_facts
             connection.execute(
                 """
                 SELECT fact_id, location_path, selector, raw_text, translatable_text
-                FROM text_facts_v2
+                FROM text_facts
                 WHERE domain = 'note_tag'
                     AND location_path = 'Items.json/1/note/desc'
                 ORDER BY translatable_text
@@ -947,8 +949,8 @@ async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_pa
                 SELECT facts.domain, facts.location_path, facts.source_file, facts.selector,
                        facts.raw_text, facts.visible_text, facts.translatable_text,
                        payloads.payload_json
-                FROM text_facts_v2 AS facts
-                LEFT JOIN text_fact_domain_payloads_v2 AS payloads
+                FROM text_facts AS facts
+                LEFT JOIN text_fact_domain_payloads AS payloads
                     ON payloads.fact_id = facts.fact_id
                 WHERE facts.domain IN (
                     'plugin_config',
@@ -1006,7 +1008,7 @@ async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_pa
 
 def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path) -> None:
     """Rust storage 结构化错误必须由 Python adapter 渲染为中文摘要。"""
-    db_path = tmp_path / "old.db"
+    db_path = tmp_path / "invalid-schema.db"
     with sqlite3.connect(db_path) as connection:
         _ = connection.execute(
             "CREATE TABLE schema_version (schema_key TEXT PRIMARY KEY, version INTEGER NOT NULL)"
@@ -1015,19 +1017,23 @@ def test_native_scope_index_storage_error_renders_chinese_summary(tmp_path: Path
             "INSERT INTO schema_version (schema_key, version) VALUES ('current', 14)"
         )
 
-    with pytest.raises(RuntimeError, match="scope_index_storage_schema_version_mismatch"):
+    with pytest.raises(RuntimeError) as exc_info:
         _ = inspect_native_scope_index_storage(
             {
                 "db_path": str(db_path),
                 "game_path": str(tmp_path),
             }
         )
+    message = str(exc_info.value)
+    assert "scope_index_storage_schema_version_mismatch" in message
+    assert "当前数据库结构不满足要求" in message
+    assert "重新注册游戏" in message
 
 
 def test_write_native_scope_index_storage_rejects_unsupported_text_fact_schema_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Python native adapter 必须拒绝 Rust 返回的不支持 v2 fact schema。"""
+    """Python native adapter 必须拒绝 Rust 返回的不支持文本事实 schema。"""
 
     class FakeNativeScopeIndexModule:
         def write_scope_index_storage(self, payload_json: str) -> str:
@@ -1042,7 +1048,7 @@ def test_write_native_scope_index_storage_rejects_unsupported_text_fact_schema_v
                     "render_part_count": 0,
                     "scope_key": "scope-v999",
                     "scope_hash": "0" * 64,
-                    "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION + 1,
+                    "text_fact_schema_version": CURRENT_TEXT_FACT_CONTRACT_VERSION + 1,
                 },
                 ensure_ascii=False,
             )
@@ -1053,7 +1059,7 @@ def test_write_native_scope_index_storage_rejects_unsupported_text_fact_schema_v
         lambda: FakeNativeScopeIndexModule(),
     )
 
-    with pytest.raises(RuntimeError, match="text fact v2 schema_version"):
+    with pytest.raises(RuntimeError, match="文本事实 schema_version"):
         _ = write_native_scope_index_storage({})
 
 
@@ -1073,9 +1079,9 @@ def test_write_native_scope_index_storage_rejects_non_hex_scope_hash(
                     "rule_hit_summary_count": 0,
                     "text_fact_count": 0,
                     "render_part_count": 0,
-                    "scope_key": "scope-v2",
+                    "scope_key": "scope-current",
                     "scope_hash": "g" * 64,
-                    "text_fact_schema_version": TEXT_FACT_SCHEMA_VERSION,
+                    "text_fact_schema_version": CURRENT_TEXT_FACT_CONTRACT_VERSION,
                 },
                 ensure_ascii=False,
             )

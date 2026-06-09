@@ -24,29 +24,21 @@ def _changelog_section_by_title(changelog_text: str, title: str) -> str:
     return match.group(0)
 
 
-def _readme_section_by_title(readme_text: str, title: str) -> str:
-    """按 README 小节标题返回段落。"""
-    pattern = rf"^### {re.escape(title)}\n.+?(?=^## |\Z)"
-    match = re.search(pattern, readme_text, flags=re.MULTILINE | re.DOTALL)
-    if match is None:
-        raise AssertionError(f"README.md 缺少小节: {title}")
-    return match.group(0)
-
-
-def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
-    """Text Fact Contract v2 发布说明必须写明具体契约变化。"""
+def test_current_release_notes_include_contract_cleanup_changes() -> None:
+    """CHANGELOG 可以记录当前契约失忆化清理的破坏性变更。"""
     changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     current_section = _changelog_section_by_title(
         changelog_text,
-        "未发布 - Text Fact Contract v2 契约冻结",
+        "未发布 - 当前契约失忆化清理",
     )
     required_terms = {
-        "Text Fact Contract v2",
-        "v2 facts",
+        "破坏性变更",
+        "当前文本事实契约",
+        "current text facts",
         "rebuild-text-index",
-        "旧数据库",
-        "旧工作区",
-        "旧 runtime map",
+        "索引缺失",
+        "当前工作区",
+        "缺少可用写回映射",
         "prepare-agent-workspace",
         "rebuild-active-runtime",
         "真实游戏耗时",
@@ -56,40 +48,7 @@ def test_current_release_notes_include_text_fact_v2_contract_changes() -> None:
 
     missing_terms = sorted(term for term in required_terms if term not in current_section)
 
-    assert not missing_terms, f"最新 CHANGELOG 段落缺少 v2 契约变化: {missing_terms}"
-
-
-def test_readme_text_fact_contract_lists_prepare_workspace_command_entries() -> None:
-    """README 当前文本事实契约小节必须区分源码和发行包工作区命令。"""
-    readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
-    current_section = _readme_section_by_title(readme_text, "当前文本事实契约")
-
-    source_command = (
-        "uv run python main.py prepare-agent-workspace "
-        "--game <游戏标题> --output-dir <工作区>"
-    )
-    release_command = (
-        ".\\att-mz.exe prepare-agent-workspace "
-        "--game <游戏标题> --output-dir <工作区>"
-    )
-    bare_command = "prepare-agent-workspace --game <游戏标题> --output-dir <工作区>"
-
-    assert source_command in current_section
-    assert release_command in current_section
-    assert bare_command not in current_section.splitlines()
-
-
-def test_text_fact_v2_design_keeps_runtime_literal_out_of_current_domains() -> None:
-    """当前 v2 fact domain 列表不得把 runtime literal 伪装成翻译事实。"""
-    spec_text = (
-        ROOT / "docs" / "superpowers" / "specs" / "2026-06-07-text-fact-contract-v2-design.md"
-    ).read_text(encoding="utf-8")
-    current_domains = spec_text.split("## 非翻译事实边界", 1)[0]
-    non_translation_boundary = spec_text.split("## 非翻译事实边界", 1)[1]
-
-    assert "active_runtime_literal" not in current_domains
-    assert "Placeholder 候选和 active runtime literal 诊断" in non_translation_boundary
-    assert "不属于当前 v2 fact domains" in non_translation_boundary
+    assert not missing_terms, f"最新 CHANGELOG 段落缺少当前契约清理说明: {missing_terms}"
 
 
 def test_extract_release_notes_section_reads_matching_tag() -> None:
@@ -117,7 +76,7 @@ def test_extract_release_notes_section_reads_matching_tag() -> None:
 
 ## v0.1.9 - 2026-05-31
 
-- 旧版本。
+- 前一版本。
 """
 
     notes = extract_release_notes_section(

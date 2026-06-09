@@ -462,7 +462,7 @@ async def _build_text_index_empty_rule_review_decision(
 
 
 def _decision_state_stale(decision: RuleReviewDecision | None) -> bool:
-    """判断统一决策是否代表旧确认范围已失效。"""
+    """判断统一决策是否代表确认范围已失效。"""
     return decision is not None and decision.confirmation_status == "stale"
 
 

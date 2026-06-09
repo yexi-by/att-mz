@@ -90,7 +90,7 @@ def collect_native_note_tag_extraction_details(
 
 
 def _native_note_tag_source_order(source_details: JsonArray) -> list[tuple[str, str]]:
-    """读取 native 来源摘要，保留旧提取路径的来源遍历顺序。"""
+    """读取 native 来源摘要，保留当前规则提取的来源遍历顺序。"""
     sources: list[tuple[str, str]] = []
     for index, raw_source in enumerate(source_details):
         source = ensure_json_object(raw_source, f"native_note_tag_extraction.source_details[{index}]")

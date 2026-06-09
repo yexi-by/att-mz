@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
+from app.rmmz.game_file_view import GameFileView
 from app.rmmz.control_codes import (
     LITERAL_LINE_BREAK_PLACEHOLDER,
     REAL_LINE_BREAK_MARKER,
@@ -523,6 +524,7 @@ class GameLayout:
 class GameData:
     """游戏数据聚合模型。"""
 
+    view: GameFileView
     layout: GameLayout
     data: dict[str, JsonValue]
     writable_data: dict[str, JsonValue]

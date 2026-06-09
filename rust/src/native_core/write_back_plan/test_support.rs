@@ -144,12 +144,12 @@ fn build_plan_with_omitted_allowed_paths_rejects_unrelated_stale_translation() {
     let connection = Connection::open(&db_path).expect("测试数据库应可打开");
     insert_stale_translation_item(
         &connection,
-        "tfv2:stale-unrelated",
+        "tf:stale-unrelated",
         "System.json/staleTranslation",
         "short_text",
         "[\"古いテキスト\"]",
         "[]",
-        "[\"索引外旧译文\"]",
+        "[\"索引外先前译文\"]",
         "stale-raw-hash",
         "stale-translatable-hash",
     );
@@ -167,10 +167,10 @@ fn build_plan_with_omitted_allowed_paths_rejects_unrelated_stale_translation() {
         "rebuild_active_runtime",
         false,
     )
-    .expect_err("完整写回必须检查全部已保存译文的 v2 fact 身份");
+    .expect_err("完整写回必须检查全部已保存译文的 current text fact 身份");
 
     assert!(
-        error.contains("已保存译文不再匹配当前 v2 文本事实身份")
+        error.contains("已保存译文不再匹配当前文本事实")
             && error.contains("System.json/staleTranslation"),
         "错误文案应说明完整写回发现范围外 stale 译文，实际为 {error}",
     );
@@ -187,7 +187,7 @@ fn build_plan_with_empty_writable_index_rejects_saved_translation() {
     let connection = Connection::open(&db_path).expect("测试数据库应可打开");
     insert_stale_translation_item(
         &connection,
-        "tfv2:stale-with-empty-index",
+        "tf:stale-with-empty-index",
         "System.json/staleTranslation",
         "short_text",
         "[\"古いテキスト\"]",
@@ -213,7 +213,7 @@ fn build_plan_with_empty_writable_index_rejects_saved_translation() {
     .expect_err("完整写回即便当前可写范围为空，也必须检查全部已保存译文");
 
     assert!(
-        error.contains("已保存译文不再匹配当前 v2 文本事实身份")
+        error.contains("已保存译文不再匹配当前文本事实")
             && error.contains("System.json/staleTranslation"),
         "错误文案应说明完整写回空范围仍发现 stale 译文，实际为 {error}",
     );
@@ -230,7 +230,7 @@ fn write_back_reads_saved_translation_by_fact_id_without_duplicate_location_gate
     let first_fact_id = insert_test_text_fact_with_identity(
         &connection,
         TestTextFactIdentity {
-            fact_id: "tfv2:first-fact".to_string(),
+            fact_id: "tf:first-fact".to_string(),
             location_path: location_path.to_string(),
             item_type: "short_text".to_string(),
             role: None,
@@ -244,7 +244,7 @@ fn write_back_reads_saved_translation_by_fact_id_without_duplicate_location_gate
     _ = insert_test_text_fact_with_identity(
         &connection,
         TestTextFactIdentity {
-            fact_id: "tfv2:second-fact".to_string(),
+            fact_id: "tf:second-fact".to_string(),
             location_path: location_path.to_string(),
             item_type: "short_text".to_string(),
             role: None,
@@ -286,7 +286,7 @@ fn write_back_reports_saved_translation_with_stale_fact_id_as_unresolved() {
     _ = insert_test_text_fact_with_identity(
         &connection,
         TestTextFactIdentity {
-            fact_id: "tfv2:current-fact".to_string(),
+            fact_id: "tf:current-fact".to_string(),
             location_path: location_path.to_string(),
             item_type: "short_text".to_string(),
             role: None,
@@ -299,12 +299,12 @@ fn write_back_reports_saved_translation_with_stale_fact_id_as_unresolved() {
     );
     insert_stale_translation_item(
         &connection,
-        "tfv2:stale-fact",
+        "tf:stale-fact",
         location_path,
         "short_text",
         "[\"当前源文\"]",
         "[]",
-        "[\"旧译文\"]",
+        "[\"先前译文\"]",
         "stale-raw-hash",
         "stale-translatable-hash",
     );
@@ -313,11 +313,11 @@ fn write_back_reports_saved_translation_with_stale_fact_id_as_unresolved() {
         .expect_err("fact_id 不匹配的已保存译文必须被判定为 unresolved/stale");
 
     assert!(
-        error.contains("已保存译文不再匹配当前 v2 文本事实身份")
+        error.contains("已保存译文不再匹配当前文本事实")
             && error.contains("rebuild-text-index")
-            && error.contains("重新翻译/手动导入")
+            && error.contains("重新翻译或手动导入")
             && error.contains(location_path),
-        "错误文案应说明 v2 fact 身份失配和下一步，实际为 {error}",
+        "错误文案应说明 current text fact 身份失配和下一步，实际为 {error}",
     );
     drop(connection);
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
@@ -347,12 +347,12 @@ fn write_back_allowed_paths_ignore_unrelated_saved_translations() {
     );
     insert_stale_translation_item(
         &connection,
-        "tfv2:stale-unrelated",
+        "tf:stale-unrelated",
         "System.json/staleTranslation",
         "short_text",
         "[\"古いテキスト\"]",
         "[]",
-        "[\"索引外旧译文\"]",
+        "[\"索引外先前译文\"]",
         "stale-raw-hash",
         "stale-translatable-hash",
     );
@@ -812,7 +812,7 @@ fn build_plan_writes_mv_terminology_virtual_namebox() {
 }
 
 #[test]
-fn build_plan_writes_mv_terminology_virtual_namebox_from_v2_render_parts_preserves_spacing() {
+fn build_plan_writes_mv_terminology_virtual_namebox_from_render_parts_preserves_spacing() {
     let fixture = create_fixture_dir("att_mz_write_plan_mv_terminology_render_parts");
     let game_dir = fixture.join("game");
     let db_path = fixture.join("game.db");
@@ -842,20 +842,20 @@ fn build_plan_writes_mv_terminology_virtual_namebox_from_v2_render_parts_preserv
         "rebuild_active_runtime",
         false,
     )
-    .expect("MV 虚拟名字框术语应使用 v2 render parts 写入");
+    .expect("MV 虚拟名字框术语应使用当前写回所需源文结构写入");
     let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
 
     assert_eq!(value["summary"]["terminology_written_count"], 1);
     assert!(
         planned_file_content(&value, "data/CommonEvents.json").contains(r#"\n<丹:> Hello"#),
-        "MV 术语写回必须复用 v2 render parts 保留原始 spacing",
+        "MV 术语写回必须复用当前写回所需源文结构保留原始 spacing",
     );
 
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
 
 #[test]
-fn build_plan_rejects_mv_terminology_virtual_namebox_without_v2_render_parts() {
+fn build_plan_rejects_mv_terminology_virtual_namebox_without_render_parts() {
     let fixture = create_fixture_dir("att_mz_write_plan_mv_terminology_missing_parts");
     let game_dir = fixture.join("game");
     let db_path = fixture.join("game.db");
@@ -885,11 +885,11 @@ fn build_plan_rejects_mv_terminology_virtual_namebox_without_v2_render_parts() {
         "rebuild_active_runtime",
         false,
     )
-    .expect_err("MV 虚拟名字框 v2 fact 缺少 render parts 时必须失败");
+    .expect_err("MV 虚拟名字框当前文本事实缺少写回所需源文结构时必须失败");
 
     assert!(
-        error.contains("render parts"),
-        "错误文案应说明缺少 v2 render parts: {error}",
+        error.contains("写回所需源文结构"),
+        "错误文案应说明缺少写回所需源文结构: {error}",
     );
 
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
@@ -1519,9 +1519,14 @@ fn build_plan_rejects_bad_setting_payload() {
 
 #[test]
 fn build_plan_rejects_invalid_mode_before_running_hot_path() {
-    let error =
-        build_write_back_plan_impl("C:/missing-game", "C:/missing.db", "{}", "legacy", false)
-            .expect_err("写回计划 mode 非法时必须直接失败");
+    let error = build_write_back_plan_impl(
+        "C:/missing-game",
+        "C:/missing.db",
+        "{}",
+        "invalid-mode",
+        false,
+    )
+    .expect_err("写回计划 mode 非法时必须直接失败");
 
     assert!(
         error.contains("写回计划模式无效"),
@@ -1559,7 +1564,7 @@ fn build_plan_rejects_missing_quality_text_rules() {
 }
 
 #[test]
-fn build_plan_rejects_missing_v2_scope_when_allowed_translation_paths_omitted() {
+fn build_plan_rejects_missing_text_fact_scope_when_allowed_translation_paths_omitted() {
     let fixture = create_fixture_dir("att_mz_write_plan_missing_allowed_paths");
     let game_dir = fixture.join("game");
     let db_path = fixture.join("game.db");
@@ -1567,7 +1572,7 @@ fn build_plan_rejects_missing_v2_scope_when_allowed_translation_paths_omitted() 
     create_minimal_database(&db_path);
     let connection = Connection::open(&db_path).expect("测试数据库应可打开");
     connection
-        .execute("DELETE FROM text_fact_scope_v2", [])
+        .execute("DELETE FROM text_fact_scope", [])
         .expect("测试 text fact scope 应可清空");
     drop(connection);
     let mut payload = minimal_setting_payload();
@@ -1583,11 +1588,11 @@ fn build_plan_rejects_missing_v2_scope_when_allowed_translation_paths_omitted() 
         "rebuild_active_runtime",
         false,
     )
-    .expect_err("缺少 allowed_translation_paths 且没有 v2 scope 时必须直接失败");
+    .expect_err("缺少 allowed_translation_paths 且没有 当前文本事实 scope 时必须直接失败");
 
     assert!(
-        error.contains("当前数据库缺少 text fact v2 scope"),
-        "错误文案应说明缺少当前 v2 文本事实范围",
+        error.contains("当前数据库缺少 当前文本事实 scope"),
+        "错误文案应说明缺少当前文本事实范围",
     );
     fs::remove_dir_all(fixture).expect("测试目录应可清理");
 }
@@ -2360,7 +2365,7 @@ fn create_minimal_database(db_path: &Path) {
                 rules_fingerprint TEXT NOT NULL,
                 locator_json TEXT NOT NULL
             );
-            CREATE TABLE text_facts_v2 (
+            CREATE TABLE text_facts (
                 fact_id TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
                 domain TEXT NOT NULL,
@@ -2378,7 +2383,7 @@ fn create_minimal_database(db_path: &Path) {
                 translatable_hash TEXT NOT NULL,
                 scope_key TEXT NOT NULL
             );
-            CREATE TABLE text_fact_render_parts_v2 (
+            CREATE TABLE text_fact_render_parts (
                 fact_id TEXT NOT NULL,
                 part_order INTEGER NOT NULL,
                 part_kind TEXT NOT NULL,
@@ -2387,7 +2392,7 @@ fn create_minimal_database(db_path: &Path) {
                 template_key TEXT NOT NULL,
                 PRIMARY KEY (fact_id, part_order)
             );
-            CREATE TABLE text_fact_scope_v2 (
+            CREATE TABLE text_fact_scope (
                 scope_key TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
                 scope_hash TEXT NOT NULL,
@@ -2451,8 +2456,8 @@ fn create_empty_database(db_path: &Path) {
         .execute_batch(
             "
             DELETE FROM translation_items;
-            DELETE FROM text_fact_render_parts_v2;
-            DELETE FROM text_facts_v2;
+            DELETE FROM text_fact_render_parts;
+            DELETE FROM text_facts;
             DELETE FROM text_index_items;
             ",
         )
@@ -2476,7 +2481,7 @@ fn ensure_test_text_fact_schema(connection: &Connection) {
                 rules_fingerprint TEXT NOT NULL,
                 locator_json TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS text_facts_v2 (
+            CREATE TABLE IF NOT EXISTS text_facts (
                 fact_id TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
                 domain TEXT NOT NULL,
@@ -2494,7 +2499,7 @@ fn ensure_test_text_fact_schema(connection: &Connection) {
                 translatable_hash TEXT NOT NULL,
                 scope_key TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS text_fact_render_parts_v2 (
+            CREATE TABLE IF NOT EXISTS text_fact_render_parts (
                 fact_id TEXT NOT NULL,
                 part_order INTEGER NOT NULL,
                 part_kind TEXT NOT NULL,
@@ -2503,7 +2508,7 @@ fn ensure_test_text_fact_schema(connection: &Connection) {
                 template_key TEXT NOT NULL,
                 PRIMARY KEY (fact_id, part_order)
             );
-            CREATE TABLE IF NOT EXISTS text_fact_scope_v2 (
+            CREATE TABLE IF NOT EXISTS text_fact_scope (
                 scope_key TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
                 scope_hash TEXT NOT NULL,
@@ -2514,14 +2519,14 @@ fn ensure_test_text_fact_schema(connection: &Connection) {
             );
             ",
         )
-        .expect("测试 text fact v2 schema 应可创建");
+        .expect("测试 当前文本事实 schema 应可创建");
     insert_test_text_fact_scope(connection);
 }
 
 fn insert_test_text_fact_scope(connection: &Connection) {
     connection
         .execute(
-            "INSERT OR REPLACE INTO text_fact_scope_v2 \
+            "INSERT OR REPLACE INTO text_fact_scope \
              (scope_key, schema_version, scope_hash, source_snapshot_hash, rule_hash, text_rules_hash, created_at) \
              VALUES (?1, 2, ?2, ?3, ?4, ?5, ?6)",
             params![
@@ -2533,7 +2538,7 @@ fn insert_test_text_fact_scope(connection: &Connection) {
                 "2026-01-01T00:00:00+00:00",
             ],
         )
-        .expect("测试 text fact v2 scope 应可写入");
+        .expect("测试 当前文本事实 scope 应可写入");
 }
 
 fn insert_text_fact_contract_for_item(
@@ -2618,7 +2623,7 @@ fn upsert_test_text_fact(
     let translatable_hash = sha256_text(&translatable_text);
     connection
         .execute(
-            "INSERT OR REPLACE INTO text_facts_v2 \
+            "INSERT OR REPLACE INTO text_facts \
              (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, \
               raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
              VALUES (?1, 2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
@@ -2640,11 +2645,11 @@ fn upsert_test_text_fact(
                 TEST_TEXT_FACT_SCOPE_KEY,
             ],
         )
-        .expect("测试 text fact v2 应可写入");
+        .expect("测试 当前文本事实 应可写入");
     if domain == "plugin_source" {
         connection
             .execute(
-                "INSERT OR REPLACE INTO text_fact_render_parts_v2 \
+                "INSERT OR REPLACE INTO text_fact_render_parts \
                  (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
                  VALUES (?1, 0, 'translated_body', ?2, ?2, 'body')",
                 params![fact_id.as_str(), translatable_text.as_str()],
@@ -2692,7 +2697,7 @@ fn insert_test_text_fact_with_identity(
     let translatable_hash = sha256_text(&identity.translatable_text);
     connection
         .execute(
-            "INSERT OR REPLACE INTO text_facts_v2 \
+            "INSERT OR REPLACE INTO text_facts \
              (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, \
               raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
              VALUES (?1, 2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
@@ -2714,7 +2719,7 @@ fn insert_test_text_fact_with_identity(
                 TEST_TEXT_FACT_SCOPE_KEY,
             ],
         )
-        .expect("测试自定义 text fact v2 应可写入");
+        .expect("测试自定义 当前文本事实 应可写入");
     insert_test_render_part(connection, &identity.fact_id, &identity.raw_text);
     identity.fact_id
 }
@@ -2722,7 +2727,7 @@ fn insert_test_text_fact_with_identity(
 fn insert_test_render_part(connection: &Connection, fact_id: &str, raw_text: &str) {
     connection
         .execute(
-            "INSERT OR REPLACE INTO text_fact_render_parts_v2 \
+            "INSERT OR REPLACE INTO text_fact_render_parts \
              (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
              VALUES (?1, 0, 'translated_body', ?2, ?2, 'body')",
             params![fact_id, raw_text],
@@ -2865,11 +2870,11 @@ fn insert_translation_item_for_fact(
 ) {
     let (raw_hash, translatable_hash) = connection
         .query_row(
-            "SELECT raw_hash, translatable_hash FROM text_facts_v2 WHERE fact_id = ?1",
+            "SELECT raw_hash, translatable_hash FROM text_facts WHERE fact_id = ?1",
             params![fact_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
-        .expect("测试 v2 fact hash 应可读取");
+        .expect("测试 current text fact hash 应可读取");
     insert_stale_translation_item(
         connection,
         fact_id,
@@ -3153,7 +3158,7 @@ fn insert_mv_virtual_namebox_text_fact_with_parts(
     let fact_id = test_fact_id(location_path);
     connection
         .execute(
-            "INSERT OR REPLACE INTO text_facts_v2 \
+            "INSERT OR REPLACE INTO text_facts \
              (fact_id, schema_version, domain, location_path, source_file, source_type, item_type, role, selector, \
               raw_text, visible_text, translatable_text, raw_hash, visible_hash, translatable_hash, scope_key) \
              VALUES (?1, 2, 'mv_virtual_namebox', ?2, 'CommonEvents.json', 'event_command', 'long_text', ?3, ?4, ?5, ?5, ?6, ?7, ?7, ?8, ?9)",
@@ -3169,14 +3174,14 @@ fn insert_mv_virtual_namebox_text_fact_with_parts(
                 TEST_TEXT_FACT_SCOPE_KEY,
             ],
         )
-        .expect("测试 MV virtual namebox v2 fact 应可写入");
+        .expect("测试 MV virtual namebox current text fact 应可写入");
     let Some(render_parts) = render_parts else {
         return;
     };
     for (part_order, (part_kind, raw, semantic, template_key)) in render_parts.iter().enumerate() {
         connection
             .execute(
-                "INSERT OR REPLACE INTO text_fact_render_parts_v2 \
+                "INSERT OR REPLACE INTO text_fact_render_parts \
                  (fact_id, part_order, part_kind, raw_text, semantic_text, template_key) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![

@@ -7,8 +7,8 @@ from app.application.use_cases.translation_run import (
     deduplicate_translation_data,
     expand_cached_translation_items,
 )
-from app.persistence.records import TextFactV2Record
-from app.persistence.sql import TEXT_FACT_SCHEMA_VERSION
+from app.persistence.records import TextFactRecord, TextIndexItemRecord
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
 from app.rmmz.control_codes import REAL_LINE_BREAK_PLACEHOLDER
 from app.rmmz.schema import TranslationData, TranslationItem
 from app.rmmz.text_rules import get_default_text_rules
@@ -17,7 +17,7 @@ from app.translation import TranslationCache, iter_translation_context_batches
 
 
 def _sha256_text(text: str) -> str:
-    """计算测试用 v2 fact 文本 hash。"""
+    """计算测试用 current text fact 文本 hash。"""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -30,11 +30,11 @@ def _make_text_fact_record(
     translatable_text: str,
     role: str = "Dan",
     item_type: str = "long_text",
-) -> TextFactV2Record:
-    """构造最小 Text Fact Contract v2 记录。"""
-    return TextFactV2Record(
+) -> TextFactRecord:
+    """构造最小 当前文本事实契约 记录。"""
+    return TextFactRecord(
         fact_id=fact_id,
-        schema_version=TEXT_FACT_SCHEMA_VERSION,
+        schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
         domain="mv_virtual_namebox",
         location_path=location_path,
         source_file="Map001.json",
@@ -48,7 +48,24 @@ def _make_text_fact_record(
         raw_hash=_sha256_text(raw_text),
         visible_hash=_sha256_text(visible_text),
         translatable_hash=_sha256_text(translatable_text),
-        scope_key="scope-v2",
+        scope_key="scope-current",
+    )
+
+
+def _make_text_index_record(fact: TextFactRecord) -> TextIndexItemRecord:
+    """构造与当前文本事实匹配的当前索引定位记录。"""
+    return TextIndexItemRecord(
+        location_path=fact.location_path,
+        item_type="long_text" if fact.item_type == "long_text" else "short_text",
+        role=fact.role or None,
+        original_lines=[fact.translatable_text],
+        source_line_paths=[fact.location_path],
+        source_type=fact.source_type,
+        source_file=fact.source_file,
+        writable=True,
+        source_snapshot_fingerprint="snapshot-current",
+        rules_fingerprint="rules-current",
+        locator_json='{"display_name": null, "terminology_owner_terms": []}',
     )
 
 
@@ -64,7 +81,7 @@ def test_translation_cache_deduplicates_and_expands_items() -> None:
 
 
 def test_text_fact_cache_expansion_preserves_fact_identity() -> None:
-    """同 dedupe key 展开保存时，重复 fact 保持自己的 v2 identity。"""
+    """同 dedupe key 展开保存时，重复 fact 保持自己的当前身份。"""
     cache = TranslationCache()
     first = TranslationItem(
         fact_id="fact-a",
@@ -73,7 +90,7 @@ def test_text_fact_cache_expansion_preserves_fact_identity() -> None:
         location_path="A/1",
         item_type="short_text",
         original_lines=["こんにちは"],
-        translation_dedupe_key="text_fact_v2:shared",
+        translation_dedupe_key="text_fact:shared",
     )
     duplicate = TranslationItem(
         fact_id="fact-b",
@@ -82,7 +99,7 @@ def test_text_fact_cache_expansion_preserves_fact_identity() -> None:
         location_path="B/1",
         item_type="short_text",
         original_lines=["こんにちは"],
-        translation_dedupe_key="text_fact_v2:shared",
+        translation_dedupe_key="text_fact:shared",
     )
     assert cache.remember_or_defer(first)
     assert not cache.remember_or_defer(duplicate)
@@ -97,8 +114,8 @@ def test_text_fact_cache_expansion_preserves_fact_identity() -> None:
     assert all(item.translation_lines == ["你好"] for item in expanded_items)
 
 
-def test_text_fact_v2_adapter_uses_translatable_text_and_hash_dedupes_prompt() -> None:
-    """v2 fact 送模只使用 translatable_text，并按相同可译正文合并请求。"""
+def test_current_text_fact_adapter_uses_translatable_text_and_hash_dedupes_prompt() -> None:
+    """current text fact 送模只使用 translatable_text，并按相同可译正文合并请求。"""
     first = _make_text_fact_record(
         fact_id="fact-1",
         location_path="Map001.json/1/0",
@@ -114,7 +131,11 @@ def test_text_fact_v2_adapter_uses_translatable_text_and_hash_dedupes_prompt() -
         translatable_text="Hello",
     )
 
-    translation_data_map = text_fact_records_to_translation_data_map([first, duplicate])
+    facts = [first, duplicate]
+    translation_data_map = text_fact_records_to_translation_data_map(
+        facts,
+        index_records=[_make_text_index_record(fact) for fact in facts],
+    )
     deduplicated_map = deduplicate_translation_data(
         translation_data_map=translation_data_map,
         translation_cache=TranslationCache(),
@@ -144,8 +165,8 @@ def test_text_fact_v2_adapter_uses_translatable_text_and_hash_dedupes_prompt() -
     assert "位置:" not in user_prompt
 
 
-def test_text_fact_v2_dedupe_keeps_role_and_item_type_boundaries() -> None:
-    """v2 相同可译正文只在同结构和同说话人内去重。"""
+def test_current_text_fact_dedupe_keeps_role_and_item_type_boundaries() -> None:
+    """相同可译正文只在同结构和同说话人内去重。"""
     first = _make_text_fact_record(
         fact_id="fact-1",
         location_path="Map001.json/1/0",
@@ -172,8 +193,10 @@ def test_text_fact_v2_dedupe_keeps_role_and_item_type_boundaries() -> None:
         item_type="short_text",
     )
 
+    facts = [first, same_text_different_role, same_text_different_item_type]
     translation_data_map = text_fact_records_to_translation_data_map(
-        [first, same_text_different_role, same_text_different_item_type]
+        facts,
+        index_records=[_make_text_index_record(fact) for fact in facts],
     )
     deduplicated_map = deduplicate_translation_data(
         translation_data_map=translation_data_map,

@@ -55,7 +55,7 @@ from .sql import (
 type SqlParameter = str | int | None
 PATH_QUERY_BATCH_SIZE = 500
 TEXT_INDEX_WORKFLOW_GATE_PRECHECK_PREFIX = "workflow_gate_prechecked:"
-TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed_v2"
+TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed"
 
 
 class TextIndexRecordSessionMixin(SessionMixinBase):
@@ -70,7 +70,7 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
         domain_summary: Sequence[TextIndexDomainSummaryRecord] = (),
         rule_hit_summary: Sequence[TextIndexRuleHitSummaryRecord] = (),
     ) -> None:
-        """用一次完整索引重建结果替换旧索引。"""
+        """用一次完整索引重建结果替换当前索引。"""
         if metadata.item_count != len(items):
             raise ValueError("文本索引元信息 item_count 必须等于索引项数量")
 

@@ -959,7 +959,7 @@ def _collect_quality_fix_problem_items(
     active_items_by_path: dict[str, TranslationItem],
     active_items_by_fact_id: dict[str, TranslationItem],
 ) -> list[QualityFixProblemItem]:
-    """按质量报告优先级收集需要导出的唯一 v2 fact 问题项。"""
+    """按质量报告优先级收集需要导出的唯一 current text fact 问题项。"""
     problem_items: list[QualityFixProblemItem] = []
     for item in quality_error_items:
         active_item = active_items_by_fact_id.get(item.fact_id)
@@ -1062,7 +1062,7 @@ def _append_unique_quality_fix_problem_item(
     problem_items: list[QualityFixProblemItem],
     item: QualityFixProblemItem,
 ) -> None:
-    """只把尚未出现过的 v2 fact 问题项加入列表。"""
+    """只把尚未出现过的 current text fact 问题项加入列表。"""
     if any(existing.fact_id == item.fact_id for existing in problem_items):
         return
     problem_items.append(item)
@@ -1166,11 +1166,7 @@ def _build_coverage_report(
     translated_items: list[TranslationItem],
     text_rules: TextRules,
 ) -> AgentReport:
-    """根据 legacy Python 统一文本清单生成覆盖审计报告。
-
-    remaining owner: legacy/test/non-migrated coverage utility。已迁移生产命令
-    不得通过本 helper 消费 `TextScopeResult`，应读取 text fact v2 覆盖事实。
-    """
+    """根据当前文本范围生成覆盖审计报告。"""
     errors: list[AgentIssue] = []
     warnings: list[AgentIssue] = []
     active_items = scope.active_items()
@@ -1230,7 +1226,7 @@ def _build_coverage_report(
         errors.append(
             issue(
                 "coverage_missing_fact_identity",
-                f"发现 {len(missing_fact_identity_paths)} 条文本缺少当前 v2 fact_id，无法判断译文是否属于当前事实",
+                f"发现 {len(missing_fact_identity_paths)} 条文本缺少当前文本事实 fact_id，无法判断译文是否属于当前事实",
             )
         )
 
@@ -1586,7 +1582,7 @@ def _build_custom_placeholder_rule_draft(
 def _build_custom_placeholder_rule_draft_from_details(
     candidate_details: JsonArray,
 ) -> dict[str, str]:
-    """把旧报告同形候选明细折叠成适合 Agent 编辑的规则草稿。"""
+    """把当前 native 候选明细折叠成适合 Agent 编辑的规则草稿。"""
     draft_rules: dict[str, str] = {}
     for index, raw_candidate in enumerate(candidate_details):
         candidate = ensure_json_object(raw_candidate, f"placeholder_candidate_details[{index}]")
@@ -1625,7 +1621,7 @@ def _joined_text_boundary_markers(
 
 
 def _joined_text_boundary_markers_from_details(candidate_details: JsonArray) -> list[str]:
-    """从旧报告同形候选明细列出必须人工确认边界的裸字母控制符候选。"""
+    """从当前 native 候选明细列出必须人工确认边界的裸字母控制符候选。"""
     markers: set[str] = set()
     for index, raw_candidate in enumerate(candidate_details):
         candidate = ensure_json_object(raw_candidate, f"placeholder_candidate_details[{index}]")
@@ -1841,7 +1837,7 @@ def _rule_hit_identity_or_none(hit: _RuleHitMetric) -> TranslationFactIdentity |
     if not hit.fact_id:
         return None
     if not hit.source_fact_raw_hash or not hit.source_fact_translatable_hash:
-        raise ValueError(f"规则命中缺少 v2 fact identity，无法判断当前事实身份: {hit.location_path}")
+        raise ValueError(f"规则命中缺少当前文本事实身份，无法判断当前事实身份: {hit.location_path}")
     return hit.fact_id, hit.source_fact_raw_hash, hit.source_fact_translatable_hash
 
 
@@ -1872,7 +1868,7 @@ def _count_translated_rule_hits(
 
 
 def _sample_texts_from_rule_hits(hits: Iterable[_RuleHitMetric], limit: int = 5) -> JsonArray:
-    """从 native/v2 命中明细提取少量样本文本。"""
+    """从 native 当前命中明细提取少量样本文本。"""
     samples: JsonArray = []
     for hit in hits:
         if not hit.sample_text:
@@ -1910,7 +1906,7 @@ def _build_rule_hit_metric_detail(
     translated_identities: set[TranslationFactIdentity],
     unwritable_items_by_path: dict[str, JsonArray],
 ) -> JsonObject:
-    """生成单条外部规则的 native/v2 命中、保存和可写统计。"""
+    """生成单条外部规则的 native 当前命中、保存和可写统计。"""
     return {
         "hit_count": len(record_hits),
         "extractable_count": len(record_hits),

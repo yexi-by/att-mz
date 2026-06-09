@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
-from tests.current_v2_scope import read_current_v2_scope_for_test
+from tests.current_text_fact_scope import read_current_text_fact_scope_for_test
 
 from app.agent_toolkit import AgentToolkitService
-from app.persistence.records import TextFactV2ReadFilter
+from app.persistence.records import TextFactReadFilter
+
+
+async def _load_current_runtime_game_data(game_dir: Path) -> GameData:
+    """按当前运行视图加载测试游戏数据。"""
+    return await load_active_runtime_game_data(
+        game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
+
 
 @pytest.mark.asyncio
 async def test_mv_outer_layout_loads_www_data_and_system_title(minimal_mv_game_dir: Path) -> None:
     """MV 外层目录布局会定位到 www 内容目录，并用 System 标题兜底注册。"""
     layout = resolve_game_layout(minimal_mv_game_dir)
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
 
     assert layout.engine_kind == "mv"
     assert layout.engine_version == "1.6.1"
@@ -137,7 +148,7 @@ async def test_mv_data_extraction_reads_role_from_first_401(
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     extracted = DataTextExtraction(
         game_data,
@@ -200,7 +211,7 @@ async def test_mv_data_extraction_without_virtual_namebox_rules_keeps_401_as_bod
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     item = next(
         candidate
@@ -257,9 +268,9 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
     scope_key = str(report.summary["scope_key"])
 
     async with await registry.open_game(record.game_title) as session:
-        _ = await session.require_current_text_fact_scope_v2(scope_key)
-        facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        _ = await session.require_current_text_fact_scope(scope_key)
+        facts = await session.read_text_facts(
+            TextFactReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
         )
         assert len(facts) == 1
         fact = facts[0]
@@ -267,7 +278,7 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
         assert fact.visible_text == r"  \n<Dan:> Hello  "
         assert fact.translatable_text == "Hello"
         assert fact.role == "Dan"
-        parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+        parts = await session.read_text_fact_render_parts([fact.fact_id])
 
     assert [part.part_kind for part in parts] == [
         "literal",
@@ -325,8 +336,8 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_for_standalone
     scope_key = str(report.summary["scope_key"])
 
     async with await registry.open_game(record.game_title) as session:
-        facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        facts = await session.read_text_facts(
+            TextFactReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
         )
         assert len(facts) == 1
         fact = facts[0]
@@ -334,7 +345,7 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_for_standalone
         assert fact.visible_text == "  <受付>  \n独立行の本文です"
         assert fact.translatable_text == "独立行の本文です"
         assert fact.role == "受付"
-        parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+        parts = await session.read_text_fact_render_parts([fact.fact_id])
 
         rows = await session.read_text_index_items()
         row = next(item for item in rows if item.location_path == fact.location_path)
@@ -382,11 +393,11 @@ async def test_native_rebuild_weak_mv_namebox_rule_splits_colon_inside_angle_spe
     scope_key = str(report.summary["scope_key"])
 
     async with await registry.open_game(record.game_title) as session:
-        facts = await session.read_text_facts_v2(
-            TextFactV2ReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
+        facts = await session.read_text_facts(
+            TextFactReadFilter(scope_key=scope_key, domain="mv_virtual_namebox")
         )
         fact = next(item for item in facts if item.location_path == "CommonEvents.json/93/0")
-        parts = await session.read_text_fact_render_parts_v2([fact.fact_id])
+        parts = await session.read_text_fact_render_parts([fact.fact_id])
 
     assert fact.raw_text == r"\n<Dan:> Hello"
     assert fact.role == "Dan"
@@ -511,7 +522,7 @@ async def test_mv_virtual_name_box_write_back_rebuilds_speaker_lines(minimal_mv_
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     extracted = DataTextExtraction(
         game_data,
@@ -645,13 +656,13 @@ async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
             ),
             glossary=TerminologyGlossary(terms={"案内人": "向导", "MV勇者": "勇者"}),
         )
-        scope = await read_current_v2_scope_for_test(session=session)
+        scope = await read_current_text_fact_scope_for_test(session=session)
         custom_translations = {
             "CommonEvents.json/2/0": ["你好"],
             "CommonEvents.json/3/0": ["你好」"],
             "CommonEvents.json/4/0": ["勇者正文"],
         }
-        await write_v2_test_translation_items(
+        await write_current_translation_items_for_test(
             session,
             [
                 TranslationItem(
@@ -719,7 +730,7 @@ async def test_mv_virtual_name_box_write_back_requires_speaker_translation(minim
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     extracted = DataTextExtraction(
         game_data,
@@ -768,7 +779,7 @@ async def test_mv_virtual_name_box_write_back_keeps_dynamic_speaker_without_tran
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     extracted = DataTextExtraction(
         game_data,
@@ -817,7 +828,7 @@ async def test_mv_virtual_name_box_write_back_rejects_speaker_line_paths_in_body
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     extracted = DataTextExtraction(
         game_data,
@@ -864,7 +875,7 @@ async def test_mv_virtual_name_box_rule_conflict_reports_text_location(minimal_m
     _rewrite_json(common_events_path, common_events)
     _create_test_source_snapshot(minimal_mv_game_dir)
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     extracted = DataTextExtraction(
         game_data,
@@ -907,7 +918,7 @@ async def test_mv_virtual_name_box_rule_conflict_reports_text_location(minimal_m
 async def test_mv_write_back_uses_www_active_and_origin_paths(minimal_mv_game_dir: Path) -> None:
     """MV 外层目录写回只触碰 www 内的 data 和 plugins.js。"""
     _create_test_source_snapshot(minimal_mv_game_dir)
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_mv_game_dir)
     reset_writable_copies(game_data)
     system_object = ensure_json_object(game_data.writable_data["System.json"], "System.json")
     system_object["gameTitle"] = "MV测试游戏"

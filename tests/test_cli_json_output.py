@@ -818,11 +818,11 @@ def test_unknown_command_reports_json_argument_error(
     assert "可能想用" not in message
 
 
-def test_removed_output_mode_flags_report_argument_error(
+def test_unknown_global_argument_returns_json_argument_error(
     capsys: CaptureFixture[str],
 ) -> None:
-    """旧输出模式参数已删除，传入时返回 JSON 参数错误。"""
-    exit_code = main(["list", "--json"])
+    """未知全局参数返回 JSON 参数错误。"""
+    exit_code = main(["list", "--not-a-current-option"])
 
     captured = capsys.readouterr()
     payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
@@ -833,20 +833,8 @@ def test_removed_output_mode_flags_report_argument_error(
     assert exit_code == 2
     assert first_error["code"] == "argument_error"
     assert isinstance(message, str)
-    assert "--json" in message
+    assert "--not-a-current-option" in message
     assert "CLI 运行开始" not in captured.out
-
-    exit_code = main(["--agent-mode", "list"])
-    captured = capsys.readouterr()
-    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
-    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
-    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
-    message = first_error["message"]
-
-    assert exit_code == 2
-    assert first_error["code"] == "argument_error"
-    assert isinstance(message, str)
-    assert "--agent-mode" in message
 
 
 def test_debug_timings_cli_run_writes_single_diagnostics_file(

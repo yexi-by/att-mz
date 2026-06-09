@@ -34,8 +34,8 @@ from app.text_index import (
     detect_text_index_invalidations,
 )
 from app.text_facts import (
-    count_pending_text_facts_v2,
-    read_pending_text_fact_records_v2,
+    count_pending_text_facts,
+    read_pending_text_fact_records,
     read_writable_text_fact_translation_items_by_fact_ids,
     read_writable_text_fact_translation_items_by_paths,
     text_fact_record_to_translation_item,
@@ -166,11 +166,11 @@ class ManualTranslationAgentMixin:
                 )
 
             set_status("读取还没成功保存译文的索引条目")
-            pending_total_count = await count_pending_text_facts_v2(session)
+            pending_total_count = await count_pending_text_facts(session)
             if limit is not None and limit <= 0:
                 pending_fact_entries: list[tuple[str, TranslationItem]] = []
             else:
-                pending_facts = await read_pending_text_fact_records_v2(session, limit=limit)
+                pending_facts = await read_pending_text_fact_records(session, limit=limit)
                 index_records = await session.read_text_index_items_by_paths(
                     sorted({fact.location_path for fact in pending_facts})
                 )
@@ -293,7 +293,7 @@ class ManualTranslationAgentMixin:
                 if isinstance(raw_fact_id, str) and raw_fact_id.strip():
                     payload_fact_ids[str(location_path)] = raw_fact_id.strip()
             if payload_fact_ids:
-                scope_mode = "text_fact_v2"
+                scope_mode = "current_text_fact"
             requires_text_index = any(path not in payload_fact_ids for path in payload_paths)
             latest_run = await session.read_latest_translation_run()
             if requires_text_index:
@@ -360,12 +360,12 @@ class ManualTranslationAgentMixin:
                 if item is None:
                     if fact_id:
                         message = (
-                            f"{location_path} 的 fact_id 不属于当前可写 v2 文本事实；"
+                            f"{location_path} 的 fact_id 不属于当前可写 当前文本事实；"
                             "请重新导出 pending translations 后再填写导入"
                         )
                     else:
                         message = (
-                            f"{location_path} 不在当前可写 v2 文本事实范围内；"
+                            f"{location_path} 不在当前可写 当前文本事实范围内；"
                             "请重新导出 pending translations 后再填写导入"
                         )
                     errors.append(issue("manual_translation_location", message))
@@ -462,7 +462,7 @@ class ManualTranslationAgentMixin:
             if latest_run is not None:
                 remaining_quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
                 llm_failures = await session.read_llm_failures(latest_run.run_id)
-                has_pending_items = await count_pending_text_facts_v2(session) > 0
+                has_pending_items = await count_pending_text_facts(session) > 0
                 if not has_pending_items and remaining_quality_error_count == 0 and not llm_failures:
                     await session.write_translation_run(
                         latest_run.model_copy(

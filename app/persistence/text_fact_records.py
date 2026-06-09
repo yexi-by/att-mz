@@ -1,34 +1,34 @@
-"""Text Fact Contract v2 持久化会话能力。"""
+"""当前文本事实契约 持久化会话能力。"""
 
 from collections.abc import Sequence
 
 import aiosqlite
 
 from .records import (
-    TextFactDomainPayloadV2Record,
-    TextFactRenderPartV2Record,
-    TextFactScopeV2Record,
-    TextFactV2ReadFilter,
-    TextFactV2Record,
+    TextFactDomainPayloadRecord,
+    TextFactRenderPartRecord,
+    TextFactScopeRecord,
+    TextFactReadFilter,
+    TextFactRecord,
 )
 from .rows import row_int, row_str
 from .session_base import SessionMixinBase
 from .sql import (
-    COUNT_TEXT_FACTS_V2,
-    COUNT_TEXT_FACTS_V2_OUTSIDE_SCOPE,
-    DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS_V2,
-    DELETE_ALL_TEXT_FACT_RENDER_PARTS_V2,
-    DELETE_ALL_TEXT_FACT_SCOPES_V2,
-    DELETE_ALL_TEXT_FACTS_V2,
-    INSERT_TEXT_FACT_DOMAIN_PAYLOAD_V2,
-    INSERT_TEXT_FACT_RENDER_PART_V2,
-    INSERT_TEXT_FACT_SCOPE_V2,
-    INSERT_TEXT_FACT_V2,
-    SELECT_TEXT_FACT_SCOPE_V2,
-    TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME,
-    TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME,
-    TEXT_FACT_SCHEMA_VERSION,
-    TEXT_FACTS_V2_TABLE_NAME,
+    COUNT_TEXT_FACTS,
+    COUNT_TEXT_FACTS_OUTSIDE_SCOPE,
+    DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS,
+    DELETE_ALL_TEXT_FACT_RENDER_PARTS,
+    DELETE_ALL_TEXT_FACT_SCOPES,
+    DELETE_ALL_TEXT_FACTS,
+    INSERT_TEXT_FACT_DOMAIN_PAYLOAD,
+    INSERT_TEXT_FACT_RENDER_PART,
+    INSERT_TEXT_FACT_SCOPE,
+    INSERT_TEXT_FACT,
+    SELECT_TEXT_FACT_SCOPE,
+    TEXT_FACT_DOMAIN_PAYLOADS_TABLE_NAME,
+    TEXT_FACT_RENDER_PARTS_TABLE_NAME,
+    CURRENT_TEXT_FACT_CONTRACT_VERSION,
+    TEXT_FACTS_TABLE_NAME,
 )
 
 type SqlParameter = str | int
@@ -55,233 +55,232 @@ TEXT_FACT_SELECT_COLUMNS = """
 
 
 class TextFactRecordSessionMixin(SessionMixinBase):
-    """负责 Text Fact Contract v2 表的保存、读取与 scope 校验。"""
+    """负责 当前文本事实契约 表的保存、读取与 scope 校验。"""
 
-    async def replace_text_facts_v2(
+    async def replace_text_facts(
         self,
         *,
-        scope: TextFactScopeV2Record,
-        facts: Sequence[TextFactV2Record],
-        render_parts: Sequence[TextFactRenderPartV2Record] = (),
-        domain_payloads: Sequence[TextFactDomainPayloadV2Record] = (),
+        scope: TextFactScopeRecord,
+        facts: Sequence[TextFactRecord],
+        render_parts: Sequence[TextFactRenderPartRecord] = (),
+        domain_payloads: Sequence[TextFactDomainPayloadRecord] = (),
     ) -> None:
-        """用一次完整重建结果替换旧 v2 文本事实。"""
-        self._validate_text_fact_v2_replace_payload(
+        """用一次完整重建结果替换当前文本事实记录。"""
+        self._validate_text_fact_replace_payload(
             scope=scope,
             facts=facts,
             render_parts=render_parts,
             domain_payloads=domain_payloads,
         )
-        _ = await self.connection.execute(DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS_V2)
-        _ = await self.connection.execute(DELETE_ALL_TEXT_FACT_RENDER_PARTS_V2)
-        _ = await self.connection.execute(DELETE_ALL_TEXT_FACTS_V2)
-        _ = await self.connection.execute(DELETE_ALL_TEXT_FACT_SCOPES_V2)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_FACT_DOMAIN_PAYLOADS)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_FACT_RENDER_PARTS)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_FACTS)
+        _ = await self.connection.execute(DELETE_ALL_TEXT_FACT_SCOPES)
         _ = await self.connection.execute(
-            INSERT_TEXT_FACT_SCOPE_V2,
-            self._serialize_text_fact_scope_v2(scope),
+            INSERT_TEXT_FACT_SCOPE,
+            self._serialize_text_fact_scope(scope),
         )
         if facts:
             _ = await self.connection.executemany(
-                INSERT_TEXT_FACT_V2,
-                [self._serialize_text_fact_v2(fact) for fact in _sort_text_facts(facts)],
+                INSERT_TEXT_FACT,
+                [self._serialize_text_fact(fact) for fact in _sort_text_facts(facts)],
             )
         if render_parts:
             _ = await self.connection.executemany(
-                INSERT_TEXT_FACT_RENDER_PART_V2,
+                INSERT_TEXT_FACT_RENDER_PART,
                 [
-                    self._serialize_text_fact_render_part_v2(part)
+                    self._serialize_text_fact_render_part(part)
                     for part in _sort_text_fact_render_parts(render_parts)
                 ],
             )
         if domain_payloads:
             _ = await self.connection.executemany(
-                INSERT_TEXT_FACT_DOMAIN_PAYLOAD_V2,
+                INSERT_TEXT_FACT_DOMAIN_PAYLOAD,
                 [
-                    self._serialize_text_fact_domain_payload_v2(payload)
+                    self._serialize_text_fact_domain_payload(payload)
                     for payload in _sort_text_fact_domain_payloads(domain_payloads)
                 ],
             )
         await self.commit()
 
-    async def read_text_fact_scope_v2(self, scope_key: str) -> TextFactScopeV2Record | None:
-        """读取指定 v2 scope 元数据；scope 缺失时返回空。"""
-        async with self.connection.execute(SELECT_TEXT_FACT_SCOPE_V2, (scope_key,)) as cursor:
+    async def read_text_fact_scope(self, scope_key: str) -> TextFactScopeRecord | None:
+        """读取指定 当前文本事实 scope 元数据；scope 缺失时返回空。"""
+        async with self.connection.execute(SELECT_TEXT_FACT_SCOPE, (scope_key,)) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return None
-        return self._text_fact_scope_v2_from_row(row)
+        return self._text_fact_scope_from_row(row)
 
-    async def require_current_text_fact_scope_v2(self, scope_key: str) -> TextFactScopeV2Record:
-        """读取并校验当前 v2 scope；旧库或不一致状态必须显式失败。"""
+    async def require_current_text_fact_scope(self, scope_key: str) -> TextFactScopeRecord:
+        """读取并校验当前文本事实 scope；缺失或不一致状态必须显式失败。"""
         try:
-            scope = await self.read_text_fact_scope_v2(scope_key)
+            scope = await self.read_text_fact_scope(scope_key)
         except aiosqlite.Error as error:
-            raise _text_fact_v2_scope_error(
-                f"text_fact_scope_v2 不可读取或缺失，当前数据库还没有 v2 文本事实 scope: {scope_key}"
+            raise _text_fact_scope_error(
+                f"text_fact_scope 不可读取或缺失，当前数据库还没有 当前文本事实 scope: {scope_key}"
             ) from error
         if scope is None:
-            raise _text_fact_v2_scope_error(
-                f"没有找到 text fact v2 scope: {scope_key}"
+            raise _text_fact_scope_error(
+                f"没有找到 当前文本事实 scope: {scope_key}"
             )
-        if scope.schema_version != TEXT_FACT_SCHEMA_VERSION:
-            raise _text_fact_v2_scope_error(
-                "text fact v2 scope 的 schema version 不受支持: "
-                + f"数据库是 {scope.schema_version}，当前工具支持 {TEXT_FACT_SCHEMA_VERSION}"
+        if scope.schema_version != CURRENT_TEXT_FACT_CONTRACT_VERSION:
+            raise _text_fact_scope_error(
+                "当前文本事实范围不符合当前要求，不能继续执行；请重新运行 rebuild-text-index"
             )
         try:
-            async with self.connection.execute(COUNT_TEXT_FACTS_V2_OUTSIDE_SCOPE, (scope_key,)) as cursor:
+            async with self.connection.execute(COUNT_TEXT_FACTS_OUTSIDE_SCOPE, (scope_key,)) as cursor:
                 row = await cursor.fetchone()
         except aiosqlite.Error as error:
-            raise _text_fact_v2_scope_error(
-                f"{TEXT_FACTS_V2_TABLE_NAME} 不可读取或缺失，无法确认当前 v2 文本事实 scope"
+            raise _text_fact_scope_error(
+                f"{TEXT_FACTS_TABLE_NAME} 不可读取或缺失，无法确认当前文本事实范围"
             ) from error
         mismatch_count = 0 if row is None else row_int(row, "mismatch_count", self.db_path)
         if mismatch_count > 0:
-            raise _text_fact_v2_scope_error(
-                f"text fact v2 scope 不一致: {mismatch_count} 条文本事实不属于当前 scope {scope_key}"
+            raise _text_fact_scope_error(
+                f"当前文本事实 scope 不一致: {mismatch_count} 条文本事实不属于当前 scope {scope_key}"
             )
         return scope
 
-    async def read_text_facts_v2(
+    async def read_text_facts(
         self,
-        filter: TextFactV2ReadFilter | None = None,
-    ) -> list[TextFactV2Record]:
-        """按稳定顺序读取 v2 文本事实。"""
+        filter: TextFactReadFilter | None = None,
+    ) -> list[TextFactRecord]:
+        """按稳定顺序读取 当前文本事实。"""
         if filter is not None and filter.location_paths:
-            records: list[TextFactV2Record] = []
+            records: list[TextFactRecord] = []
             location_paths = sorted(set(filter.location_paths))
             for batch in _chunks(location_paths, PATH_QUERY_BATCH_SIZE):
-                records.extend(await self._read_text_facts_v2_batch(filter=filter, location_paths=batch))
+                records.extend(await self._read_text_facts_batch(filter=filter, location_paths=batch))
             return _sort_text_facts(records)
-        return await self._read_text_facts_v2_batch(filter=filter)
+        return await self._read_text_facts_batch(filter=filter)
 
-    async def _read_text_facts_v2_batch(
+    async def _read_text_facts_batch(
         self,
         *,
-        filter: TextFactV2ReadFilter | None,
+        filter: TextFactReadFilter | None,
         location_paths: Sequence[str] = (),
-    ) -> list[TextFactV2Record]:
-        """读取单批 v2 文本事实。"""
+    ) -> list[TextFactRecord]:
+        """读取单批 当前文本事实。"""
         where_clause, parameters = _build_text_fact_filter_sql(filter, location_paths=location_paths)
         query = f"""
 --sql
             SELECT
 {TEXT_FACT_SELECT_COLUMNS}
-            FROM [{TEXT_FACTS_V2_TABLE_NAME}]
+            FROM [{TEXT_FACTS_TABLE_NAME}]
             {where_clause}
             ORDER BY domain, location_path, fact_id
         ;
         """
         async with self.connection.execute(query, tuple(parameters)) as cursor:
             rows = await cursor.fetchall()
-        return [self._text_fact_v2_from_row(row) for row in rows]
+        return [self._text_fact_from_row(row) for row in rows]
 
-    async def read_text_fact_render_parts_v2(
+    async def read_text_fact_render_parts(
         self,
         fact_ids: Sequence[str],
-    ) -> list[TextFactRenderPartV2Record]:
-        """按 fact_id 和 part_order 稳定读取 v2 渲染片段。"""
+    ) -> list[TextFactRenderPartRecord]:
+        """按 fact_id 和 part_order 稳定读取 当前渲染片段。"""
         unique_fact_ids = sorted(set(fact_ids))
         if not unique_fact_ids:
             return []
-        records: list[TextFactRenderPartV2Record] = []
+        records: list[TextFactRenderPartRecord] = []
         for batch in _chunks(unique_fact_ids, PATH_QUERY_BATCH_SIZE):
-            records.extend(await self._read_text_fact_render_parts_v2_batch(batch))
+            records.extend(await self._read_text_fact_render_parts_batch(batch))
         return _sort_text_fact_render_parts(records)
 
-    async def _read_text_fact_render_parts_v2_batch(
+    async def _read_text_fact_render_parts_batch(
         self,
         fact_ids: Sequence[str],
-    ) -> list[TextFactRenderPartV2Record]:
-        """读取单批 v2 渲染片段。"""
+    ) -> list[TextFactRenderPartRecord]:
+        """读取单批 当前渲染片段。"""
         placeholders = ", ".join("?" for _fact_id in fact_ids)
         query = f"""
 --sql
             SELECT fact_id, part_order, part_kind, raw_text, semantic_text, template_key
-            FROM [{TEXT_FACT_RENDER_PARTS_V2_TABLE_NAME}]
+            FROM [{TEXT_FACT_RENDER_PARTS_TABLE_NAME}]
             WHERE fact_id IN ({placeholders})
             ORDER BY fact_id, part_order
         ;
         """
         async with self.connection.execute(query, tuple(fact_ids)) as cursor:
             rows = await cursor.fetchall()
-        return [self._text_fact_render_part_v2_from_row(row) for row in rows]
+        return [self._text_fact_render_part_from_row(row) for row in rows]
 
-    async def read_text_fact_domain_payloads_v2(
+    async def read_text_fact_domain_payloads(
         self,
         fact_ids: Sequence[str],
-    ) -> list[TextFactDomainPayloadV2Record]:
-        """按 fact_id 稳定读取 v2 领域 payload。"""
+    ) -> list[TextFactDomainPayloadRecord]:
+        """按 fact_id 稳定读取 当前领域 payload。"""
         unique_fact_ids = sorted(set(fact_ids))
         if not unique_fact_ids:
             return []
-        records: list[TextFactDomainPayloadV2Record] = []
+        records: list[TextFactDomainPayloadRecord] = []
         for batch in _chunks(unique_fact_ids, PATH_QUERY_BATCH_SIZE):
-            records.extend(await self._read_text_fact_domain_payloads_v2_batch(batch))
+            records.extend(await self._read_text_fact_domain_payloads_batch(batch))
         return _sort_text_fact_domain_payloads(records)
 
-    async def _read_text_fact_domain_payloads_v2_batch(
+    async def _read_text_fact_domain_payloads_batch(
         self,
         fact_ids: Sequence[str],
-    ) -> list[TextFactDomainPayloadV2Record]:
-        """读取单批 v2 领域 payload。"""
+    ) -> list[TextFactDomainPayloadRecord]:
+        """读取单批 当前领域 payload。"""
         placeholders = ", ".join("?" for _fact_id in fact_ids)
         query = f"""
 --sql
             SELECT fact_id, payload_json
-            FROM [{TEXT_FACT_DOMAIN_PAYLOADS_V2_TABLE_NAME}]
+            FROM [{TEXT_FACT_DOMAIN_PAYLOADS_TABLE_NAME}]
             WHERE fact_id IN ({placeholders})
             ORDER BY fact_id
         ;
         """
         async with self.connection.execute(query, tuple(fact_ids)) as cursor:
             rows = await cursor.fetchall()
-        return [self._text_fact_domain_payload_v2_from_row(row) for row in rows]
+        return [self._text_fact_domain_payload_from_row(row) for row in rows]
 
-    async def count_text_facts_v2(self) -> int:
-        """统计当前 v2 文本事实数量。"""
-        async with self.connection.execute(COUNT_TEXT_FACTS_V2) as cursor:
+    async def count_text_facts(self) -> int:
+        """统计当前文本事实数量。"""
+        async with self.connection.execute(COUNT_TEXT_FACTS) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return 0
         return row_int(row, "fact_count", self.db_path)
 
-    def _validate_text_fact_v2_replace_payload(
+    def _validate_text_fact_replace_payload(
         self,
         *,
-        scope: TextFactScopeV2Record,
-        facts: Sequence[TextFactV2Record],
-        render_parts: Sequence[TextFactRenderPartV2Record],
-        domain_payloads: Sequence[TextFactDomainPayloadV2Record],
+        scope: TextFactScopeRecord,
+        facts: Sequence[TextFactRecord],
+        render_parts: Sequence[TextFactRenderPartRecord],
+        domain_payloads: Sequence[TextFactDomainPayloadRecord],
     ) -> None:
-        """在写库前显式拒绝不一致的 v2 替换数据。"""
+        """在写库前显式拒绝不一致的当前文本事实替换数据。"""
         fact_ids: set[str] = set()
         for fact in facts:
             if fact.fact_id in fact_ids:
-                raise ValueError(f"v2 文本事实 fact_id 重复: {fact.fact_id}")
+                raise ValueError(f"当前文本事实 fact_id 重复: {fact.fact_id}")
             fact_ids.add(fact.fact_id)
             if fact.schema_version != scope.schema_version:
-                raise ValueError("v2 文本事实 schema_version 必须等于 scope schema_version")
+                raise ValueError("当前文本事实 schema_version 必须等于 scope schema_version")
             if fact.scope_key != scope.scope_key:
-                raise ValueError("v2 文本事实 scope_key 必须等于当前 scope_key")
+                raise ValueError("当前文本事实 scope_key 必须等于当前 scope_key")
         render_part_keys: set[tuple[str, int]] = set()
         for part in render_parts:
             if part.fact_id not in fact_ids:
-                raise ValueError("v2 渲染片段必须引用本次替换中的文本事实")
+                raise ValueError("当前渲染片段必须引用本次替换中的文本事实")
             render_part_key = (part.fact_id, part.part_order)
             if render_part_key in render_part_keys:
-                raise ValueError(f"v2 渲染片段重复: fact_id={part.fact_id}, part_order={part.part_order}")
+                raise ValueError(f"当前渲染片段重复: fact_id={part.fact_id}, part_order={part.part_order}")
             render_part_keys.add(render_part_key)
         payload_fact_ids: set[str] = set()
         for payload in domain_payloads:
             if payload.fact_id not in fact_ids:
-                raise ValueError("v2 领域 payload 必须引用本次替换中的文本事实")
+                raise ValueError("当前领域 payload 必须引用本次替换中的文本事实")
             if payload.fact_id in payload_fact_ids:
-                raise ValueError(f"v2 领域 payload 重复: fact_id={payload.fact_id}")
+                raise ValueError(f"当前领域 payload 重复: fact_id={payload.fact_id}")
             payload_fact_ids.add(payload.fact_id)
 
-    def _serialize_text_fact_scope_v2(self, scope: TextFactScopeV2Record) -> tuple[SqlParameter, ...]:
-        """把 v2 scope 转换为 SQLite 参数。"""
+    def _serialize_text_fact_scope(self, scope: TextFactScopeRecord) -> tuple[SqlParameter, ...]:
+        """把 当前文本事实 scope 转换为 SQLite 参数。"""
         return (
             scope.scope_key,
             scope.schema_version,
@@ -292,8 +291,8 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             scope.created_at,
         )
 
-    def _serialize_text_fact_v2(self, fact: TextFactV2Record) -> tuple[SqlParameter, ...]:
-        """把 v2 文本事实转换为 SQLite 参数。"""
+    def _serialize_text_fact(self, fact: TextFactRecord) -> tuple[SqlParameter, ...]:
+        """把 当前文本事实转换为 SQLite 参数。"""
         return (
             fact.fact_id,
             fact.schema_version,
@@ -313,11 +312,11 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             fact.scope_key,
         )
 
-    def _serialize_text_fact_render_part_v2(
+    def _serialize_text_fact_render_part(
         self,
-        part: TextFactRenderPartV2Record,
+        part: TextFactRenderPartRecord,
     ) -> tuple[SqlParameter, ...]:
-        """把 v2 渲染片段转换为 SQLite 参数。"""
+        """把 当前渲染片段转换为 SQLite 参数。"""
         return (
             part.fact_id,
             part.part_order,
@@ -327,16 +326,16 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             part.template_key,
         )
 
-    def _serialize_text_fact_domain_payload_v2(
+    def _serialize_text_fact_domain_payload(
         self,
-        payload: TextFactDomainPayloadV2Record,
+        payload: TextFactDomainPayloadRecord,
     ) -> tuple[SqlParameter, ...]:
-        """把 v2 领域 payload 转换为 SQLite 参数。"""
+        """把 当前领域 payload 转换为 SQLite 参数。"""
         return (payload.fact_id, payload.payload_json)
 
-    def _text_fact_scope_v2_from_row(self, row: aiosqlite.Row) -> TextFactScopeV2Record:
-        """把数据库行还原为 v2 scope。"""
-        return TextFactScopeV2Record(
+    def _text_fact_scope_from_row(self, row: aiosqlite.Row) -> TextFactScopeRecord:
+        """把数据库行还原为 当前文本事实 scope。"""
+        return TextFactScopeRecord(
             scope_key=row_str(row, "scope_key", self.db_path),
             schema_version=row_int(row, "schema_version", self.db_path),
             scope_hash=row_str(row, "scope_hash", self.db_path),
@@ -346,9 +345,9 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             created_at=row_str(row, "created_at", self.db_path),
         )
 
-    def _text_fact_v2_from_row(self, row: aiosqlite.Row) -> TextFactV2Record:
-        """把数据库行还原为 v2 文本事实。"""
-        return TextFactV2Record(
+    def _text_fact_from_row(self, row: aiosqlite.Row) -> TextFactRecord:
+        """把数据库行还原为 当前文本事实。"""
+        return TextFactRecord(
             fact_id=row_str(row, "fact_id", self.db_path),
             schema_version=row_int(row, "schema_version", self.db_path),
             domain=row_str(row, "domain", self.db_path),
@@ -367,12 +366,12 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             scope_key=row_str(row, "scope_key", self.db_path),
         )
 
-    def _text_fact_render_part_v2_from_row(
+    def _text_fact_render_part_from_row(
         self,
         row: aiosqlite.Row,
-    ) -> TextFactRenderPartV2Record:
-        """把数据库行还原为 v2 渲染片段。"""
-        return TextFactRenderPartV2Record(
+    ) -> TextFactRenderPartRecord:
+        """把数据库行还原为 当前渲染片段。"""
+        return TextFactRenderPartRecord(
             fact_id=row_str(row, "fact_id", self.db_path),
             part_order=row_int(row, "part_order", self.db_path),
             part_kind=row_str(row, "part_kind", self.db_path),
@@ -381,23 +380,23 @@ class TextFactRecordSessionMixin(SessionMixinBase):
             template_key=row_str(row, "template_key", self.db_path),
         )
 
-    def _text_fact_domain_payload_v2_from_row(
+    def _text_fact_domain_payload_from_row(
         self,
         row: aiosqlite.Row,
-    ) -> TextFactDomainPayloadV2Record:
-        """把数据库行还原为 v2 领域 payload。"""
-        return TextFactDomainPayloadV2Record(
+    ) -> TextFactDomainPayloadRecord:
+        """把数据库行还原为 当前领域 payload。"""
+        return TextFactDomainPayloadRecord(
             fact_id=row_str(row, "fact_id", self.db_path),
             payload_json=row_str(row, "payload_json", self.db_path),
         )
 
 
 def _build_text_fact_filter_sql(
-    filter: TextFactV2ReadFilter | None,
+    filter: TextFactReadFilter | None,
     *,
     location_paths: Sequence[str] = (),
 ) -> tuple[str, list[SqlParameter]]:
-    """把 v2 fact 过滤条件转换成参数化 SQL 片段。"""
+    """把 current text fact 过滤条件转换成参数化 SQL 片段。"""
     if filter is None:
         return "", []
     clauses: list[str] = []
@@ -427,31 +426,31 @@ def _chunks(values: Sequence[str], size: int) -> list[Sequence[str]]:
     return [values[index:index + size] for index in range(0, len(values), size)]
 
 
-def _text_fact_v2_scope_error(detail: str) -> RuntimeError:
-    """构造 v2 scope 契约失败错误，包含影响和下一步命令。"""
+def _text_fact_scope_error(detail: str) -> RuntimeError:
+    """构造 当前文本事实 scope 契约失败错误，包含影响和下一步命令。"""
     message = (
-        f"{detail}。影响：当前命令需要读取当前 text fact v2 scope，不能继续使用旧索引或不一致事实。"
+        f"{detail}。影响：当前命令需要读取当前文本事实 scope，无法在索引缺失或事实不一致时继续。"
         + "下一步：请运行 rebuild-text-index 重新生成当前文本索引。"
     )
     return RuntimeError(message)
 
 
-def _sort_text_facts(records: Sequence[TextFactV2Record]) -> list[TextFactV2Record]:
-    """按稳定顺序排列 v2 文本事实。"""
+def _sort_text_facts(records: Sequence[TextFactRecord]) -> list[TextFactRecord]:
+    """按稳定顺序排列 当前文本事实。"""
     return sorted(records, key=lambda record: (record.domain, record.location_path, record.fact_id))
 
 
 def _sort_text_fact_render_parts(
-    records: Sequence[TextFactRenderPartV2Record],
-) -> list[TextFactRenderPartV2Record]:
-    """按稳定顺序排列 v2 渲染片段。"""
+    records: Sequence[TextFactRenderPartRecord],
+) -> list[TextFactRenderPartRecord]:
+    """按稳定顺序排列 当前渲染片段。"""
     return sorted(records, key=lambda record: (record.fact_id, record.part_order))
 
 
 def _sort_text_fact_domain_payloads(
-    records: Sequence[TextFactDomainPayloadV2Record],
-) -> list[TextFactDomainPayloadV2Record]:
-    """按稳定顺序排列 v2 领域 payload。"""
+    records: Sequence[TextFactDomainPayloadRecord],
+) -> list[TextFactDomainPayloadRecord]:
+    """按稳定顺序排列 当前领域 payload。"""
     return sorted(records, key=lambda record: record.fact_id)
 
 

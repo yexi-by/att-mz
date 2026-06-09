@@ -79,20 +79,20 @@ from app.text_index import collect_text_index_scope_gate_errors
 from app.text_index import collect_text_index_placeholder_gate_decisions
 from app.text_index import text_index_source_branch_gates_prechecked
 from app.text_facts import (
-    count_current_text_facts_v2,
-    count_pending_text_fact_quality_errors_by_type_v2,
-    count_pending_text_fact_quality_errors_v2,
-    count_pending_text_facts_v2,
-    count_stale_translations_outside_writable_text_facts_v2,
-    count_translated_text_facts_v2,
-    count_writable_text_facts_v2,
-    read_current_text_fact_records_v2,
-    read_pending_text_fact_quality_error_fact_ids_v2,
-    read_text_fact_quality_error_fact_ids_v2,
+    count_current_text_facts,
+    count_pending_text_fact_quality_errors_by_type,
+    count_pending_text_fact_quality_errors,
+    count_pending_text_facts,
+    count_stale_translations_outside_writable_text_facts,
+    count_translated_text_facts,
+    count_writable_text_facts,
+    read_current_text_fact_records,
+    read_pending_text_fact_quality_error_fact_ids,
+    read_text_fact_quality_error_fact_ids,
     read_text_fact_quality_items_for_translations,
-    read_text_fact_sample_details_by_fact_ids_v2,
+    read_text_fact_sample_details_by_fact_ids,
     read_current_text_fact_translation_items_by_paths,
-    read_writable_text_fact_translation_items_v2,
+    read_writable_text_fact_translation_items,
 )
 from app.text_fact_identity import (
     TranslationFactIdentity,
@@ -449,7 +449,7 @@ def _int_counts_to_json_object(counts: dict[str, int]) -> JsonObject:
 
 
 def _quality_error_fact_sample_fields(sample: JsonObject | None) -> JsonObject:
-    """返回质量错误明细里的 v2 fact 短样本字段。"""
+    """返回质量错误明细里的 current text fact 短样本字段。"""
     if sample is None:
         return {
             "raw_text_sample": "",
@@ -1067,7 +1067,7 @@ class QualityAgentMixin:
             translated_items = await session.read_translated_items()
             translated_by_path = {item.location_path: item for item in translated_items}
             translated_identities = require_translation_fact_identities(translated_items)
-            active_translation_items = await read_writable_text_fact_translation_items_v2(session)
+            active_translation_items = await read_writable_text_fact_translation_items(session)
             active_items_by_path: dict[str, TranslationItem] = {}
             active_items_by_fact_id: dict[str, TranslationItem] = {}
             active_identities: set[TranslationFactIdentity] = set()
@@ -1098,15 +1098,15 @@ class QualityAgentMixin:
             else:
                 quality_error_items = await session.read_translation_quality_errors(latest_run.run_id)
             source_residual_rules = await session.read_source_residual_rules()
-            text_fact_count = await count_current_text_facts_v2(session)
-            writable_fact_count = await count_writable_text_facts_v2(session)
+            text_fact_count = await count_current_text_facts(session)
+            writable_fact_count = await count_writable_text_facts(session)
             coverage_report = _text_index_coverage_report_from_counts(
                 extractable_count=text_fact_count,
-                translated_count=await count_translated_text_facts_v2(session),
+                translated_count=await count_translated_text_facts(session),
                 writable_count=writable_fact_count,
-                pending_count=await count_pending_text_facts_v2(session),
+                pending_count=await count_pending_text_facts(session),
                 unwritable_count=max(0, text_fact_count - writable_fact_count),
-                stale_translation_count=await count_stale_translations_outside_writable_text_facts_v2(session),
+                stale_translation_count=await count_stale_translations_outside_writable_text_facts(session),
                 include_write_probe=include_write_probe,
             )
             advance_progress(2)
@@ -1365,16 +1365,16 @@ class QualityAgentMixin:
             scope_summary = await session.read_text_index_scope_summary()
             if scope_summary is None:
                 raise RuntimeError("持久文本范围索引摘要不可读取，请重新运行 rebuild-text-index")
-            text_fact_count = await count_current_text_facts_v2(session)
-            translated_count = await count_translated_text_facts_v2(session)
-            pending_count = await count_pending_text_facts_v2(session)
-            writable_count = await count_writable_text_facts_v2(session)
-            stale_translation_count = await count_stale_translations_outside_writable_text_facts_v2(session)
-            active_quality_error_fact_ids = await read_text_fact_quality_error_fact_ids_v2(
+            text_fact_count = await count_current_text_facts(session)
+            translated_count = await count_translated_text_facts(session)
+            pending_count = await count_pending_text_facts(session)
+            writable_count = await count_writable_text_facts(session)
+            stale_translation_count = await count_stale_translations_outside_writable_text_facts(session)
+            active_quality_error_fact_ids = await read_text_fact_quality_error_fact_ids(
                 session,
                 latest_run.run_id,
             )
-            pending_quality_error_fact_ids = await read_pending_text_fact_quality_error_fact_ids_v2(
+            pending_quality_error_fact_ids = await read_pending_text_fact_quality_error_fact_ids(
                 session,
                 latest_run.run_id,
             )
@@ -1416,13 +1416,13 @@ class QualityAgentMixin:
                 stale_translation_count=stale_translation_count,
             )
         else:
-            text_fact_records = await read_current_text_fact_records_v2(session, limit=None)
+            text_fact_records = await read_current_text_fact_records(session, limit=None)
             active_paths = {record.location_path for record in text_fact_records}
             active_identities = {text_fact_record_identity(record) for record in text_fact_records}
             translated_items = await session.read_translated_items()
             writable_paths = {
                 item.location_path
-                for item in await read_writable_text_fact_translation_items_v2(session)
+                for item in await read_writable_text_fact_translation_items(session)
             }
             active_translated_items = [
                 item
@@ -1438,11 +1438,11 @@ class QualityAgentMixin:
                 active_quality_error_fact_ids: set[str] = set()
                 pending_quality_error_fact_ids: set[str] = set()
             else:
-                active_quality_error_fact_ids = await read_text_fact_quality_error_fact_ids_v2(
+                active_quality_error_fact_ids = await read_text_fact_quality_error_fact_ids(
                     session,
                     latest_run.run_id,
                 )
-                pending_quality_error_fact_ids = await read_pending_text_fact_quality_error_fact_ids_v2(
+                pending_quality_error_fact_ids = await read_pending_text_fact_quality_error_fact_ids(
                     session,
                     latest_run.run_id,
                 )
@@ -1452,12 +1452,12 @@ class QualityAgentMixin:
                 if item.fact_id in pending_quality_error_fact_ids
             ]
             active_count = len(active_paths)
-            writable_count = await count_writable_text_facts_v2(session)
+            writable_count = await count_writable_text_facts(session)
             unwritable_count = max(0, active_count - writable_count)
-            translated_count = await count_translated_text_facts_v2(session)
-            pending_paths_count = await count_pending_text_facts_v2(session)
+            translated_count = await count_translated_text_facts(session)
+            pending_paths_count = await count_pending_text_facts(session)
             writable_translation_count = max(0, writable_count - pending_paths_count)
-            stale_paths_count = await count_stale_translations_outside_writable_text_facts_v2(session)
+            stale_paths_count = await count_stale_translations_outside_writable_text_facts(session)
             coverage_report = _text_index_coverage_report_from_counts(
                 extractable_count=active_count,
                 translated_count=translated_count,
@@ -1677,7 +1677,7 @@ class QualityAgentMixin:
             errors.append(issue("stale_source_residual_rules", f"发现 {len(stale_source_residual_rule_paths)} 条不在当前提取范围内的源文残留例外规则"))
 
         quality_error_details: JsonArray = []
-        quality_error_fact_samples = await read_text_fact_sample_details_by_fact_ids_v2(
+        quality_error_fact_samples = await read_text_fact_sample_details_by_fact_ids(
             session,
             [item.fact_id for item in quality_error_items],
         )
@@ -1984,10 +1984,10 @@ class QualityAgentMixin:
                     set_status("读取持久文本范围索引")
                     metadata = await session.read_text_index_metadata()
                     extractable_count = metadata.item_count if metadata is not None else latest_run.total_extracted
-                    pending_count = await count_pending_text_facts_v2(session)
-                    translated_count = await count_translated_text_facts_v2(session)
-                    quality_error_count = await count_pending_text_fact_quality_errors_v2(session, latest_run.run_id)
-                    quality_error_counts = await count_pending_text_fact_quality_errors_by_type_v2(
+                    pending_count = await count_pending_text_facts(session)
+                    translated_count = await count_translated_text_facts(session)
+                    quality_error_count = await count_pending_text_fact_quality_errors(session, latest_run.run_id)
+                    quality_error_counts = await count_pending_text_fact_quality_errors_by_type(
                         session,
                         latest_run.run_id,
                     )
@@ -2075,10 +2075,10 @@ class QualityAgentMixin:
                 set_status("读取持久文本范围索引")
                 metadata = await session.read_text_index_metadata()
                 extractable_count = metadata.item_count if metadata is not None else latest_run.total_extracted
-                pending_count = await count_pending_text_facts_v2(session)
-                translated_count = await count_translated_text_facts_v2(session)
-                quality_error_count = await count_pending_text_fact_quality_errors_v2(session, latest_run.run_id)
-                quality_error_counts = await count_pending_text_fact_quality_errors_by_type_v2(
+                pending_count = await count_pending_text_facts(session)
+                translated_count = await count_translated_text_facts(session)
+                quality_error_count = await count_pending_text_fact_quality_errors(session, latest_run.run_id)
+                quality_error_counts = await count_pending_text_fact_quality_errors_by_type(
                     session,
                     latest_run.run_id,
                 )

@@ -8,6 +8,16 @@ from app.rmmz.text_rules import JsonArray
 from app.text_scope.rule_hits import collect_note_tag_rule_hits
 
 
+async def _load_current_runtime_game_data(game_dir: Path) -> GameData:
+    """按当前运行视图加载测试游戏数据。"""
+    return await load_active_runtime_game_data(
+        game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
+
+
 @pytest.mark.asyncio
 async def test_native_write_back_helper_nonstandard_data_audit_skips_game_data_load(
     tmp_path: Path,
@@ -139,7 +149,7 @@ async def test_note_tag_rules_extract_and_write_back_only_target_values(minimal_
     _rewrite_json(items_path, raw_items)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     standard_extracted = DataTextExtraction(game_data, get_default_text_rules()).extract_all_text()
     standard_paths = {
         candidate.location_path
@@ -182,7 +192,7 @@ async def test_note_tag_extraction_rejects_stale_rule_without_current_tag(minima
     item["note"] = "<拡張説明:薬草の詳細説明>\n<upgrade:1,2,3>"
     _rewrite_json(items_path, raw_items)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     rule_records = build_note_tag_rule_records_from_import(
         game_data=game_data,
         import_file={"Items.json": ["拡張説明"]},
@@ -190,7 +200,7 @@ async def test_note_tag_extraction_rejects_stale_rule_without_current_tag(minima
     )
     item["note"] = "<upgrade:1,2,3>"
     _rewrite_json(items_path, raw_items)
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await _load_current_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="Note 标签规则已过期"):
         _ = NoteTagTextExtraction(
@@ -214,7 +224,7 @@ async def test_note_tag_rule_hits_expand_full_locations_and_normalized_text(mini
     )
     _rewrite_json(items_path, raw_items)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     hits = collect_note_tag_rule_hits(
         game_data=game_data,
         note_tag_rules=[
@@ -301,7 +311,7 @@ async def test_note_tag_rule_hits_use_native_details_without_python_note_scan(
         raising=False,
     )
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     hits = collect_note_tag_rule_hits(
         game_data=game_data,
         note_tag_rules=[
@@ -401,7 +411,7 @@ async def test_note_tag_extraction_uses_native_details_without_python_note_scan(
         raising=False,
     )
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     extracted = NoteTagTextExtraction(
         game_data=game_data,
         rule_records=[
@@ -476,7 +486,7 @@ async def test_note_tag_extraction_native_details_keep_duplicate_error_before_fi
         raising=False,
     )
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     with pytest.raises(ValueError, match="标签重复"):
         _ = NoteTagTextExtraction(
             game_data=game_data,
@@ -500,7 +510,7 @@ async def test_note_tag_multiline_value_keeps_line_break_structure_before_write_
         )
     )
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     note_items = NoteTagTextExtraction(
         game_data=game_data,
         rule_records=[
@@ -531,7 +541,7 @@ async def test_note_tag_json_string_leaf_uses_visible_text_protocol(minimal_game
     _rewrite_json(items_path, raw_items)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     candidates = collect_note_tag_candidates(
         game_data=game_data,
         text_rules=get_default_text_rules(),
@@ -582,7 +592,7 @@ async def test_map_event_note_tag_rules_extract_and_write_back(minimal_game_dir:
     _rewrite_json(map_path, raw_map)
     _create_test_source_snapshot(minimal_game_dir)
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await _load_current_runtime_game_data(minimal_game_dir)
     candidates = collect_note_tag_candidates(
         game_data=game_data,
         text_rules=get_default_text_rules(),

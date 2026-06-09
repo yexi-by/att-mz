@@ -35,7 +35,7 @@ ERR_EMPTY_TRANSLATION: ErrorType = "AI漏翻"
 class TranslationResponseItem(BaseModel):
     """模型返回的单条对照译文。"""
 
-    id: str | int
+    id: str
     translation_lines: list[str]
 
 
@@ -247,7 +247,7 @@ async def verify_translation_batch(
 
 
 def _require_translation_error_fact_id(item: TranslationItem) -> str:
-    """返回质量错误所属 v2 fact identity，缺失时显式失败。"""
+    """返回质量错误所属当前文本事实身份，缺失时显式失败。"""
     if not item.fact_id:
         raise ValueError(f"质量错误缺少 fact_id，无法记录当前文本事实的检查结果: {item.location_path}")
     return item.fact_id
@@ -276,7 +276,7 @@ def _build_translation_line_map(
     """按本地批次条目收窄模型译文，忽略无关字段和未知 ID。"""
     translation_map: dict[str, list[str]] = {}
     for response_item in response_items:
-        response_id = str(response_item.id)
+        response_id = response_item.id
         if response_id not in valid_prompt_ids:
             continue
         if response_id in translation_map:

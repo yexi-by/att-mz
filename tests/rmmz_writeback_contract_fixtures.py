@@ -7,6 +7,8 @@ import json
 
 import shutil
 
+from collections.abc import Sequence
+
 from pathlib import Path
 
 from types import SimpleNamespace
@@ -70,11 +72,13 @@ from app.rule_review import (
 from app.rmmz import (
     DataTextExtraction,
     GameFileView,
-    load_active_runtime_game_data,
-    load_game_data,
-    load_game_data_for_view,
     read_game_title,
     resolve_game_layout,
+)
+from app.rmmz.loader import (
+    load_active_runtime_game_data,
+    load_game_data_for_view,
+    load_translation_source_game_data,
 )
 
 from app.rmmz.control_codes import CustomPlaceholderRule
@@ -101,7 +105,7 @@ from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 
 from app.text_facts import (
-    read_current_text_fact_translation_data_map_v2,
+    read_current_text_fact_translation_data_map,
     read_current_text_fact_translation_items_by_paths,
 )
 
@@ -235,7 +239,12 @@ async def _prepare_write_gate_session(
     glossary: TerminologyGlossary | None = None,
 ) -> tuple[GameData, Setting, TextRules]:
     """让最小游戏通过写文件前置规则，便于测试特定写入风险。"""
-    game_data = await load_game_data(game_dir)
+    game_data = await load_translation_source_game_data(
+        game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=True,
+        run_dialogue_probe_check=True,
+    )
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
     placeholder_record = PlaceholderRuleRecord(
         pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
@@ -282,7 +291,7 @@ async def _prepare_write_gate_session(
         setting=setting,
         text_rules=text_rules,
     )
-    translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
+    translation_data_map = await read_current_text_fact_translation_data_map(session)
     await session.replace_rule_review_state(
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
         scope_hash=structured_placeholder_scope_hash(
@@ -298,72 +307,36 @@ async def _prepare_write_gate_session(
     )
     return game_data, setting, text_rules
 
-async def write_v2_test_translation_items(
+async def write_current_translation_items_for_test(
     session: TargetGameSession,
     items: list[TranslationItem],
 ) -> None:
-    """把旧式测试译文映射到当前 v2 fact 身份后写入主译文表。"""
-    items_to_migrate = [item for item in items]
+    """按当前 text fact 身份写入测试译文；缺少当前事实时显式失败。"""
+    items_to_write = [item for item in items]
     current_items = await read_current_text_fact_translation_items_by_paths(
         session,
-        [item.location_path for item in items_to_migrate],
+        [item.location_path for item in items_to_write],
     )
-    current_paths = {item.location_path for item in current_items}
-    missing_items = [
-        item for item in items_to_migrate if item.location_path not in current_paths
-    ]
-    if missing_items:
-        await session.write_translation_items(
-            [_generated_stale_v2_test_item(item) for item in missing_items]
-        )
-        missing_item_ids = {id(item) for item in missing_items}
-        items_to_migrate = [
-            item for item in items_to_migrate if id(item) not in missing_item_ids
-        ]
-        if not items_to_migrate:
-            return
-        current_items = await read_current_text_fact_translation_items_by_paths(
-            session,
-            [item.location_path for item in items_to_migrate],
-        )
     current_by_path: dict[str, list[TranslationItem]] = {}
     for current_item in current_items:
         current_by_path.setdefault(current_item.location_path, []).append(current_item)
-    migrated_items: list[TranslationItem] = []
-    for item in items_to_migrate:
-        current_item = _pop_matching_v2_test_item(
+    current_items_to_write: list[TranslationItem] = []
+    for item in items_to_write:
+        current_item = _pop_matching_current_test_item(
             current_by_path.get(item.location_path, []),
             item,
         )
         if current_item is None:
-            raise AssertionError(f"测试夹具缺少当前 v2 fact: {item.location_path}")
-        current_item.role = item.role
-        current_item.original_lines = [line for line in item.original_lines]
-        current_item.source_line_paths = [path for path in item.source_line_paths]
+            raise AssertionError(f"测试夹具缺少当前 text fact: {item.location_path}")
         current_item.translation_lines = [line for line in item.translation_lines]
-        migrated_items.append(current_item)
-    await session.write_translation_items(migrated_items)
+        current_items_to_write.append(current_item)
+    await session.write_translation_items(current_items_to_write)
 
-def _generated_stale_v2_test_item(item: TranslationItem) -> TranslationItem:
-    """把无当前 fact 的写回测试译文转成显式过期 v2 行。"""
-    identity = item.location_path.replace("'", "_")
-    return TranslationItem(
-        fact_id=f"test-stale-fact:{identity}",
-        source_fact_raw_hash=f"test-stale-raw:{identity}",
-        source_fact_translatable_hash=f"test-stale-translatable:{identity}",
-        location_path=item.location_path,
-        item_type=item.item_type,
-        role=item.role,
-        original_lines=[line for line in item.original_lines],
-        source_line_paths=[path for path in item.source_line_paths],
-        translation_lines=[line for line in item.translation_lines],
-    )
-
-def _pop_matching_v2_test_item(
+def _pop_matching_current_test_item(
     candidates: list[TranslationItem],
     item: TranslationItem,
 ) -> TranslationItem | None:
-    """从同 path 候选中优先取源文一致的 v2 fact 测试项。"""
+    """从同 path 候选中优先取源文一致的当前 text fact 测试项。"""
     if not candidates:
         return None
     for index, candidate in enumerate(candidates):
@@ -372,6 +345,51 @@ def _pop_matching_v2_test_item(
     if len(candidates) == 1:
         return candidates.pop()
     return candidates.pop(0)
+
+async def insert_invalid_fact_translation_row_for_test(
+    session: TargetGameSession,
+    *,
+    location_path: str,
+    item_type: str,
+    role: str | None,
+    original_lines: Sequence[str],
+    source_line_paths: Sequence[str],
+    translation_lines: Sequence[str],
+    fact_id: str = "tf:invalid-test-row",
+    source_fact_raw_hash: str = "invalid-raw-hash",
+    source_fact_translatable_hash: str = "invalid-translatable-hash",
+) -> None:
+    """测试专用：直接插入与当前 text fact 不匹配的无效译文行。"""
+    _ = await session.connection.execute(
+        """
+--sql
+            INSERT OR REPLACE INTO translation_items (
+                fact_id,
+                location_path,
+                item_type,
+                role,
+                original_lines,
+                source_line_paths,
+                source_fact_raw_hash,
+                source_fact_translatable_hash,
+                translation_lines
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ;
+        """,
+        (
+            fact_id,
+            location_path,
+            item_type,
+            role,
+            json.dumps(list(original_lines), ensure_ascii=False),
+            json.dumps(list(source_line_paths), ensure_ascii=False),
+            source_fact_raw_hash,
+            source_fact_translatable_hash,
+            json.dumps(list(translation_lines), ensure_ascii=False),
+        ),
+    )
+    await session.connection.commit()
 
 class _NativePlanSessionStub:
     """测试 Rust 写回计划应用层协议的会话桩。"""
@@ -479,8 +497,8 @@ __all__ = (
     "DataTextExtraction",
     "GameFileView",
     "load_active_runtime_game_data",
-    "load_game_data",
     "load_game_data_for_view",
+    "load_translation_source_game_data",
     "read_game_title",
     "resolve_game_layout",
     "CustomPlaceholderRule",
@@ -519,6 +537,7 @@ __all__ = (
     "_translated_test_line_preserving_controls",
     "_mv_virtual_namebox_rule_records",
     "_prepare_write_gate_session",
-    "write_v2_test_translation_items",
+    "write_current_translation_items_for_test",
+    "insert_invalid_fact_translation_row_for_test",
     "_NativePlanSessionStub",
 )

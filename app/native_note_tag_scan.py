@@ -71,7 +71,7 @@ def build_note_tag_rule_records_from_native_candidates(
 
 
 def collect_native_note_tag_candidate_details(*, game_data: GameData, text_rules: TextRules) -> JsonArray:
-    """调用 native Note 标签候选入口并返回旧报告同形明细。"""
+    """调用 native Note 标签候选入口并返回当前候选明细。"""
     payload = build_native_note_tag_candidates_payload(game_data, text_rules)
     result = scan_native_rule_candidates(payload)
     summary_value = result.scan_summary.get("note_tags")

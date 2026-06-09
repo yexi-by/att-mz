@@ -1,4 +1,4 @@
-"""测试专用的当前 Text Fact v2 范围构造器。"""
+"""测试专用的当前 text fact 范围构造器。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from app.config.schemas import Setting
 from app.persistence import TargetGameSession
 from app.rmmz.text_rules import TextRules
 from app.text_facts import (
-    read_current_text_fact_records_v2,
-    read_current_text_fact_translation_data_map_v2,
+    read_current_text_fact_records,
+    read_current_text_fact_translation_data_map,
     text_fact_record_to_translation_item,
 )
 from app.text_index import rebuild_text_index_native_storage
@@ -25,28 +25,28 @@ _TEXT_SOURCE_TYPES = {
 }
 
 
-async def rebuild_current_v2_scope_for_test(
+async def rebuild_current_text_fact_scope_for_test(
     *,
     session: TargetGameSession,
     setting: Setting,
     text_rules: TextRules,
 ) -> TextScopeResult:
-    """重建当前 v2 索引，并返回测试可消费的最小文本范围。"""
+    """重建当前 索引，并返回测试可消费的最小文本范围。"""
     _ = await rebuild_text_index_native_storage(
         session=session,
         setting=setting,
         text_rules=text_rules,
     )
-    return await read_current_v2_scope_for_test(session=session)
+    return await read_current_text_fact_scope_for_test(session=session)
 
 
-async def read_current_v2_scope_for_test(
+async def read_current_text_fact_scope_for_test(
     *,
     session: TargetGameSession,
 ) -> TextScopeResult:
-    """从当前 v2 facts 读取测试可消费的最小文本范围。"""
-    translation_data_map = await read_current_text_fact_translation_data_map_v2(session)
-    facts = await read_current_text_fact_records_v2(session, limit=None)
+    """从当前 text facts 读取测试可消费的最小文本范围。"""
+    translation_data_map = await read_current_text_fact_translation_data_map(session)
+    facts = await read_current_text_fact_records(session, limit=None)
     index_records = await session.read_text_index_items_by_paths(
         [fact.location_path for fact in facts]
     )
@@ -54,7 +54,7 @@ async def read_current_v2_scope_for_test(
     entries: list[TextScopeEntry] = []
     for fact in facts:
         if fact.source_type not in _TEXT_SOURCE_TYPES:
-            raise AssertionError(f"测试 v2 fact 包含未知来源类型: {fact.source_type}")
+            raise AssertionError(f"测试 text fact 包含未知来源类型: {fact.source_type}")
         index_record = index_by_path.get(fact.location_path)
         item = text_fact_record_to_translation_item(fact, index_record=index_record)
         can_write_back = index_record.writable if index_record is not None else False

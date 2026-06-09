@@ -56,16 +56,22 @@ REQUIRED_AGENT_REVIEW_AGENT_IDS = frozenset(
     }
 )
 REQUIRED_SUBTASK_PACKAGE_STAGE_IDS = frozenset({"workspace", "terminology", "external_rules"})
-PUBLIC_DOC_PATHS = (
+CURRENT_DOC_PATHS = (
     ROOT / "README.md",
-    ROOT / "CHANGELOG.md",
-    ROOT / "docs" / "superpowers" / "specs" / "2026-06-07-text-fact-contract-v2-design.md",
+    *sorted((ROOT / "docs" / "wiki").rglob("*.md")),
+    *sorted((ROOT / "docs" / "guides").rglob("*.md")),
+    *sorted((ROOT / "docs" / "guides").rglob("*.html")),
+    PROTOCOL_DIR / "workflow.toml",
     PROTOCOL_DIR / "templates" / "SKILL.md.in",
     *sorted((PROTOCOL_DIR / "templates" / "references").glob("*.md.in")),
     DEV_SKILL_DIR / "SKILL.md",
     RELEASE_SKILL_DIR / "SKILL.md",
     *sorted((DEV_SKILL_DIR / "references").glob("*.md")),
     *sorted((RELEASE_SKILL_DIR / "references").glob("*.md")),
+)
+PUBLIC_DOC_PATHS = (
+    *CURRENT_DOC_PATHS,
+    ROOT / "CHANGELOG.md",
 )
 COMMAND_LINE_PATTERNS = (
     re.compile(r"uv\s+run\s+python\s+main\.py\s+([a-z][a-z0-9-]+)"),
@@ -105,16 +111,6 @@ def _read_toml(path: Path) -> dict[str, object]:
     return cast(dict[str, object], tomllib.loads(_read_text(path)))
 
 
-def _readme_recovery_block(start_marker: str) -> str:
-    """读取 README 中指定恢复说明到下一个二级标题前的文本。"""
-    readme = _read_text(ROOT / "README.md")
-    start = readme.index(start_marker)
-    end = readme.find("\n## ", start)
-    if end == -1:
-        end = len(readme)
-    return readme[start:end]
-
-
 def test_generated_skill_protocol_outputs_are_current() -> None:
     """Skill 和 references 必须由 canonical 协议源生成。"""
     completed = subprocess.run(
@@ -131,7 +127,7 @@ def test_generated_skill_protocol_outputs_are_current() -> None:
 
 
 def test_public_docs_examples_do_not_expose_real_local_paths() -> None:
-    """公开文档和 Skill 示例只能使用占位符路径，不暴露真实本机路径。"""
+    """公开文档和 Skill 示例只能使用占位符路径，不暴露具体本地目录。"""
     for path in PUBLIC_DOC_PATHS:
         text = _read_text(path)
         matches = [
@@ -140,18 +136,15 @@ def test_public_docs_examples_do_not_expose_real_local_paths() -> None:
             for match in pattern.finditer(text)
             if not match.group(0).startswith("<")
         ]
-        assert not matches, f"{path.relative_to(ROOT)} 含真实本机路径示例: {matches}"
+        assert not matches, f"{path.relative_to(ROOT)} 含具体本地目录示例: {matches}"
 
 
-def test_v2_fact_recovery_entries_are_documented_for_users_and_agents() -> None:
-    """README 与 Skill CLI 契约必须说明 v2 事实失败后的用户可执行恢复入口。"""
+def test_current_text_index_and_workspace_recovery_entries_are_documented() -> None:
+    """README 与 Skill CLI 契约必须说明当前可执行恢复入口。"""
     required_terms = {
-        "Text Fact Contract v2",
-        "v2 facts",
-        "旧数据库",
-        "旧工作区",
-        "旧 runtime map",
+        "当前文本索引",
         "rebuild-text-index --game <游戏标题>",
+        "当前工作区",
         "prepare-agent-workspace --game <游戏标题> --output-dir <工作区>",
         "rebuild-active-runtime --game <游戏标题>",
     }
@@ -164,11 +157,41 @@ def test_v2_fact_recovery_entries_are_documented_for_users_and_agents() -> None:
     for path in protocol_paths:
         text = _read_text(path)
         missing_terms = sorted(term for term in required_terms if term not in text)
-        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少 v2 恢复说明: {missing_terms}"
+        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少当前恢复说明: {missing_terms}"
 
-    runtime_map_block = _readme_recovery_block("旧 runtime map")
-    assert "rebuild-text-index --game <游戏标题>" in runtime_map_block
-    assert "rebuild-active-runtime --game <游戏标题>" in runtime_map_block
+
+def test_current_docs_describe_text_index_and_invalid_state_recovery() -> None:
+    """README 与 Skill 契约必须用当前索引和中性无效状态描述恢复动作。"""
+    expected_terms_by_path = {
+        ROOT / "README.md": {
+            "当前文本索引",
+            "索引缺失、过期或范围不一致",
+            "当前工作区校验失败",
+            "范围信息不可用",
+            "缺少可用写回映射",
+        },
+        DEV_SKILL_DIR / "references" / "cli-command-contract.md": {
+            "当前文本索引",
+            "不满足当前契约的输入只作为无效输入处理",
+            "rebuild-text-index --game <游戏标题>",
+            "prepare-agent-workspace --game <游戏标题> --output-dir <工作区>",
+            "rebuild-active-runtime --game <游戏标题>",
+            "输入路径不属于当前范围时整体失败",
+        },
+        RELEASE_SKILL_DIR / "references" / "cli-command-contract.md": {
+            "当前文本索引",
+            "不满足当前契约的输入只作为无效输入处理",
+            "rebuild-text-index --game <游戏标题>",
+            "prepare-agent-workspace --game <游戏标题> --output-dir <工作区>",
+            "rebuild-active-runtime --game <游戏标题>",
+            "输入路径不属于当前范围时整体失败",
+        },
+    }
+
+    for path, expected_terms in expected_terms_by_path.items():
+        text = _read_text(path)
+        missing_terms = sorted(term for term in expected_terms if term not in text)
+        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少当前无效状态恢复说明: {missing_terms}"
 
 
 def test_skill_protocol_workflow_manifest_commands_and_references_are_valid() -> None:
@@ -311,7 +334,7 @@ def test_skill_and_readme_command_examples_exist_in_parser() -> None:
 
 
 def test_removed_agent_mode_flags_are_absent_from_public_protocol_docs() -> None:
-    """公开协议文档不再要求旧的 Agent JSON 开关。"""
+    """公开协议文档只保留当前 Agent JSON 入口。"""
     protocol_paths = [
         DEV_SKILL_DIR / "SKILL.md",
         RELEASE_SKILL_DIR / "SKILL.md",
@@ -336,23 +359,47 @@ def test_public_protocol_docs_use_current_environment_contract() -> None:
         text = _read_text(path)
         assert "ATT_MZ_LLM_BASE_URL" in text, path
         assert "ATT_MZ_LLM_API_KEY" in text, path
-        assert "RPG_MAKER_TOOLS_" not in text, path
 
 
-def test_public_protocol_docs_do_not_promise_legacy_candidate_hash_compatibility() -> None:
-    """公开协议不得继续承诺旧版候选样本 hash 会放行当前流程。"""
-    protocol_paths = [
-        DEV_SKILL_DIR / "references" / "cli-command-contract.md",
-        DEV_SKILL_DIR / "references" / "placeholder-rules.md",
-        DEV_SKILL_DIR / "references" / "structured-placeholder-rules.md",
-        RELEASE_SKILL_DIR / "references" / "cli-command-contract.md",
-        RELEASE_SKILL_DIR / "references" / "placeholder-rules.md",
-        RELEASE_SKILL_DIR / "references" / "structured-placeholder-rules.md",
-    ]
-    for path in protocol_paths:
+def test_public_protocol_docs_explain_current_candidate_review_boundaries() -> None:
+    """公开协议必须说明 sampled 报告、完整候选和当前规则确认边界。"""
+    expected_terms_by_path = {
+        DEV_SKILL_DIR / "references" / "cli-command-contract.md": {
+            "summary.report_detail_mode=sampled",
+            "--output <文件>",
+            "完整报告",
+        },
+        DEV_SKILL_DIR / "references" / "placeholder-rules.md": {
+            "summary.uncovered_count",
+            "完整候选",
+            "重新审查并导入当前规则",
+        },
+        DEV_SKILL_DIR / "references" / "structured-placeholder-rules.md": {
+            "未覆盖候选",
+            "剩余风险已确认",
+            "重新审查并导入当前规则",
+        },
+        RELEASE_SKILL_DIR / "references" / "cli-command-contract.md": {
+            "summary.report_detail_mode=sampled",
+            "--output <文件>",
+            "完整报告",
+        },
+        RELEASE_SKILL_DIR / "references" / "placeholder-rules.md": {
+            "summary.uncovered_count",
+            "完整候选",
+            "重新审查并导入当前规则",
+        },
+        RELEASE_SKILL_DIR / "references" / "structured-placeholder-rules.md": {
+            "未覆盖候选",
+            "剩余风险已确认",
+            "重新审查并导入当前规则",
+        },
+    }
+
+    for path, expected_terms in expected_terms_by_path.items():
         text = _read_text(path)
-        assert "legacy_hash" not in text, path
-        assert "前 100 个候选" not in text, path
+        missing_terms = sorted(term for term in expected_terms if term not in text)
+        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少当前候选审查边界: {missing_terms}"
 
 
 def test_cli_contract_uses_debug_diagnostics_for_rebuild_text_index_timings() -> None:
@@ -386,7 +433,6 @@ def test_removed_prepare_translation_command_is_absent_from_user_facing_protocol
         DEV_SKILL_DIR / "SKILL.md",
         RELEASE_SKILL_DIR / "SKILL.md",
         ROOT / "README.md",
-        ROOT / "app" / "agent_toolkit" / "services" / "workspace.py",
         *sorted((DEV_SKILL_DIR / "references").glob("*.md")),
         *sorted((RELEASE_SKILL_DIR / "references").glob("*.md")),
     ]

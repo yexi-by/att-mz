@@ -244,12 +244,12 @@ def test_stage0_cli_agent_canary_runs_full_public_flow(
 
 
 @pytest.mark.asyncio
-async def test_stage0_stale_workspace_optional_files_not_in_manifest_are_ignored(
+async def test_stage0_manifest_ignores_optional_files_not_declared(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """第二次 prepare 后残留的旧重支线文件不能参与本轮工作区校验。"""
+    """本轮 manifest 未声明的可选支线文件不能参与工作区校验。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=Path("setting.example.toml"))
@@ -260,17 +260,17 @@ async def test_stage0_stale_workspace_optional_files_not_in_manifest_are_ignored
         command_codes=None,
     )
     assert prepare_report.status == "ok"
-    _write_json(workspace / "plugin-source-rules.json", {"stale": ["not", "a", "rule"]})
-    _write_json(workspace / "nonstandard-data-rules.json", {"stale": ["not", "a", "rule"]})
-    _write_json(workspace / "nonstandard-data" / "OldPluginData.json", {"text": "旧工作区残留"})
+    _write_json(workspace / "plugin-source-rules.json", {"invalid": ["not", "a", "rule"]})
+    _write_json(workspace / "nonstandard-data-rules.json", {"invalid": ["not", "a", "rule"]})
+    _write_json(workspace / "nonstandard-data" / "UnmanifestedPluginData.json", {"text": "未声明工作区数据"})
 
     def forbidden_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
-        raise AssertionError("旧 plugin-source-rules.json 不应触发插件源码扫描")
+        raise AssertionError("manifest 未声明的 plugin-source-rules.json 不应触发插件源码扫描")
 
     async def forbidden_nonstandard_data_scan(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
-        raise AssertionError("旧 nonstandard-data-rules.json 不应触发非标准 data 扫描")
+        raise AssertionError("manifest 未声明的 nonstandard-data-rules.json 不应触发非标准 data 扫描")
 
     monkeypatch.setattr(
         "app.agent_toolkit.services.workspace.build_plugin_source_scan",

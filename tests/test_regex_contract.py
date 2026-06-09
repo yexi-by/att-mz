@@ -20,45 +20,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class _MissingNativeContractModule:
-    """模拟旧版 Rust 扩展：没有契约版本函数。"""
+    """模拟不符合当前契约的 Rust 扩展：没有契约版本函数。"""
 
     def validate_regex_contract(self, payload_json: str) -> str:
-        """旧扩展即使有同名函数，也必须先被版本检查拦住。"""
+        """即使有同名函数，也必须先被契约检查拦住。"""
         _ = payload_json
         return '{"errors":[]}'
 
 
-class _OldNativeContractModule:
-    """模拟旧版 Rust 扩展：契约版本过低。"""
+class _MismatchedNativeContractModule:
+    """模拟不符合当前契约的 Rust 扩展：契约版本不匹配。"""
 
     def native_contract_version(self) -> int:
-        """返回旧契约版本。"""
+        """返回不满足当前要求的契约版本。"""
         return 1
 
     def validate_regex_contract(self, payload_json: str) -> str:
-        """旧扩展即使能返回结果，也不能继续参与正则预检。"""
+        """即使能返回结果，也不能继续参与正则预检。"""
         _ = payload_json
         return '{"errors":[]}'
 
 
 def _import_missing_native_contract(_name: str) -> object:
-    """返回缺少契约版本函数的旧扩展替身。"""
+    """返回缺少契约版本函数的扩展替身。"""
     return _MissingNativeContractModule()
 
 
-def _import_old_native_contract(_name: str) -> object:
-    """返回契约版本过低的旧扩展替身。"""
-    return _OldNativeContractModule()
+def _import_mismatched_native_contract(_name: str) -> object:
+    """返回契约版本不匹配的扩展替身。"""
+    return _MismatchedNativeContractModule()
 
 
-def test_regex_contract_rejects_stale_native_module(monkeypatch: pytest.MonkeyPatch) -> None:
-    """正则预检不能让旧 Rust 扩展以内部 AttributeError 形式失败。"""
+def test_regex_contract_rejects_invalid_native_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """正则预检不能让无效 Rust 契约以内部 AttributeError 形式失败。"""
     monkeypatch.setattr(regex_contract, "import_module", _import_missing_native_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    with pytest.raises(RuntimeError, match="Rust 原生扩展不满足当前 Python 契约"):
         validate_text_rules_regex_contract(setting=TextRulesSetting())
 
-    monkeypatch.setattr(regex_contract, "import_module", _import_old_native_contract)
-    with pytest.raises(RuntimeError, match="Rust 原生扩展版本过旧"):
+    monkeypatch.setattr(regex_contract, "import_module", _import_mismatched_native_contract)
+    with pytest.raises(RuntimeError, match="Rust 原生扩展不满足当前 Python 契约"):
         validate_text_rules_regex_contract(setting=TextRulesSetting())
 
 

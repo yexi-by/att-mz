@@ -12,7 +12,8 @@ from app.application.handler import TranslationHandler, validate_terminology_reg
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
-from app.rmmz import DataTextExtraction, load_game_data
+from app.rmmz import DataTextExtraction
+from app.rmmz.loader import load_active_runtime_game_data, load_translation_source_game_data
 from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
@@ -102,7 +103,9 @@ async def test_export_terminology_writes_terms_and_contexts(
     tmp_path: Path,
 ) -> None:
     """导出命令生成完整术语表和只读上下文。"""
-    game_data = await load_game_data(minimal_game_dir)
+    active_game_data = await load_active_runtime_game_data(minimal_game_dir)
+    _create_test_source_snapshot(active_game_data)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -264,7 +267,7 @@ async def test_import_terminology_rejects_field_terms_without_glossary(
     """字段译名表有已填写译名时，正文术语表为空必须直接拒绝导入。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -322,7 +325,7 @@ async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_te
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -374,7 +377,7 @@ async def test_import_terminology_validates_shape_without_export_context_generat
     """术语导入只需要当前字段表形状，不能生成导出用上下文。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -454,7 +457,7 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     tmp_path: Path,
 ) -> None:
     """MV 不把 101.parameters[4] 当名字框，也不会为了写回补第 5 个参数。"""
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "mv-terminology",
@@ -488,7 +491,7 @@ async def test_mv_terminology_consumes_native_speaker_requirements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MV 说话人术语需求来自 native speaker_requirements。"""
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
     calls: list[object] = []
 
     def fake_scan_native_mv_virtual_namebox(**kwargs: object) -> object:
@@ -607,7 +610,10 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
         encoding="utf-8",
     )
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_mv_game_dir,
+        include_writable_copies=True,
+    )
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     summary = await export_terminology_artifacts(
         game_data=game_data,
@@ -722,7 +728,10 @@ async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
         json.dumps(common_events, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_mv_game_dir,
+        include_writable_copies=True,
+    )
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     conflict_rules = [
         *mv_namebox_rules,
@@ -848,7 +857,10 @@ async def test_terminology_skips_actor_name_control_variables(
     tmp_path: Path,
 ) -> None:
     """名字框中的角色名变量不会进入术语表、提示词和写回。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
     common_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
     event = ensure_json_object(common_events[1], "CommonEvents[1]")
     commands = ensure_json_array(event["list"], "CommonEvents[1].list")
@@ -1015,7 +1027,10 @@ async def test_translation_prompt_injects_same_database_entry_name(
     minimal_game_dir: Path,
 ) -> None:
     """翻译数据库条目正文时会注入同一条目的名称术语。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
     glossary = TerminologyGlossary(terms={"火の術": "火术"})
     data = TranslationData(
         display_name="",
@@ -1085,7 +1100,10 @@ async def test_native_terminology_write_updates_all_supported_fields(
     minimal_game_dir: Path,
 ) -> None:
     """已填写术语表可以直接写回名字框、地图名、数据库名称和系统类型。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
     registry = TerminologyRegistry(
         speaker_names={"村人": "村民"},
         map_display_names={"始まりの町": "起始之镇"},

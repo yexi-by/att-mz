@@ -759,7 +759,7 @@
           {
             actor: "workspace",
             title: "读取 manifest 判断本轮边界",
-            text: "本轮 manifest.files 是 Agent、CLI 校验和清理共同认可的输入集合。目录里旧文件不自动参与当前流程。"
+            text: "本轮 manifest.files 是 Agent、CLI 校验和清理共同认可的输入集合。manifest 外文件不参与本轮处理。"
           },
           {
             actor: "cli",
@@ -939,7 +939,7 @@
           "猜测路径。",
           "选中资源、脚本或机器协议。",
           "空结果未说明理由。",
-          "插件配置变化后继续使用旧工作区。"
+          "插件配置变化后未重新准备当前工作区。"
         ],
         tasks: [
           {

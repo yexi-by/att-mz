@@ -6,8 +6,8 @@ from typing import cast
 
 import pytest
 
-from tests.agent_toolkit_contract_fixtures import write_v2_test_translation_items
-from tests.current_v2_scope import rebuild_current_v2_scope_for_test
+from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 from app.agent_toolkit import AgentToolkitService
 from app.application.flow_gate import (
@@ -18,7 +18,7 @@ from app.application.flow_gate import (
 )
 from app.native_quality import NativeQualityDetails
 from app.persistence import GameRegistry
-from app.rmmz import load_game_data
+from app.rmmz.loader import load_translation_source_game_data
 from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import JsonArray, TextRules
 from app.rule_review import (
@@ -30,6 +30,7 @@ from app.rule_review import (
     plugin_rule_scope_hash,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_fact_core import TextFactContractError
 from app.text_facts import read_text_fact_quality_items_for_translations
 from app.text_index import text_index_item_to_translation_item
 from app.utils.config_loader_utils import load_setting
@@ -39,11 +40,11 @@ EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
 
 
 @pytest.mark.asyncio
-async def test_quality_item_rehydrate_fails_when_saved_translation_lacks_current_v2_fact(
+async def test_quality_item_rehydrate_requires_current_text_fact(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """质量检查重建已保存译文源文时缺 v2 fact 必须显式失败，不能回退旧 original_lines。"""
+    """质量检查重建已保存译文源文时必须读取当前文本事实。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -54,7 +55,7 @@ async def test_quality_item_rehydrate_fails_when_saved_translation_lacks_current
             """
 --sql
             SELECT facts.location_path
-            FROM text_facts_v2 AS facts
+            FROM text_facts AS facts
             INNER JOIN text_index_items AS indexed
                 ON indexed.location_path = facts.location_path
             WHERE indexed.writable = 1
@@ -70,23 +71,24 @@ async def test_quality_item_rehydrate_fails_when_saved_translation_lacks_current
             location_path=target_path,
             item_type="short_text",
             role=None,
-            original_lines=["旧 original_lines 不应回退"],
+            original_lines=["非当前 original_lines 不应参与"],
             source_line_paths=[target_path],
             translation_lines=["译文"],
         )
-        await write_v2_test_translation_items(session, [saved_item])
+        await write_current_translation_items_for_test(session, [saved_item])
         _ = await session.connection.execute(
-            "DELETE FROM text_facts_v2 WHERE location_path = ?",
+            "DELETE FROM text_facts WHERE location_path = ?",
             (target_path,),
         )
         await session.connection.commit()
 
-        with pytest.raises(RuntimeError, match="rebuild-text-index"):
+        with pytest.raises(TextFactContractError) as exc_info:
             _ = await read_text_fact_quality_items_for_translations(
                 session,
                 [saved_item],
                 source_text="translatable",
             )
+        assert "当前文本事实" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -101,8 +103,13 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
     async with await registry.open_game("テストゲーム") as session:
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         text_rules = TextRules.from_setting(setting.text_rules)
-        game_data = await load_game_data(minimal_game_dir)
-        scope = await rebuild_current_v2_scope_for_test(
+        game_data = await load_translation_source_game_data(
+            minimal_game_dir,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
+        )
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
@@ -150,7 +157,7 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
         )
         target_item = next(item for item in scope.active_items() if item.item_type != "array")
         target_path = target_item.location_path
-        await write_v2_test_translation_items(session,
+        await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
                     location_path=target_path,
@@ -173,7 +180,7 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
             item = text_index_item_to_translation_item(index_item)
             item.translation_lines = ["结构化质量结果测试译文" for _line in item.original_lines]
             translated_items.append(item)
-        await write_v2_test_translation_items(session, translated_items)
+        await write_current_translation_items_for_test(session, translated_items)
 
     def fake_native_quality_details(**kwargs: object) -> NativeQualityDetails:
         _ = kwargs

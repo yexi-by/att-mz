@@ -41,16 +41,11 @@ async def test_text_scope_and_audit_coverage_use_unified_contract(
 
 
 @pytest.mark.asyncio
-async def test_text_scope_and_audit_coverage_count_current_v2_facts_not_index_rows(
+async def test_text_scope_and_audit_coverage_count_current_text_facts_not_index_rows(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """warm 报告必须按当前 v2 facts 计数，不继续按旧索引行计数。"""
-
-    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("warm 报告不应构建完整文本范围")
+    """warm 报告必须按当前 text facts 计数。"""
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -64,7 +59,7 @@ async def test_text_scope_and_audit_coverage_count_current_v2_facts_not_index_ro
             """
 --sql
                 SELECT fact_id
-                FROM text_facts_v2
+                FROM text_facts
                 ORDER BY domain, location_path, fact_id
                 LIMIT 1
             ;
@@ -74,20 +69,18 @@ async def test_text_scope_and_audit_coverage_count_current_v2_facts_not_index_ro
         assert row is not None
         kept_fact_id = cast(str, row["fact_id"])
         _ = await session.connection.execute(
-            "DELETE FROM text_fact_domain_payloads_v2 WHERE fact_id <> ?",
+            "DELETE FROM text_fact_domain_payloads WHERE fact_id <> ?",
             (kept_fact_id,),
         )
         _ = await session.connection.execute(
-            "DELETE FROM text_fact_render_parts_v2 WHERE fact_id <> ?",
+            "DELETE FROM text_fact_render_parts WHERE fact_id <> ?",
             (kept_fact_id,),
         )
         _ = await session.connection.execute(
-            "DELETE FROM text_facts_v2 WHERE fact_id <> ?",
+            "DELETE FROM text_facts WHERE fact_id <> ?",
             (kept_fact_id,),
         )
         await session.connection.commit()
-    monkeypatch.setattr(TextScopeService, "build", forbidden_scope_build)
-
     scope_report = await service.text_scope(game_title="テストゲーム")
     audit_report = await service.audit_coverage(game_title="テストゲーム")
 
@@ -112,12 +105,12 @@ async def test_text_scope_and_audit_coverage_include_write_probe_does_not_call_p
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """include_write_probe 只保留报告标记，不回退旧 Python 写入探针。"""
+    """include_write_probe 只保留报告标记，不执行写入探针。"""
 
     def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
-        """text-scope/audit-coverage 不应再调用旧文本范围写入探针。"""
+        """text-scope/audit-coverage 不应调用文本范围写入探针。"""
         _ = (args, kwargs)
-        raise AssertionError("include_write_probe 不应回退 app.text_scope.write_probe")
+        raise AssertionError("include_write_probe 不应执行 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
@@ -197,11 +190,6 @@ async def test_audit_coverage_uses_warm_text_index_without_full_scope_load(
         _ = (args, kwargs)
         raise AssertionError("warm index audit-coverage 不应加载完整游戏数据")
 
-    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 覆盖审计不应构建完整文本范围。"""
-        _ = (args, kwargs)
-        raise AssertionError("warm index audit-coverage 不应构建完整文本范围")
-
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -210,7 +198,6 @@ async def test_audit_coverage_uses_warm_text_index_without_full_scope_load(
         "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
         forbidden_game_data_load,
     )
-    monkeypatch.setattr(TextScopeService, "build", forbidden_scope_build)
 
     audit_report = await service.audit_coverage(game_title="テストゲーム")
 
@@ -236,11 +223,6 @@ async def test_text_scope_uses_warm_text_index_without_full_scope_load(
         _ = (args, kwargs)
         raise AssertionError("warm index text-scope 不应加载完整游戏数据")
 
-    async def forbidden_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        """warm index 文本清单不应构建完整文本范围。"""
-        _ = (args, kwargs)
-        raise AssertionError("warm index text-scope 不应构建完整文本范围")
-
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -249,7 +231,6 @@ async def test_text_scope_uses_warm_text_index_without_full_scope_load(
         "app.agent_toolkit.services.core.CoreAgentMixin._load_translation_source_game_data",
         forbidden_game_data_load,
     )
-    monkeypatch.setattr(TextScopeService, "build", forbidden_scope_build)
 
     scope_report = await service.text_scope(game_title="テストゲーム")
 
@@ -270,11 +251,11 @@ async def test_text_scope_uses_warm_text_index_without_full_scope_load(
 
 
 @pytest.mark.asyncio
-async def test_text_scope_can_return_full_v2_entries_for_output_reports(
+async def test_text_scope_can_return_full_current_entries_for_output_reports(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """写入文件用的 text-scope 报告必须能取得完整 v2 entries。"""
+    """写入文件用的 text-scope 报告必须能取得完整当前 entries。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -300,12 +281,12 @@ async def test_text_scope_reports_global_write_probe_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧写入探针整体不可用时不影响 index 报告。"""
+    """写入探针整体不可用时不影响 index 报告。"""
 
     def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
-        """text-scope/audit/quality 不应再触碰旧文本范围写入探针。"""
+        """text-scope/audit/quality 不应触碰文本范围写入探针。"""
         _ = (args, kwargs)
-        raise AssertionError("include_write_probe 不应回退 app.text_scope.write_probe")
+        raise AssertionError("include_write_probe 不应执行 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
@@ -332,12 +313,12 @@ async def test_text_scope_reports_batch_write_probe_failure_directly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧批量探针失败不会影响 text index 输出。"""
+    """批量探针失败不会影响 text index 输出。"""
 
     def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
-        """text-scope 不应再进入旧批量写入探针。"""
+        """text-scope 不应进入批量写入探针。"""
         _ = (args, kwargs)
-        raise AssertionError("include_write_probe 不应回退 app.text_scope.write_probe")
+        raise AssertionError("include_write_probe 不应执行 app.text_scope.write_probe")
 
     monkeypatch.setattr(
         "app.text_scope.write_probe.collect_native_write_protocol_details",
@@ -388,19 +369,12 @@ async def test_read_only_placeholder_scan_does_not_run_write_probe(
 async def test_scan_placeholder_candidates_uses_warm_text_index_without_full_scope_build(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """warm index 可用时，占位符候选扫描直接读取索引项。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     _ = await _rebuild_text_index_for_test(service)
-
-    async def forbidden_text_scope_build(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("scan-placeholder-candidates 命中 warm index 时不应构建完整文本范围")
-
-    monkeypatch.setattr(TextScopeService, "build", forbidden_text_scope_build)
 
     report = await service.scan_placeholder_candidates(
         game_title="テストゲーム",
