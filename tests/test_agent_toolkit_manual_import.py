@@ -678,6 +678,80 @@ async def test_manual_translation_import_rejects_boolean_translation_line(
 
 
 @pytest.mark.asyncio
+async def test_manual_translation_import_normalizes_integer_fact_id(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动译文导入中的整数 fact_id 按外部文本规范化。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+    assert export_report.status == "ok"
+
+    payload = load_json_object(pending_path)
+    first_key = next(iter(payload))
+    entry = ensure_json_object(coerce_json_value(payload[first_key]), first_key)
+    entry["fact_id"] = 123
+    entry["translation_lines"] = ["你好"]
+    payload[first_key] = entry
+    _ = pending_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert report.status == "error"
+    assert {error.code for error in report.errors} == {"manual_translation_location"}
+    assert "fact_id 不属于当前可写" in report.errors[0].message
+    assert "bool" not in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_manual_translation_import_reports_boolean_fact_id(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动译文导入中的布尔 fact_id 无效，并进入导入报告。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    pending_path = tmp_path / "pending-translations.json"
+
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=1,
+    )
+    assert export_report.status == "ok"
+
+    payload = load_json_object(pending_path)
+    first_key = next(iter(payload))
+    entry = ensure_json_object(coerce_json_value(payload[first_key]), first_key)
+    entry["fact_id"] = True
+    entry["translation_lines"] = ["你好"]
+    payload[first_key] = entry
+    _ = pending_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=pending_path,
+    )
+
+    assert report.status == "error"
+    assert {error.code for error in report.errors} == {"manual_translation_invalid"}
+    assert "fact_id" in report.errors[0].message
+    assert "bool" in report.errors[0].message
+
+
+@pytest.mark.asyncio
 async def test_manual_quality_fix_import_uses_current_fact_scope_without_full_load(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1423,6 +1497,56 @@ async def test_reset_translations_input_deletes_paths_without_full_scope_load(
     assert report.summary["text_index_status"] == "used"
     async with await registry.open_game("テストゲーム") as session:
         assert await session.read_translated_items() == []
+
+
+@pytest.mark.asyncio
+async def test_reset_translations_input_normalizes_integer_location_path(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """reset-translations 输入中的整数定位路径按外部文本规范化。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    input_path = tmp_path / "reset-integer-path.json"
+    _ = input_path.write_text(
+        json.dumps({"location_paths": [123]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.reset_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert report.status == "error"
+    assert report.errors[0].code == "reset_translation_location"
+    assert report.details["invalid_location_paths"] == ["123"]
+
+
+@pytest.mark.asyncio
+async def test_reset_translations_input_rejects_boolean_location_path(
+    tmp_path: Path,
+) -> None:
+    """reset-translations 输入中的布尔定位路径无效。"""
+    service = AgentToolkitService(game_registry=GameRegistry(tmp_path / "db"), setting_path=EXAMPLE_SETTING_PATH)
+    input_path = tmp_path / "reset-boolean-path.json"
+    _ = input_path.write_text(
+        json.dumps({"location_paths": [True]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = await service.reset_translations(
+        game_title="テストゲーム",
+        input_path=input_path,
+    )
+
+    assert report.status == "error"
+    assert {error.code for error in report.errors} == {"reset_translation_file"}
+    assert "reset-translations.location_paths[0]" in report.errors[0].message
+    assert "bool" in report.errors[0].message
 @pytest.mark.asyncio
 async def test_reset_translations_input_rejects_unknown_paths_without_partial_delete(
     minimal_game_dir: Path,

@@ -578,6 +578,41 @@ async def test_translation_response_normalizes_integer_translation_line() -> Non
 
 
 @pytest.mark.asyncio
+async def test_translation_response_rejects_boolean_translation_line() -> None:
+    """模型响应译文行不能用布尔值表达。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        fact_id="fact-boolean-line",
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        role=None,
+        original_lines=["一"],
+    )
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+
+    await verify_translation_batch(
+        ai_result=_build_model_response(
+            item=item,
+            prompt_id="1",
+            translation_lines=[True],
+        ),
+        items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
+    assert right_queue.empty()
+    error_items = await error_queue.get()
+    assert error_items is not None
+    assert error_items[0].error_type == "模型返回不可解析"
+    assert "bool" in "\n".join(error_items[0].error_detail)
+
+
+@pytest.mark.asyncio
 async def test_translation_response_ignores_source_lines_and_extra_fields() -> None:
     """模型返回的原文对照和额外字段不参与业务校验。"""
     text_rules = _build_text_rules(width_limit=40)

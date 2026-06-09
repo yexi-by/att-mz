@@ -178,9 +178,10 @@ def parse_command_code(value: str) -> int:
 def parse_parameter_filters(match: dict[str, str]) -> list[EventCommandParameterFilter]:
     """把外部 match 对象转换成参数过滤条件。"""
     filters: list[EventCommandParameterFilter] = []
-    for index_text, expected_value in sorted(match.items(), key=lambda item: int(item[0])):
+    for index_text in match:
         if not index_text.isdecimal():
             raise ValueError(f"match 的键必须是参数索引: {index_text}")
+    for index_text, expected_value in sorted(match.items(), key=lambda item: int(item[0])):
         filters.append(EventCommandParameterFilter(index=int(index_text), value=expected_value))
     return filters
 

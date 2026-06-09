@@ -292,7 +292,10 @@ class ManualTranslationAgentMixin:
                 raw_fact_id = raw_entry.get("fact_id")
                 if raw_fact_id is None:
                     continue
-                fact_id = normalize_external_str(raw_fact_id, f"{location_path}.fact_id").strip()
+                try:
+                    fact_id = normalize_external_str(raw_fact_id, f"{location_path}.fact_id").strip()
+                except Exception:
+                    continue
                 if fact_id:
                     payload_fact_ids[str(location_path)] = fact_id
             if payload_fact_ids:
@@ -360,7 +363,18 @@ class ManualTranslationAgentMixin:
                 raw_fact_id = entry.get("fact_id")
                 fact_id = ""
                 if raw_fact_id is not None:
-                    fact_id = normalize_external_str(raw_fact_id, f"{location_path}.fact_id").strip()
+                    try:
+                        fact_id = normalize_external_str(raw_fact_id, f"{location_path}.fact_id").strip()
+                    except Exception as error:
+                        error_message = f"{type(error).__name__}: {error}"
+                        invalid_items.append({"location_path": location_path, "message": error_message})
+                        errors.append(
+                            issue(
+                                "manual_translation_invalid",
+                                f"{location_path} 手动填写译文不可用: {error_message}",
+                            )
+                        )
+                        continue
                 item = active_items_by_fact_id.get(fact_id) if fact_id else active_items.get(location_path)
                 if item is None:
                     if fact_id:

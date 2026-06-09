@@ -3036,3 +3036,41 @@ def _read_test_json_from_plugins_js(path: Path) -> JsonValue:
     start = text.index("[")
     end = text.rindex("]") + 1
     return coerce_json_value(cast(object, json.loads(text[start:end])))
+
+
+def test_plugin_source_rule_import_normalizes_integer_fields() -> None:
+    """插件源码规则导入中的文本字段允许整数表达。"""
+    import_file = parse_plugin_source_rule_import_text(
+        json.dumps(
+            [
+                {
+                    "file": 123,
+                    "selectors": [456],
+                    "excluded_selectors": [789],
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+
+    assert import_file.rules[0].file == "123"
+    assert import_file.rules[0].selectors == ["456"]
+    assert import_file.rules[0].excluded_selectors == ["789"]
+
+
+def test_plugin_source_rule_import_rejects_boolean_selector() -> None:
+    """插件源码规则导入中的布尔 selector 无效。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_plugin_source_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "HardcodedText.js",
+                        "selectors": [True],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+    assert "bool" in str(error_info.value)

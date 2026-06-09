@@ -8,7 +8,12 @@ import pytest
 import app.config as config
 from app.config.custom_placeholder_rules import (
     load_custom_placeholder_rules_file,
+    load_custom_placeholder_rules_import_text,
     load_custom_placeholder_rules_text,
+)
+from app.config.structured_placeholder_rules import (
+    load_structured_placeholder_rules_import_text,
+    load_structured_placeholder_rules_text,
 )
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
@@ -1000,3 +1005,94 @@ def test_custom_placeholder_rules_empty_cli_json_string_fails() -> None:
     """CLI 规则字符串为空时应直接失败。"""
     with pytest.raises(ValueError):
         _ = load_custom_placeholder_rules_text("")
+
+
+def test_custom_placeholder_rules_cli_keeps_string_values_strict() -> None:
+    """CLI 自定义占位符规则值仍必须是真实字符串。"""
+    with pytest.raises(TypeError, match="必须是字符串"):
+        _ = load_custom_placeholder_rules_text(json.dumps({r"\\Face\[[^\]]+\]": 123}, ensure_ascii=False))
+
+
+def test_custom_placeholder_rules_import_normalizes_integer_template() -> None:
+    """Agent 导入自定义占位符规则时，整数模板先按文本字段规范化。"""
+    with pytest.raises(ValueError, match="必须生成形如"):
+        _ = load_custom_placeholder_rules_import_text(
+            json.dumps({r"\\Face\[[^\]]+\]": 123}, ensure_ascii=False)
+        )
+
+
+def test_custom_placeholder_rules_import_rejects_boolean_template() -> None:
+    """Agent 导入自定义占位符规则时，布尔模板无效。"""
+    with pytest.raises(TypeError, match="bool"):
+        _ = load_custom_placeholder_rules_import_text(
+            json.dumps({r"\\Face\[[^\]]+\]": True}, ensure_ascii=False)
+        )
+
+
+def test_structured_placeholder_rules_cli_keeps_string_values_strict() -> None:
+    """CLI 结构化占位符规则值仍必须是真实字符串。"""
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": 123,
+                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_TAG_OPEN_{index}]",
+                        "close": "[CUSTOM_TAG_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(TypeError, match="必须是字符串"):
+        _ = load_structured_placeholder_rules_text(rules_text)
+
+
+def test_structured_placeholder_rules_import_normalizes_integer_name() -> None:
+    """Agent 导入结构化占位符规则时，整数 name 先按文本字段规范化。"""
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": 123,
+                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_TAG_OPEN_{index}]",
+                        "close": "[CUSTOM_TAG_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(ValueError, match="大写标识"):
+        _ = load_structured_placeholder_rules_import_text(rules_text)
+
+
+def test_structured_placeholder_rules_import_rejects_boolean_template() -> None:
+    """Agent 导入结构化占位符规则时，布尔模板无效。"""
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "TAG",
+                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": True,
+                        "close": "[CUSTOM_TAG_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(TypeError, match="bool"):
+        _ = load_structured_placeholder_rules_import_text(rules_text)

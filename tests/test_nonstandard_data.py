@@ -845,3 +845,74 @@ def test_nonstandard_data_rules_reject_dot_jsonpath() -> None:
                 ensure_ascii=False,
             )
         )
+
+
+def test_nonstandard_data_rule_import_normalizes_integer_file_before_business_validation() -> None:
+    """非标准 data 规则导入中的整数 file 按文本字段规范化后再执行业务校验。"""
+    with pytest.raises(ValueError, match="file 必须是 JSON 文件名"):
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": 123,
+                        "paths": [],
+                        "excluded_paths": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_nonstandard_data_rule_import_normalizes_integer_path_before_business_validation() -> None:
+    """非标准 data 规则导入中的整数路径按文本字段规范化后再执行业务校验。"""
+    with pytest.raises(ValueError, match="JSONPath"):
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "Recipes.json",
+                        "paths": [123],
+                        "excluded_paths": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_nonstandard_data_rule_import_rejects_boolean_path() -> None:
+    """非标准 data 规则导入中的布尔路径无效。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "Recipes.json",
+                        "paths": [True],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+    assert "bool" in str(error_info.value)
+
+
+@pytest.mark.parametrize("skipped_value", [1, "true"])
+def test_nonstandard_data_rule_import_requires_boolean_skipped(skipped_value: object) -> None:
+    """非标准 data 规则导入中的 skipped 只接受真实布尔值。"""
+    with pytest.raises(Exception):
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "Recipes.json",
+                        "paths": [],
+                        "excluded_paths": [],
+                        "skipped": skipped_value,
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )

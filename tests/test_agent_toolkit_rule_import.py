@@ -6,16 +6,22 @@ from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 from app.application.flow_gate import count_note_tag_rule_candidates
-from app.event_command_text import parse_event_command_rule_import_text
+from app.event_command_text import (
+    build_event_command_rule_records_from_import_shape,
+    parse_event_command_rule_import_text,
+)
+from app.note_tag_text import parse_note_tag_rule_import_text
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
 from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import TargetGameSession
 from app.persistence.records import TextFactRecord
 from app.plugin_text import parse_plugin_rule_import_text
+from app.rmmz.mv_namebox import parse_mv_virtual_namebox_rule_import_text
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import get_default_text_rules
 from app.rule_review import note_tag_rule_scope_hash_for_candidates
+from app.source_residual import parse_source_residual_rule_import_text
 from app.agent_toolkit.services.rule_identity import RuleFactProbe, resolve_current_rule_fact_hits
 from app.text_facts import (
     read_current_text_fact_records,
@@ -86,6 +92,158 @@ def test_event_command_rule_import_normalizes_match_and_paths() -> None:
     specs = import_file["357"]
     assert specs[0].match == {"0": "123"}
     assert specs[0].paths == ["1"]
+
+
+def test_event_command_rule_import_rejects_boolean_match_value() -> None:
+    """事件指令规则中的 match 值不能用布尔值表达。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_event_command_rule_import_text(
+            """
+            {
+              "357": [
+                {
+                  "match": {"0": true},
+                  "paths": ["0"]
+                }
+              ]
+            }
+            """
+        )
+
+    assert "bool" in str(error_info.value)
+
+
+def test_event_command_rule_import_reports_invalid_match_index() -> None:
+    """事件指令规则中的 match 键必须报告为参数索引错误。"""
+    import_file = parse_event_command_rule_import_text(
+        """
+        {
+          "357": [
+            {
+              "match": {"x": "abc"},
+              "paths": ["0"]
+            }
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(ValueError, match="match 的键必须是参数索引"):
+        _ = build_event_command_rule_records_from_import_shape(import_file=import_file)
+
+
+def test_note_tag_rule_import_normalizes_integer_fields() -> None:
+    """Note 标签规则导入中的文本字段允许整数表达。"""
+    import_file = parse_note_tag_rule_import_text(json.dumps({123: [456]}, ensure_ascii=False))
+
+    assert import_file == {"123": ["456"]}
+
+
+def test_note_tag_rule_import_rejects_boolean_tag_name() -> None:
+    """Note 标签规则导入中的布尔标签名无效。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_note_tag_rule_import_text(json.dumps({"Items.json": [True]}, ensure_ascii=False))
+
+    assert "bool" in str(error_info.value)
+
+
+def test_source_residual_rule_import_normalizes_integer_fields() -> None:
+    """源文残留规则导入中的文本字段允许整数表达。"""
+    import_file = parse_source_residual_rule_import_text(
+        json.dumps(
+            {
+                "position_rules": {
+                    123: {
+                        "allowed_terms": [456],
+                        "reason": 789,
+                    }
+                },
+                "structural_rules": [
+                    {
+                        "pattern": "(?P<word>abc)",
+                        "allowed_terms": [123],
+                        "check_group": 456,
+                        "reason": 789,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert import_file.position_rules["123"].allowed_terms == ["456"]
+    assert import_file.position_rules["123"].reason == "789"
+    assert import_file.structural_rules[0].allowed_terms == ["123"]
+    assert import_file.structural_rules[0].check_group == "456"
+    assert import_file.structural_rules[0].reason == "789"
+
+
+def test_source_residual_rule_import_rejects_boolean_reason() -> None:
+    """源文残留规则导入中的布尔原因无效。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_source_residual_rule_import_text(
+            json.dumps(
+                {
+                    "position_rules": {
+                        "Map001.json/1/0/0": {
+                            "allowed_terms": ["abc"],
+                            "reason": True,
+                        }
+                    },
+                    "structural_rules": [],
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    assert "bool" in str(error_info.value)
+
+
+def test_mv_namebox_rule_import_normalizes_integer_fields() -> None:
+    """MV 虚拟名字框规则导入中的文本字段允许整数表达。"""
+    records = parse_mv_virtual_namebox_rule_import_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "name": 123,
+                        "pattern": r"^(?P<speaker>[^：]+)：(?P<body>.*)$",
+                        "speaker_group": "speaker",
+                        "speaker_policy": "translate",
+                        "render_template": "{speaker}：{body}",
+                        "body_group": "body",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert records[0].rule_name == "123"
+
+
+def test_mv_namebox_rule_import_rejects_boolean_name() -> None:
+    """MV 虚拟名字框规则导入中的布尔规则名无效。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_mv_virtual_namebox_rule_import_text(
+            json.dumps(
+                {
+                    "rules": [
+                        {
+                            "name": True,
+                            "pattern": r"^(?P<speaker>[^：]+)：(?P<body>.*)$",
+                            "speaker_group": "speaker",
+                            "speaker_policy": "translate",
+                            "render_template": "{speaker}：{body}",
+                            "body_group": "body",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    assert "bool" in str(error_info.value)
 
 
 async def _translation_item_from_text_fact_for_test(
