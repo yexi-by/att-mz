@@ -16,6 +16,7 @@ import aiofiles
 import demjson3
 from pydantic import TypeAdapter
 
+from app.external_input import normalize_external_int
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.schema import (
@@ -499,11 +500,10 @@ def collect_missing_map_files_from_map_infos(*, data_dir: Path) -> list[str]:
         if not isinstance(item, dict):
             raise TypeError(f"{MAP_INFOS_FILE_NAME}[{index}] 必须是对象或 null")
         raw_id = item.get("id")
-        if isinstance(raw_id, bool) or not isinstance(raw_id, int):
-            raise TypeError(f"{MAP_INFOS_FILE_NAME}[{index}].id 必须是整数")
-        if raw_id <= 0:
+        map_id = normalize_external_int(raw_id, f"{MAP_INFOS_FILE_NAME}[{index}].id")
+        if map_id <= 0:
             continue
-        expected_map_names.add(f"Map{raw_id:03d}.json")
+        expected_map_names.add(f"Map{map_id:03d}.json")
     return sorted(
         map_name
         for map_name in expected_map_names
