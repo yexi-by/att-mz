@@ -4,15 +4,19 @@
 
 from .custom_placeholder_rules import (
     load_custom_placeholder_rules_file,
+    load_custom_placeholder_rules_import_text,
     load_custom_placeholder_rules_text,
     parse_custom_placeholder_rules,
+    parse_custom_placeholder_rules_import,
 )
 from .structured_placeholder_rules import (
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
     empty_structured_placeholder_rules_payload,
     load_structured_placeholder_rules_file,
+    load_structured_placeholder_rules_import_text,
     load_structured_placeholder_rules_text,
     parse_structured_placeholder_rules,
+    parse_structured_placeholder_rules_import,
 )
 from .environment import (
     LLM_API_KEY_ENV_NAME,
@@ -66,11 +70,15 @@ __all__: list[str] = [
     "apply_environment_overrides",
     "apply_setting_overrides",
     "load_custom_placeholder_rules_file",
+    "load_custom_placeholder_rules_import_text",
     "load_custom_placeholder_rules_text",
     "load_environment_overrides",
     "load_structured_placeholder_rules_file",
+    "load_structured_placeholder_rules_import_text",
     "load_structured_placeholder_rules_text",
     "parse_custom_placeholder_rules",
+    "parse_custom_placeholder_rules_import",
     "parse_structured_placeholder_rules",
+    "parse_structured_placeholder_rules_import",
     "empty_structured_placeholder_rules_payload",
 ]

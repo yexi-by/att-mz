@@ -33,6 +33,7 @@ from app.terminology.extraction import (
     build_speaker_sample_file_name,
     is_translatable_terminology_source,
 )
+from app.terminology.schemas import TERMINOLOGY_CATEGORIES
 from app.terminology.files import reserve_speaker_sample_file_name
 from app.translation import iter_translation_context_batches
 from tests._native_write_plan_helper import reset_writable_copies, write_terminology_text
@@ -835,6 +836,33 @@ async def test_load_terminology_registry_requires_all_file_categories(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_load_terminology_registry_normalizes_integer_translations(tmp_path: Path) -> None:
+    """外部字段译名表中的整数译名按文本字段规范化。"""
+    field_terms_path = tmp_path / "field-terms.json"
+    payload: dict[str, dict[str, object]] = {category: {} for category in TERMINOLOGY_CATEGORIES}
+    payload["speaker_names"] = {"案内人": 123}
+    _ = field_terms_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    registry = await load_terminology_registry(field_terms_path=field_terms_path)
+
+    assert registry.speaker_names == {"案内人": "123"}
+
+
+@pytest.mark.asyncio
+async def test_load_terminology_registry_rejects_boolean_translations(tmp_path: Path) -> None:
+    """外部字段译名表中的布尔译名无效。"""
+    field_terms_path = tmp_path / "field-terms.json"
+    payload: dict[str, dict[str, object]] = {category: {} for category in TERMINOLOGY_CATEGORIES}
+    payload["speaker_names"] = {"案内人": True}
+    _ = field_terms_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValidationError) as error_info:
+        _ = await load_terminology_registry(field_terms_path=field_terms_path)
+
+    assert "bool" in str(error_info.value)
+
+
+@pytest.mark.asyncio
 async def test_load_terminology_glossary_validates_shape_and_values(tmp_path: Path) -> None:
     """正文术语表只接受 terms 字段，并拒绝空译名。"""
     extra_path = tmp_path / "extra.json"
@@ -849,6 +877,29 @@ async def test_load_terminology_glossary_validates_shape_and_values(tmp_path: Pa
     )
     with pytest.raises(ValueError, match="不能包含空值"):
         _ = await load_terminology_glossary(glossary_path=empty_value_path)
+
+
+@pytest.mark.asyncio
+async def test_load_terminology_glossary_normalizes_integer_terms(tmp_path: Path) -> None:
+    """外部正文术语表中的整数术语按文本字段规范化。"""
+    glossary_path = tmp_path / "glossary.json"
+    _ = glossary_path.write_text(json.dumps({"terms": {"案内人": 123}}, ensure_ascii=False), encoding="utf-8")
+
+    glossary = await load_terminology_glossary(glossary_path=glossary_path)
+
+    assert glossary.terms == {"案内人": "123"}
+
+
+@pytest.mark.asyncio
+async def test_load_terminology_glossary_rejects_boolean_terms(tmp_path: Path) -> None:
+    """外部正文术语表中的布尔术语无效。"""
+    glossary_path = tmp_path / "glossary.json"
+    _ = glossary_path.write_text(json.dumps({"terms": {"案内人": True}}, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValidationError) as error_info:
+        _ = await load_terminology_glossary(glossary_path=glossary_path)
+
+    assert "bool" in str(error_info.value)
 
 
 @pytest.mark.asyncio

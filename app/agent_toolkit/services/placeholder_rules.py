@@ -22,8 +22,9 @@ from .common import (
     aiofiles,
     issue,
     json,
+    load_custom_placeholder_rules_import_text,
     load_custom_placeholder_rules_text,
-    load_structured_placeholder_rules_text,
+    load_structured_placeholder_rules_import_text,
     load_setting,
 )
 from app.native_placeholder_scan import (
@@ -164,7 +165,7 @@ class PlaceholderRuleAgentMixin:
                 translation_data_map = None
             else:
                 setting = load_setting(self.setting_path)
-                custom_rules = load_custom_placeholder_rules_text(custom_placeholder_rules_text)
+                custom_rules = load_custom_placeholder_rules_import_text(custom_placeholder_rules_text)
                 structured_rules = ()
                 translation_data_map = None
         except Exception as error:
@@ -203,7 +204,7 @@ class PlaceholderRuleAgentMixin:
         """校验并导入当前游戏专用自定义占位符规则。"""
         coverage: RuleCoverageResult | None = None
         try:
-            custom_rules = load_custom_placeholder_rules_text(rules_text)
+            custom_rules = load_custom_placeholder_rules_import_text(rules_text)
             rule_records = [
                 PlaceholderRuleRecord(
                     pattern_text=rule.pattern_text,
@@ -373,7 +374,7 @@ class PlaceholderRuleAgentMixin:
     ) -> AgentReport:
         """校验结构化占位符规则，并预览协议外壳保护效果。"""
         try:
-            structured_rules = load_structured_placeholder_rules_text(rules_text)
+            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
@@ -427,7 +428,7 @@ class PlaceholderRuleAgentMixin:
     ) -> AgentReport:
         """扫描结构化规则对当前正文中协议外壳候选的覆盖情况。"""
         try:
-            structured_rules = load_structured_placeholder_rules_text(rules_text)
+            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
@@ -482,7 +483,7 @@ class PlaceholderRuleAgentMixin:
         """校验并导入当前游戏专用结构化占位符规则。"""
         coverage: RuleCoverageResult | None = None
         try:
-            structured_rules = load_structured_placeholder_rules_text(rules_text)
+            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
             rule_records = _structured_placeholder_rule_records_from_runtime(structured_rules)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)

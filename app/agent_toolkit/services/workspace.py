@@ -65,8 +65,8 @@ from .common import (
     export_terminology_artifacts,
     issue,
     json,
-    load_custom_placeholder_rules_text,
-    load_structured_placeholder_rules_text,
+    load_custom_placeholder_rules_import_text,
+    load_structured_placeholder_rules_import_text,
     load_setting,
     load_terminology_glossary,
     load_terminology_registry,
@@ -1317,7 +1317,7 @@ class WorkspaceAgentMixin:
                 if placeholder_empty_issue is not None:
                     warnings.append(placeholder_empty_issue)
             try:
-                workspace_custom_rules = load_custom_placeholder_rules_text(placeholder_rules_text)
+                workspace_custom_rules = load_custom_placeholder_rules_import_text(placeholder_rules_text)
                 workspace_text_rules = TextRules.from_setting(
                     setting.text_rules,
                     custom_placeholder_rules=workspace_custom_rules,
@@ -1372,7 +1372,7 @@ class WorkspaceAgentMixin:
                 if structured_placeholder_empty_issue is not None:
                     warnings.append(structured_placeholder_empty_issue)
             try:
-                workspace_structured_rules = load_structured_placeholder_rules_text(structured_placeholder_rules_text)
+                workspace_structured_rules = load_structured_placeholder_rules_import_text(structured_placeholder_rules_text)
                 workspace_structured_text_rules = TextRules.from_setting(
                     setting.text_rules,
                     custom_placeholder_rules=workspace_custom_rules,
@@ -1912,7 +1912,7 @@ def _validate_workspace_placeholder_rules(
 ) -> AgentReport:
     """复用工作区上下文校验普通占位符规则。"""
     try:
-        custom_rules = load_custom_placeholder_rules_text(rules_text)
+        custom_rules = load_custom_placeholder_rules_import_text(rules_text)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[
@@ -1954,7 +1954,7 @@ def _validate_workspace_structured_placeholder_rules(
 ) -> AgentReport:
     """复用工作区上下文校验结构化占位符规则。"""
     try:
-        structured_rules = load_structured_placeholder_rules_text(rules_text)
+        structured_rules = load_structured_placeholder_rules_import_text(rules_text)
     except Exception:
         structured_rules = ()
     return _validate_structured_placeholder_rules_with_context(

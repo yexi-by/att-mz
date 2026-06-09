@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.rmmz.game_data import BaseItem, EventCommand
-from app.rmmz.loader import collect_missing_map_files_from_map_infos
+from app.rmmz.loader import collect_missing_map_files_from_map_infos, read_game_title_from_system
 
 
 def test_base_item_normalizes_string_id_and_integer_text() -> None:
@@ -82,4 +82,24 @@ def test_map_infos_rejects_boolean_id(tmp_path: Path) -> None:
         _ = collect_missing_map_files_from_map_infos(data_dir=data_dir)
 
     assert "MapInfos.json[1].id" in str(error_info.value)
+    assert "bool" in str(error_info.value)
+
+
+def test_system_title_reader_normalizes_integer_title(tmp_path: Path) -> None:
+    """System.json 标题读取入口使用游戏原文文本字段口径。"""
+    system_path = tmp_path / "System.json"
+    _ = system_path.write_text(json.dumps({"gameTitle": 123}, ensure_ascii=False), encoding="utf-8")
+
+    assert read_game_title_from_system(system_path) == "123"
+
+
+def test_system_title_reader_rejects_boolean_title(tmp_path: Path) -> None:
+    """System.json 标题读取入口拒绝布尔标题。"""
+    system_path = tmp_path / "System.json"
+    _ = system_path.write_text(json.dumps({"gameTitle": True}, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(TypeError) as error_info:
+        _ = read_game_title_from_system(system_path)
+
+    assert "gameTitle" in str(error_info.value)
     assert "bool" in str(error_info.value)

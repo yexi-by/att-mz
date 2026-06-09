@@ -1021,6 +1021,40 @@ async def test_validate_placeholder_rules_rejects_rust_unsupported_regex() -> No
     assert report.status == "error"
     assert "placeholder_rules_invalid" in {error.code for error in report.errors}
     assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_validate_placeholder_rules_normalizes_integer_template() -> None:
+    """Agent 导入普通占位符规则时，整数模板按文本字段规范化。"""
+    service = AgentToolkitService(setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_placeholder_rules(
+        game_title=None,
+        custom_placeholder_rules_text=json.dumps({r"\\Face\[[^\]]+\]": 123}, ensure_ascii=False),
+        sample_texts=[r"\Face[Actor1]"],
+    )
+
+    assert report.status == "error"
+    assert "placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "必须生成形如" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_validate_placeholder_rules_rejects_boolean_template() -> None:
+    """Agent 导入普通占位符规则时，布尔模板无效。"""
+    service = AgentToolkitService(setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_placeholder_rules(
+        game_title=None,
+        custom_placeholder_rules_text=json.dumps({r"\\Face\[[^\]]+\]": True}, ensure_ascii=False),
+        sample_texts=[r"\Face[Actor1]"],
+    )
+
+    assert report.status == "error"
+    assert "placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "bool" in report.errors[0].message
+
+
 @pytest.mark.asyncio
 async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_regex(
     minimal_game_dir: Path,
@@ -1057,6 +1091,80 @@ async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_re
     assert report.status == "error"
     assert "structured_placeholder_rules_invalid" in {error.code for error in report.errors}
     assert "Rust fancy-regex" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_validate_structured_placeholder_rules_normalizes_integer_name(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Agent 导入结构化占位符规则时，整数字段按文本字段规范化。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": 123,
+                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": "[CUSTOM_TAG_OPEN_{index}]",
+                        "close": "[CUSTOM_TAG_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=["<tag>薬草</tag>"],
+    )
+
+    assert report.status == "error"
+    assert "structured_placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "大写标识" in report.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_validate_structured_placeholder_rules_rejects_boolean_template(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Agent 导入结构化占位符规则时，布尔模板无效。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "TAG",
+                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "translatable_group": "text",
+                    "protected_groups": {
+                        "open": True,
+                        "close": "[CUSTOM_TAG_CLOSE_{index}]",
+                    },
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=["<tag>薬草</tag>"],
+    )
+
+    assert report.status == "error"
+    assert "structured_placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "bool" in report.errors[0].message
 
 
 @pytest.mark.asyncio

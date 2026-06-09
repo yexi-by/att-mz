@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import cast
 
+from app.external_input import normalize_external_str
 from app.rmmz.control_codes import CustomPlaceholderRule
 from app.rmmz.json_types import coerce_json_value, ensure_json_object
 
@@ -30,6 +31,15 @@ def load_custom_placeholder_rules_text(rules_text: str) -> tuple[CustomPlacehold
         raise ValueError("自定义占位符规则 JSON 字符串不能为空")
     raw_value = cast(object, json.loads(stripped_text))
     return parse_custom_placeholder_rules(raw_value=raw_value, source_label="--placeholder-rules")
+
+
+def load_custom_placeholder_rules_import_text(rules_text: str) -> tuple[CustomPlaceholderRule, ...]:
+    """从 Agent 导入 JSON 字符串读取自定义正则占位符规则。"""
+    stripped_text = rules_text.strip()
+    if not stripped_text:
+        raise ValueError("自定义占位符规则 JSON 字符串不能为空")
+    raw_value = cast(object, json.loads(stripped_text))
+    return parse_custom_placeholder_rules_import(raw_value=raw_value, source_label="--placeholder-rules")
 
 
 def parse_custom_placeholder_rules(
@@ -58,8 +68,38 @@ def parse_custom_placeholder_rules(
     return tuple(rules)
 
 
+def parse_custom_placeholder_rules_import(
+    *,
+    raw_value: object,
+    source_label: str,
+) -> tuple[CustomPlaceholderRule, ...]:
+    """把 Agent 导入 JSON 对象转换成自定义占位符规则集合。"""
+    json_value = coerce_json_value(raw_value)
+    raw_rules = ensure_json_object(json_value, source_label)
+
+    rules: list[CustomPlaceholderRule] = []
+    for pattern_text, raw_placeholder_template in raw_rules.items():
+        placeholder_template = normalize_external_str(
+            raw_placeholder_template,
+            f"{source_label} 中 {pattern_text} 的值",
+        )
+        try:
+            rule = CustomPlaceholderRule.create(
+                pattern_text=pattern_text,
+                placeholder_template=placeholder_template,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"{source_label} 中规则 {pattern_text} -> {placeholder_template} 无效: {error}"
+            ) from error
+        rules.append(rule)
+    return tuple(rules)
+
+
 __all__: list[str] = [
     "load_custom_placeholder_rules_file",
+    "load_custom_placeholder_rules_import_text",
     "load_custom_placeholder_rules_text",
     "parse_custom_placeholder_rules",
+    "parse_custom_placeholder_rules_import",
 ]

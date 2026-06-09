@@ -16,7 +16,7 @@ import aiofiles
 import demjson3
 from pydantic import TypeAdapter
 
-from app.external_input import normalize_external_int
+from app.external_input import normalize_external_int, normalize_external_str
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.schema import (
@@ -313,8 +313,11 @@ def read_game_title_from_system(system_path: Path) -> str | None:
     raw_text = system_path.read_text(encoding="utf-8")
     system_data = _decode_json_value(content=raw_text, source=system_path)
     system_object = ensure_json_object(system_data, f"{system_path} 顶层")
-    title = system_object.get("gameTitle")
-    if not isinstance(title, str) or not title.strip():
+    raw_title = system_object.get("gameTitle")
+    if raw_title is None:
+        return None
+    title = normalize_external_str(raw_title, "System.json.gameTitle").strip()
+    if not title:
         return None
     return title.strip()
 

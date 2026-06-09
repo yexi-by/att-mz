@@ -28,7 +28,9 @@ from app.config import (
     SettingOverrides,
     TextRulesSetting,
     empty_structured_placeholder_rules_payload,
+    load_custom_placeholder_rules_import_text,
     load_custom_placeholder_rules_text,
+    load_structured_placeholder_rules_import_text,
     load_structured_placeholder_rules_text,
 )
 from app.config.environment import load_environment_overrides
@@ -2371,7 +2373,7 @@ def _validate_structured_placeholder_rules_with_context(
     warnings: list[AgentIssue] = []
     sample_text_list = list(sample_texts)
     try:
-        structured_rules = load_structured_placeholder_rules_text(rules_text)
+        structured_rules = load_structured_placeholder_rules_import_text(rules_text)
         text_rules = TextRules.from_setting(
             setting_text_rules,
             custom_placeholder_rules=custom_rules,
@@ -2490,7 +2492,7 @@ def _build_structured_placeholder_coverage_report_with_context(
         active_structured_rules = (
             structured_rules
             if structured_rules is not None
-            else load_structured_placeholder_rules_text(rules_text)
+            else load_structured_placeholder_rules_import_text(rules_text)
         )
         if translation_data_map is None:
             raise RuntimeError("结构化占位符覆盖扫描缺少当前正文")
@@ -3268,7 +3270,9 @@ __all__: list[str] = [
     'SettingOverrides',
     'STRUCTURED_PLACEHOLDER_RULES_FILE_NAME',
     'empty_structured_placeholder_rules_payload',
+    'load_custom_placeholder_rules_import_text',
     'load_custom_placeholder_rules_text',
+    'load_structured_placeholder_rules_import_text',
     'load_structured_placeholder_rules_text',
     'load_environment_overrides',
     'DEFAULT_SOURCE_LANGUAGE',
