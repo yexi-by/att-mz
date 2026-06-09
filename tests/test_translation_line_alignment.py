@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import Sequence
 
 import pytest
 
@@ -37,17 +38,17 @@ def _build_text_rules(*, width_limit: int) -> TextRules:
 def _build_model_response(
     *,
     item: TranslationItem,
-    translation_lines: list[str],
+    translation_lines: Sequence[object],
     prompt_id: object = "1",
-    source_lines: list[str] | None = None,
+    source_lines: Sequence[str] | None = None,
     extra_fields: dict[str, object] | None = None,
 ) -> str:
     """构建新数组协议下的模型返回。"""
     response_item: dict[str, object] = {
         "id": prompt_id,
         "role": item.role or "",
-        "source_lines": source_lines if source_lines is not None else list(item.original_lines),
-        "translation_lines": translation_lines,
+        "source_lines": list(source_lines) if source_lines is not None else list(item.original_lines),
+        "translation_lines": list(translation_lines),
     }
     if extra_fields is not None:
         response_item.update(extra_fields)
@@ -474,11 +475,11 @@ async def test_translation_response_accepts_minimal_output_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_translation_response_rejects_non_string_prompt_id() -> None:
-    """模型响应 ID 类型不符合当前契约时整批进入解析错误。"""
+async def test_translation_response_accepts_integer_prompt_id() -> None:
+    """模型响应 ID 可以用整数表达当前批次临时 ID。"""
     text_rules = _build_text_rules(width_limit=40)
     item = TranslationItem(
-        fact_id="fact-non-string-id",
+        fact_id="fact-integer-id",
         location_path="Map001.json/1/0/0",
         item_type="long_text",
         role="村人",
@@ -501,11 +502,79 @@ async def test_translation_response_rejects_non_string_prompt_id() -> None:
         text_rules=text_rules,
     )
 
+    assert error_queue.empty()
+    right_items = await right_queue.get()
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["你好"]
+
+
+@pytest.mark.asyncio
+async def test_translation_response_rejects_boolean_prompt_id() -> None:
+    """模型响应 ID 不能用布尔值表达。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        fact_id="fact-boolean-id",
+        location_path="Map001.json/1/0/0",
+        item_type="long_text",
+        role="村人",
+        original_lines=["こんにちは"],
+    )
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+
+    await verify_translation_batch(
+        ai_result=_build_model_response(
+            item=item,
+            prompt_id=True,
+            translation_lines=["你好"],
+        ),
+        items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
     assert right_queue.empty()
     error_items = await error_queue.get()
     assert error_items is not None
     assert error_items[0].error_type == "模型返回不可解析"
-    assert "id" in "\n".join(error_items[0].error_detail)
+    assert "bool" in "\n".join(error_items[0].error_detail)
+
+
+@pytest.mark.asyncio
+async def test_translation_response_normalizes_integer_translation_line() -> None:
+    """模型响应译文行中的整数按外部文本规范化为字符串。"""
+    text_rules = _build_text_rules(width_limit=40)
+    item = TranslationItem(
+        fact_id="fact-integer-line",
+        location_path="Map001.json/1/0/0",
+        item_type="short_text",
+        role=None,
+        original_lines=["一"],
+    )
+    item.build_placeholders(text_rules)
+    right_queue: asyncio.Queue[list[TranslationItem] | None] = asyncio.Queue()
+    error_queue: asyncio.Queue[list[TranslationErrorItem] | None] = asyncio.Queue()
+
+    await verify_translation_batch(
+        ai_result=_build_model_response(
+            item=item,
+            prompt_id="1",
+            translation_lines=[1],
+        ),
+        items=[item],
+        prompt_ids_by_location_path={item.location_path: "1"},
+        right_queue=right_queue,
+        error_queue=error_queue,
+        text_rules=text_rules,
+    )
+
+    assert error_queue.empty()
+    right_items = await right_queue.get()
+    assert right_items is not None
+    assert right_items[0].translation_lines == ["1"]
 
 
 @pytest.mark.asyncio

@@ -6,10 +6,12 @@
 """
 
 import asyncio
+from typing import ClassVar
 
 from json_repair import repair_json
-from pydantic import BaseModel, RootModel
+from pydantic import ConfigDict, RootModel
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.rmmz.schema import ErrorType, TranslationErrorItem, TranslationItem
 from app.rmmz.placeholder_mapping import (
     build_original_placeholder_queues,
@@ -32,11 +34,13 @@ ERR_ARRAY_LINE_COUNT: ErrorType = "选项行数不匹配"
 ERR_EMPTY_TRANSLATION: ErrorType = "AI漏翻"
 
 
-class TranslationResponseItem(BaseModel):
+class TranslationResponseItem(ExternalInputModel):
     """模型返回的单条对照译文。"""
 
-    id: str
-    translation_lines: list[str]
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", strict=True)
+
+    id: ExternalStr
+    translation_lines: list[ExternalStr]
 
 
 class TranslationResponse(RootModel[list[TranslationResponseItem]]):
