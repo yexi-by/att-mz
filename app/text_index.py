@@ -22,6 +22,7 @@ from app.persistence.records import (
     TextIndexMetadata,
 )
 from app.persistence.repository import current_timestamp_text
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
 from app.rmmz.schema import (
     EventCommandTextRuleRecord,
     MvVirtualNameboxRuleRecord,
@@ -60,6 +61,16 @@ from app.text_fact_counts import (
     read_text_fact_quality_error_fact_ids,
 )
 from app.text_fact_readers import read_current_text_fact_records
+
+CURRENT_RUST_SCOPE_FACTS_CONTRACT_VERSION = 1
+CURRENT_PARSER_CONTRACT_VERSION = 1
+CURRENT_SOURCE_BRANCH_CONTRACT_VERSION = 1
+TEXT_INDEX_GATE_FACT_SOURCE = "rust_text_index_gate_facts"
+REQUIRED_TEXT_INDEX_SOURCE_BRANCHES = ("plugin_source_text", "nonstandard_data")
+TEXT_INDEX_SOURCE_BRANCH_LABELS = {
+    "plugin_source_text": "插件源码文本",
+    "nonstandard_data": "非标准 data 文本",
+}
 TEXT_INDEX_PLACEHOLDER_GATE_PREFIX = "workflow_gate:placeholder_rules"
 TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX = "workflow_gate:structured_placeholder_rules"
 TEXT_INDEX_PROMPT_CONTEXT_VERSION = "display_name_owner_system_terms_v3"
@@ -71,6 +82,18 @@ class TextIndexNativeRebuildResult:
 
     metadata: TextIndexMetadata
     native_summary: JsonObject
+
+
+@dataclass(frozen=True, slots=True)
+class TextIndexGateFacts:
+    """当前文本索引保存的 Rust gate facts。"""
+
+    source: str
+    facts: dict[str, JsonObject]
+    rust_contract_version: int
+    parser_contract_version: int
+    source_branch_contract_version: int
+    text_fact_schema_version: int
 
 
 def text_fact_rebuild_report_fields(native_summary: JsonObject) -> JsonObject:
@@ -243,6 +266,126 @@ def _source_branch_gate_passed(metadata: TextIndexMetadata, source_branch: str) 
     if fact is None:
         return False
     return fact.get("source_branch") == source_branch and fact.get("status") == "pass"
+
+
+async def read_current_text_index_gate_facts(session: TargetGameSession) -> TextIndexGateFacts:
+    """读取并校验当前文本索引 gate facts。"""
+    try:
+        metadata = await session.read_text_index_metadata()
+    except (RuntimeError, TypeError, ValueError) as error:
+        raise RuntimeError(
+            "当前文本范围索引 gate facts 不符合当前契约："
+            + f"{error}。下一步：请重新生成当前文本范围索引。"
+        ) from error
+    if metadata is None:
+        raise RuntimeError("当前游戏缺少持久文本范围索引 gate facts。下一步：请重新生成当前文本范围索引。")
+    _validate_text_index_gate_versions(metadata)
+    facts = {
+        source_branch: _validate_text_index_gate_fact(metadata, source_branch)
+        for source_branch in REQUIRED_TEXT_INDEX_SOURCE_BRANCHES
+    }
+    return TextIndexGateFacts(
+        source=TEXT_INDEX_GATE_FACT_SOURCE,
+        facts=facts,
+        rust_contract_version=metadata.rust_contract_version,
+        parser_contract_version=metadata.parser_contract_version,
+        source_branch_contract_version=metadata.source_branch_contract_version,
+        text_fact_schema_version=metadata.text_fact_schema_version,
+    )
+
+
+def text_index_gate_facts_to_workflow_gate_issues(gate_facts: TextIndexGateFacts) -> list[WorkflowGateIssue]:
+    """把 Rust gate facts 转成 workflow gate 错误。"""
+    errors: list[WorkflowGateIssue] = []
+    for source_branch in REQUIRED_TEXT_INDEX_SOURCE_BRANCHES:
+        fact = gate_facts.facts[source_branch]
+        if fact.get("status") == "pass":
+            continue
+        label = TEXT_INDEX_SOURCE_BRANCH_LABELS[source_branch]
+        raw_error_codes = fact.get("error_codes")
+        error_codes = [code for code in raw_error_codes if isinstance(code, str)] if isinstance(raw_error_codes, list) else []
+        detail = f"（错误码：{', '.join(error_codes)}）" if error_codes else ""
+        errors.append(
+            WorkflowGateIssue(
+                code=f"text_index_{source_branch}_gate_failed",
+                message=f"持久文本范围索引记录的{label} gate 未通过{detail}，请重新生成当前文本范围索引并按报告修正规则",
+            )
+        )
+    return errors
+
+
+def text_index_gate_facts_report(gate_facts: TextIndexGateFacts) -> JsonObject:
+    """渲染质量报告中的 Rust gate facts 摘要。"""
+    return {
+        "source": gate_facts.source,
+        "contract_versions": {
+            "rust_scope_facts": gate_facts.rust_contract_version,
+            "parser": gate_facts.parser_contract_version,
+            "source_branch": gate_facts.source_branch_contract_version,
+            "text_fact_schema": gate_facts.text_fact_schema_version,
+        },
+        "source_branches": {
+            source_branch: _text_index_gate_fact_report_fields(fact)
+            for source_branch, fact in gate_facts.facts.items()
+        },
+    }
+
+
+def _text_index_gate_fact_report_fields(fact: JsonObject) -> JsonObject:
+    stale_reasons = fact.get("stale_reasons")
+    return {
+        "status": fact.get("status"),
+        "scope_hash": fact.get("scope_hash"),
+        "error_codes": fact.get("error_codes"),
+        "stale_reason_count": len(stale_reasons) if isinstance(stale_reasons, list) else 0,
+    }
+
+
+def _validate_text_index_gate_versions(metadata: TextIndexMetadata) -> None:
+    version_errors: list[str] = []
+    if metadata.rust_contract_version != CURRENT_RUST_SCOPE_FACTS_CONTRACT_VERSION:
+        version_errors.append(
+            f"rust_contract_version={metadata.rust_contract_version}，当前要求 {CURRENT_RUST_SCOPE_FACTS_CONTRACT_VERSION}"
+        )
+    if metadata.parser_contract_version != CURRENT_PARSER_CONTRACT_VERSION:
+        version_errors.append(
+            f"parser_contract_version={metadata.parser_contract_version}，当前要求 {CURRENT_PARSER_CONTRACT_VERSION}"
+        )
+    if metadata.source_branch_contract_version != CURRENT_SOURCE_BRANCH_CONTRACT_VERSION:
+        version_errors.append(
+            "source_branch_contract_version="
+            + f"{metadata.source_branch_contract_version}，当前要求 {CURRENT_SOURCE_BRANCH_CONTRACT_VERSION}"
+        )
+    if metadata.text_fact_schema_version != CURRENT_TEXT_FACT_CONTRACT_VERSION:
+        version_errors.append(
+            f"text_fact_schema_version={metadata.text_fact_schema_version}，当前要求 {CURRENT_TEXT_FACT_CONTRACT_VERSION}"
+        )
+    if version_errors:
+        raise RuntimeError(
+            "当前文本范围索引 gate facts 契约版本不匹配："
+            + "；".join(version_errors)
+            + "。下一步：请重新生成当前文本范围索引。"
+        )
+
+
+def _validate_text_index_gate_fact(metadata: TextIndexMetadata, source_branch: str) -> JsonObject:
+    fact = metadata.workflow_gate_facts.get(source_branch)
+    label = TEXT_INDEX_SOURCE_BRANCH_LABELS[source_branch]
+    if fact is None:
+        raise RuntimeError(f"当前文本范围索引缺少{label} gate fact。下一步：请重新生成当前文本范围索引。")
+    if fact.get("source_branch") != source_branch:
+        raise RuntimeError(f"当前文本范围索引的{label} gate fact 来源不匹配。下一步：请重新生成当前文本范围索引。")
+    if fact.get("status") not in {"pass", "fail"}:
+        raise RuntimeError(f"当前文本范围索引的{label} gate fact 状态无效。下一步：请重新生成当前文本范围索引。")
+    if not isinstance(fact.get("scope_hash"), str) or not str(fact.get("scope_hash")).strip():
+        raise RuntimeError(f"当前文本范围索引的{label} gate fact 缺少 scope hash。下一步：请重新生成当前文本范围索引。")
+    raw_error_codes = fact.get("error_codes")
+    if not isinstance(raw_error_codes, list) or any(not isinstance(code, str) for code in raw_error_codes):
+        raise RuntimeError(f"当前文本范围索引的{label} gate fact 错误码无效。下一步：请重新生成当前文本范围索引。")
+    raw_stale_reasons = fact.get("stale_reasons")
+    if not isinstance(raw_stale_reasons, list) or any(not isinstance(reason, dict) for reason in raw_stale_reasons):
+        raise RuntimeError(f"当前文本范围索引的{label} gate fact stale 原因无效。下一步：请重新生成当前文本范围索引。")
+    return fact
 
 
 async def collect_text_index_placeholder_gate_errors(
@@ -916,10 +1059,13 @@ __all__ = [
     "collect_text_index_rules_fingerprint",
     "detect_text_index_invalidations",
     "evaluate_text_index_scope_gate",
+    "read_current_text_index_gate_facts",
     "rebuild_text_index_native_storage",
     "rebuild_text_index_native_storage_with_summary",
     "source_snapshot_records_fingerprint",
     "stable_json_fingerprint",
+    "text_index_gate_facts_report",
+    "text_index_gate_facts_to_workflow_gate_issues",
     "text_index_item_to_translation_item",
     "text_index_items_to_translation_data_map",
     "text_index_source_branch_gates_prechecked",

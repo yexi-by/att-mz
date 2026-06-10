@@ -427,6 +427,30 @@ async def test_quality_report_uses_text_index_without_full_scope_load(
 
 
 @pytest.mark.asyncio
+async def test_quality_report_consumes_contract_gate_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """warm index 质量报告应暴露 Rust gate facts 来源，且不泄漏旧预检标记。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+
+    report = await service.quality_report(game_title="テストゲーム")
+
+    workflow_gate = ensure_json_object(report.details["workflow_gate"], "workflow_gate")
+    assert workflow_gate["source"] == "rust_text_index_gate_facts"
+    assert "workflow_gate_prechecked" not in json.dumps(workflow_gate, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
 async def test_quality_report_coverage_hard_stop_does_not_leak_non_current_index_text(
     minimal_game_dir: Path,
     tmp_path: Path,

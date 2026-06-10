@@ -180,8 +180,6 @@ class TextIndexAgentMixin:
                 text_rules=text_rules,
                 custom_placeholder_rules_supplied=False,
                 scope=None,
-                plugin_source_rule_gate_errors=[],
-                nonstandard_data_rule_gate_errors=[],
                 external_rule_gate_errors=external_rule_gate_errors,
                 placeholder_gate_errors=placeholder_gate_errors,
                 text_scope_gate_errors=text_scope_gate_errors,

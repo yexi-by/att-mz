@@ -61,6 +61,7 @@ from app.rule_review import (
     structured_placeholder_rule_scope_hash,
 )
 from app.terminology import collect_terminology_bundle_errors
+from app.text_index import read_current_text_index_gate_facts, text_index_gate_facts_to_workflow_gate_issues
 from app.text_scope import TextScopeResult, read_fresh_plugin_text_rules
 
 
@@ -146,16 +147,23 @@ async def collect_indexed_workflow_gate_errors(
     text_rules: TextRules,
     custom_placeholder_rules_supplied: bool,
     scope: TextScopeResult | None,
-    plugin_source_rule_gate_errors: list[WorkflowGateIssue],
-    nonstandard_data_rule_gate_errors: list[WorkflowGateIssue],
     external_rule_gate_errors: list[WorkflowGateIssue],
     placeholder_gate_errors: list[WorkflowGateIssue] | None = None,
     text_scope_gate_errors: list[WorkflowGateIssue] | None = None,
 ) -> list[WorkflowGateIssue]:
     """收集已由索引预检覆盖 GameData 支线后的 workflow gate 错误。"""
     errors: list[WorkflowGateIssue] = []
-    errors.extend(plugin_source_rule_gate_errors)
-    errors.extend(nonstandard_data_rule_gate_errors)
+    try:
+        gate_facts = await read_current_text_index_gate_facts(session)
+    except RuntimeError as error:
+        errors.append(
+            WorkflowGateIssue(
+                code="text_index_workflow_gate_metadata_missing",
+                message=str(error),
+            )
+        )
+    else:
+        errors.extend(text_index_gate_facts_to_workflow_gate_issues(gate_facts))
     errors.extend(await _terminology_gate_errors(session))
     errors.extend(external_rule_gate_errors)
     if placeholder_gate_errors is None:

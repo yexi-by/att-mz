@@ -77,7 +77,9 @@ from app.text_index import detect_text_index_invalidations
 from app.text_index import collect_text_index_external_rule_gate_errors
 from app.text_index import collect_text_index_scope_gate_errors
 from app.text_index import collect_text_index_placeholder_gate_decisions
-from app.text_index import text_index_source_branch_gates_prechecked
+from app.text_index import read_current_text_index_gate_facts
+from app.text_index import text_index_gate_facts_report
+from app.text_index import text_index_gate_facts_to_workflow_gate_issues
 from app.text_facts import (
     count_current_text_facts,
     count_pending_text_fact_quality_errors_by_type,
@@ -1308,22 +1310,33 @@ class QualityAgentMixin:
         plugin_source_review: PluginSourceReviewCoverage | None = None
         plugin_source_unreviewed_details: JsonArray | None = None
         plugin_source_review_status = "not_started"
-        source_branch_gates_prechecked = text_index_source_branch_gates_prechecked(metadata)
-        if precomputed_source_branch_gate_errors is not None and not source_branch_gates_prechecked:
+        try:
+            text_index_gate_facts = await read_current_text_index_gate_facts(session)
+        except RuntimeError as error:
+            source_branch_gate_issues = [
+                issue("text_index_workflow_gate_metadata_missing", str(error))
+            ]
+            workflow_gate_details: JsonObject = {
+                "source": "rust_text_index_gate_facts",
+                "status": "invalid",
+                "message": str(error),
+            }
+        else:
+            workflow_gate_details = text_index_gate_facts_report(text_index_gate_facts)
+            source_branch_gate_issues = [
+                issue(item.code, item.message)
+                for item in text_index_gate_facts_to_workflow_gate_issues(text_index_gate_facts)
+            ]
+        if precomputed_source_branch_gate_errors is not None and source_branch_gate_issues:
             plugin_source_gate_errors = list(precomputed_source_branch_gate_errors)
             plugin_source_review_status = "reused_rebuild_gate"
             record_stage("plugin_source_review", 0)
-        elif plugin_source_records and source_branch_gates_prechecked:
-            plugin_source_review_status = "prechecked_from_text_index"
-            record_stage("plugin_source_review", 0)
-        elif not source_branch_gates_prechecked:
-            plugin_source_gate_errors = [
-                issue(
-                    "text_index_workflow_gate_metadata_missing",
-                    "持久文本范围索引缺少插件源码或非标准 data 预检结果，请重新运行 rebuild-text-index",
-                )
-            ]
+        elif source_branch_gate_issues:
+            plugin_source_gate_errors = source_branch_gate_issues
             plugin_source_review_status = "metadata_missing"
+            record_stage("plugin_source_review", 0)
+        elif plugin_source_records:
+            plugin_source_review_status = "prechecked_from_text_index"
             record_stage("plugin_source_review", 0)
         stage_started = time.perf_counter()
         event_rules = await session.read_event_command_text_rules()
@@ -1760,6 +1773,7 @@ class QualityAgentMixin:
                 "text_index_status": "used",
             },
             details={
+                "workflow_gate": workflow_gate_details,
                 "error_type_counts": dict(error_type_counts),
                 "llm_failure_counts": dict(llm_failure_counts),
                 "quality_error_items": quality_error_details,

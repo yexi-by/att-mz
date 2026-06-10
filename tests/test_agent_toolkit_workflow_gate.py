@@ -7,6 +7,7 @@ import json
 from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 from app.llm.schemas import ChatMessage
+from app.persistence.sql import TEXT_INDEX_META_KEY, TEXT_INDEX_META_TABLE_NAME
 from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.terminology import TerminologyPromptIndex
@@ -458,6 +459,55 @@ async def test_translate_max_items_warm_index_uses_prechecked_source_branch_gate
     assert summary.text_index_status == "used"
     assert summary.pending_count == 3
     assert captured["item_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_indexed_workflow_gate_rejects_missing_rust_gate_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm index 缺少 Rust gate facts 时必须阻断，不能继续进入模型阶段。"""
+    _ = app_home_with_example_setting
+
+    async def forbidden_run_batches(*args: object, **kwargs: object) -> NoReturn:
+        """gate facts 缺失时不应继续准备模型批次。"""
+        _ = (args, kwargs)
+        raise AssertionError("缺少 Rust gate facts 时不应进入模型批处理")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            f"UPDATE [{TEXT_INDEX_META_TABLE_NAME}] SET workflow_gate_facts = ? WHERE index_key = ?",
+            ("{}", TEXT_INDEX_META_KEY),
+        )
+        await session.connection.commit()
+    monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", forbidden_run_batches)
+
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=1),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.blocked_reason is not None
+    assert "重新生成当前文本范围索引" in summary.blocked_reason
 
 
 @pytest.mark.asyncio
