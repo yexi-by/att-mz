@@ -256,6 +256,15 @@ def _note_tag_game_data() -> GameData:
     )
 
 
+def test_native_scope_index_outputs_contract_versions() -> None:
+    result = scan_native_rule_candidates({"candidates": []})
+
+    assert result.contract_versions.rust_scope_facts >= 1
+    assert result.contract_versions.parser >= 1
+    assert result.contract_versions.source_branch >= 1
+    assert result.contract_versions.text_fact_schema >= 1
+
+
 def test_build_native_scope_index_returns_rows_and_summaries() -> None:
     """build_scope_index 返回 text index rows、范围摘要和规则命中摘要。"""
     result = build_native_scope_index(

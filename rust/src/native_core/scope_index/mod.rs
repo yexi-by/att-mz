@@ -11,6 +11,7 @@ use super::models::{NativeCustomPlaceholderRule, NativeStructuredPlaceholderRule
 use super::pool;
 
 mod event_commands;
+mod contracts;
 mod mv_virtual_namebox;
 mod nonstandard_data;
 mod note_tags;
@@ -21,6 +22,7 @@ mod rebuild;
 mod storage;
 mod structured_placeholders;
 
+use self::contracts::{ContractVersionsOutput, current_contract_versions};
 use self::plugin_source::{PluginSourceFileInput, scan_plugin_source_rule_candidates};
 
 const RULE_CANDIDATES_SCHEMA_VERSION: usize = 1;
@@ -208,6 +210,7 @@ struct RuleCandidateOutput {
 
 #[derive(Debug, Serialize)]
 struct BuildScopeIndexOutput {
+    contract_versions: ContractVersionsOutput,
     text_index_rows: Vec<TextIndexRowOutput>,
     scope_summary: ScopeSummaryOutput,
     domain_summary: Vec<DomainSummaryOutput>,
@@ -221,6 +224,7 @@ struct BuildScopeIndexOutput {
 #[derive(Debug, Serialize)]
 struct RuleCandidatesOutput {
     schema_version: usize,
+    contract_versions: ContractVersionsOutput,
     candidates: Vec<RuleCandidateOutput>,
     candidate_summary: Vec<CandidateGroupOutput>,
     scan_summary: BTreeMap<String, Value>,
@@ -234,6 +238,7 @@ fn default_source_text_exclusion_profile() -> String {
 
 #[derive(Debug, Serialize)]
 struct ScopeGateOutput {
+    contract_versions: ContractVersionsOutput,
     workflow_gate: WorkflowGateOutput,
     quality_gate: QualityGateOutput,
     pending_count: usize,
@@ -428,6 +433,7 @@ fn build_scope_index(payload: BuildScopeIndexPayload) -> Result<String, String> 
     };
 
     let output = BuildScopeIndexOutput {
+        contract_versions: current_contract_versions(),
         text_index_rows,
         scope_summary,
         domain_summary: domain_summary_outputs(domain_counters),
@@ -831,6 +837,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
     counters.insert("candidate_count".to_string(), candidate_count);
     let output = RuleCandidatesOutput {
         schema_version: RULE_CANDIDATES_SCHEMA_VERSION,
+        contract_versions: current_contract_versions(),
         candidates,
         candidate_summary: summary_by_domain
             .into_iter()
@@ -885,6 +892,7 @@ fn evaluate_scope_gate(payload: ScopeGatePayload) -> Result<String, String> {
         .filter(|path| !active_paths.contains(path))
         .collect();
     let output = ScopeGateOutput {
+        contract_versions: current_contract_versions(),
         workflow_gate: WorkflowGateOutput {
             status: if missing_required_paths.is_empty() {
                 "ok"
@@ -1058,6 +1066,7 @@ mod tests {
         let output = build_scope_index_impl(&payload.to_string()).expect("Scope/Index 应构建成功");
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
 
+        assert_eq!(value["contract_versions"]["rust_scope_facts"], json!(1));
         assert_eq!(value["scope_summary"]["total_count"], json!(1));
         assert_eq!(
             value["text_index_rows"][0]["source_snapshot_fingerprint"],
@@ -1141,6 +1150,8 @@ mod tests {
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
 
         assert_eq!(value["schema_version"], json!(1));
+        assert_eq!(value["contract_versions"]["rust_scope_facts"], json!(1));
+        assert_eq!(value["contract_versions"]["text_fact_schema"], json!(2));
         assert!(value["scan_summary"].is_object());
         assert!(value["timings_ms"].is_object());
         assert_eq!(value["counters"]["candidate_count"], json!(3));

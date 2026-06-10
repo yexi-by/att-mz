@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use super::contracts::{ContractVersionsOutput, current_contract_versions};
 use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
 use super::mv_virtual_namebox::{
     MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput, MvVirtualNameboxFactParts,
@@ -76,6 +77,7 @@ struct RebuildStoragePayload {
 
 #[derive(Debug, Serialize)]
 struct RebuildStorageOutput {
+    contract_versions: ContractVersionsOutput,
     status: &'static str,
     index_status: &'static str,
     source_snapshot_fingerprint: String,
@@ -538,6 +540,7 @@ fn rebuild_with_context(
     record_stage(&mut internal_stage_timings, "write_storage", stage_started);
     let written_item_count = write_output.written_item_count;
     serialize_output(&RebuildStorageOutput {
+        contract_versions: current_contract_versions(),
         status: "ok",
         index_status: "rebuilt",
         source_snapshot_fingerprint,
