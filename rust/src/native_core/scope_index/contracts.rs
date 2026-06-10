@@ -14,6 +14,7 @@ pub(crate) const SOURCE_BRANCH_CONTRACT_VERSION: i64 = 1;
 
 /// 当前文本索引可持久化的事实契约。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct TextIndexContractFacts {
     /// Rust scope facts contract 版本。
     pub(crate) rust_contract_version: i64,
@@ -62,6 +63,7 @@ impl TextIndexContractFacts {
 
 /// 单个 source branch 的 gate 事实。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct SourceBranchGateFact {
     /// source branch 稳定标识。
     pub(crate) source_branch: String,
@@ -78,6 +80,7 @@ pub(crate) struct SourceBranchGateFact {
 /// gate 状态。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub(crate) enum GateStatus {
     /// gate 通过。
     Pass,
@@ -87,6 +90,7 @@ pub(crate) enum GateStatus {
 
 /// stale 原因。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct StaleReason {
     /// 稳定 stale 错误码。
     pub(crate) code: String,
@@ -96,6 +100,7 @@ pub(crate) struct StaleReason {
 
 /// 稳定 stale 错误码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum StaleReasonCode {
     /// AST 缺失。
     AstMissing,
@@ -111,6 +116,7 @@ pub(crate) enum StaleReasonCode {
 
 impl StaleReasonCode {
     /// 返回稳定 snake_case 字符串错误码。
+    #[allow(dead_code)]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::AstMissing => "ast_missing",

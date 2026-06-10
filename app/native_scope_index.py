@@ -79,9 +79,20 @@ class NativeScopeIndexStorageError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class NativeContractVersions:
+    """Rust scope/index 输出的契约版本集合。"""
+
+    rust_scope_facts: int
+    parser: int
+    source_branch: int
+    text_fact_schema: int
+
+
+@dataclass(frozen=True, slots=True)
 class NativeScopeIndexResult:
     """Rust Scope/Index Engine 构建结果。"""
 
+    contract_versions: NativeContractVersions
     text_index_rows: list[JsonObject]
     scope_summary: JsonObject
     domain_summary: list[JsonObject]
@@ -97,6 +108,7 @@ class NativeRuleCandidatesResult:
     """Rust 规则候选扫描结果。"""
 
     schema_version: int
+    contract_versions: NativeContractVersions
     candidates: JsonArray
     candidate_summary: list[JsonObject]
     scan_summary: JsonObject
@@ -108,6 +120,7 @@ class NativeRuleCandidatesResult:
 class NativeScopeGateResult:
     """Rust 范围门禁评估结果。"""
 
+    contract_versions: NativeContractVersions
     workflow_gate: JsonObject
     quality_gate: JsonObject
     pending_count: int
@@ -122,6 +135,7 @@ def build_native_scope_index(payload: JsonObject) -> NativeScopeIndexResult:
     result_text = native_module.build_scope_index(json.dumps(payload, ensure_ascii=False))
     result = _load_result_object(result_text, "native_scope_index_result")
     return NativeScopeIndexResult(
+        contract_versions=_read_contract_versions(result, "native_scope_index_result"),
         text_index_rows=_read_object_array(result, "text_index_rows", "native_scope_index_result"),
         scope_summary=ensure_json_object(result["scope_summary"], "native_scope_index_result.scope_summary"),
         domain_summary=_read_object_array(result, "domain_summary", "native_scope_index_result"),
@@ -151,6 +165,7 @@ def scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResu
         raise RuntimeError(f"不支持的规则候选 native schema_version: {schema_version}")
     return NativeRuleCandidatesResult(
         schema_version=schema_version,
+        contract_versions=_read_contract_versions(result, "native_rule_candidates_result"),
         candidates=ensure_json_array(result["candidates"], "native_rule_candidates_result.candidates"),
         candidate_summary=_read_object_array(result, "candidate_summary", "native_rule_candidates_result"),
         scan_summary=ensure_json_object(
@@ -168,6 +183,7 @@ def evaluate_native_scope_gate(payload: JsonObject) -> NativeScopeGateResult:
     result_text = native_module.evaluate_scope_gate(json.dumps(payload, ensure_ascii=False))
     result = _load_result_object(result_text, "native_scope_gate_result")
     return NativeScopeGateResult(
+        contract_versions=_read_contract_versions(result, "native_scope_gate_result"),
         workflow_gate=ensure_json_object(result["workflow_gate"], "native_scope_gate_result.workflow_gate"),
         quality_gate=ensure_json_object(result["quality_gate"], "native_scope_gate_result.quality_gate"),
         pending_count=_read_int(result, "pending_count", "native_scope_gate_result"),
@@ -602,6 +618,17 @@ def _read_int(result: JsonObject, field_name: str, label: str) -> int:
     return value
 
 
+def _read_contract_versions(result: JsonObject, label: str) -> NativeContractVersions:
+    """读取 Rust scope/index 契约版本集合。"""
+    raw_versions = ensure_json_object(result["contract_versions"], f"{label}.contract_versions")
+    return NativeContractVersions(
+        rust_scope_facts=_read_int(raw_versions, "rust_scope_facts", f"{label}.contract_versions"),
+        parser=_read_int(raw_versions, "parser", f"{label}.contract_versions"),
+        source_branch=_read_int(raw_versions, "source_branch", f"{label}.contract_versions"),
+        text_fact_schema=_read_int(raw_versions, "text_fact_schema", f"{label}.contract_versions"),
+    )
+
+
 def _read_int_map(result: JsonObject, field_name: str, label: str) -> dict[str, int]:
     """读取字符串到非负整数的 JSON 对象字段。"""
     raw_map = ensure_json_object(result[field_name], f"{label}.{field_name}")
@@ -614,6 +641,7 @@ def _read_int_map(result: JsonObject, field_name: str, label: str) -> dict[str, 
 
 
 __all__ = [
+    "NativeContractVersions",
     "NativeRuleCandidatesResult",
     "NativeScopeGateResult",
     "NativeScopeIndexResult",

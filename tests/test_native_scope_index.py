@@ -257,7 +257,7 @@ def _note_tag_game_data() -> GameData:
 
 
 def test_native_scope_index_outputs_contract_versions() -> None:
-    result = scan_native_rule_candidates({"candidates": []})
+    result = scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
 
     assert result.contract_versions.rust_scope_facts >= 1
     assert result.contract_versions.parser >= 1
