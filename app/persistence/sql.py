@@ -46,7 +46,7 @@ METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
 TEXT_INDEX_META_KEY = "current"
-CURRENT_SCHEMA_VERSION = 18
+CURRENT_SCHEMA_VERSION = 19
 CURRENT_TEXT_FACT_CONTRACT_VERSION = 2
 CURRENT_SCHEMA_RESOURCE_PACKAGE = "app.persistence.schema"
 CURRENT_SCHEMA_RESOURCE_NAME = "current.sql"
@@ -520,6 +520,9 @@ CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE = f"""
     CREATE TABLE IF NOT EXISTS [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}] (
         file_name    TEXT PRIMARY KEY,
         file_hash    TEXT NOT NULL,
+        rust_contract_version INTEGER NOT NULL,
+        parser_contract_version INTEGER NOT NULL,
+        audit_contract_version INTEGER NOT NULL,
         syntax_error TEXT NOT NULL,
         literals_json TEXT NOT NULL,
         created_at   TEXT NOT NULL
@@ -1761,14 +1764,31 @@ DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS = f"""
 INSERT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE = f"""
 --sql
     INSERT OR REPLACE INTO [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}]
-    (file_name, file_hash, syntax_error, literals_json, created_at)
-    VALUES (?, ?, ?, ?, ?)
+    (
+        file_name,
+        file_hash,
+        rust_contract_version,
+        parser_contract_version,
+        audit_contract_version,
+        syntax_error,
+        literals_json,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
 SELECT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE = f"""
 --sql
-    SELECT file_name, file_hash, syntax_error, literals_json, created_at
+    SELECT
+        file_name,
+        file_hash,
+        rust_contract_version,
+        parser_contract_version,
+        audit_contract_version,
+        syntax_error,
+        literals_json,
+        created_at
     FROM [{PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE_NAME}]
     ORDER BY file_name
 ;

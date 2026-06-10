@@ -30,6 +30,9 @@ from app.rmmz.text_rules import (
 _PLUGIN_SOURCE_RUST_PREFILTER_PATTERN = r"[\s\S]"
 _RULE_CANDIDATES_SCHEMA_VERSION = 1
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+RUST_SCOPE_FACTS_CONTRACT_VERSION = 1
+PARSER_CONTRACT_VERSION = 1
+SOURCE_BRANCH_CONTRACT_VERSION = 1
 
 
 class NativeScopeIndexModule(Protocol):
@@ -650,6 +653,9 @@ __all__ = [
     "NativeScopeGateResult",
     "NativeScopeIndexResult",
     "NativeScopeIndexStorageError",
+    "PARSER_CONTRACT_VERSION",
+    "RUST_SCOPE_FACTS_CONTRACT_VERSION",
+    "SOURCE_BRANCH_CONTRACT_VERSION",
     "build_native_event_command_data_files",
     "build_native_event_command_candidates_payload",
     "build_native_mv_virtual_namebox_candidates_payload",

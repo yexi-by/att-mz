@@ -29,6 +29,11 @@ from app.persistence.sql import (
     current_schema_fingerprint,
     current_schema_sql,
 )
+from app.plugin_source_text.native_scan import (
+    PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+    PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+)
+from app.plugin_source_text.runtime_audit import PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION
 from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
     EventCommandParameterFilter,
@@ -226,7 +231,7 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
         translation_item_declared_indexes = read_sqlite_declared_index_columns(connection, "translation_items")
 
     assert {row[0] for row in table_rows} - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
-    assert CURRENT_SCHEMA_VERSION == 18
+    assert CURRENT_SCHEMA_VERSION == 19
     assert version_row == (CURRENT_SCHEMA_VERSION,)
     assert len(current_schema_fingerprint()) == 64
     assert translation_item_columns == (
@@ -519,6 +524,9 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         runtime_scan_cache = PluginSourceRuntimeScanCacheRecord(
             file_name="Source.js",
             file_hash="runtime-file-hash",
+            rust_contract_version=PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+            parser_contract_version=PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+            audit_contract_version=PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION,
             literals=[
                 PluginSourceRuntimeStringLiteralCacheRecord(
                     selector="ast:string:1:10:bbbb",
@@ -892,7 +900,7 @@ async def test_text_fact_records_replace_read_and_require_scope(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
     assert CURRENT_TEXT_FACT_CONTRACT_VERSION == 2
-    assert CURRENT_SCHEMA_VERSION == 18
+    assert CURRENT_SCHEMA_VERSION == 19
     scope = make_text_fact_scope()
     namebox_fact = TextFactRecord(
         fact_id="fact-namebox",

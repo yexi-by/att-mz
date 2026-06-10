@@ -422,6 +422,9 @@ class PluginSourceRuntimeScanCacheRecord(BaseModel):
 
     file_name: str
     file_hash: str
+    rust_contract_version: int
+    parser_contract_version: int
+    audit_contract_version: int
     syntax_error: str = ""
     literals: list[PluginSourceRuntimeStringLiteralCacheRecord] = Field(default_factory=list)
     created_at: str

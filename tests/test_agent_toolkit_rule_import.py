@@ -16,6 +16,11 @@ from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import TargetGameSession
 from app.persistence.records import TextFactRecord
 from app.plugin_text import parse_plugin_rule_import_text
+from app.plugin_source_text.native_scan import (
+    PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+    PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+)
+from app.plugin_source_text.runtime_audit import PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION
 from app.rmmz.mv_namebox import parse_mv_virtual_namebox_rule_import_text
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.schema import TranslationItem
@@ -1444,6 +1449,48 @@ async def test_audit_active_runtime_reuses_scan_cache_and_invalidates_changed_fi
 
 
 @pytest.mark.asyncio
+async def test_plugin_source_runtime_scan_cache_invalidates_contract_change(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行插件源码扫描缓存契约版本变化时必须重扫。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins = ensure_json_array(
+        coerce_json_value(cast(object, json.loads(plugins_text[plugins_text.index("["):plugins_text.rindex("]") + 1]))),
+        "plugins",
+    )
+    plugins.append({"name": "ContractCacheSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "ContractCacheSource.js").write_text(
+        "const Messages = { title: 'カテゴリ' };\n",
+        encoding="utf-8",
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    first_report = await service.audit_active_runtime(game_title="テストゲーム")
+    assert _json_int_for_assert(first_report.summary["active_runtime_scan_cache_rescan_file_count"], "rescan") > 0
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            "UPDATE plugin_source_runtime_scan_cache SET parser_contract_version = parser_contract_version - 1"
+        )
+        await session.connection.commit()
+
+    second_report = await service.audit_active_runtime(game_title="テストゲーム")
+
+    assert _json_int_for_assert(second_report.summary["active_runtime_scan_cache_stale_file_count"], "stale") > 0
+    assert _json_int_for_assert(second_report.summary["active_runtime_scan_cache_rescan_file_count"], "rescan") > 0
+
+
+@pytest.mark.asyncio
 async def test_audit_active_runtime_rebuilds_incomplete_literal_cache(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1483,12 +1530,24 @@ async def test_audit_active_runtime_rebuilds_incomplete_literal_cache(
         _ = await session.connection.execute(
             """
             INSERT INTO plugin_source_runtime_scan_cache
-            (file_name, file_hash, syntax_error, literals_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            (
+                file_name,
+                file_hash,
+                rust_contract_version,
+                parser_contract_version,
+                audit_contract_version,
+                syntax_error,
+                literals_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "IncompleteRuntimeCache.js",
                 build_plugin_source_file_hash(source_text),
+                PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+                PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+                PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION,
                 "",
                 json.dumps(incomplete_literals, ensure_ascii=False, separators=(",", ":")),
                 "2026-06-07T00:00:00",

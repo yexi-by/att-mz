@@ -109,6 +109,9 @@
     CREATE TABLE IF NOT EXISTS [plugin_source_runtime_scan_cache] (
         file_name    TEXT PRIMARY KEY,
         file_hash    TEXT NOT NULL,
+        rust_contract_version INTEGER NOT NULL,
+        parser_contract_version INTEGER NOT NULL,
+        audit_contract_version INTEGER NOT NULL,
         syntax_error TEXT NOT NULL,
         literals_json TEXT NOT NULL,
         created_at   TEXT NOT NULL
@@ -468,5 +471,5 @@
 ;
 
 INSERT OR REPLACE INTO [schema_version] (schema_key, version)
-VALUES ('current', 18)
+VALUES ('current', 19)
 ;

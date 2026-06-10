@@ -29,7 +29,13 @@ from .scanner import (
     build_plugin_source_file_hash,
     scan_plugin_source_runtime_files_text_strict,
 )
+from .native_scan import (
+    PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+    PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+)
 from .runtime_mapping import plugin_source_runtime_hash_text
+
+PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION = 1
 
 type ActiveRuntimeMappingStatus = Literal[
     "mapped_translate",
@@ -370,6 +376,10 @@ def scan_plugin_source_files_text_strict_with_cache(
             miss_file_count += 1
             uncached_files[file_name] = source
             continue
+        if not _runtime_scan_cache_contract_current(cached_record):
+            stale_file_count += 1
+            uncached_files[file_name] = source
+            continue
         if cached_record.file_hash != file_hash:
             stale_file_count += 1
             uncached_files[file_name] = source
@@ -461,6 +471,9 @@ def _cache_records_from_batch_scan(
             PluginSourceRuntimeScanCacheRecord(
                 file_name=file_name,
                 file_hash=file_hash,
+                rust_contract_version=PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+                parser_contract_version=PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+                audit_contract_version=PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION,
                 syntax_error=syntax_error,
                 literals=[
                     PluginSourceRuntimeStringLiteralCacheRecord(
@@ -480,6 +493,15 @@ def _cache_records_from_batch_scan(
             )
         )
     return records
+
+
+def _runtime_scan_cache_contract_current(record: PluginSourceRuntimeScanCacheRecord) -> bool:
+    """判断当前运行 AST 缓存记录是否符合当前扫描契约。"""
+    return (
+        record.rust_contract_version == PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION
+        and record.parser_contract_version == PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION
+        and record.audit_contract_version == PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION
+    )
 
 
 def _strict_active_runtime_syntax_issue(

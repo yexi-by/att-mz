@@ -100,6 +100,9 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     (
                         record.file_name,
                         record.file_hash,
+                        record.rust_contract_version,
+                        record.parser_contract_version,
+                        record.audit_contract_version,
                         record.syntax_error,
                         json.dumps(
                             [literal.model_dump() for literal in record.literals],
@@ -148,6 +151,9 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                 PluginSourceRuntimeScanCacheRecord(
                     file_name=row_str(row, "file_name", self.db_path),
                     file_hash=row_str(row, "file_hash", self.db_path),
+                    rust_contract_version=row_int(row, "rust_contract_version", self.db_path),
+                    parser_contract_version=row_int(row, "parser_contract_version", self.db_path),
+                    audit_contract_version=row_int(row, "audit_contract_version", self.db_path),
                     syntax_error=row_str(row, "syntax_error", self.db_path),
                     literals=literals,
                     created_at=row_str(row, "created_at", self.db_path),

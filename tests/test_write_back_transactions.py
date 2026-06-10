@@ -13,6 +13,11 @@ from app.llm import LLMHandler
 from app.native_write_plan import NativePlannedFile, NativeWriteBackPlan, NativeWriteBackSummary
 from app.persistence import GameRegistry
 from app.plugin_source_text import ActiveRuntimePluginSourceAudit, ActiveRuntimePluginSourceIssue
+from app.plugin_source_text.native_scan import (
+    PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+    PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+)
+from app.plugin_source_text.runtime_audit import PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION
 from app.rmmz.schema import GameData, PluginSourceRuntimeScanCacheRecord, PluginSourceRuntimeWriteMapRecord
 from app.rmmz.text_rules import TextRules
 
@@ -56,6 +61,9 @@ async def test_write_back_post_write_audit_failure_rolls_back_files_fonts_and_re
     refreshed_cache = PluginSourceRuntimeScanCacheRecord(
         file_name="Broken.js",
         file_hash="runtime-hash",
+        rust_contract_version=PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
+        parser_contract_version=PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION,
+        audit_contract_version=PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION,
         syntax_error="",
         literals=[],
         created_at="2026-01-01T00:00:00",

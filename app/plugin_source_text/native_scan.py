@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from app.native_scope_index import build_native_plugin_source_candidates_payload, scan_native_rule_candidates
+from app.native_scope_index import (
+    PARSER_CONTRACT_VERSION,
+    RUST_SCOPE_FACTS_CONTRACT_VERSION,
+    build_native_plugin_source_candidates_payload,
+    scan_native_rule_candidates,
+)
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import GameData
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, ensure_json_array, ensure_json_object
 
 from .models import PluginSourceCandidate, PluginSourceFileScan, PluginSourceRisk, PluginSourceScan
 from .scanner import build_plugin_source_file_hash
+
+PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION = RUST_SCOPE_FACTS_CONTRACT_VERSION
+PLUGIN_SOURCE_RUNTIME_SCAN_PARSER_CONTRACT_VERSION = PARSER_CONTRACT_VERSION
 
 
 def build_native_plugin_source_risk_report(*, game_data: GameData, text_rules: TextRules) -> JsonObject:

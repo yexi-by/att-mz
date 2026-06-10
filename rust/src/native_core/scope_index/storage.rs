@@ -20,7 +20,7 @@ use crate::native_core::text_facts::{
 };
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
-const CURRENT_SCHEMA_VERSION: i64 = 18;
+const CURRENT_SCHEMA_VERSION: i64 = 19;
 const SCHEMA_VERSION_KEY: &str = "current";
 const TEXT_INDEX_META_KEY: &str = "current";
 type TextFactIdentity = (String, String, String, String, String, String);
