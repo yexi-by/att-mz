@@ -28,7 +28,6 @@ from app.plugin_text import collect_plugin_json_string_leaf_candidates, extract_
 from app.plugin_source_text import (
     PluginSourceScan,
     build_native_plugin_source_scan,
-    collect_plugin_source_review_coverage,
     filter_fresh_plugin_source_text_rules,
 )
 from app.rmmz.commands import iter_all_commands
@@ -572,7 +571,7 @@ async def _plugin_source_rule_gate_errors(
 ) -> list[WorkflowGateIssue]:
     """高风险插件源码文本必须先确认并导入源码规则。"""
     records = await session.read_plugin_source_text_rules()
-    if scan is None:
+    if scan is None or records:
         scan = build_native_plugin_source_scan(
             game_data=game_data,
             text_rules=text_rules,
@@ -603,14 +602,16 @@ async def _plugin_source_rule_gate_errors(
                 ),
             )
         ]
-    coverage = collect_plugin_source_review_coverage(scan=scan, rule_records=fresh_records)
-    if not coverage.unreviewed_candidates:
+    review_summary = scan.review_summary
+    if review_summary is None:
+        raise RuntimeError("插件源码 native scan 缺少 Rust review_summary，请重新构建原生扩展")
+    if review_summary.unreviewed_selector_count == 0:
         return []
     return [
         WorkflowGateIssue(
             code="plugin_source_review_incomplete",
             message=(
-                f"插件源码支线还有 {len(coverage.unreviewed_candidates)} 个候选未由外部 Agent 归入翻译或排除；"
+                f"插件源码支线还有 {review_summary.unreviewed_selector_count} 个候选未由外部 Agent 归入翻译或排除；"
                 "请补全插件源码规则后再继续"
             ),
         )

@@ -13,11 +13,11 @@ from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import TextRulesSetting
 from app.persistence import GameRegistry, TargetGameSession
 from app.plugin_source_text import (
-    PluginSourceTextExtraction,
     build_native_plugin_source_scan,
     build_plugin_source_rule_records_from_import,
     parse_plugin_source_rule_import_text,
 )
+from app.plugin_source_text.extraction import _PluginSourceTextExtraction
 from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import PluginSourceRuntimeWriteMapRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array
@@ -87,7 +87,7 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         text_rules=text_rules,
         scan=scan,
     )
-    old_item = PluginSourceTextExtraction(game_data, old_records, text_rules, scan=scan).extract_all_text()[
+    old_item = _PluginSourceTextExtraction(game_data, old_records, text_rules, scan=scan).extract_all_text()[
         "js/plugins/RuleSource.js"
     ].translation_items[0]
     old_item.translation_lines = ["旧译文"]

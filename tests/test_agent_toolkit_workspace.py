@@ -598,7 +598,7 @@ async def test_validate_agent_workspace_uses_plugin_source_note_tag_native_paths
         raise AssertionError("validate-agent-workspace 不应构造 NoteTagTextExtraction")
 
     monkeypatch.setattr(
-        "app.plugin_source_text.extraction.PluginSourceTextExtraction",
+        "app.plugin_source_text.extraction._PluginSourceTextExtraction",
         forbidden_plugin_source_extractor,
     )
     monkeypatch.setattr(

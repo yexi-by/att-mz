@@ -3778,7 +3778,7 @@ async def test_public_rule_validation_and_import_use_native_candidate_paths(
         raise AssertionError("公共 Note 标签规则命令不应构造 NoteTagTextExtraction")
 
     monkeypatch.setattr(
-        "app.plugin_source_text.extraction.PluginSourceTextExtraction",
+        "app.plugin_source_text.extraction._PluginSourceTextExtraction",
         forbidden_plugin_source_extractor,
     )
     monkeypatch.setattr(
@@ -3786,6 +3786,10 @@ async def test_public_rule_validation_and_import_use_native_candidate_paths(
         forbidden_note_tag_extractor,
     )
 
+    plugin_ast_map_report = await service.export_plugin_source_ast_map(
+        game_title="テストゲーム",
+        output_path=tmp_path / "plugin-source-ast-map.json",
+    )
     plugin_validate_report = await service.validate_plugin_source_rules(
         game_title="テストゲーム",
         rules_text=plugin_rules_text,
@@ -3803,6 +3807,7 @@ async def test_public_rule_validation_and_import_use_native_candidate_paths(
         rules_text=note_rules_text,
     )
 
+    assert plugin_ast_map_report.status == "ok"
     assert plugin_validate_report.status == "ok"
     assert plugin_validate_report.summary["hit_count"] == 1
     assert plugin_import_report.status == "ok"

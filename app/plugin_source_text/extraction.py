@@ -1,4 +1,5 @@
 """插件源码文本规则驱动提取。"""
+# pyright: reportUnusedClass=false
 
 from __future__ import annotations
 
@@ -11,8 +12,8 @@ from .scanner import PluginSourceCandidateIndex, build_plugin_source_candidate_i
 from .rules import StalePluginSourceTextRule, filter_fresh_plugin_source_text_rules
 
 
-class PluginSourceTextExtraction:
-    """从已确认插件源码 AST selector 提取正文文本。"""
+class _PluginSourceTextExtraction:
+    """仅供旧夹具读取历史样本，不参与当前生产事实生成。"""
 
     def __init__(
         self,
@@ -165,7 +166,6 @@ def parse_plugin_source_location_path(location_path: str) -> tuple[str, str] | N
 
 
 __all__ = [
-    "PluginSourceTextExtraction",
     "parse_plugin_source_location_path",
     "plugin_source_file_key",
     "plugin_source_location_path",

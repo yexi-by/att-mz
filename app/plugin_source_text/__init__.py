@@ -1,7 +1,6 @@
 """插件源码文本 AST 支线能力。"""
 
 from .extraction import (
-    PluginSourceTextExtraction,
     parse_plugin_source_location_path,
     plugin_source_file_key,
     plugin_source_location_path,
@@ -47,7 +46,6 @@ __all__ = [
     "PluginSourceRuleImportEntry",
     "PluginSourceRuleImportFile",
     "PluginSourceScan",
-    "PluginSourceTextExtraction",
     "PluginSourceReviewCoverage",
     "StalePluginSourceTextRule",
     "ActiveRuntimePluginSourceAudit",
