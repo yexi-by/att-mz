@@ -17,6 +17,7 @@ from app.native_scope_index import (
     build_native_placeholder_candidates_payload,
     build_native_rule_candidate_text_rules_payload,
     build_native_scope_index,
+    evaluate_native_scope_gate,
     inspect_native_scope_index_storage,
     native_schema_fingerprint,
     rebuild_native_scope_index_storage,
@@ -258,11 +259,22 @@ def _note_tag_game_data() -> GameData:
 
 def test_native_scope_index_outputs_contract_versions() -> None:
     result = scan_native_rule_candidates(cast(JsonObject, {"candidates": []}))
+    gate_result = evaluate_native_scope_gate(
+        cast(
+            JsonObject,
+            {
+                "entries": [],
+                "matched_translation_fact_ids": [],
+                "quality_error_fact_ids": [],
+            },
+        )
+    )
 
     assert result.contract_versions.rust_scope_facts >= 1
     assert result.contract_versions.parser >= 1
     assert result.contract_versions.source_branch >= 1
     assert result.contract_versions.text_fact_schema >= 1
+    assert gate_result.contract_versions.rust_scope_facts >= 1
 
 
 def test_build_native_scope_index_returns_rows_and_summaries() -> None:
@@ -301,6 +313,8 @@ def test_build_native_scope_index_returns_rows_and_summaries() -> None:
         )
     )
 
+    assert result.contract_versions.rust_scope_facts >= 1
+    assert result.contract_versions.text_fact_schema == CURRENT_TEXT_FACT_CONTRACT_VERSION
     assert result.scope_summary["total_count"] == 3
     assert result.scope_summary["active_count"] == 2
     assert result.scope_summary["writable_count"] == 1
@@ -473,6 +487,8 @@ async def test_inspect_native_scope_index_storage_reads_db_and_game_files(
     )
 
     assert result["status"] == "ok"
+    contract_versions = ensure_json_object(result["contract_versions"], "storage.contract_versions")
+    assert contract_versions["rust_scope_facts"] == 1
     schema = ensure_json_object(result["schema"], "storage.schema")
     assert schema["schema_fingerprint"] == current_schema_fingerprint()
     database = ensure_json_object(result["database"], "storage.database")
@@ -512,6 +528,19 @@ async def test_write_native_scope_index_storage_writes_python_readable_index(
                 "rules_fingerprint": "rules-v1",
                 "item_count": 1,
                 "workflow_gate_scope_hashes": {"plugin_text_rules": "scope-hash-v1"},
+                "workflow_gate_facts": {
+                    "plugin_source_text": {
+                        "source_branch": "plugin_source_text",
+                        "status": "pass",
+                        "scope_hash": "scope-hash-v1",
+                        "error_codes": [],
+                        "stale_reasons": [],
+                    }
+                },
+                "rust_contract_version": 1,
+                "parser_contract_version": 1,
+                "source_branch_contract_version": 1,
+                "text_fact_schema_version": CURRENT_TEXT_FACT_CONTRACT_VERSION,
                 "created_at": "2026-06-05T00:00:00",
             },
             "text_index_rows": [
@@ -561,6 +590,8 @@ async def test_write_native_scope_index_storage_writes_python_readable_index(
     )
 
     assert result["status"] == "ok"
+    contract_versions = ensure_json_object(result["contract_versions"], "storage_write.contract_versions")
+    assert contract_versions["text_fact_schema"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
     assert result["written_item_count"] == 1
     assert result["text_fact_count"] == 0
     assert result["render_part_count"] == 0
@@ -572,6 +603,8 @@ async def test_write_native_scope_index_storage_writes_python_readable_index(
         assert metadata is not None
         assert metadata.source_snapshot_fingerprint == "snapshot-v1"
         assert metadata.workflow_gate_scope_hashes == {"plugin_text_rules": "scope-hash-v1"}
+        assert metadata.workflow_gate_facts["plugin_source_text"]["status"] == "pass"
+        assert metadata.rust_contract_version == 1
         items = await session.read_text_index_items()
         assert [item.location_path for item in items] == ["System.json/gameTitle"]
         assert items[0].original_lines == ["テストゲーム"]
@@ -621,6 +654,8 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     )
 
     assert result["status"] == "ok"
+    contract_versions = ensure_json_object(result["contract_versions"], "storage_rebuild.contract_versions")
+    assert contract_versions["text_fact_schema"] == CURRENT_TEXT_FACT_CONTRACT_VERSION
     assert _json_int(result["text_fact_count"], "text_fact_count") == _json_int(
         result["indexed_count"],
         "indexed_count",
@@ -641,6 +676,10 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     assert "write_storage" in internal_timings
     assert all(isinstance(value, int) and value >= 0 for value in internal_timings.values())
     async with await registry.open_game(record.game_title) as session:
+        metadata = await session.read_text_index_metadata()
+        assert metadata is not None
+        assert metadata.workflow_gate_facts["plugin_source_text"]["status"] == "pass"
+        assert metadata.workflow_gate_facts["nonstandard_data"]["status"] == "pass"
         scope_summary = await session.read_text_index_scope_summary()
         assert scope_summary is not None
         assert scope_summary.stale_rule_count == 1

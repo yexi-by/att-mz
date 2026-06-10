@@ -226,7 +226,7 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
         translation_item_declared_indexes = read_sqlite_declared_index_columns(connection, "translation_items")
 
     assert {row[0] for row in table_rows} - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
-    assert CURRENT_SCHEMA_VERSION == 17
+    assert CURRENT_SCHEMA_VERSION == 18
     assert version_row == (CURRENT_SCHEMA_VERSION,)
     assert len(current_schema_fingerprint()) == 64
     assert translation_item_columns == (
@@ -892,7 +892,7 @@ async def test_text_fact_records_replace_read_and_require_scope(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
     assert CURRENT_TEXT_FACT_CONTRACT_VERSION == 2
-    assert CURRENT_SCHEMA_VERSION == 17
+    assert CURRENT_SCHEMA_VERSION == 18
     scope = make_text_fact_scope()
     namebox_fact = TextFactRecord(
         fact_id="fact-namebox",
@@ -1201,6 +1201,11 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
         source_snapshot_fingerprint="snapshot-v1",
         rules_fingerprint="rules-v1",
         item_count=3,
+        workflow_gate_facts={},
+        rust_contract_version=1,
+        parser_contract_version=1,
+        source_branch_contract_version=1,
+        text_fact_schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
         created_at="2026-06-02T00:00:00",
     )
 
@@ -1299,6 +1304,11 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
             source_snapshot_fingerprint="snapshot-current-next",
             rules_fingerprint="rules-current-next",
             item_count=0,
+            workflow_gate_facts={},
+            rust_contract_version=1,
+            parser_contract_version=1,
+            source_branch_contract_version=1,
+            text_fact_schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
             created_at="2026-06-02T00:02:00",
         )
         scope_summary = TextIndexScopeSummaryRecord(
@@ -1350,6 +1360,44 @@ async def test_text_index_records_replace_read_subset_and_invalidate(
 
 
 @pytest.mark.asyncio
+async def test_text_index_metadata_round_trips_contract_gate_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+    metadata = TextIndexMetadata(
+        source_snapshot_fingerprint="source-v1",
+        rules_fingerprint="rules-v1",
+        item_count=0,
+        workflow_gate_scope_hashes={},
+        workflow_gate_facts={
+            "plugin_source_text": {
+                "source_branch": "plugin_source_text",
+                "status": "pass",
+                "scope_hash": "a" * 64,
+                "error_codes": [],
+                "stale_reasons": [],
+            }
+        },
+        rust_contract_version=1,
+        parser_contract_version=1,
+        source_branch_contract_version=1,
+        text_fact_schema_version=2,
+        created_at="2026-06-11T00:00:00+00:00",
+    )
+
+    async with await registry.open_game(record.game_title) as session:
+        await session.replace_text_index(metadata=metadata, items=[])
+
+        saved = await session.read_text_index_metadata()
+
+    assert saved is not None
+    assert saved.workflow_gate_facts["plugin_source_text"]["status"] == "pass"
+    assert saved.rust_contract_version == 1
+
+
+@pytest.mark.asyncio
 async def test_text_index_replace_rejects_mismatched_item_count(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -1365,6 +1413,11 @@ async def test_text_index_replace_rejects_mismatched_item_count(
                     source_snapshot_fingerprint="snapshot-v1",
                     rules_fingerprint="rules-v1",
                     item_count=1,
+                    workflow_gate_facts={},
+                    rust_contract_version=1,
+                    parser_contract_version=1,
+                    source_branch_contract_version=1,
+                    text_fact_schema_version=CURRENT_TEXT_FACT_CONTRACT_VERSION,
                     created_at="2026-06-02T00:00:00",
                 ),
                 items=[],

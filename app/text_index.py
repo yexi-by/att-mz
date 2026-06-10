@@ -60,9 +60,6 @@ from app.text_fact_counts import (
     read_text_fact_quality_error_fact_ids,
 )
 from app.text_fact_readers import read_current_text_fact_records
-TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY = "workflow_gate_prechecked:plugin_source_text"
-TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY = "workflow_gate_prechecked:nonstandard_data"
-TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed"
 TEXT_INDEX_PLACEHOLDER_GATE_PREFIX = "workflow_gate:placeholder_rules"
 TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX = "workflow_gate:structured_placeholder_rules"
 TEXT_INDEX_PROMPT_CONTEXT_VERSION = "display_name_owner_system_terms_v3"
@@ -233,12 +230,19 @@ async def detect_text_index_invalidations(
 
 
 def text_index_source_branch_gates_prechecked(metadata: TextIndexMetadata) -> bool:
-    """判断持久索引是否记录过插件源码和非标准 data gate 已通过预检。"""
-    scope_hashes = metadata.workflow_gate_scope_hashes
-    return (
-        scope_hashes.get(TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY) == TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-        and scope_hashes.get(TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY) == TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
+    """判断持久索引是否保存了 source branch 的当前 gate 通过事实。"""
+    return _source_branch_gate_passed(metadata, "plugin_source_text") and _source_branch_gate_passed(
+        metadata,
+        "nonstandard_data",
     )
+
+
+def _source_branch_gate_passed(metadata: TextIndexMetadata, source_branch: str) -> bool:
+    """读取单个 source branch 的 gate pass 事实。"""
+    fact = metadata.workflow_gate_facts.get(source_branch)
+    if fact is None:
+        return False
+    return fact.get("source_branch") == source_branch and fact.get("status") == "pass"
 
 
 async def collect_text_index_placeholder_gate_errors(

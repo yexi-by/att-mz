@@ -46,7 +46,7 @@ METADATA_KEY = "current_game"
 LANGUAGE_SETTINGS_KEY = "current"
 SCHEMA_VERSION_KEY = "current"
 TEXT_INDEX_META_KEY = "current"
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 CURRENT_TEXT_FACT_CONTRACT_VERSION = 2
 CURRENT_SCHEMA_RESOURCE_PACKAGE = "app.persistence.schema"
 CURRENT_SCHEMA_RESOURCE_NAME = "current.sql"
@@ -294,6 +294,11 @@ CREATE_TEXT_INDEX_META_TABLE = f"""
         rules_fingerprint           TEXT NOT NULL,
         item_count                  INTEGER NOT NULL,
         workflow_gate_scope_hashes  TEXT NOT NULL,
+        workflow_gate_facts         TEXT NOT NULL,
+        rust_contract_version       INTEGER NOT NULL,
+        parser_contract_version     INTEGER NOT NULL,
+        source_branch_contract_version INTEGER NOT NULL,
+        text_fact_schema_version    INTEGER NOT NULL,
         created_at                  TEXT NOT NULL
     )
 ;
@@ -885,8 +890,20 @@ INSERT_TRANSLATION_QUALITY_ERROR = f"""
 UPSERT_TEXT_INDEX_META = f"""
 --sql
     INSERT OR REPLACE INTO [{TEXT_INDEX_META_TABLE_NAME}]
-    (index_key, source_snapshot_fingerprint, rules_fingerprint, item_count, workflow_gate_scope_hashes, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    (
+        index_key,
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        item_count,
+        workflow_gate_scope_hashes,
+        workflow_gate_facts,
+        rust_contract_version,
+        parser_contract_version,
+        source_branch_contract_version,
+        text_fact_schema_version,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -1437,7 +1454,17 @@ SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN = f"""
 
 SELECT_TEXT_INDEX_META = f"""
 --sql
-    SELECT source_snapshot_fingerprint, rules_fingerprint, item_count, workflow_gate_scope_hashes, created_at
+    SELECT
+        source_snapshot_fingerprint,
+        rules_fingerprint,
+        item_count,
+        workflow_gate_scope_hashes,
+        workflow_gate_facts,
+        rust_contract_version,
+        parser_contract_version,
+        source_branch_contract_version,
+        text_fact_schema_version,
+        created_at
     FROM [{TEXT_INDEX_META_TABLE_NAME}]
     WHERE index_key = ?
     LIMIT 1

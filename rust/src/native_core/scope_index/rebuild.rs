@@ -16,7 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::contracts::{ContractVersionsOutput, current_contract_versions};
+use super::contracts::{
+    ContractVersionsOutput, SourceBranchGateFact, current_contract_versions,
+    source_branch_pass_fact,
+};
 use super::event_commands::{EventCommandDataFileInput, EventCommandRuleInput};
 use super::mv_virtual_namebox::{
     MvVirtualNameboxActorNameInput, MvVirtualNameboxDataFileInput, MvVirtualNameboxFactParts,
@@ -50,11 +53,6 @@ const PLUGIN_TEXT_RULE_DOMAIN: &str = "plugin_text";
 const EVENT_COMMAND_TEXT_RULE_DOMAIN: &str = "event_command_text";
 const NOTE_TAG_TEXT_RULE_DOMAIN: &str = "note_tag_text";
 const MV_VIRTUAL_NAMEBOX_RULE_DOMAIN: &str = "mv_virtual_namebox";
-const TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: &str =
-    "workflow_gate_prechecked:plugin_source_text";
-const TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: &str =
-    "workflow_gate_prechecked:nonstandard_data";
-const TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE: &str = "passed";
 const TEXT_INDEX_PLACEHOLDER_GATE_PREFIX: &str = "workflow_gate:placeholder_rules";
 const TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX: &str =
     "workflow_gate:structured_placeholder_rules";
@@ -455,19 +453,22 @@ fn rebuild_with_context(
         &warm_index_rows,
         &mut internal_stage_timings,
     )?;
-    record_stage(
-        &mut internal_stage_timings,
-        "build_workflow_gate_metadata",
-        stage_started,
-    );
     let text_rules_hash = rebuild_text_rules_hash(&payload)?;
-    let stage_started = Instant::now();
     let text_fact_scope = TextFactScope::from_hashes(
         source_snapshot_fingerprint.clone(),
         rules_fingerprint.clone(),
         text_rules_hash.clone(),
         payload.created_at.clone(),
     );
+    let workflow_gate_facts =
+        build_workflow_gate_facts(&warm_index_rows, &text_fact_scope.scope_hash);
+    record_stage(
+        &mut internal_stage_timings,
+        "build_workflow_gate_metadata",
+        stage_started,
+    );
+    let contract_versions = current_contract_versions();
+    let stage_started = Instant::now();
     let text_fact_payload = build_text_fact_storage_payload_with_context(
         &fact_rows,
         &text_fact_scope,
@@ -482,6 +483,11 @@ fn rebuild_with_context(
             text_rules_hash: Some(text_rules_hash),
             item_count,
             workflow_gate_scope_hashes,
+            workflow_gate_facts,
+            rust_contract_version: contract_versions.rust_scope_facts,
+            parser_contract_version: contract_versions.parser,
+            source_branch_contract_version: contract_versions.source_branch,
+            text_fact_schema_version: contract_versions.text_fact_schema,
             created_at: payload.created_at,
         },
         text_index_rows: warm_index_rows
@@ -577,14 +583,6 @@ fn build_workflow_gate_scope_hashes(
     stage_timings: &mut BTreeMap<String, u64>,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut metadata = BTreeMap::new();
-    metadata.insert(
-        TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY.to_string(),
-        TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE.to_string(),
-    );
-    metadata.insert(
-        TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY.to_string(),
-        TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE.to_string(),
-    );
 
     if context.plugin_text_rules.is_empty() {
         let stage_started = Instant::now();
@@ -725,6 +723,63 @@ fn build_workflow_gate_scope_hashes(
     );
 
     Ok(metadata)
+}
+
+fn build_workflow_gate_facts(
+    rows: &[DirectTextIndexRow],
+    text_fact_scope_hash: &str,
+) -> BTreeMap<String, SourceBranchGateFact> {
+    let mut gate_facts = BTreeMap::new();
+    gate_facts.insert(
+        "plugin_source_text".to_string(),
+        source_branch_pass_fact(
+            "plugin_source_text",
+            source_branch_scope_hash("plugin_source_text", rows, text_fact_scope_hash),
+        ),
+    );
+    gate_facts.insert(
+        "nonstandard_data".to_string(),
+        source_branch_pass_fact(
+            "nonstandard_data",
+            source_branch_scope_hash("nonstandard_data", rows, text_fact_scope_hash),
+        ),
+    );
+    gate_facts
+}
+
+fn source_branch_scope_hash(
+    source_branch: &str,
+    rows: &[DirectTextIndexRow],
+    text_fact_scope_hash: &str,
+) -> String {
+    let mut parts = vec![
+        format!("text_fact_scope_hash={text_fact_scope_hash}"),
+        format!("source_branch={source_branch}"),
+    ];
+    for row in rows
+        .iter()
+        .filter(|row| row_belongs_to_source_branch(row, source_branch))
+    {
+        parts.push(format!(
+            "{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}",
+            row.location_path,
+            row.source_type,
+            row.source_file,
+            row.fact_selector.as_deref().unwrap_or(""),
+            row.source_snapshot_fingerprint,
+            row.rules_fingerprint,
+            row.original_lines.join("\u{1f}")
+        ));
+    }
+    sha256_text(&parts.join("\n"))
+}
+
+fn row_belongs_to_source_branch(row: &DirectTextIndexRow, source_branch: &str) -> bool {
+    match source_branch {
+        "plugin_source_text" => text_fact_domain_for_row(row) == domains::PLUGIN_SOURCE,
+        "nonstandard_data" => text_fact_domain_for_row(row) == domains::NONSTANDARD_DATA,
+        _ => false,
+    }
 }
 
 fn insert_candidate_coverage_metadata(

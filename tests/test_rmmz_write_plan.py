@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from collections.abc import Callable
 from typing import cast
@@ -11,14 +12,10 @@ from typing import cast
 from app.agent_toolkit import AgentToolkitService
 from app.native_write_plan import build_native_write_back_plan, build_native_write_back_setting_payload
 from app.persistence.records import TextFactReadFilter
-from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME
+from app.persistence.sql import TEXT_INDEX_ITEMS_TABLE_NAME, TEXT_INDEX_META_KEY, TEXT_INDEX_META_TABLE_NAME
 from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_lines
 from app.rmmz.loader import load_active_runtime_game_data
-from app.text_index import (
-    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
-    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
-    rebuild_text_index_native_storage,
-)
+from app.text_index import rebuild_text_index_native_storage
 
 from tests._native_write_plan_helper import (
     _text_fact_domain_for_helper,
@@ -507,10 +504,12 @@ async def test_write_related_commands_rebuild_missing_or_mismatched_text_index_b
         async with await registry.open_game("テストゲーム") as session:
             metadata = await session.read_text_index_metadata()
             assert metadata is not None
-            scope_hashes = dict(metadata.workflow_gate_scope_hashes)
-            _ = scope_hashes.pop(TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY, None)
-            _ = scope_hashes.pop(TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY, None)
-            await session.update_text_index_workflow_gate_scope_hashes(scope_hashes)
+            assert metadata.workflow_gate_facts
+            _ = await session.connection.execute(
+                f"UPDATE [{TEXT_INDEX_META_TABLE_NAME}] SET workflow_gate_facts = ? WHERE index_key = ?",
+                (json.dumps({}, ensure_ascii=False), TEXT_INDEX_META_KEY),
+            )
+            await session.connection.commit()
 
     async def forbidden_rust_scope_gate(*args: object, **kwargs: object) -> NoReturn:
         """自动重建后写回快路径仍不应还原 Rust scope gate 输入。"""

@@ -220,7 +220,9 @@ def inspect_native_scope_index_storage(payload: JsonObject) -> JsonObject:
         result_text = native_module.inspect_scope_index_storage(json.dumps(payload, ensure_ascii=False))
     except ValueError as error:
         raise _native_storage_error(str(error)) from error
-    return _load_result_object(result_text, "native_scope_index_storage_inspect")
+    result = _load_result_object(result_text, "native_scope_index_storage_inspect")
+    _ = _read_contract_versions(result, "native_scope_index_storage_inspect")
+    return result
 
 
 def write_native_scope_index_storage(payload: JsonObject) -> JsonObject:
@@ -232,6 +234,7 @@ def write_native_scope_index_storage(payload: JsonObject) -> JsonObject:
         raise _native_storage_error(str(error)) from error
     result = _load_result_object(result_text, "native_scope_index_storage_write")
     _validate_text_fact_storage_contract(result, "native_scope_index_storage_write")
+    _ = _read_contract_versions(result, "native_scope_index_storage_write")
     return result
 
 
@@ -244,6 +247,7 @@ def rebuild_native_scope_index_storage(payload: JsonObject) -> JsonObject:
         raise _native_storage_error(str(error)) from error
     result = _load_result_object(result_text, "native_scope_index_storage_rebuild")
     _validate_text_fact_storage_contract(result, "native_scope_index_storage_rebuild")
+    _ = _read_contract_versions(result, "native_scope_index_storage_rebuild")
     return result
 
 

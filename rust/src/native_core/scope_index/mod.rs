@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::models::{NativeCustomPlaceholderRule, NativeStructuredPlaceholderRule};
 use super::pool;
 
-mod event_commands;
 mod contracts;
+mod event_commands;
 mod mv_virtual_namebox;
 mod nonstandard_data;
 mod note_tags;

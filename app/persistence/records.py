@@ -9,6 +9,7 @@ from pathlib import Path
 from app.language import SourceLanguage, TargetLanguage
 from app.rule_review import RuleReviewDomain
 from app.rmmz.schema import EngineKind, ItemType
+from app.rmmz.text_rules import JsonObject
 
 
 @dataclass(slots=True)
@@ -69,6 +70,11 @@ class TextIndexMetadata:
     source_snapshot_fingerprint: str
     rules_fingerprint: str
     item_count: int
+    workflow_gate_facts: dict[str, JsonObject]
+    rust_contract_version: int
+    parser_contract_version: int
+    source_branch_contract_version: int
+    text_fact_schema_version: int
     created_at: str
     workflow_gate_scope_hashes: dict[str, str] = field(default_factory=dict)
 

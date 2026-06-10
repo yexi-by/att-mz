@@ -17,6 +17,8 @@ from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
 from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
 from app.persistence import GameRegistry
 from app.persistence.records import TextFactRecord, TextIndexMetadata
+from app.persistence.sql import TEXT_INDEX_META_KEY, TEXT_INDEX_META_TABLE_NAME
+from app.persistence.text_index_records import decode_workflow_gate_scope_hashes
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rule_review import EVENT_COMMAND_TEXT_RULE_DOMAIN, PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.loader import load_translation_source_game_data
@@ -29,11 +31,8 @@ from app.rmmz.schema import (
 )
 from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_object
 from app.text_index import (
-    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY,
     TEXT_INDEX_PLACEHOLDER_GATE_PREFIX,
-    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY,
     TEXT_INDEX_STRUCTURED_PLACEHOLDER_GATE_PREFIX,
-    TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
     collect_text_index_external_rule_gate_errors,
     collect_text_index_rules_fingerprint,
     detect_text_index_invalidations,
@@ -1186,22 +1185,47 @@ def test_text_index_source_branch_precheck_rejects_invalid_gate_markers() -> Non
         source_snapshot_fingerprint="snapshot",
         rules_fingerprint="rules",
         item_count=0,
+        workflow_gate_facts={},
+        rust_contract_version=1,
+        parser_contract_version=1,
+        source_branch_contract_version=1,
+        text_fact_schema_version=2,
         created_at="2026-06-08T00:00:00",
         workflow_gate_scope_hashes={
-            TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "invalid-marker",
-            TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "invalid-marker",
+            "workflow_gate_prechecked:plugin_source_text": "invalid-marker",
+            "workflow_gate_prechecked:nonstandard_data": "invalid-marker",
         },
     )
     current_metadata = replace(
         invalid_metadata,
-        workflow_gate_scope_hashes={
-            TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
-            TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE,
+        workflow_gate_scope_hashes={},
+        workflow_gate_facts={
+            "plugin_source_text": {
+                "source_branch": "plugin_source_text",
+                "status": "pass",
+                "scope_hash": "plugin-scope",
+                "error_codes": [],
+                "stale_reasons": [],
+            },
+            "nonstandard_data": {
+                "source_branch": "nonstandard_data",
+                "status": "pass",
+                "scope_hash": "nonstandard-scope",
+                "error_codes": [],
+                "stale_reasons": [],
+            },
         },
     )
 
     assert not text_index_source_branch_gates_prechecked(invalid_metadata)
     assert text_index_source_branch_gates_prechecked(current_metadata)
+
+
+def test_text_index_metadata_rejects_prechecked_passed_shortcut() -> None:
+    raw = '{"workflow_gate_prechecked:plugin_source_text":"passed"}'
+
+    with pytest.raises(RuntimeError, match="当前文本范围索引不再接受 workflow_gate_prechecked"):
+        _ = decode_workflow_gate_scope_hashes(raw)
 
 
 @pytest.mark.asyncio
@@ -1219,19 +1243,37 @@ async def test_read_text_index_metadata_rejects_invalid_gate_markers(
                 source_snapshot_fingerprint="snapshot",
                 rules_fingerprint="rules",
                 item_count=0,
+                workflow_gate_facts={},
+                rust_contract_version=1,
+                parser_contract_version=1,
+                source_branch_contract_version=1,
+                text_fact_schema_version=2,
                 created_at="2026-06-08T00:00:00",
-                workflow_gate_scope_hashes={
-                    TEXT_INDEX_PLUGIN_SOURCE_GATE_PRECHECK_KEY: "invalid-marker",
-                    TEXT_INDEX_NONSTANDARD_DATA_GATE_PRECHECK_KEY: "invalid-marker",
-                },
+                workflow_gate_scope_hashes={},
             ),
             items=[],
         )
+        _ = await session.connection.execute(
+            f"UPDATE [{TEXT_INDEX_META_TABLE_NAME}] SET workflow_gate_scope_hashes = ? WHERE index_key = ?",
+            (
+                json.dumps(
+                    {
+                        "workflow_gate_prechecked:plugin_source_text": "invalid-marker",
+                        "workflow_gate_prechecked:nonstandard_data": "invalid-marker",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                TEXT_INDEX_META_KEY,
+            ),
+        )
+        await session.connection.commit()
 
         with pytest.raises(RuntimeError) as error_info:
             _ = await session.read_text_index_metadata()
 
         message = str(error_info.value)
-        assert "预检标记不符合当前文本范围索引契约" in message
+        assert "当前文本范围索引不再接受 workflow_gate_prechecked" in message
         assert "invalid-marker" in message
         assert "请运行 rebuild-text-index" in message

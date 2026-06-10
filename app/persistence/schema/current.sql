@@ -315,6 +315,11 @@
         rules_fingerprint           TEXT NOT NULL,
         item_count                  INTEGER NOT NULL,
         workflow_gate_scope_hashes  TEXT NOT NULL,
+        workflow_gate_facts         TEXT NOT NULL,
+        rust_contract_version       INTEGER NOT NULL,
+        parser_contract_version     INTEGER NOT NULL,
+        source_branch_contract_version INTEGER NOT NULL,
+        text_fact_schema_version    INTEGER NOT NULL,
         created_at                  TEXT NOT NULL
     )
 ;
@@ -463,5 +468,5 @@
 ;
 
 INSERT OR REPLACE INTO [schema_version] (schema_key, version)
-VALUES ('current', 17)
+VALUES ('current', 18)
 ;

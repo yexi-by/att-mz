@@ -11,13 +11,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::contracts::{
+    ContractVersionsOutput, SourceBranchGateFact, TextIndexContractFacts, current_contract_versions,
+};
 use crate::native_core::text_facts::{
     CURRENT_TEXT_FACT_CONTRACT_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart,
     TextFactScope,
 };
 
 const CURRENT_SCHEMA_SQL: &str = include_str!("../../../../app/persistence/schema/current.sql");
-const CURRENT_SCHEMA_VERSION: i64 = 17;
+const CURRENT_SCHEMA_VERSION: i64 = 18;
 const SCHEMA_VERSION_KEY: &str = "current";
 const TEXT_INDEX_META_KEY: &str = "current";
 type TextFactIdentity = (String, String, String, String, String, String);
@@ -32,6 +35,7 @@ struct InspectStoragePayload {
 #[derive(Debug, Serialize)]
 struct InspectStorageOutput {
     status: &'static str,
+    contract_versions: ContractVersionsOutput,
     schema: SchemaSummary,
     database: DatabaseSummary,
     game_files: GameFileSummary,
@@ -103,6 +107,11 @@ pub(crate) struct TextIndexMetadataInput {
     pub(crate) item_count: usize,
     #[serde(default)]
     pub(crate) workflow_gate_scope_hashes: BTreeMap<String, String>,
+    pub(crate) workflow_gate_facts: BTreeMap<String, SourceBranchGateFact>,
+    pub(crate) rust_contract_version: i64,
+    pub(crate) parser_contract_version: i64,
+    pub(crate) source_branch_contract_version: i64,
+    pub(crate) text_fact_schema_version: i64,
     pub(crate) created_at: String,
 }
 
@@ -157,6 +166,7 @@ pub(crate) struct RuleHitSummaryInput {
 #[derive(Debug, Serialize)]
 pub(crate) struct WriteStorageOutput {
     status: &'static str,
+    contract_versions: ContractVersionsOutput,
     pub(crate) written_item_count: usize,
     domain_summary_count: usize,
     rule_hit_summary_count: usize,
@@ -183,6 +193,7 @@ pub(crate) fn inspect_scope_index_storage_impl(payload_json: &str) -> Result<Str
     validate_schema_version(&connection)?;
     let output = InspectStorageOutput {
         status: "ok",
+        contract_versions: current_contract_versions(),
         schema: SchemaSummary {
             version: CURRENT_SCHEMA_VERSION,
             schema_fingerprint: current_schema_fingerprint(),
@@ -220,12 +231,14 @@ pub(crate) fn write_scope_index_storage_direct(
         ));
     }
     let text_fact_scope = effective_text_fact_scope(payload)?;
+    validate_metadata_contract(&payload.metadata)?;
     validate_text_fact_write_payload(payload, &text_fact_scope)?;
     let mut connection = open_connection_readwrite(Path::new(&payload.db_path))?;
     validate_schema_version(&connection)?;
     write_text_index_storage(&mut connection, payload, &text_fact_scope)?;
     Ok(WriteStorageOutput {
         status: "ok",
+        contract_versions: current_contract_versions(),
         written_item_count: payload.text_index_rows.len(),
         domain_summary_count: payload.domain_summary.len(),
         rule_hit_summary_count: payload.rule_hit_summary.len(),
@@ -285,6 +298,47 @@ fn validate_schema_version(connection: &Connection) -> Result<(), String> {
             "scope_index_storage_schema_version_mismatch",
             format!(
                 "当前数据库结构不满足要求，schema_version={version}，当前要求 {CURRENT_SCHEMA_VERSION}。影响命令: rebuild-text-index。下一步：请使用当前版本重新注册游戏并重新生成当前文本索引。"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_metadata_contract(metadata: &TextIndexMetadataInput) -> Result<(), String> {
+    let versions = current_contract_versions();
+    if metadata.rust_contract_version != versions.rust_scope_facts {
+        return Err(structured_error(
+            "scope_index_storage_contract_version_mismatch",
+            format!(
+                "text_index_meta rust_contract_version={}，当前要求 {}。下一步：请重新生成当前文本范围索引。",
+                metadata.rust_contract_version, versions.rust_scope_facts
+            ),
+        ));
+    }
+    if metadata.parser_contract_version != versions.parser {
+        return Err(structured_error(
+            "scope_index_storage_contract_version_mismatch",
+            format!(
+                "text_index_meta parser_contract_version={}，当前要求 {}。下一步：请重新生成当前文本范围索引。",
+                metadata.parser_contract_version, versions.parser
+            ),
+        ));
+    }
+    if metadata.source_branch_contract_version != versions.source_branch {
+        return Err(structured_error(
+            "scope_index_storage_contract_version_mismatch",
+            format!(
+                "text_index_meta source_branch_contract_version={}，当前要求 {}。下一步：请重新生成当前文本范围索引。",
+                metadata.source_branch_contract_version, versions.source_branch
+            ),
+        ));
+    }
+    if metadata.text_fact_schema_version != versions.text_fact_schema {
+        return Err(structured_error(
+            "scope_index_storage_contract_version_mismatch",
+            format!(
+                "text_index_meta text_fact_schema_version={}，当前要求 {}。下一步：请重新生成当前文本范围索引。",
+                metadata.text_fact_schema_version, versions.text_fact_schema
             ),
         ));
     }
@@ -979,17 +1033,39 @@ fn write_text_index_storage(
                 format!("workflow_gate_scope_hashes 序列化失败: {error}"),
             )
         })?;
+    let contract_facts = TextIndexContractFacts {
+        rust_contract_version: payload.metadata.rust_contract_version,
+        parser_contract_version: payload.metadata.parser_contract_version,
+        source_branch_contract_version: payload.metadata.source_branch_contract_version,
+        text_fact_schema_version: payload.metadata.text_fact_schema_version,
+        scope_hash: text_fact_scope.scope_hash.clone(),
+        source_snapshot_fingerprint: payload.metadata.source_snapshot_fingerprint.clone(),
+        rules_fingerprint: payload.metadata.rules_fingerprint.clone(),
+        gate_facts: payload.metadata.workflow_gate_facts.clone(),
+    };
+    let workflow_gate_facts =
+        serde_json::to_string(&contract_facts.gate_facts).map_err(|error| {
+            structured_error(
+                "scope_index_storage_payload_invalid",
+                format!("workflow_gate_facts 序列化失败: {error}"),
+            )
+        })?;
     transaction
         .execute(
             "INSERT OR REPLACE INTO text_index_meta \
-             (index_key, source_snapshot_fingerprint, rules_fingerprint, item_count, workflow_gate_scope_hashes, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (index_key, source_snapshot_fingerprint, rules_fingerprint, item_count, workflow_gate_scope_hashes, workflow_gate_facts, rust_contract_version, parser_contract_version, source_branch_contract_version, text_fact_schema_version, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 TEXT_INDEX_META_KEY,
-                payload.metadata.source_snapshot_fingerprint,
-                payload.metadata.rules_fingerprint,
+                contract_facts.source_snapshot_fingerprint,
+                contract_facts.rules_fingerprint,
                 payload.metadata.item_count as i64,
                 workflow_gate_scope_hashes,
+                workflow_gate_facts,
+                contract_facts.rust_contract_version,
+                contract_facts.parser_contract_version,
+                contract_facts.source_branch_contract_version,
+                contract_facts.text_fact_schema_version,
                 payload.metadata.created_at,
             ],
         )
@@ -1193,7 +1269,8 @@ mod tests {
         write_scope_index_storage_impl,
     };
     use crate::native_core::text_facts::{
-        TextFact, TextFactDomainPayload, TextFactInput, TextFactRenderPart, TextFactScope, domains,
+        CURRENT_TEXT_FACT_CONTRACT_VERSION, TextFact, TextFactDomainPayload, TextFactInput,
+        TextFactRenderPart, TextFactScope, domains,
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
@@ -1242,6 +1319,19 @@ mod tests {
                 "rules_fingerprint": "rules-v1",
                 "item_count": 1,
                 "workflow_gate_scope_hashes": {"plugin_text_rules": "hash-v1"},
+                "workflow_gate_facts": {
+                    "plugin_source_text": {
+                        "source_branch": "plugin_source_text",
+                        "status": "pass",
+                        "scope_hash": "scope-hash",
+                        "error_codes": [],
+                        "stale_reasons": []
+                    }
+                },
+                "rust_contract_version": 1,
+                "parser_contract_version": 1,
+                "source_branch_contract_version": 1,
+                "text_fact_schema_version": 2,
                 "created_at": "2026-06-05T00:00:00"
             },
             "text_index_rows": [
@@ -2006,6 +2096,11 @@ mod tests {
                 text_rules_hash: Some(scope.text_rules_hash.clone()),
                 item_count: text_index_rows.len(),
                 workflow_gate_scope_hashes: Default::default(),
+                workflow_gate_facts: Default::default(),
+                rust_contract_version: 1,
+                parser_contract_version: 1,
+                source_branch_contract_version: 1,
+                text_fact_schema_version: CURRENT_TEXT_FACT_CONTRACT_VERSION,
                 created_at: scope.created_at.clone(),
             },
             text_index_rows,

@@ -14,7 +14,6 @@ pub(crate) const SOURCE_BRANCH_CONTRACT_VERSION: i64 = 1;
 
 /// 当前文本索引可持久化的事实契约。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct TextIndexContractFacts {
     /// Rust scope facts contract 版本。
     pub(crate) rust_contract_version: i64,
@@ -63,7 +62,6 @@ impl TextIndexContractFacts {
 
 /// 单个 source branch 的 gate 事实。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct SourceBranchGateFact {
     /// source branch 稳定标识。
     pub(crate) source_branch: String,
@@ -148,6 +146,20 @@ pub(crate) fn current_contract_versions() -> ContractVersionsOutput {
         parser: PARSER_CONTRACT_VERSION,
         source_branch: SOURCE_BRANCH_CONTRACT_VERSION,
         text_fact_schema: CURRENT_TEXT_FACT_CONTRACT_VERSION,
+    }
+}
+
+/// 构造单个 source branch 的通过 gate 事实。
+pub(crate) fn source_branch_pass_fact(
+    source_branch: &str,
+    scope_hash: String,
+) -> SourceBranchGateFact {
+    SourceBranchGateFact {
+        source_branch: source_branch.to_string(),
+        status: GateStatus::Pass,
+        scope_hash,
+        error_codes: Vec::new(),
+        stale_reasons: Vec::new(),
     }
 }
 

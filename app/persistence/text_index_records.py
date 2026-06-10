@@ -6,6 +6,8 @@ from typing import cast
 
 import aiosqlite
 
+from app.rmmz.text_rules import JsonObject, coerce_json_value, ensure_json_array, ensure_json_object
+
 from .records import (
     TextIndexDomainSummaryRecord,
     TextIndexInvalidationRecord,
@@ -54,8 +56,6 @@ from .sql import (
 
 type SqlParameter = str | int | None
 PATH_QUERY_BATCH_SIZE = 500
-TEXT_INDEX_WORKFLOW_GATE_PRECHECK_PREFIX = "workflow_gate_prechecked:"
-TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE = "passed"
 
 
 class TextIndexRecordSessionMixin(SessionMixinBase):
@@ -88,6 +88,11 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
                 metadata.rules_fingerprint,
                 metadata.item_count,
                 _encode_workflow_gate_scope_hashes(metadata.workflow_gate_scope_hashes),
+                _encode_workflow_gate_facts(metadata.workflow_gate_facts),
+                metadata.rust_contract_version,
+                metadata.parser_contract_version,
+                metadata.source_branch_contract_version,
+                metadata.text_fact_schema_version,
                 metadata.created_at,
             ),
         )
@@ -164,6 +169,13 @@ class TextIndexRecordSessionMixin(SessionMixinBase):
             workflow_gate_scope_hashes=_decode_workflow_gate_scope_hashes(
                 row_str(row, "workflow_gate_scope_hashes", self.db_path)
             ),
+            workflow_gate_facts=_decode_workflow_gate_facts(
+                row_str(row, "workflow_gate_facts", self.db_path)
+            ),
+            rust_contract_version=row_int(row, "rust_contract_version", self.db_path),
+            parser_contract_version=row_int(row, "parser_contract_version", self.db_path),
+            source_branch_contract_version=row_int(row, "source_branch_contract_version", self.db_path),
+            text_fact_schema_version=row_int(row, "text_fact_schema_version", self.db_path),
             created_at=row_str(row, "created_at", self.db_path),
         )
 
@@ -435,11 +447,18 @@ def _chunks(values: Sequence[str], size: int) -> list[Sequence[str]]:
 
 def _encode_workflow_gate_scope_hashes(scope_hashes: dict[str, str]) -> str:
     """把索引门禁 scope hash 元数据序列化为稳定 JSON。"""
+    for key, raw_hash in scope_hashes.items():
+        if key.startswith("workflow_gate_prechecked:"):
+            raise RuntimeError(
+                "当前文本范围索引不再接受 workflow_gate_prechecked 预检标记: "
+                + f"{key}={raw_hash}。"
+                + "下一步：请运行 rebuild-text-index 重新生成当前文本范围索引。"
+            )
     return json.dumps(scope_hashes, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _decode_workflow_gate_scope_hashes(raw_value: str) -> dict[str, str]:
-    """读取索引门禁 scope hash 元数据，并校验当前预检标记。"""
+    """读取索引门禁 scope hash 元数据，并拒绝旧预检标记。"""
     value = cast(object, json.loads(raw_value))
     if not isinstance(value, dict):
         raise TypeError("workflow_gate_scope_hashes 必须是 JSON 对象")
@@ -448,17 +467,67 @@ def _decode_workflow_gate_scope_hashes(raw_value: str) -> dict[str, str]:
     for key, raw_hash in items.items():
         if not isinstance(key, str) or not isinstance(raw_hash, str):
             raise TypeError("workflow_gate_scope_hashes 只能包含字符串键值")
-        if (
-            key.startswith(TEXT_INDEX_WORKFLOW_GATE_PRECHECK_PREFIX)
-            and raw_hash != TEXT_INDEX_WORKFLOW_GATE_PRECHECK_VALUE
-        ):
+        if key.startswith("workflow_gate_prechecked:"):
             raise RuntimeError(
-                "workflow_gate_scope_hashes 中的预检标记不符合当前文本范围索引契约: "
+                "当前文本范围索引不再接受 workflow_gate_prechecked 预检标记: "
                 + f"{key}={raw_hash}。"
                 + "下一步：请运行 rebuild-text-index 重新生成当前文本范围索引。"
             )
         result[key] = raw_hash
     return result
+
+
+def decode_workflow_gate_scope_hashes(raw_value: str) -> dict[str, str]:
+    """读取索引门禁 scope hash 元数据。"""
+    return _decode_workflow_gate_scope_hashes(raw_value)
+
+
+def _encode_workflow_gate_facts(gate_facts: dict[str, JsonObject]) -> str:
+    """把索引 gate facts 元数据序列化为稳定 JSON。"""
+    for source_branch, gate_fact in gate_facts.items():
+        _validate_workflow_gate_fact(source_branch, gate_fact)
+    return json.dumps(gate_facts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _decode_workflow_gate_facts(raw_value: str) -> dict[str, JsonObject]:
+    """读取索引 gate facts 元数据，并校验每个 source branch 的事实形状。"""
+    value = cast(object, json.loads(raw_value))
+    if not isinstance(value, dict):
+        raise TypeError("workflow_gate_facts 必须是 JSON 对象")
+    result: dict[str, JsonObject] = {}
+    items = cast(dict[object, object], value)
+    for key, raw_fact in items.items():
+        if not isinstance(key, str):
+            raise TypeError("workflow_gate_facts 只能包含字符串键")
+        fact = ensure_json_object(
+            coerce_json_value(raw_fact),
+            f"workflow_gate_facts.{key}",
+        )
+        _validate_workflow_gate_fact(key, fact)
+        result[key] = fact
+    return result
+
+
+def _validate_workflow_gate_fact(source_branch: str, fact: JsonObject) -> None:
+    """校验单个 source branch gate fact 的稳定字段。"""
+    raw_source_branch = fact.get("source_branch")
+    if not isinstance(raw_source_branch, str) or raw_source_branch != source_branch:
+        raise TypeError(f"workflow_gate_facts.{source_branch}.source_branch 必须等于 source branch 键")
+    raw_status = fact.get("status")
+    if raw_status not in {"pass", "fail"}:
+        raise TypeError(f"workflow_gate_facts.{source_branch}.status 必须是 pass 或 fail")
+    raw_scope_hash = fact.get("scope_hash")
+    if not isinstance(raw_scope_hash, str):
+        raise TypeError(f"workflow_gate_facts.{source_branch}.scope_hash 必须是字符串")
+    error_codes = ensure_json_array(fact.get("error_codes"), f"workflow_gate_facts.{source_branch}.error_codes")
+    if any(not isinstance(code, str) for code in error_codes):
+        raise TypeError(f"workflow_gate_facts.{source_branch}.error_codes 只能包含字符串")
+    stale_reasons = ensure_json_array(
+        fact.get("stale_reasons"),
+        f"workflow_gate_facts.{source_branch}.stale_reasons",
+    )
+    for index, reason in enumerate(stale_reasons):
+        _ = ensure_json_object(reason, f"workflow_gate_facts.{source_branch}.stale_reasons[{index}]")
 
 
 __all__ = ["TextIndexRecordSessionMixin"]
