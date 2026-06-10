@@ -42,8 +42,66 @@ pub(super) struct CompiledRuleCandidateTextRules {
     pub(super) strip_wrapping_punctuation_pairs: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct PluginSourceStaleReason {
+    pub(super) code: String,
+    pub(super) message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct PluginSourceSelectorFact {
+    pub(super) file_name: String,
+    pub(super) selector: String,
+    pub(super) role: String,
+    pub(super) active: bool,
+    pub(super) file_hash: String,
+    pub(super) source_text_hash: String,
+    pub(super) stale_reason: Option<PluginSourceStaleReason>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct PluginSourceReviewSummary {
+    pub(super) total_selector_count: usize,
+    pub(super) translated_selector_count: usize,
+    pub(super) excluded_selector_count: usize,
+    pub(super) filtered_selector_count: usize,
+    pub(super) reviewed_selector_count: usize,
+    pub(super) stale_selector_count: usize,
+    pub(super) active_candidate_count: usize,
+    pub(super) unreviewed_selector_count: usize,
+    pub(super) review_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct PluginSourceRiskThresholds {
+    pub(super) strong_context_text_count: usize,
+    pub(super) risk_score: usize,
+    pub(super) files_score_ge_250: usize,
+    pub(super) single_file_score: usize,
+    pub(super) single_file_strong_context_text_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct PluginSourceRiskSummary {
+    pub(super) high_risk: bool,
+    pub(super) risk_score: usize,
+    pub(super) strong_context_text_count: usize,
+    pub(super) medium_confidence_text_count: usize,
+    pub(super) scanned_file_count: usize,
+    pub(super) ignored_file_count: usize,
+    pub(super) read_error_file_count: usize,
+    pub(super) syntax_error_file_count: usize,
+    pub(super) files_score_ge_250: usize,
+    pub(super) max_file_score: usize,
+    pub(super) thresholds: PluginSourceRiskThresholds,
+}
+
 pub(super) struct PluginSourceRuleCandidateScan {
     pub(super) candidates: Vec<RuleCandidateOutput>,
+    pub(super) selector_facts: Vec<PluginSourceSelectorFact>,
+    pub(super) review_summary: PluginSourceReviewSummary,
+    pub(super) risk_summary: PluginSourceRiskSummary,
+    pub(super) scope_hash: String,
     pub(super) scanned_file_count: usize,
     pub(super) ignored_file_count: usize,
     pub(super) syntax_error_file_count: usize,
@@ -53,8 +111,17 @@ pub(super) struct PluginSourceRuleCandidateScan {
 struct PluginSourceFileRuleCandidateScan {
     file_name: String,
     candidates: Vec<RuleCandidateOutput>,
+    filtered_selectors: BTreeMap<String, String>,
     active: bool,
     syntax_error: bool,
+}
+
+enum PluginSourceSpanCandidateDecision {
+    Candidate(Box<RuleCandidateOutput>),
+    Filtered {
+        selector: String,
+        source_text_hash: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -158,10 +225,27 @@ static ENGLISH_STATEMENT_PROTOCOL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\b(?:return|var|let|const|throw|break|continue)\b|[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]+\])*\s*(?:[-+*/]?=)|\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+\s*\([^)]*\))[^.;!?]*;")
         .unwrap_or_else(|error| panic!("内置英文语句协议正则编译失败: {error}"))
 });
+const PLUGIN_SOURCE_ROLE_TRANSLATED: &str = "translated";
+const PLUGIN_SOURCE_ROLE_EXCLUDED: &str = "excluded";
+const PLUGIN_SOURCE_ROLE_FILTERED: &str = "filtered";
+const PLUGIN_SOURCE_STRONG_CONTEXT_THRESHOLD: usize = 300;
+const PLUGIN_SOURCE_RISK_SCORE_THRESHOLD: usize = 2000;
+const PLUGIN_SOURCE_FILES_SCORE_GE_250_THRESHOLD: usize = 3;
+const PLUGIN_SOURCE_SINGLE_FILE_SCORE_THRESHOLD: usize = 300;
+const PLUGIN_SOURCE_SINGLE_FILE_STRONG_CONTEXT_THRESHOLD: usize = 80;
 
 pub(super) fn scan_plugin_source_rule_candidates(
     files: &[PluginSourceFileInput],
     text_rules: RuleCandidateTextRules,
+) -> Result<PluginSourceRuleCandidateScan, String> {
+    scan_plugin_source_rule_candidates_with_rules(files, &[], text_rules, 0)
+}
+
+pub(super) fn scan_plugin_source_rule_candidates_with_rules(
+    files: &[PluginSourceFileInput],
+    rules: &[PluginSourceTextRuleInput],
+    text_rules: RuleCandidateTextRules,
+    read_error_file_count: usize,
 ) -> Result<PluginSourceRuleCandidateScan, String> {
     let compiled_rules = compile_rule_candidate_text_rules(text_rules)?;
     let mut file_refs: Vec<&PluginSourceFileInput> = files.iter().collect();
@@ -187,17 +271,381 @@ pub(super) fn scan_plugin_source_rule_candidates(
             })
         })
         .collect();
+    let filtered_selectors = file_scans
+        .iter()
+        .flat_map(|scan| {
+            scan.filtered_selectors
+                .iter()
+                .map(|(selector, source_text_hash)| {
+                    (
+                        (scan.file_name.clone(), selector.clone()),
+                        source_text_hash.clone(),
+                    )
+                })
+        })
+        .collect::<BTreeMap<_, _>>();
     let candidates = file_scans
         .into_iter()
         .flat_map(|scan| scan.candidates)
-        .collect();
+        .collect::<Vec<_>>();
+    let selector_facts =
+        build_plugin_source_selector_facts(files, rules, &candidates, &filtered_selectors);
+    let risk_summary = build_plugin_source_risk_summary(
+        &candidates,
+        scanned_file_count,
+        ignored_file_count,
+        syntax_error_file_count,
+        read_error_file_count,
+    );
+    let review_summary = build_plugin_source_review_summary(&selector_facts, &risk_summary);
+    let scope_hash = plugin_source_selector_scope_hash(&selector_facts);
     Ok(PluginSourceRuleCandidateScan {
         candidates,
+        selector_facts,
+        review_summary,
+        risk_summary,
+        scope_hash,
         scanned_file_count,
         ignored_file_count,
         syntax_error_file_count,
         syntax_errors,
     })
+}
+
+fn build_plugin_source_selector_facts(
+    files: &[PluginSourceFileInput],
+    rules: &[PluginSourceTextRuleInput],
+    candidates: &[RuleCandidateOutput],
+    filtered_selectors: &BTreeMap<(String, String), String>,
+) -> Vec<PluginSourceSelectorFact> {
+    let files_by_name = files
+        .iter()
+        .map(|file| (file.file_name.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    let file_hashes = files
+        .iter()
+        .map(|file| (file.file_name.as_str(), sha256_text(&file.source)))
+        .collect::<BTreeMap<_, _>>();
+    let candidates_by_file_selector = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let selector = candidate.selector.as_ref()?;
+            Some((
+                (candidate.source_file.as_str(), selector.as_str()),
+                candidate,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut reviewed_selectors = BTreeSet::new();
+    let mut facts = BTreeMap::new();
+
+    for rule in rules {
+        for selector in &rule.selectors {
+            reviewed_selectors.insert((rule.file_name.as_str(), selector.as_str()));
+            let fact = plugin_source_selector_fact_for_rule_selector(
+                &rule.file_name,
+                selector,
+                PLUGIN_SOURCE_ROLE_TRANSLATED,
+                &files_by_name,
+                &file_hashes,
+                &candidates_by_file_selector,
+                filtered_selectors,
+            );
+            facts.insert(
+                (
+                    fact.file_name.clone(),
+                    fact.selector.clone(),
+                    fact.role.clone(),
+                ),
+                fact,
+            );
+        }
+        for selector in &rule.excluded_selectors {
+            reviewed_selectors.insert((rule.file_name.as_str(), selector.as_str()));
+            let fact = plugin_source_selector_fact_for_rule_selector(
+                &rule.file_name,
+                selector,
+                PLUGIN_SOURCE_ROLE_EXCLUDED,
+                &files_by_name,
+                &file_hashes,
+                &candidates_by_file_selector,
+                filtered_selectors,
+            );
+            facts.insert(
+                (
+                    fact.file_name.clone(),
+                    fact.selector.clone(),
+                    fact.role.clone(),
+                ),
+                fact,
+            );
+        }
+    }
+
+    for candidate in candidates {
+        let Some(selector) = candidate.selector.as_deref() else {
+            continue;
+        };
+        if reviewed_selectors.contains(&(candidate.source_file.as_str(), selector)) {
+            continue;
+        }
+        let file_hash = candidate
+            .file_hash
+            .clone()
+            .or_else(|| file_hashes.get(candidate.source_file.as_str()).cloned())
+            .unwrap_or_default();
+        let fact = PluginSourceSelectorFact {
+            file_name: candidate.source_file.clone(),
+            selector: selector.to_string(),
+            role: PLUGIN_SOURCE_ROLE_FILTERED.to_string(),
+            active: candidate.active.unwrap_or(false),
+            file_hash,
+            source_text_hash: sha256_text(&candidate.original_text),
+            stale_reason: None,
+        };
+        facts.insert(
+            (
+                fact.file_name.clone(),
+                fact.selector.clone(),
+                fact.role.clone(),
+            ),
+            fact,
+        );
+    }
+
+    facts.into_values().collect()
+}
+
+fn plugin_source_selector_fact_for_rule_selector(
+    file_name: &str,
+    selector: &str,
+    role: &str,
+    files_by_name: &BTreeMap<&str, &PluginSourceFileInput>,
+    file_hashes: &BTreeMap<&str, String>,
+    candidates_by_file_selector: &BTreeMap<(&str, &str), &RuleCandidateOutput>,
+    filtered_selectors: &BTreeMap<(String, String), String>,
+) -> PluginSourceSelectorFact {
+    let Some(file) = files_by_name.get(file_name).copied() else {
+        return PluginSourceSelectorFact {
+            file_name: file_name.to_string(),
+            selector: selector.to_string(),
+            role: role.to_string(),
+            active: false,
+            file_hash: String::new(),
+            source_text_hash: String::new(),
+            stale_reason: Some(plugin_source_stale_reason(
+                "file_missing",
+                "插件源码文件不存在或不是 js/plugins 直接文件",
+            )),
+        };
+    };
+    let file_hash = file_hashes.get(file_name).cloned().unwrap_or_default();
+    if !file.active {
+        return PluginSourceSelectorFact {
+            file_name: file_name.to_string(),
+            selector: selector.to_string(),
+            role: role.to_string(),
+            active: false,
+            file_hash,
+            source_text_hash: candidates_by_file_selector
+                .get(&(file_name, selector))
+                .map(|candidate| sha256_text(&candidate.original_text))
+                .or_else(|| {
+                    filtered_selectors
+                        .get(&(file_name.to_string(), selector.to_string()))
+                        .cloned()
+                })
+                .unwrap_or_default(),
+            stale_reason: Some(plugin_source_stale_reason(
+                "file_inactive",
+                "插件源码文件未在 plugins.js 中启用",
+            )),
+        };
+    }
+    if let Some(candidate) = candidates_by_file_selector.get(&(file_name, selector)) {
+        return PluginSourceSelectorFact {
+            file_name: file_name.to_string(),
+            selector: selector.to_string(),
+            role: role.to_string(),
+            active: candidate.active.unwrap_or(file.active),
+            file_hash: candidate
+                .file_hash
+                .clone()
+                .unwrap_or_else(|| file_hash.clone()),
+            source_text_hash: sha256_text(&candidate.original_text),
+            stale_reason: None,
+        };
+    }
+    if let Some(source_text_hash) =
+        filtered_selectors.get(&(file_name.to_string(), selector.to_string()))
+    {
+        return PluginSourceSelectorFact {
+            file_name: file_name.to_string(),
+            selector: selector.to_string(),
+            role: role.to_string(),
+            active: file.active,
+            file_hash,
+            source_text_hash: source_text_hash.clone(),
+            stale_reason: Some(plugin_source_stale_reason(
+                "selector_filtered",
+                "插件源码 selector 被当前文本规则过滤",
+            )),
+        };
+    }
+    PluginSourceSelectorFact {
+        file_name: file_name.to_string(),
+        selector: selector.to_string(),
+        role: role.to_string(),
+        active: file.active,
+        file_hash,
+        source_text_hash: String::new(),
+        stale_reason: Some(plugin_source_stale_reason(
+            "selector_missing",
+            "插件源码 selector 已无法命中当前 AST 地图",
+        )),
+    }
+}
+
+fn plugin_source_stale_reason(code: &str, message: &str) -> PluginSourceStaleReason {
+    PluginSourceStaleReason {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+fn build_plugin_source_risk_summary(
+    candidates: &[RuleCandidateOutput],
+    scanned_file_count: usize,
+    ignored_file_count: usize,
+    syntax_error_file_count: usize,
+    read_error_file_count: usize,
+) -> PluginSourceRiskSummary {
+    let mut file_scores: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut file_strong_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut strong_context_text_count = 0;
+    let mut medium_confidence_text_count = 0;
+    for candidate in candidates {
+        if candidate.active != Some(true) {
+            continue;
+        }
+        match candidate.confidence.as_deref() {
+            Some("strong") => {
+                strong_context_text_count += 1;
+                *file_scores
+                    .entry(candidate.source_file.as_str())
+                    .or_default() += 3;
+                *file_strong_counts
+                    .entry(candidate.source_file.as_str())
+                    .or_default() += 1;
+            }
+            Some("medium") => {
+                medium_confidence_text_count += 1;
+                *file_scores
+                    .entry(candidate.source_file.as_str())
+                    .or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+    let risk_score = strong_context_text_count * 3 + medium_confidence_text_count;
+    let files_score_ge_250 = file_scores
+        .values()
+        .filter(|file_score| **file_score >= 250)
+        .count();
+    let max_file_score = file_scores.values().copied().max().unwrap_or(0);
+    let high_risk = strong_context_text_count >= PLUGIN_SOURCE_STRONG_CONTEXT_THRESHOLD
+        || risk_score >= PLUGIN_SOURCE_RISK_SCORE_THRESHOLD
+        || files_score_ge_250 >= PLUGIN_SOURCE_FILES_SCORE_GE_250_THRESHOLD
+        || file_scores.iter().any(|(file_name, file_score)| {
+            *file_score >= PLUGIN_SOURCE_SINGLE_FILE_SCORE_THRESHOLD
+                && file_strong_counts.get(file_name).copied().unwrap_or(0)
+                    >= PLUGIN_SOURCE_SINGLE_FILE_STRONG_CONTEXT_THRESHOLD
+        });
+    PluginSourceRiskSummary {
+        high_risk,
+        risk_score,
+        strong_context_text_count,
+        medium_confidence_text_count,
+        scanned_file_count,
+        ignored_file_count,
+        read_error_file_count,
+        syntax_error_file_count,
+        files_score_ge_250,
+        max_file_score,
+        thresholds: PluginSourceRiskThresholds {
+            strong_context_text_count: PLUGIN_SOURCE_STRONG_CONTEXT_THRESHOLD,
+            risk_score: PLUGIN_SOURCE_RISK_SCORE_THRESHOLD,
+            files_score_ge_250: PLUGIN_SOURCE_FILES_SCORE_GE_250_THRESHOLD,
+            single_file_score: PLUGIN_SOURCE_SINGLE_FILE_SCORE_THRESHOLD,
+            single_file_strong_context_text_count:
+                PLUGIN_SOURCE_SINGLE_FILE_STRONG_CONTEXT_THRESHOLD,
+        },
+    }
+}
+
+fn build_plugin_source_review_summary(
+    selector_facts: &[PluginSourceSelectorFact],
+    risk_summary: &PluginSourceRiskSummary,
+) -> PluginSourceReviewSummary {
+    let translated_selector_count = selector_facts
+        .iter()
+        .filter(|fact| fact.role == PLUGIN_SOURCE_ROLE_TRANSLATED)
+        .count();
+    let excluded_selector_count = selector_facts
+        .iter()
+        .filter(|fact| fact.role == PLUGIN_SOURCE_ROLE_EXCLUDED)
+        .count();
+    let filtered_selector_count = selector_facts
+        .iter()
+        .filter(|fact| fact.role == PLUGIN_SOURCE_ROLE_FILTERED)
+        .count();
+    let stale_selector_count = selector_facts
+        .iter()
+        .filter(|fact| fact.stale_reason.is_some())
+        .count();
+    let unreviewed_selector_count = selector_facts
+        .iter()
+        .filter(|fact| {
+            fact.role == PLUGIN_SOURCE_ROLE_FILTERED && fact.active && fact.stale_reason.is_none()
+        })
+        .count();
+    let reviewed_selector_count = translated_selector_count + excluded_selector_count;
+    PluginSourceReviewSummary {
+        total_selector_count: selector_facts.len(),
+        translated_selector_count,
+        excluded_selector_count,
+        filtered_selector_count,
+        reviewed_selector_count,
+        stale_selector_count,
+        active_candidate_count: selector_facts
+            .iter()
+            .filter(|fact| fact.active && fact.stale_reason.is_none())
+            .count(),
+        unreviewed_selector_count,
+        review_required: risk_summary.high_risk || reviewed_selector_count > 0,
+    }
+}
+
+fn plugin_source_selector_scope_hash(selector_facts: &[PluginSourceSelectorFact]) -> String {
+    let mut lines = vec!["plugin_source_selector_facts:v1".to_string()];
+    for fact in selector_facts {
+        let stale_code = fact
+            .stale_reason
+            .as_ref()
+            .map(|reason| reason.code.as_str())
+            .unwrap_or("");
+        lines.push(format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            fact.file_name,
+            fact.selector,
+            fact.role,
+            fact.active,
+            fact.file_hash,
+            fact.source_text_hash,
+            stale_code
+        ));
+    }
+    sha256_text(&lines.join("\n"))
 }
 
 pub(super) fn collect_plugin_source_managed_texts(
@@ -418,6 +866,7 @@ fn scan_plugin_source_rule_candidate_file(
         return Ok(PluginSourceFileRuleCandidateScan {
             file_name: file.file_name.clone(),
             candidates: Vec::new(),
+            filtered_selectors: BTreeMap::new(),
             active: file.active,
             syntax_error: true,
         });
@@ -425,20 +874,30 @@ fn scan_plugin_source_rule_candidate_file(
     let file_hash = sha256_text(&file.source);
     let newline_indexes = collect_newline_indexes(&file.source);
     let mut candidates = Vec::new();
+    let mut filtered_selectors = BTreeMap::new();
     for span in scan.spans {
-        if let Some(candidate) = plugin_source_candidate_from_span(
+        match plugin_source_candidate_from_span(
             file,
             &span,
             &file_hash,
             &newline_indexes,
             text_rules,
         )? {
-            candidates.push(candidate);
+            PluginSourceSpanCandidateDecision::Candidate(candidate) => {
+                candidates.push(*candidate);
+            }
+            PluginSourceSpanCandidateDecision::Filtered {
+                selector,
+                source_text_hash,
+            } => {
+                filtered_selectors.insert(selector, source_text_hash);
+            }
         }
     }
     Ok(PluginSourceFileRuleCandidateScan {
         file_name: file.file_name.clone(),
         candidates,
+        filtered_selectors,
         active: file.active,
         syntax_error: false,
     })
@@ -450,53 +909,58 @@ fn plugin_source_candidate_from_span(
     file_hash: &str,
     newline_indexes: &[usize],
     text_rules: &CompiledRuleCandidateTextRules,
-) -> Result<Option<RuleCandidateOutput>, String> {
+) -> Result<PluginSourceSpanCandidateDecision, String> {
     let raw_text = file
         .source
         .get(span.content_start_byte_index..span.content_end_byte_index)
         .ok_or_else(|| format!("插件源码字符串范围无效: {}", file.file_name))?;
     let text = normalize_visible_text_for_extraction(&unescape_js_text(raw_text));
+    let selector = candidate_selector_for_span(span.start_index, span.end_index, raw_text);
     if text.is_empty() || !should_translate_plugin_source_text(&text, text_rules)? {
-        return Ok(None);
+        return Ok(PluginSourceSpanCandidateDecision::Filtered {
+            selector,
+            source_text_hash: sha256_text(&text),
+        });
     }
     let api = span.ast_context.call_name.clone();
     let key = span.ast_context.property_key.clone();
     let structural_flags = plugin_source_text_structural_flags(&text);
     let confidence =
         plugin_source_candidate_confidence(&text, &api, &key, &span.ast_context, &structural_flags);
-    let selector = candidate_selector_for_span(span.start_index, span.end_index, raw_text);
     let location_path = format!("js/plugins/{}/{}", file.file_name, selector);
     let line = line_number_for_index(newline_indexes, span.start_index);
-    Ok(Some(RuleCandidateOutput {
-        domain: "plugin_source".to_string(),
-        location_path,
-        rule_key: selector.clone(),
-        original_text: text.clone(),
-        source_file: file.file_name.clone(),
-        file: Some(file.file_name.clone()),
-        json_path: None,
-        source_text: None,
-        field_name: None,
-        sibling_field_names: None,
-        parent_object_keys: None,
-        selector: Some(selector),
-        text: Some(text),
-        raw_text: Some(raw_text.to_string()),
-        quote: Some(span.quote.clone()),
-        line: Some(line),
-        start_index: Some(span.start_index),
-        end_index: Some(span.end_index),
-        content_start_index: Some(span.content_start_index),
-        content_end_index: Some(span.content_end_index),
-        context: Some(plugin_source_candidate_context(&api, &key)),
-        api: Some(api),
-        key: Some(key),
-        ast_context: Some(plugin_source_ast_context_json(&span.ast_context)),
-        active: Some(file.active),
-        confidence: Some(confidence),
-        structural_flags: Some(structural_flags),
-        file_hash: Some(file_hash.to_string()),
-    }))
+    Ok(PluginSourceSpanCandidateDecision::Candidate(Box::new(
+        RuleCandidateOutput {
+            domain: "plugin_source".to_string(),
+            location_path,
+            rule_key: selector.clone(),
+            original_text: text.clone(),
+            source_file: file.file_name.clone(),
+            file: Some(file.file_name.clone()),
+            json_path: None,
+            source_text: None,
+            field_name: None,
+            sibling_field_names: None,
+            parent_object_keys: None,
+            selector: Some(selector),
+            text: Some(text),
+            raw_text: Some(raw_text.to_string()),
+            quote: Some(span.quote.clone()),
+            line: Some(line),
+            start_index: Some(span.start_index),
+            end_index: Some(span.end_index),
+            content_start_index: Some(span.content_start_index),
+            content_end_index: Some(span.content_end_index),
+            context: Some(plugin_source_candidate_context(&api, &key)),
+            api: Some(api),
+            key: Some(key),
+            ast_context: Some(plugin_source_ast_context_json(&span.ast_context)),
+            active: Some(file.active),
+            confidence: Some(confidence),
+            structural_flags: Some(structural_flags),
+            file_hash: Some(file_hash.to_string()),
+        },
+    )))
 }
 
 pub(super) fn should_translate_plugin_source_text(
@@ -872,6 +1336,96 @@ Window_Base.prototype.drawText('短い', 0, 0, 320);
         assert_eq!(managed[0].file_name, "HardcodedText.js");
         assert_eq!(managed[0].selector, first_selector);
         assert_eq!(managed[0].text, "一番目");
+    }
+
+    fn scan_plugin_source_fixture_with_rules() -> super::PluginSourceRuleCandidateScan {
+        let files = vec![source_file(
+            "ReviewedSource.js",
+            "const Messages = { first: '一番目', second: '二番目' };",
+            true,
+        )];
+        let initial_scan =
+            scan_plugin_source_rule_candidates(&files, text_rules()).expect("扫描应成功");
+        let first_selector = initial_scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "一番目")
+            .and_then(|candidate| candidate.selector.clone())
+            .expect("一番目 selector 应存在");
+        let second_selector = initial_scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "二番目")
+            .and_then(|candidate| candidate.selector.clone())
+            .expect("二番目 selector 应存在");
+
+        super::scan_plugin_source_rule_candidates_with_rules(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "ReviewedSource.js".to_string(),
+                selectors: vec![first_selector],
+                excluded_selectors: vec![second_selector],
+            }],
+            text_rules(),
+            0,
+        )
+        .expect("带规则扫描应成功")
+    }
+
+    fn scan_plugin_source_fixture_with_filtered_text() -> super::PluginSourceRuleCandidateScan {
+        let files = vec![source_file(
+            "FilteredSource.js",
+            "const Messages = { protocol: 'this.value()' };",
+            true,
+        )];
+        let mut initial_rules = text_rules();
+        initial_rules.source_text_required_pattern = r"[\s\S]".to_string();
+        let initial_scan =
+            scan_plugin_source_rule_candidates(&files, initial_rules).expect("扫描应成功");
+        let raw_selector = initial_scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.original_text == "this.value()")
+            .and_then(|candidate| candidate.selector.clone())
+            .expect("this.value() selector 应存在");
+        let mut rules = text_rules();
+        rules.source_text_required_pattern = r"[\s\S]".to_string();
+        rules.source_text_exclusion_profile = "english_protocol_noise".to_string();
+        super::scan_plugin_source_rule_candidates_with_rules(
+            &files,
+            &[PluginSourceTextRuleInput {
+                file_name: "FilteredSource.js".to_string(),
+                selectors: vec![raw_selector],
+                excluded_selectors: Vec::new(),
+            }],
+            rules,
+            0,
+        )
+        .expect("过滤文本扫描应成功")
+    }
+
+    #[test]
+    fn plugin_source_scan_outputs_selector_facts_and_review_summary() {
+        let result = scan_plugin_source_fixture_with_rules();
+
+        assert_eq!(result.review_summary.total_selector_count, 2);
+        assert_eq!(result.review_summary.excluded_selector_count, 1);
+        assert_eq!(result.selector_facts[0].stale_reason, None);
+        assert!(!result.risk_summary.high_risk);
+        assert!(!result.scope_hash.is_empty());
+    }
+
+    #[test]
+    fn plugin_source_scan_reports_filtered_selector_reason() {
+        let result = scan_plugin_source_fixture_with_filtered_text();
+
+        assert_eq!(
+            result.selector_facts[0]
+                .stale_reason
+                .as_ref()
+                .map(|reason| reason.code.as_str()),
+            Some("selector_filtered")
+        );
     }
 
     #[test]

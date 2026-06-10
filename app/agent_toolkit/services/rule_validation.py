@@ -55,12 +55,12 @@ from app.note_tag_text.sources import matched_note_file_names
 from app.persistence import RuleImportUnitOfWork, TargetGameSession
 from app.plugin_text import NativePluginRuleValidationContext
 from app.plugin_source_text import (
-    PluginSourceRuleImportFile,
     build_plugin_source_rule_records_from_import,
     collect_plugin_source_review_coverage,
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
+from app.plugin_source_text.importer import build_plugin_source_rule_scan_records_from_import
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_rule_records_to_import_json,
     parse_mv_virtual_namebox_rule_import_text,
@@ -71,7 +71,6 @@ from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
 )
-from app.text_index import text_index_source_branch_gates_prechecked
 from app.plugin_source_text import build_native_plugin_source_scan
 
 
@@ -230,95 +229,6 @@ async def _resolve_event_command_rule_validation_context(
         translation_prefixes=context.translation_prefixes,
         translation_prefixes_by_index=context.translation_prefixes_by_index,
     )
-
-
-def _plugin_source_import_matches_current_exclusions(
-    *,
-    import_file: PluginSourceRuleImportFile,
-    current_records: list[PluginSourceTextRuleRecord],
-) -> bool:
-    """判断导入文件是否只是当前已保存的排除 selector 规则。"""
-    if not import_file.rules and not current_records:
-        return False
-    import_file_names = [entry.file for entry in import_file.rules]
-    if len(set(import_file_names)) != len(import_file_names):
-        return False
-    normalized_import = {
-        entry.file: {
-            "selectors": tuple(selector.strip() for selector in entry.selectors if selector.strip()),
-            "excluded_selectors": tuple(
-                selector.strip() for selector in entry.excluded_selectors if selector.strip()
-            ),
-        }
-        for entry in import_file.rules
-    }
-    normalized_current = {
-        record.file_name: {
-            "selectors": tuple(record.selectors),
-            "excluded_selectors": tuple(record.excluded_selectors),
-        }
-        for record in current_records
-    }
-    if any(value["selectors"] for value in normalized_import.values()):
-        return False
-    if any(value["selectors"] for value in normalized_current.values()):
-        return False
-    return normalized_import == normalized_current
-
-
-def _plugin_source_current_exclusions_report(
-    *,
-    records: list[PluginSourceTextRuleRecord],
-    deleted_translation_items: int | None = None,
-    deleted_translation_backup_path: str | None = None,
-) -> AgentReport:
-    """渲染当前排除 selector 规则的轻量报告。"""
-    selector_count = sum(len(record.selectors) for record in records)
-    excluded_selector_count = sum(len(record.excluded_selectors) for record in records)
-    summary: JsonObject = {
-        "file_count": len(records),
-        "selector_count": selector_count,
-        "excluded_selector_count": excluded_selector_count,
-        "reviewed_selector_count": selector_count + excluded_selector_count,
-        "unreviewed_selector_count": 0,
-    }
-    if deleted_translation_items is None:
-        summary.update(
-            {
-                "hit_count": 0,
-                "extractable_count": 0,
-                "translated_count": 0,
-                "writable_count": 0,
-                "unwritable_count": 0,
-            }
-        )
-    else:
-        summary.update(
-            {
-                "deleted_translation_items": deleted_translation_items,
-                "deleted_translation_backup_path": deleted_translation_backup_path or "",
-            }
-        )
-    return AgentReport.from_parts(
-        errors=[],
-        warnings=[],
-        summary=summary,
-        details={
-            "rules": [
-                {
-                    "file": record.file_name,
-                    "file_hash": record.file_hash,
-                    "selector_count": len(record.selectors),
-                    "excluded_selector_count": len(record.excluded_selectors),
-                    "reviewed_selector_count": len(record.selectors) + len(record.excluded_selectors),
-                    "selectors": [selector for selector in record.selectors],
-                    "excluded_selectors": [selector for selector in record.excluded_selectors],
-                }
-                for record in sorted(records, key=lambda item: item.file_name)
-            ]
-        },
-    )
-
 
 class RuleValidationAgentMixin:
     """承载 AgentToolkitService 的 RuleValidationAgentMixin 命令族。"""
@@ -811,17 +721,6 @@ class RuleValidationAgentMixin:
         try:
             import_file = parse_plugin_source_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
-                metadata = await session.read_text_index_metadata()
-                current_records = await session.read_plugin_source_text_rules()
-                if (
-                    metadata is not None
-                    and text_index_source_branch_gates_prechecked(metadata)
-                    and _plugin_source_import_matches_current_exclusions(
-                        import_file=import_file,
-                        current_records=current_records,
-                    )
-                ):
-                    return _plugin_source_current_exclusions_report(records=current_records)
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
                     session=session,
@@ -841,7 +740,15 @@ class RuleValidationAgentMixin:
                     _plugin_source_file_prefixes(game_data)
                 )
                 translated_identities = require_translation_fact_identities(translated_plugin_source_items)
-                scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+                scan_records = build_plugin_source_rule_scan_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                )
+                scan = build_native_plugin_source_scan(
+                    game_data=game_data,
+                    text_rules=text_rules,
+                    rule_records=scan_records,
+                )
                 records = build_plugin_source_rule_records_from_import(
                     game_data=game_data,
                     import_file=import_file,
@@ -894,21 +801,7 @@ class RuleValidationAgentMixin:
         try:
             import_file = parse_plugin_source_rule_import_text(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
-                metadata = await session.read_text_index_metadata()
                 prior_records = await session.read_plugin_source_text_rules()
-                if (
-                    metadata is not None
-                    and text_index_source_branch_gates_prechecked(metadata)
-                    and _plugin_source_import_matches_current_exclusions(
-                        import_file=import_file,
-                        current_records=prior_records,
-                    )
-                ):
-                    return _plugin_source_current_exclusions_report(
-                        records=prior_records,
-                        deleted_translation_items=0,
-                        deleted_translation_backup_path="",
-                    )
                 setting = load_setting(self.setting_path, source_language=session.source_language)
                 custom_rules = await self._resolve_custom_rules(
                     session=session,
@@ -924,7 +817,15 @@ class RuleValidationAgentMixin:
                     session,
                     include_plugin_source_files=True,
                 )
-                scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+                scan_records = build_plugin_source_rule_scan_records_from_import(
+                    game_data=game_data,
+                    import_file=import_file,
+                )
+                scan = build_native_plugin_source_scan(
+                    game_data=game_data,
+                    text_rules=text_rules,
+                    rule_records=scan_records,
+                )
                 records = build_plugin_source_rule_records_from_import(
                     game_data=game_data,
                     import_file=import_file,

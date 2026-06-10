@@ -573,7 +573,11 @@ async def _plugin_source_rule_gate_errors(
     """高风险插件源码文本必须先确认并导入源码规则。"""
     records = await session.read_plugin_source_text_rules()
     if scan is None:
-        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        scan = build_native_plugin_source_scan(
+            game_data=game_data,
+            text_rules=text_rules,
+            rule_records=records,
+        )
     fresh_records, stale_records = filter_fresh_plugin_source_text_rules(
         game_data=game_data,
         rule_records=records,

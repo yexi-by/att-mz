@@ -647,7 +647,11 @@ class WorkspaceAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            plugin_source_scan = _build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            plugin_source_scan = _build_native_plugin_source_scan(
+                game_data=game_data,
+                text_rules=text_rules,
+                rule_records=plugin_source_rules,
+            )
             plugin_source_risk_report = _native_plugin_source_risk_report_from_scan(plugin_source_scan)
             plugin_source_risk = ensure_json_object(
                 plugin_source_risk_report["risk"],
@@ -1024,6 +1028,7 @@ class WorkspaceAgentMixin:
                 plugin_source_scan = _build_native_plugin_source_scan(
                     game_data=game_data,
                     text_rules=text_rules,
+                    rule_records=stored_plugin_source_rules,
                 )
                 plugin_source_required = plugin_source_scan.risk.high_risk
             set_status("读取文本范围索引")

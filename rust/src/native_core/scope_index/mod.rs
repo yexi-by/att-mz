@@ -23,7 +23,9 @@ mod storage;
 mod structured_placeholders;
 
 use self::contracts::{ContractVersionsOutput, current_contract_versions};
-use self::plugin_source::{PluginSourceFileInput, scan_plugin_source_rule_candidates};
+use self::plugin_source::{
+    PluginSourceFileInput, PluginSourceTextRuleInput, scan_plugin_source_rule_candidates_with_rules,
+};
 
 const RULE_CANDIDATES_SCHEMA_VERSION: usize = 1;
 
@@ -64,6 +66,10 @@ struct RuleCandidatesPayload {
     candidates: Vec<RuleCandidateOutput>,
     #[serde(default)]
     plugin_source_files: Vec<PluginSourceFileInput>,
+    #[serde(default)]
+    plugin_source_text_rules: Vec<PluginSourceTextRuleInput>,
+    #[serde(default)]
+    plugin_source_read_error_file_count: usize,
     #[serde(default)]
     nonstandard_data_files: Vec<nonstandard_data::NonstandardDataFileInput>,
     #[serde(default)]
@@ -592,6 +598,8 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
     let RuleCandidatesPayload {
         mut candidates,
         plugin_source_files,
+        plugin_source_text_rules,
+        plugin_source_read_error_file_count,
         nonstandard_data_files,
         nonstandard_data_leaves,
         nonstandard_data_rule_coverage,
@@ -614,8 +622,12 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
         let text_rules = text_rules
             .clone()
             .ok_or_else(|| "规则候选扫描缺少插件源码提取文本规则 text_rules".to_string())?;
-        let plugin_source_scan =
-            scan_plugin_source_rule_candidates(&plugin_source_files, text_rules)?;
+        let plugin_source_scan = scan_plugin_source_rule_candidates_with_rules(
+            &plugin_source_files,
+            &plugin_source_text_rules,
+            text_rules,
+            plugin_source_read_error_file_count,
+        )?;
         scan_summary.insert(
             "plugin_source".to_string(),
             json!({
@@ -626,7 +638,11 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                     .count(),
                 "candidate_count": plugin_source_scan.candidates.len(),
                 "ignored_file_count": plugin_source_scan.ignored_file_count,
+                "review_summary": plugin_source_scan.review_summary,
+                "risk_summary": plugin_source_scan.risk_summary,
                 "scanned_file_count": plugin_source_scan.scanned_file_count,
+                "scope_hash": plugin_source_scan.scope_hash,
+                "selector_facts": plugin_source_scan.selector_facts,
                 "syntax_error_file_count": plugin_source_scan.syntax_error_file_count,
                 "syntax_errors": plugin_source_scan.syntax_errors
             }),

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import TextRules
 
-from .models import PluginSourceCandidate, PluginSourceScan
+from .models import PluginSourceCandidate, PluginSourceReviewSummary, PluginSourceScan, PluginSourceSelectorFact
 from .native_scan import build_native_plugin_source_scan
 
 
@@ -73,14 +73,12 @@ def filter_fresh_plugin_source_text_rules(
                 )
             )
             continue
-        available_selectors = {candidate.selector for candidate in file_scan.candidates}
-        record_selectors = [*record.selectors, *record.excluded_selectors]
-        missing_selectors = [selector for selector in record_selectors if selector not in available_selectors]
-        if missing_selectors:
+        stale_reasons = _stale_plugin_source_selector_reasons(scan=scan, record=record)
+        if stale_reasons:
             stale_rules.append(
                 StalePluginSourceTextRule(
                     file_name=record.file_name,
-                    reason="插件源码 selector 已无法命中当前 AST 地图",
+                    reason=stale_reasons[0],
                 )
             )
             continue
@@ -93,7 +91,19 @@ def collect_plugin_source_review_coverage(
     scan: PluginSourceScan,
     rule_records: list[PluginSourceTextRuleRecord],
 ) -> PluginSourceReviewCoverage:
-    """按 AST 地图统计插件源码候选是否已被归入翻译或排除。"""
+    """按 Rust selector facts 统计插件源码候选是否已被归入翻译或排除。"""
+    summary = scan.review_summary
+    if summary is not None and _review_summary_matches_records(summary=summary, rule_records=rule_records):
+        unreviewed_candidates = _unreviewed_candidates_from_selector_facts(scan)
+        return PluginSourceReviewCoverage(
+            required=summary.review_required,
+            translate_selector_count=summary.translated_selector_count,
+            excluded_selector_count=summary.excluded_selector_count,
+            reviewed_selector_count=summary.reviewed_selector_count,
+            active_candidate_count=summary.active_candidate_count,
+            unreviewed_candidates=unreviewed_candidates,
+        )
+
     reviewed_selectors_by_file: dict[str, set[str]] = {}
     translate_selector_count = 0
     excluded_selector_count = 0
@@ -104,7 +114,16 @@ def collect_plugin_source_review_coverage(
         translate_selector_count += len(record.selectors)
         excluded_selector_count += len(record.excluded_selectors)
 
-    active_candidates = tuple(candidate for candidate in scan.candidates if candidate.active)
+    current_selector_keys = {
+        (fact.file_name, fact.selector)
+        for fact in scan.selector_facts
+        if fact.active and fact.stale_reason is None
+    }
+    active_candidates = tuple(
+        candidate
+        for candidate in scan.candidates
+        if candidate.active and (candidate.file_name, candidate.selector) in current_selector_keys
+    )
     required = scan.risk.high_risk or bool(rule_records)
     if required:
         unreviewed_candidates = tuple(
@@ -122,6 +141,60 @@ def collect_plugin_source_review_coverage(
         reviewed_selector_count=reviewed_selector_count,
         active_candidate_count=len(active_candidates),
         unreviewed_candidates=unreviewed_candidates,
+    )
+
+
+def _stale_plugin_source_selector_reasons(
+    *,
+    scan: PluginSourceScan,
+    record: PluginSourceTextRuleRecord,
+) -> list[str]:
+    """返回指定规则在 Rust facts 中的 selector 失效原因。"""
+    facts = _selector_facts_by_file(scan).get(record.file_name, {})
+    reasons: list[str] = []
+    for selector in [*record.selectors, *record.excluded_selectors]:
+        fact = facts.get(selector)
+        if fact is None:
+            reasons.append("插件源码 selector 已无法命中当前 AST 地图")
+        elif fact.stale_reason is not None:
+            reasons.append(fact.stale_reason.message)
+    return reasons
+
+
+def _selector_facts_by_file(scan: PluginSourceScan) -> dict[str, dict[str, PluginSourceSelectorFact]]:
+    """按文件和 selector 整理 Rust selector facts。"""
+    facts_by_file: dict[str, dict[str, PluginSourceSelectorFact]] = {}
+    for fact in scan.selector_facts:
+        facts_by_file.setdefault(fact.file_name, {})[fact.selector] = fact
+    return facts_by_file
+
+
+def _review_summary_matches_records(
+    *,
+    summary: PluginSourceReviewSummary,
+    rule_records: list[PluginSourceTextRuleRecord],
+) -> bool:
+    """判断当前 scan 的 Rust review summary 是否已包含传入规则。"""
+    translated_count = sum(len(record.selectors) for record in rule_records)
+    excluded_count = sum(len(record.excluded_selectors) for record in rule_records)
+    return (
+        summary.translated_selector_count == translated_count
+        and summary.excluded_selector_count == excluded_count
+        and summary.reviewed_selector_count == translated_count + excluded_count
+    )
+
+
+def _unreviewed_candidates_from_selector_facts(scan: PluginSourceScan) -> tuple[PluginSourceCandidate, ...]:
+    """用 Rust filtered selector facts 定位未审查候选明细。"""
+    unreviewed_keys = {
+        (fact.file_name, fact.selector)
+        for fact in scan.selector_facts
+        if fact.role == "filtered" and fact.active and fact.stale_reason is None
+    }
+    return tuple(
+        candidate
+        for candidate in scan.candidates
+        if (candidate.file_name, candidate.selector) in unreviewed_keys
     )
 
 

@@ -11,7 +11,12 @@ from pydantic import TypeAdapter
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value
 
-from .models import PluginSourceRuleImportEntry, PluginSourceRuleImportFile, PluginSourceScan
+from .models import (
+    PluginSourceRuleImportEntry,
+    PluginSourceRuleImportFile,
+    PluginSourceScan,
+    PluginSourceSelectorFact,
+)
 from .native_scan import build_native_plugin_source_scan
 from .scanner import build_plugin_source_file_hash
 
@@ -41,12 +46,16 @@ def build_plugin_source_rule_records_from_import(
     if not import_file.rules:
         return []
     if scan is None:
-        scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+        scan = build_native_plugin_source_scan(
+            game_data=game_data,
+            text_rules=text_rules,
+            rule_records=build_plugin_source_rule_scan_records_from_import(
+                game_data=game_data,
+                import_file=import_file,
+            ),
+        )
     file_scans = {file_scan.file_name: file_scan for file_scan in scan.files}
-    selectors_by_file = {
-        file_scan.file_name: {candidate.selector for candidate in file_scan.candidates}
-        for file_scan in scan.files
-    }
+    selector_facts_by_file = _selector_facts_by_file(scan)
     file_names = [entry.file for entry in import_file.rules]
     duplicate_files = sorted(file_name for file_name, count in Counter(file_names).items() if count > 1)
     if duplicate_files:
@@ -67,14 +76,14 @@ def build_plugin_source_rule_records_from_import(
             file_name=file_name,
             selector_label="selector",
             selectors=entry.selectors,
-            available_selectors=selectors_by_file[file_name],
+            selector_facts=selector_facts_by_file.get(file_name, {}),
             allow_empty=True,
         )
         excluded_selectors = _validate_selectors(
             file_name=file_name,
             selector_label="排除 selector",
             selectors=entry.excluded_selectors,
-            available_selectors=selectors_by_file[file_name],
+            selector_facts=selector_facts_by_file.get(file_name, {}),
             allow_empty=True,
         )
         overlap_selectors = sorted(set(selectors) & set(excluded_selectors))
@@ -91,6 +100,40 @@ def build_plugin_source_rule_records_from_import(
             )
         )
     return records
+
+
+def build_plugin_source_rule_scan_records_from_import(
+    *,
+    game_data: GameData,
+    import_file: PluginSourceRuleImportFile,
+) -> list[PluginSourceTextRuleRecord]:
+    """把导入 JSON 压成 Rust facts 扫描可消费的临时规则。"""
+    records: list[PluginSourceTextRuleRecord] = []
+    for entry in import_file.rules:
+        file_name = _validate_plugin_source_file_name(entry.file)
+        source = game_data.plugin_source_files.get(file_name, "")
+        records.append(
+            PluginSourceTextRuleRecord(
+                file_name=file_name,
+                file_hash=build_plugin_source_file_hash(source) if source else "",
+                selectors=[selector.strip() for selector in entry.selectors if selector.strip()],
+                excluded_selectors=[
+                    selector.strip() for selector in entry.excluded_selectors if selector.strip()
+                ],
+            )
+        )
+    return records
+
+
+def _selector_facts_by_file(scan: PluginSourceScan) -> dict[str, dict[str, PluginSourceSelectorFact]]:
+    """按文件和 selector 整理 Rust selector facts。"""
+    facts_by_file: dict[str, dict[str, PluginSourceSelectorFact]] = {}
+    for fact in scan.selector_facts:
+        file_facts = facts_by_file.setdefault(fact.file_name, {})
+        existing = file_facts.get(fact.selector)
+        if existing is None or (existing.stale_reason is None and fact.stale_reason is not None):
+            file_facts[fact.selector] = fact
+    return facts_by_file
 
 
 def plugin_source_rule_records_to_import_json(records: list[PluginSourceTextRuleRecord]) -> JsonValue:
@@ -122,10 +165,10 @@ def _validate_selectors(
     file_name: str,
     selector_label: str,
     selectors: list[str],
-    available_selectors: set[str],
+    selector_facts: dict[str, PluginSourceSelectorFact],
     allow_empty: bool = False,
 ) -> list[str]:
-    """校验 selector 非空、无重复且能命中当前 AST 地图。"""
+    """校验 selector 非空、无重复且能命中当前 Rust selector facts。"""
     cleaned_selectors = [selector.strip() for selector in selectors if selector.strip()]
     if not cleaned_selectors and not allow_empty:
         raise ValueError(f"插件源码规则缺少 selector: {file_name}")
@@ -134,7 +177,14 @@ def _validate_selectors(
     )
     if duplicate_selectors:
         raise ValueError(f"插件源码 {selector_label} 重复: {file_name}: {'、'.join(duplicate_selectors)}")
-    missing_selectors = sorted(selector for selector in cleaned_selectors if selector not in available_selectors)
+    stale_messages = [
+        f"{selector}: {fact.stale_reason.message}"
+        for selector in cleaned_selectors
+        if (fact := selector_facts.get(selector)) is not None and fact.stale_reason is not None
+    ]
+    if stale_messages:
+        raise ValueError(f"插件源码 {selector_label} 已过期: {file_name}: {'、'.join(stale_messages[:5])}")
+    missing_selectors = sorted(selector for selector in cleaned_selectors if selector not in selector_facts)
     if missing_selectors:
         raise ValueError(f"插件源码 {selector_label} 未命中当前 AST 地图: {file_name}: {'、'.join(missing_selectors[:5])}")
     return cleaned_selectors
@@ -142,6 +192,7 @@ def _validate_selectors(
 
 __all__ = [
     "build_plugin_source_rule_records_from_import",
+    "build_plugin_source_rule_scan_records_from_import",
     "parse_plugin_source_rule_import_text",
     "plugin_source_rule_records_to_import_json",
 ]

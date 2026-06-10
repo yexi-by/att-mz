@@ -114,12 +114,51 @@ class PluginSourceRisk:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginSourceStaleReason:
+    """Rust 判断出的插件源码 selector 失效原因。"""
+
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceSelectorFact:
+    """Rust 输出的插件源码 selector 当前事实。"""
+
+    file_name: str
+    selector: str
+    role: str
+    active: bool
+    file_hash: str
+    source_text_hash: str
+    stale_reason: PluginSourceStaleReason | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceReviewSummary:
+    """Rust 输出的插件源码规则审查覆盖摘要。"""
+
+    total_selector_count: int
+    translated_selector_count: int
+    excluded_selector_count: int
+    filtered_selector_count: int
+    reviewed_selector_count: int
+    stale_selector_count: int
+    active_candidate_count: int
+    unreviewed_selector_count: int
+    review_required: bool
+
+
+@dataclass(frozen=True, slots=True)
 class PluginSourceScan:
     """插件源码扫描总结果。"""
 
     risk: PluginSourceRisk
     files: tuple[PluginSourceFileScan, ...]
     candidates: tuple[PluginSourceCandidate, ...]
+    selector_facts: tuple[PluginSourceSelectorFact, ...] = ()
+    review_summary: PluginSourceReviewSummary | None = None
+    scope_hash: str = ""
     enabled_plugin_files: frozenset[str] = field(default_factory=frozenset)
     syntax_errors: dict[str, str] = field(default_factory=dict)
 
@@ -183,7 +222,10 @@ __all__ = [
     "PluginSourceCandidate",
     "PluginSourceFileScan",
     "PluginSourceRisk",
+    "PluginSourceReviewSummary",
     "PluginSourceRuleImportEntry",
     "PluginSourceRuleImportFile",
     "PluginSourceScan",
+    "PluginSourceSelectorFact",
+    "PluginSourceStaleReason",
 ]

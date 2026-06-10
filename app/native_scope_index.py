@@ -13,6 +13,7 @@ from app.rmmz.schema import (
     MAP_PATTERN,
     MvVirtualNameboxRuleRecord,
     PLUGINS_FILE_NAME,
+    PluginSourceTextRuleRecord,
     TROOPS_FILE_NAME,
     GameData,
     TranslationData,
@@ -290,6 +291,8 @@ def build_native_plugin_source_candidates_payload(
     plugin_source_files: dict[str, str],
     enabled_plugin_files: set[str] | frozenset[str],
     text_rules: TextRules,
+    plugin_source_text_rules: list[PluginSourceTextRuleRecord] | None = None,
+    plugin_source_read_error_file_count: int = 0,
 ) -> JsonObject:
     """构造 Rust 插件源码候选扫描载荷。"""
     return {
@@ -301,6 +304,15 @@ def build_native_plugin_source_candidates_payload(
             }
             for file_name, source in sorted(plugin_source_files.items())
         ],
+        "plugin_source_text_rules": [
+            {
+                "file_name": record.file_name,
+                "selectors": [selector for selector in record.selectors],
+                "excluded_selectors": [selector for selector in record.excluded_selectors],
+            }
+            for record in sorted(plugin_source_text_rules or [], key=lambda item: item.file_name)
+        ],
+        "plugin_source_read_error_file_count": plugin_source_read_error_file_count,
         "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
     }
 

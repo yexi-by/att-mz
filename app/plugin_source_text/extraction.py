@@ -121,6 +121,7 @@ class PluginSourceTextExtraction:
             self.scan = build_native_plugin_source_scan(
                 game_data=self.game_data,
                 text_rules=self.text_rules,
+                rule_records=self.rule_records,
             )
         return self.scan
 

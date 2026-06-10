@@ -3811,6 +3811,74 @@ async def test_public_rule_validation_and_import_use_native_candidate_paths(
     assert note_validate_report.summary["hit_count"] == 1
     assert note_import_report.status == "ok"
     assert note_import_report.summary["tag_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_excluded_only_rule_validates_current_selector_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """只排除 selector 的插件源码规则也必须按当前 Rust selector facts 通过完整生命周期。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
+    plugins = ensure_json_array(coerce_json_value(cast(object, json.loads(plugins_json_text))), "plugins")
+    plugins.append({"name": "ExcludedOnlySource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "ExcludedOnlySource.js").write_text(
+        "Window_Base.prototype.drawText('除外だけの本文', 0, 0, 320);\n",
+        encoding="utf-8",
+    )
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=False,
+        run_dialogue_probe_check=False,
+    )
+    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=get_default_text_rules())
+    selector = next(
+        candidate.selector
+        for candidate in scan.candidates
+        if candidate.file_name == "ExcludedOnlySource.js"
+    )
+    import_payload = json.dumps(
+        [
+            {
+                "file": "ExcludedOnlySource.js",
+                "selectors": [],
+                "excluded_selectors": [selector],
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    import_report = await service.import_plugin_source_rules(
+        game_title="テストゲーム",
+        rules_text=import_payload,
+    )
+    _ = await _rebuild_text_index_for_test(service)
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    workflow_gate = ensure_json_object(quality_report.details["workflow_gate"], "workflow_gate")
+    source_branches = ensure_json_object(workflow_gate["source_branches"], "workflow_gate.source_branches")
+    plugin_source_gate = ensure_json_object(
+        source_branches["plugin_source_text"],
+        "workflow_gate.source_branches.plugin_source_text",
+    )
+
+    assert import_report.status == "ok"
+    assert workflow_gate["source"] == "rust_text_index_gate_facts"
+    assert plugin_source_gate["status"] == "pass"
+
+
 @pytest.mark.asyncio
 async def test_agent_reports_error_on_stale_plugin_rules(
     minimal_game_dir: Path,

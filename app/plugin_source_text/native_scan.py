@@ -9,10 +9,18 @@ from app.native_scope_index import (
     scan_native_rule_candidates,
 )
 from app.plugin_text import extract_plugin_name
-from app.rmmz.schema import GameData
+from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, ensure_json_array, ensure_json_object
 
-from .models import PluginSourceCandidate, PluginSourceFileScan, PluginSourceRisk, PluginSourceScan
+from .models import (
+    PluginSourceCandidate,
+    PluginSourceFileScan,
+    PluginSourceReviewSummary,
+    PluginSourceRisk,
+    PluginSourceScan,
+    PluginSourceSelectorFact,
+    PluginSourceStaleReason,
+)
 from .scanner import build_plugin_source_file_hash
 
 PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION = RUST_SCOPE_FACTS_CONTRACT_VERSION
@@ -49,6 +57,7 @@ def build_native_plugin_source_risk_report_from_inputs(
             plugin_source_files=plugin_source_files,
             enabled_plugin_files=enabled_plugin_files,
             text_rules=text_rules,
+            plugin_source_read_error_file_count=len(plugin_source_read_errors),
         )
     )
     plugin_summary = ensure_json_object(
@@ -67,61 +76,16 @@ def build_native_plugin_source_risk_report_from_inputs(
         if _native_plugin_source_candidate_should_translate(candidate, text_rules, index)
     ]
     active_candidate_count = 0
-    file_scores: dict[str, int] = {}
-    file_strong_counts: dict[str, int] = {}
-    strong_total = 0
-    medium_total = 0
     for index, candidate in enumerate(candidates):
         label = f"native_rule_candidates_result.candidates[{index}]"
         if not _json_bool(candidate, "active", label):
             continue
         active_candidate_count += 1
-        file_name = _native_plugin_source_candidate_file(candidate, label)
-        confidence = _json_str(candidate, "confidence", label)
-        if confidence == "strong":
-            strong_total += 1
-            file_scores[file_name] = file_scores.get(file_name, 0) + 3
-            file_strong_counts[file_name] = file_strong_counts.get(file_name, 0) + 1
-        elif confidence == "medium":
-            medium_total += 1
-            file_scores[file_name] = file_scores.get(file_name, 0) + 1
-
-    risk_score = strong_total * 3 + medium_total
-    files_score_ge_250 = sum(1 for file_score in file_scores.values() if file_score >= 250)
-    max_file_score = max(file_scores.values(), default=0)
-    high_risk = (
-        strong_total >= 300
-        or risk_score >= 2000
-        or files_score_ge_250 >= 3
-        or any(
-            file_score >= 300 and file_strong_counts.get(file_name, 0) >= 80
-            for file_name, file_score in file_scores.items()
-        )
-    )
     syntax_errors = ensure_json_array(
         plugin_summary["syntax_errors"],
         "native_rule_candidates_result.scan_summary.plugin_source.syntax_errors",
     )
-    thresholds: JsonObject = {
-        "strong_context_text_count": 300,
-        "risk_score": 2000,
-        "files_score_ge_250": 3,
-        "single_file_score": 300,
-        "single_file_strong_context_text_count": 80,
-    }
-    risk: JsonObject = {
-        "high_risk": high_risk,
-        "risk_score": risk_score,
-        "strong_context_text_count": strong_total,
-        "medium_confidence_text_count": medium_total,
-        "scanned_file_count": _summary_int(plugin_summary, "scanned_file_count"),
-        "ignored_file_count": _summary_int(plugin_summary, "ignored_file_count"),
-        "read_error_file_count": len(plugin_source_read_errors),
-        "syntax_error_file_count": _summary_int(plugin_summary, "syntax_error_file_count"),
-        "files_score_ge_250": files_score_ge_250,
-        "max_file_score": max_file_score,
-        "thresholds": thresholds,
-    }
+    risk = _native_plugin_source_risk_summary(plugin_summary)
     enabled_plugin_files_json: JsonArray = [file_name for file_name in sorted(enabled_plugin_files)]
     return {
         "risk": risk,
@@ -179,6 +143,7 @@ def build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(
             plugin_source_files=plugin_source_files,
             enabled_plugin_files=enabled_plugin_files,
             text_rules=text_rules,
+            plugin_source_read_error_file_count=len(plugin_source_read_errors),
         )
     )
     plugin_summary = ensure_json_object(
@@ -223,13 +188,7 @@ def build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(
         for file_name, candidates in candidates_by_file.items()
     ]
     candidate_count = sum(len(candidates) for candidates in candidates_by_file.values())
-    risk = _native_plugin_source_risk_from_file_payloads(
-        file_payloads,
-        read_error_file_count=len(plugin_source_read_errors),
-        scanned_file_count=_summary_int(plugin_summary, "scanned_file_count"),
-        ignored_file_count=_summary_int(plugin_summary, "ignored_file_count"),
-        syntax_error_file_count=_summary_int(plugin_summary, "syntax_error_file_count"),
-    )
+    risk = _native_plugin_source_risk_summary(plugin_summary)
     enabled_plugin_files_json: JsonArray = [file_name for file_name in sorted(enabled_plugin_files)]
     files_json: JsonArray = [file_payload for file_payload in file_payloads]
     payload: JsonObject = {
@@ -249,7 +208,12 @@ def build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(
     return payload, risk_report
 
 
-def build_native_plugin_source_scan(*, game_data: GameData, text_rules: TextRules) -> PluginSourceScan:
+def build_native_plugin_source_scan(
+    *,
+    game_data: GameData,
+    text_rules: TextRules,
+    rule_records: list[PluginSourceTextRuleRecord] | None = None,
+) -> PluginSourceScan:
     """用 Rust 候选入口构造当前插件源码规则扫描对象。"""
     enabled_plugin_files = _enabled_plugin_source_file_names(game_data)
     if not game_data.plugin_source_files:
@@ -264,6 +228,9 @@ def build_native_plugin_source_scan(*, game_data: GameData, text_rules: TextRule
             risk=_plugin_source_risk_from_json(risk_json),
             files=(),
             candidates=(),
+            selector_facts=(),
+            review_summary=_empty_plugin_source_review_summary(),
+            scope_hash="",
             enabled_plugin_files=enabled_plugin_files,
             syntax_errors={},
         )
@@ -272,6 +239,8 @@ def build_native_plugin_source_scan(*, game_data: GameData, text_rules: TextRule
             plugin_source_files=game_data.plugin_source_files,
             enabled_plugin_files=enabled_plugin_files,
             text_rules=text_rules,
+            plugin_source_text_rules=rule_records,
+            plugin_source_read_error_file_count=len(game_data.plugin_source_read_errors),
         )
     )
     plugin_summary = ensure_json_object(
@@ -283,6 +252,9 @@ def build_native_plugin_source_scan(*, game_data: GameData, text_rules: TextRule
         for index, candidate in enumerate(native_result.candidates)
     ]
     _assert_native_plugin_source_summary_counts(raw_candidates=raw_candidates, plugin_summary=plugin_summary)
+    selector_facts = _native_plugin_source_selector_facts(plugin_summary)
+    review_summary = _native_plugin_source_review_summary(plugin_summary)
+    scope_hash = _json_str(plugin_summary, "scope_hash", "native_rule_candidates_result.scan_summary.plugin_source")
 
     syntax_errors = ensure_json_array(
         plugin_summary["syntax_errors"],
@@ -322,18 +294,14 @@ def build_native_plugin_source_scan(*, game_data: GameData, text_rules: TextRule
         file_scans.append(file_scan)
         all_candidates.extend(candidates)
 
-    file_payloads = [file_scan.to_json_object() for file_scan in file_scans]
-    risk_json = _native_plugin_source_risk_from_file_payloads(
-        file_payloads,
-        read_error_file_count=len(game_data.plugin_source_read_errors),
-        scanned_file_count=_summary_int(plugin_summary, "scanned_file_count"),
-        ignored_file_count=_summary_int(plugin_summary, "ignored_file_count"),
-        syntax_error_file_count=_summary_int(plugin_summary, "syntax_error_file_count"),
-    )
+    risk_json = _native_plugin_source_risk_summary(plugin_summary)
     return PluginSourceScan(
         risk=_plugin_source_risk_from_json(risk_json),
         files=tuple(file_scans),
         candidates=tuple(all_candidates),
+        selector_facts=tuple(selector_facts),
+        review_summary=review_summary,
+        scope_hash=scope_hash,
         enabled_plugin_files=enabled_plugin_files,
         syntax_errors=syntax_error_map,
     )
@@ -421,6 +389,81 @@ def _assert_native_plugin_source_summary_counts(
     summary_active_candidate_count = _summary_int(plugin_summary, "active_candidate_count")
     if summary_active_candidate_count != raw_active_candidate_count:
         raise RuntimeError("Rust 插件源码启用候选数与扫描摘要不一致")
+
+
+def _native_plugin_source_risk_summary(plugin_summary: JsonObject) -> JsonObject:
+    """读取 Rust 插件源码风险摘要。"""
+    return ensure_json_object(
+        plugin_summary["risk_summary"],
+        "native_rule_candidates_result.scan_summary.plugin_source.risk_summary",
+    )
+
+
+def _native_plugin_source_selector_facts(plugin_summary: JsonObject) -> list[PluginSourceSelectorFact]:
+    """读取 Rust 插件源码 selector facts。"""
+    raw_facts = ensure_json_array(
+        plugin_summary["selector_facts"],
+        "native_rule_candidates_result.scan_summary.plugin_source.selector_facts",
+    )
+    facts: list[PluginSourceSelectorFact] = []
+    for index, raw_fact in enumerate(raw_facts):
+        label = f"native_rule_candidates_result.scan_summary.plugin_source.selector_facts[{index}]"
+        fact = ensure_json_object(raw_fact, label)
+        raw_stale_reason = fact.get("stale_reason")
+        stale_reason: PluginSourceStaleReason | None = None
+        if raw_stale_reason is not None:
+            stale_label = f"{label}.stale_reason"
+            stale = ensure_json_object(raw_stale_reason, stale_label)
+            stale_reason = PluginSourceStaleReason(
+                code=_json_str(stale, "code", stale_label),
+                message=_json_str(stale, "message", stale_label),
+            )
+        facts.append(
+            PluginSourceSelectorFact(
+                file_name=_json_str(fact, "file_name", label),
+                selector=_json_str(fact, "selector", label),
+                role=_json_str(fact, "role", label),
+                active=_json_bool(fact, "active", label),
+                file_hash=_json_str(fact, "file_hash", label),
+                source_text_hash=_json_str(fact, "source_text_hash", label),
+                stale_reason=stale_reason,
+            )
+        )
+    return facts
+
+
+def _native_plugin_source_review_summary(plugin_summary: JsonObject) -> PluginSourceReviewSummary:
+    """读取 Rust 插件源码审查覆盖摘要。"""
+    summary = ensure_json_object(
+        plugin_summary["review_summary"],
+        "native_rule_candidates_result.scan_summary.plugin_source.review_summary",
+    )
+    return PluginSourceReviewSummary(
+        total_selector_count=_summary_int(summary, "total_selector_count"),
+        translated_selector_count=_summary_int(summary, "translated_selector_count"),
+        excluded_selector_count=_summary_int(summary, "excluded_selector_count"),
+        filtered_selector_count=_summary_int(summary, "filtered_selector_count"),
+        reviewed_selector_count=_summary_int(summary, "reviewed_selector_count"),
+        stale_selector_count=_summary_int(summary, "stale_selector_count"),
+        active_candidate_count=_summary_int(summary, "active_candidate_count"),
+        unreviewed_selector_count=_summary_int(summary, "unreviewed_selector_count"),
+        review_required=_json_bool(summary, "review_required", "plugin-source-review-summary"),
+    )
+
+
+def _empty_plugin_source_review_summary() -> PluginSourceReviewSummary:
+    """构造无插件源码文件时的空审查摘要。"""
+    return PluginSourceReviewSummary(
+        total_selector_count=0,
+        translated_selector_count=0,
+        excluded_selector_count=0,
+        filtered_selector_count=0,
+        reviewed_selector_count=0,
+        stale_selector_count=0,
+        active_candidate_count=0,
+        unreviewed_selector_count=0,
+        review_required=False,
+    )
 
 
 def _native_plugin_source_risk_from_file_payloads(
