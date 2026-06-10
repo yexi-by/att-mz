@@ -18,7 +18,7 @@
 
 它不能让未被插件规则、事件指令规则或 Note 标签规则选中的字符串进入翻译，也不能替代理解游戏私有协议语法、拆分字符串叶子或判断自然语言是否玩家可见。
 
-三类外部规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`。插件源码规则改变后同样重新执行这些命令。
+三类外部规则、非标准 data 规则、插件源码规则或 MV 虚拟名字框规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`。如果存在结构化占位符候选，也必须重新校验、扫描并导入结构化占位符规则，然后重建当前文本索引。
 
 ## 编写原则
 

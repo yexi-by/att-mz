@@ -18,7 +18,7 @@
 10. 校验通过后运行对应 `import-*`。空结果必须用对应空结构并在导入时确认。
 11. 三类外部规则全部导入后，才能重新生成和收束占位符规则。
 
-非标准 data 文本和插件源码文本默认只在高风险且用户确认后处理；低风险项目只有在用户明确要求时才启动。非标准 data 使用 `nonstandard-data-risk-report.json`、`nonstandard-data/candidates.json` 和非标准 data 任务契约；插件源码使用 `plugin-source-risk-report.json` 和插件源码任务契约。这两类都不并入三个默认子代理任务。
+非标准 data 文本和插件源码文本默认只在高风险或用户要求时启动支线；高风险支线按开局策略处理，默认由当前会话自动完成，只有用户已选择快速跳过或处理会显著增加成本/风险且缺少策略时才询问。低风险项目只有在用户明确要求时才启动。非标准 data 使用 `nonstandard-data-risk-report.json`、`nonstandard-data/candidates.json` 和非标准 data 任务契约；插件源码使用 `plugin-source-risk-report.json` 和插件源码任务契约。这两类都不并入三个默认子代理任务。
 
 派发子代理时不能只概括“分析规则”。必须复制对应任务契约，填入 `<发行版目录>`、`<工作区>`、`<游戏标题>`、输入文件、唯一可写文件、审计材料目录和校验命令。需要具体正反样例时，只读取 `translation-rule-examples.md` 中对应小节，并提醒子代理：样例只说明判断方式，不是当前游戏固定答案。
 

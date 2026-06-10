@@ -268,6 +268,62 @@ def test_agent_review_protocol_exposes_auditable_reports_and_gates() -> None:
             assert term in text, path
 
 
+def test_skill_protocol_defaults_to_autonomous_repair_before_user_choice() -> None:
+    """Skill 必须区分真实用户决策和主代理应自动处理的修复项。"""
+    required_terms_by_path = {
+        PROTOCOL_DIR / "templates" / "SKILL.md.in": {
+            "默认自动推进",
+            "不把后续可判断的支线处理变成中途选择题",
+            "只有需要用户承担额外成本、接受风险或选择完整重译时才询问用户",
+        },
+        PROTOCOL_DIR / "workflow.toml": {
+            "同类失败不下降时已进入诊断和修复流程，而不是让用户代选方案",
+            "普通 warning 已由主代理逐项确认；只有接受风险类 warning 需要用户确认",
+        },
+        PROTOCOL_DIR / "templates" / "references" / "failure-recovery.md.in": {
+            "停止无证据续跑并自动进入诊断",
+            "不要把“继续重跑、换模型、手动修复、直接写回”做成让用户猜的选择题",
+        },
+        PROTOCOL_DIR / "templates" / "references" / "agent-review-workflow.md.in": {
+            "不要把 `needs_revision`、普通 `warning` 或可由 CLI/报告判断的修复项转成用户选择题",
+            "用户确认只用于真实用户决策",
+        },
+    }
+
+    for path, required_terms in required_terms_by_path.items():
+        text = _read_text(path)
+        missing_terms = sorted(term for term in required_terms if term not in text)
+        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少自动化修复约束: {missing_terms}"
+
+
+def test_feedback_iteration_documents_rule_cascade_and_overtranslation() -> None:
+    """试玩反馈流程必须约束漏翻/多翻根因定位和补规则后的级联检查。"""
+    required_terms_by_path = {
+        PROTOCOL_DIR / "workflow.toml": {
+            "漏翻、多翻或误翻已按根因分类处理",
+            "补外部规则后已重新收束占位符并重建当前文本索引",
+            "无证据扩大规则",
+            "补外部规则后跳过占位符收束",
+        },
+        PROTOCOL_DIR / "templates" / "references" / "feedback-iteration.md.in": {
+            "多翻/过翻",
+            "不要为了修一个反馈无证据扩大规则",
+            "规则级联",
+            "重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`",
+            "运行 `rebuild-text-index --game <游戏标题>`",
+        },
+        PROTOCOL_DIR / "templates" / "references" / "placeholder-rules.md.in": {
+            "非标准 data 规则、插件源码规则或 MV 虚拟名字框规则改变后",
+            "然后重建当前文本索引",
+        },
+    }
+
+    for path, required_terms in required_terms_by_path.items():
+        text = _read_text(path)
+        missing_terms = sorted(term for term in required_terms if term not in text)
+        assert not missing_terms, f"{path.relative_to(ROOT)} 缺少试玩反馈规则级联约束: {missing_terms}"
+
+
 def test_agent_review_subagent_manifest_declares_review_roles_and_schema() -> None:
     """子代理 manifest 必须声明新增审查角色和分级 findings schema。"""
     subagents = _read_toml(PROTOCOL_DIR / "subagents.toml")

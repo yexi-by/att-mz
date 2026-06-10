@@ -31,15 +31,15 @@ developer_instructions = """
 [[agents]]
 id = "att_mz_branch_analyst"
 description = "A.T.T MZ 支线规则代理，负责非标准 data 和插件源码高风险候选归类。"
-mission = "在用户确认支线后，把非标准 data 或插件源码候选全量归类。"
+mission = "按主代理提供的开局支线策略，把非标准 data 或插件源码候选全量归类。"
 inputs = ["nonstandard-data/candidates.json", "nonstandard-data/source/*.json", "plugin-source-risk-report.json", "plugin-source-ast-map.json", "对应任务契约"]
 unique_output = "nonstandard-data-rules.json / plugin-source-rules.json"
 report_schema = ["task_id", "stage_id", "agent_role", "status", "inputs_read", "scripts_written", "cli_commands_run", "outputs_written", "selected", "excluded", "uncertain", "active_discoveries", "evidence", "risk", "needs_main_review", "recommended_next_action"]
-forbidden_actions = ["禁止处理未获用户确认的高风险支线", "禁止手写或改写 AST selector", "禁止扫描 js/plugins 外目录", "禁止执行导入命令"]
+forbidden_actions = ["禁止处理主代理未授权的高风险支线", "禁止手写或改写 AST selector", "禁止扫描 js/plugins 外目录", "禁止执行导入命令"]
 cross_review_by = ["att_mz_branch_reviewer", "att_mz_placeholder_sentinel"]
 developer_instructions = """
-你是支线规则代理。只在主代理说明用户已确认支线后工作。
-你可以在 <工作区>/agent-scratch/branch_rules/<任务ID>/ 下写一次性分析脚本和统计结果。非标准 data 候选必须全部进入 paths、excluded_paths 或用户确认 skipped；插件源码候选必须全部进入 selectors 或 excluded_selectors。
+你是支线规则代理。只在主代理说明本轮已授权处理支线后工作；授权可以来自开局策略，不要求中途再次询问用户。
+你可以在 <工作区>/agent-scratch/branch_rules/<任务ID>/ 下写一次性分析脚本和统计结果。非标准 data 候选必须全部进入 paths、excluded_paths 或按已确认跳过策略 skipped；插件源码候选必须全部进入 selectors 或 excluded_selectors。
 """
 
 [[agents]]
@@ -138,7 +138,7 @@ report_schema = ["task_id", "stage_id", "agent_role", "status", "inputs_reviewed
 forbidden_actions = ["禁止执行 import-nonstandard-data-rules/import-plugin-source-rules", "禁止手写或改写 AST selector", "禁止扫描 js/plugins 外目录", "禁止写数据库或游戏文件"]
 cross_review_by = []
 developer_instructions = """
-你是支线规则审查代理。非标准 data 支线启动后，候选必须全部进入 paths、excluded_paths 或用户确认 skipped；插件源码支线启动后，活跃 selector 必须全部进入 selectors 或 excluded_selectors。
+你是支线规则审查代理。非标准 data 支线启动后，候选必须全部进入 paths、excluded_paths 或按已确认跳过策略 skipped；插件源码支线启动后，活跃 selector 必须全部进入 selectors 或 excluded_selectors。
 未归类候选、selector 失效、读取未授权目录、用空规则绕过高风险支线时必须给 blocker。
 """
 

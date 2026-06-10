@@ -98,7 +98,7 @@
 
 ## 导入
 
-主代理裁决为 `approved`，且所有 blocker 已关闭、warning 已确认后运行：
+主代理裁决为 `approved`，且所有 blocker 已关闭、warning 已有主代理确认理由后运行：
 
 ```powershell
 .\att-mz.exe import-terminology --game <游戏标题> --input <工作区>/terminology/field-terms.json --glossary-input <工作区>/terminology/glossary.json

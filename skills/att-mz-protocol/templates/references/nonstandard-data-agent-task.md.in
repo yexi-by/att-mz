@@ -7,7 +7,7 @@
 ## 触发条件
 
 - 默认先读取 `nonstandard-data-risk-report.json`。低风险默认只报告，不启动本任务。
-- 高风险时必须先向用户说明发现了非标准 data 文本候选；用户未确认处理或跳过前，停止正文翻译。
+- 高风险时按开局支线策略处理；默认自动处理并继续流程。只有策略缺失且处理会显著增加成本/风险，或用户已明确选择快速跳过时，才停下说明并记录跳过确认。
 - 需要处理时，只使用 `prepare-agent-workspace` 已生成的 `nonstandard-data/candidates.json` 和 `nonstandard-data/source/*.json`。
 
 ## 输入
@@ -41,11 +41,11 @@
 
 `paths` 表示进入正文翻译并允许后续写回的字符串叶子；`excluded_paths` 表示已经审查但判定不翻译的候选路径。两者都只能使用 `candidates.json` 中同一文件下的括号 JSONPath。不能使用点号 JSONPath，不能手写不存在的路径。
 
-`skipped: true` 只能在用户明确确认“本文件本轮不处理”后使用，并且 `paths` 和 `excluded_paths` 必须为空。跳过会让流程放行，但后续报告会持续 warning，不能把它写成“已确认没有文本”。
+`skipped: true` 只能在用户明确确认“本文件本轮不处理”或开局策略允许快速跳过后使用，并且 `paths` 和 `excluded_paths` 必须为空。跳过会让流程放行，但后续报告会持续 warning，不能把它写成“已确认没有文本”。
 
 ## 处理逻辑
 
-- 必须全量归类 `candidates.json` 中的每个候选：进入 `paths`、进入 `excluded_paths`，或经用户确认后按文件 `skipped: true`。
+- 必须全量归类 `candidates.json` 中的每个候选：进入 `paths`、进入 `excluded_paths`，或按用户已确认的跳过策略按文件 `skipped: true`。
 - 只选择玩家可见的 UI、菜单、说明、任务、状态、提示和对话文本。
 - 排除资源路径、图片/音频文件名、脚本、公式、ID、布尔值、数字、枚举、内部键、颜色、坐标和纯协议值。
 - 判断不清时，用同一对象的字段名、相邻字段、重复结构、同文件样本和源 JSON 副本交叉验证；证据不足时向主代理报告，不编造规则。
@@ -56,7 +56,7 @@
 
 ## 停止条件
 
-- 用户不确认处理或跳过高风险文件。
+- 高风险支线策略缺失，且当前文件不能由主代理在本轮自动处理或跳过。
 - `candidates.json` 缺失或与源 JSON 副本对不上。
 - 规则校验返回 error。
 - 审查报告存在未关闭 `blocker`。

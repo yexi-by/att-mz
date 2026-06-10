@@ -14,7 +14,7 @@
 | --- | --- | --- | --- |
 | `att_mz_term_curator` | 从术语子任务源文件、说话人上下文和数据库上下文中产出可靠术语候选。 | `terminology/subtasks/candidates/<术语分组>.json` | `att_mz_terminology_reviewer` |
 | `att_mz_rule_analyst` | 把默认三类外部候选归入可翻译、排除或不确定，并给出可审查证据。 | `plugin-rules.json / event-command-rules.json / note-tag-rules.json` | `att_mz_external_rule_reviewer`、`att_mz_placeholder_sentinel` |
-| `att_mz_branch_analyst` | 在用户确认支线后，把非标准 data 或插件源码候选全量归类。 | `nonstandard-data-rules.json / plugin-source-rules.json` | `att_mz_branch_reviewer`、`att_mz_placeholder_sentinel` |
+| `att_mz_branch_analyst` | 按主代理提供的开局支线策略，把非标准 data 或插件源码候选全量归类。 | `nonstandard-data-rules.json / plugin-source-rules.json` | `att_mz_branch_reviewer`、`att_mz_placeholder_sentinel` |
 | `att_mz_placeholder_sentinel` | 独立审查外部规则和占位符规则是否漏保护协议片段或吞掉玩家可见文本。 | `结构化风险报告，不产出最终规则` | 主代理 |
 | `att_mz_writeback_auditor` | 根据覆盖审计、质量报告、当前运行审计和用户许可，判断是否建议写回。 | `写回审计报告，不执行写回` | 主代理 |
 | `att_mz_mv_namebox_discoverer` | 基于当前工作区候选和事件正文样本主动发现 MV 虚拟名字框规则草稿，并产出覆盖、误伤和不确定证据。 | `mv-virtual-namebox-rules.json` | `att_mz_mv_namebox_reviewer` |
@@ -60,7 +60,7 @@
 - `coverage_checks`：覆盖、未归类、漏选或空结果检查。
 - `anti_overfit_checks`：过拟合、硬套样例和误伤检查。
 - `quality_checks`：原文照抄、中英混杂、机械拼接、玩家可见性和协议风险检查。
-- `recommended_next_action`：建议主代理修正、重做、确认 warning 或停止。
+- `recommended_next_action`：建议主代理修正、重做、确认 warning、执行下一步 CLI 或在真实用户决策点停止；不要把普通修复项包装成用户选择。
 
 `findings[].severity` 只能是 `blocker`、`warning` 或 `info`。未关闭 `blocker` 时，主代理禁止导入规则或进入下一阶段。
 
@@ -154,7 +154,7 @@
 
 ## `att_mz_branch_analyst`
 
-使命：在用户确认支线后，把非标准 data 或插件源码候选全量归类。
+使命：按主代理提供的开局支线策略，把非标准 data 或插件源码候选全量归类。
 
 输入：
 - nonstandard-data/candidates.json
@@ -184,7 +184,7 @@
 - `recommended_next_action`
 
 禁止动作：
-- 禁止处理未获用户确认的高风险支线
+- 禁止处理主代理未授权的高风险支线
 - 禁止手写或改写 AST selector
 - 禁止扫描 js/plugins 外目录
 - 禁止执行导入命令
@@ -468,7 +468,7 @@
 - 候选文件必须真实存在，并且只改了任务允许的唯一输出。
 - 空结果必须有检查范围和空结果理由。
 - 选中项、排除项和不确定项必须有证据；证据不足时不要导入。
-- 子代理报告里的风险必须逐项关闭、转为用户确认或明确写入后续计划。
+- 子代理报告里的风险必须逐项关闭；普通 warning 由主代理写确认理由，只有接受风险、跳过候选、写回许可、字体覆盖或显著增加成本时才转为用户确认。
 - 导入前必须读取工作报告、审查报告和 `review-decisions/<阶段ID>.json`；存在未关闭 `blocker` 时禁止 validate/import。
 - 导入前必须运行对应 validate 命令；validate 失败时退回 `needs_revision`，只修任务文件后重跑，不绕过 CLI。
-- 写回前必须由主代理亲自确认用户许可、质量报告、覆盖审计和当前运行文件验收。
+- 写回前必须由主代理亲自确认用户许可、质量报告、覆盖审计和当前运行文件验收；普通 warning 由主代理写确认理由，只有接受跳过、高风险放行、字体覆盖和写文件许可需要用户确认。

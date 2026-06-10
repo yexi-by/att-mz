@@ -76,7 +76,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 事件指令 | `validate-event-command-rules`、`import-event-command-rules` | 事件编码覆盖要从导出、validate 到 import 保持一致。 |
 | Note 标签 | `export-note-tag-candidates`、`validate-note-tag-rules`、`import-note-tag-rules` | 文件键是 `fnmatch`；空规则必须说明理由。 |
 | 非标准 data 支线 | `scan-nonstandard-data`、`export-nonstandard-data-json`、`validate-nonstandard-data-rules`、`import-nonstandard-data-rules` | 高风险或用户要求时才进入；候选必须归入翻译、排除或用户确认跳过。 |
-| 插件源码支线 | `scan-plugin-source-text`、`export-plugin-source-ast-map`、`validate-plugin-source-rules`、`import-plugin-source-rules` | 高风险或反馈指向源码时先询问用户；默认 `--view translation-source`，审计当前运行文件才用 `--view active-runtime`。 |
+| 插件源码支线 | `scan-plugin-source-text`、`export-plugin-source-ast-map`、`validate-plugin-source-rules`、`import-plugin-source-rules` | 高风险或反馈指向源码时按开局支线策略处理；默认自动处理并使用 `--view translation-source`，审计当前运行文件才用 `--view active-runtime`。 |
 | 普通占位符 | `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates`、`import-placeholder-rules` | 未覆盖候选必须修规则或确认风险；warning 不表示译文可以改坏协议片段。 |
 | 结构化占位符 | `validate-structured-placeholder-rules`、`scan-structured-placeholder-candidates`、`import-structured-placeholder-rules` | 处理固定协议外壳包住可翻译显示文本的情况。 |
 | 源文保留例外 | `validate-source-residual-rules`、`import-source-residual-rules` | 只用于确实不应翻译且被报告的片段；禁止用来掩盖整句漏翻或关闭全局检测。 |
@@ -102,7 +102,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 ### 4. 写进游戏文件、重建与反馈
 
-`write-back`、`rebuild-active-runtime` 和不跳过写入的 `run-all` 都是写文件操作。执行前必须满足：用户允许写回、`audit-coverage` 无 error、`quality-report` 无 error、可信源快照有效、当前规则范围内正文译文完整、warning 已确认、字体覆盖已单独确认。
+`write-back`、`rebuild-active-runtime` 和不跳过写入的 `run-all` 都是写文件操作。执行前必须满足：用户允许写回、`audit-coverage` 无 error、`quality-report` 无 error、可信源快照有效、当前规则范围内正文译文完整、普通 warning 已由主代理确认、接受风险类 warning 已获用户确认、字体覆盖已单独确认。
 
 | 场景 | 命令 | 判断与下一步 |
 | --- | --- | --- |
@@ -120,7 +120,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 - 源语言探测不确定且用户未确认。
 - 规则未导入、工作区验收有 error、占位符覆盖风险未处理也未确认。
-- 非标准 data 或插件源码高风险已触发，但用户未确认支线或候选未归类。
+- 非标准 data 或插件源码高风险已触发，但缺少开局支线策略、处理会显著增加成本或风险，或候选未归类。
 - 翻译质量报告有 error，或写文件前检查失败。
 - 当前运行文件审计有阻断问题且无法通过规则、译文、重置或重建解释。
 - 用户未允许写回、未单独确认字体覆盖，或要求执行危险回溯但没有完整确认标题。

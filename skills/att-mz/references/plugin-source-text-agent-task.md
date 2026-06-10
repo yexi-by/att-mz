@@ -7,8 +7,8 @@
 ## 触发条件
 
 - 默认先读取 `plugin-source-risk-report.json`。低风险默认只报告，不启动本任务；用户明确要求处理插件源码文本时，可以启动本任务。
-- 高风险时必须先问用户是否处理插件源码文本；用户没有肯定回复时，停止正文翻译。
-- 用户确认启动本任务后，运行 `export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json`。本命令默认使用 `--view translation-source`，用于规则抽取和后续写回定位。
+- 高风险时按开局支线策略处理；默认自动处理插件源码文本。只有策略缺失且处理会显著增加成本/风险，或用户已明确选择跳过插件源码支线时，才停止正文翻译。
+- 本任务启动后，运行 `export-plugin-source-ast-map --game <游戏标题> --output <工作区>/plugin-source-ast-map.json`。本命令默认使用 `--view translation-source`，用于规则抽取和后续写回定位。
 
 ## 输入
 
@@ -16,7 +16,7 @@
 - `<工作区>/plugin-source-ast-map.json`
 - 当前游戏已注册标题和源语言
 
-AST 地图用于候选筛选和写回定位，插件源码只读用于语义交叉验证。用户确认启动本支线后，允许读取 `<游戏目录>/js/plugins/*.js` 直接文件，结合源码注释、插件头、相邻对象字段、函数名、数组语义和调用位置判断 selector 是否属于玩家可见文本。
+AST 地图用于候选筛选和写回定位，插件源码只读用于语义交叉验证。本支线启动后，允许读取 `<游戏目录>/js/plugins/*.js` 直接文件，结合源码注释、插件头、相邻对象字段、函数名、数组语义和调用位置判断 selector 是否属于玩家可见文本。
 
 AST 地图顶层包含 `source_view`、`risk`、`enabled_plugin_files`、`candidate_count` 和 `files`；候选只在 `files[].candidates` 内按文件分组提供，顶层不重复提供全量候选数组。
 
@@ -65,7 +65,7 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 
 ## 停止条件
 
-- 用户未确认处理高风险插件源码文本。
+- 高风险支线策略缺失，且当前插件源码候选不能由主代理在本轮自动处理或跳过。
 - AST 地图无法生成或 selector 反复失效。
 - 规则校验返回 error。
 - 审查报告存在未关闭 `blocker`。
