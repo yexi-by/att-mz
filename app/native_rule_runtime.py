@@ -36,6 +36,17 @@ class RuleImportPrepareResult:
     summary: JsonObject
 
 
+@dataclass(frozen=True, slots=True)
+class RuleImportCommitResult:
+    """规则导入 commit 报告。"""
+
+    status: str
+    errors: list[RuleRuntimeIssue]
+    warnings: list[RuleRuntimeIssue]
+    plan_token: str | None
+    summary: JsonObject
+
+
 class _NativeRuleRuntimeModule(Protocol):
     """PyO3 扩展暴露的 rule_runtime 接口。"""
 
@@ -47,16 +58,17 @@ class _NativeRuleRuntimeModule(Protocol):
         """预检规则导入并返回 JSON 文本。"""
         raise NotImplementedError
 
+    def commit_rule_import(self, payload_json: str) -> str:
+        """提交规则导入计划并返回 JSON 文本。"""
+        raise NotImplementedError
+
 
 def prepare_rule_import(payload: JsonObject) -> RuleImportPrepareResult:
     """调用 Rust rule_runtime prepare。"""
     native = _load_native_module()
-    raw_result = cast(
-        object,
-        json.loads(native.prepare_rule_import(json.dumps(payload, ensure_ascii=False))),
-    )
-    result = ensure_json_object(
-        coerce_json_value(raw_result),
+    result = _call_native_json(
+        native.prepare_rule_import,
+        payload,
         "rule_runtime.prepare_rule_import",
     )
     return RuleImportPrepareResult(
@@ -81,10 +93,54 @@ def prepare_rule_import(payload: JsonObject) -> RuleImportPrepareResult:
     )
 
 
+def commit_rule_import(payload: JsonObject) -> RuleImportCommitResult:
+    """调用 Rust rule_runtime commit。"""
+    native = _load_native_module()
+    result = _call_native_json(
+        native.commit_rule_import,
+        payload,
+        "rule_runtime.commit_rule_import",
+    )
+    return RuleImportCommitResult(
+        status=_read_string(result, "status", "rule_runtime.commit_rule_import"),
+        errors=_read_issues(
+            result.get("errors", []),
+            "rule_runtime.commit_rule_import.errors",
+        ),
+        warnings=_read_issues(
+            result.get("warnings", []),
+            "rule_runtime.commit_rule_import.warnings",
+        ),
+        plan_token=_read_optional_string(
+            result,
+            "plan_token",
+            "rule_runtime.commit_rule_import",
+        ),
+        summary=ensure_json_object(
+            result.get("summary", {}),
+            "rule_runtime.commit_rule_import.summary",
+        ),
+    )
+
+
 def _load_native_module() -> _NativeRuleRuntimeModule:
     native_module = cast(object, import_module("app._native"))
     ensure_native_contract_version(native_module)
     return cast(_NativeRuleRuntimeModule, native_module)
+
+
+def _call_native_json(
+    native_function: object,
+    payload: JsonObject,
+    context: str,
+) -> JsonObject:
+    if not callable(native_function):
+        raise RuntimeError(f"Rust 原生扩展缺少 {context} 入口，请重新执行 uv run maturin develop")
+    raw_text = native_function(json.dumps(payload, ensure_ascii=False))
+    if not isinstance(raw_text, str):
+        raise TypeError(f"{context} 必须返回 JSON 字符串")
+    raw_result = cast(object, json.loads(raw_text))
+    return ensure_json_object(coerce_json_value(raw_result), context)
 
 
 def _read_issues(value: object, context: str) -> list[RuleRuntimeIssue]:
@@ -118,7 +174,9 @@ def _read_optional_string(payload: JsonObject, field_name: str, context: str) ->
 
 
 __all__ = [
+    "RuleImportCommitResult",
     "RuleImportPrepareResult",
     "RuleRuntimeIssue",
+    "commit_rule_import",
     "prepare_rule_import",
 ]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-NATIVE_CONTRACT_VERSION = 13
+NATIVE_CONTRACT_VERSION = 14
 _CURRENT_NATIVE_CONTRACT_ERROR_MESSAGE = (
     "Rust 原生扩展不满足当前 Python 契约，请重新构建原生扩展后重试。"
 )
