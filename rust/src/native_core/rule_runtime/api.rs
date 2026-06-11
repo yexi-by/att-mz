@@ -26,6 +26,8 @@ struct PrepareRuleImportPayload {
     game_context: Value,
     #[serde(default)]
     settings_runtime_patterns: Value,
+    #[serde(default)]
+    confirm_empty: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +103,7 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
                 "rule_count": normalized_rules.len(),
                 "matcher_kinds": matcher_kinds(&normalized_rules),
             },
+            "domain_state": domain_state_summary(&payload, normalized_rules.len())?,
         }),
     })
 }
@@ -148,11 +151,34 @@ fn plan_token_for(payload: &PrepareRuleImportPayload) -> Result<String, String> 
         "rules_payload": payload.rules_payload,
         "game_context": payload.game_context,
         "settings_runtime_patterns": payload.settings_runtime_patterns,
+        "confirm_empty": payload.confirm_empty,
         "rule_runtime_contract_version": RULE_RUNTIME_CONTRACT_VERSION,
     });
     let bytes = serde_json::to_vec(&value)
         .map_err(|error| format!("规则导入计划 token 编码失败: {error}"))?;
     Ok(format!("plan:{:x}", Sha256::digest(bytes)))
+}
+
+fn domain_state_summary(
+    payload: &PrepareRuleImportPayload,
+    rule_count: usize,
+) -> Result<Value, String> {
+    Ok(serde_json::json!({
+        "domain": &payload.domain,
+        "confirmed_empty": payload.confirm_empty && rule_count == 0,
+        "scope_hash": game_context_scope_hash(&payload.game_context)?,
+    }))
+}
+
+fn game_context_scope_hash(game_context: &Value) -> Result<String, String> {
+    if let Some(scope_hash) = game_context.get("scope_hash").and_then(Value::as_str)
+        && !scope_hash.trim().is_empty()
+    {
+        return Ok(scope_hash.to_string());
+    }
+    let bytes = serde_json::to_vec(game_context)
+        .map_err(|error| format!("规则确认范围 JSON 编码失败: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn is_current_rule_domain(domain: &str) -> bool {

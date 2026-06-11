@@ -1,8 +1,14 @@
 """插件、事件指令、Note 标签和文本规则记录会话能力。"""
 
 import json
+from typing import cast
 
-from app.rule_review import RuleReviewDomain, parse_rule_review_domain
+from app.rule_review import (
+    RuleReviewDomain,
+    rule_review_domain_for_runtime_domain,
+    rule_runtime_domain_for_review_domain,
+)
+from app.rmmz.json_types import coerce_json_value, ensure_json_object
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -500,21 +506,33 @@ class RuleRecordSessionMixin(SessionMixinBase):
         scope_hash: str,
         reviewed_empty: bool,
     ) -> None:
-        """保存外部规则已审查为空的状态。"""
+        """保存当前规则域确认状态。"""
+        runtime_domain = rule_runtime_domain_for_review_domain(rule_domain)
+        state_json = json.dumps(
+            {
+                "confirmed_empty": reviewed_empty,
+                "reviewed_empty": reviewed_empty,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         _ = await self.connection.execute(
             UPSERT_RULE_REVIEW_STATE,
             (
-                rule_domain,
+                runtime_domain,
+                state_json,
                 scope_hash,
-                1 if reviewed_empty else 0,
                 current_timestamp_text(),
+                1,
+                1,
             ),
         )
         await self.commit()
 
     async def delete_rule_review_state(self, *, rule_domain: RuleReviewDomain) -> None:
         """删除某类外部规则的空结果审查状态。"""
-        _ = await self.connection.execute(DELETE_RULE_REVIEW_STATE, (rule_domain,))
+        runtime_domain = rule_runtime_domain_for_review_domain(rule_domain)
+        _ = await self.connection.execute(DELETE_RULE_REVIEW_STATE, (runtime_domain,))
         await self.commit()
 
     async def read_rule_review_state(
@@ -523,15 +541,27 @@ class RuleRecordSessionMixin(SessionMixinBase):
         rule_domain: RuleReviewDomain,
     ) -> RuleReviewStateRecord | None:
         """读取某类外部规则的空结果审查状态。"""
-        async with self.connection.execute(SELECT_RULE_REVIEW_STATE, (rule_domain,)) as cursor:
+        runtime_domain = rule_runtime_domain_for_review_domain(rule_domain)
+        async with self.connection.execute(SELECT_RULE_REVIEW_STATE, (runtime_domain,)) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return None
+        state_json = row_str(row, "state_json", self.db_path)
+        try:
+            state = ensure_json_object(
+                coerce_json_value(cast(object, json.loads(state_json))),
+                "rule_domain_states.state_json",
+            )
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"rule_domain_states.state_json 必须是 JSON 对象: {self.db_path}") from error
+        confirmed_empty = state.get("confirmed_empty", state.get("reviewed_empty"))
+        if not isinstance(confirmed_empty, bool):
+            raise RuntimeError(f"rule_domain_states.state_json.confirmed_empty 必须是布尔值: {self.db_path}")
         return RuleReviewStateRecord(
-            rule_domain=parse_rule_review_domain(row_str(row, "rule_domain", self.db_path)),
+            rule_domain=rule_review_domain_for_runtime_domain(row_str(row, "domain", self.db_path)),
             scope_hash=row_str(row, "scope_hash", self.db_path),
-            reviewed_empty=row_int(row, "reviewed_empty", self.db_path) == 1,
-            updated_at=row_str(row, "updated_at", self.db_path),
+            reviewed_empty=confirmed_empty,
+            updated_at=row_str(row, "confirmed_at", self.db_path),
         )
 
 

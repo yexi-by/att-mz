@@ -818,9 +818,9 @@ INSERT_MV_VIRTUAL_NAMEBOX_RULE = f"""
 
 UPSERT_RULE_REVIEW_STATE = f"""
 --sql
-    INSERT OR REPLACE INTO [{RULE_REVIEW_STATES_TABLE_NAME}]
-    (rule_domain, scope_hash, reviewed_empty, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT OR REPLACE INTO [{RULE_DOMAIN_STATES_TABLE_NAME}]
+    (domain, state_json, scope_hash, confirmed_at, rule_runtime_contract_version, rule_store_schema_version)
+    VALUES (?, ?, ?, ?, ?, ?)
 ;
 """
 
@@ -1368,9 +1368,9 @@ SELECT_MV_VIRTUAL_NAMEBOX_RULES = f"""
 
 SELECT_RULE_REVIEW_STATE = f"""
 --sql
-    SELECT rule_domain, scope_hash, reviewed_empty, updated_at
-    FROM [{RULE_REVIEW_STATES_TABLE_NAME}]
-    WHERE rule_domain = ?
+    SELECT domain, state_json, scope_hash, confirmed_at
+    FROM [{RULE_DOMAIN_STATES_TABLE_NAME}]
+    WHERE domain = ?
     LIMIT 1
 ;
 """
@@ -1874,8 +1874,8 @@ DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES = f"""
 
 DELETE_RULE_REVIEW_STATE = f"""
 --sql
-    DELETE FROM [{RULE_REVIEW_STATES_TABLE_NAME}]
-    WHERE rule_domain = ?
+    DELETE FROM [{RULE_DOMAIN_STATES_TABLE_NAME}]
+    WHERE domain = ?
 ;
 """
 
