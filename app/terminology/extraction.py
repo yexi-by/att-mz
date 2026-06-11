@@ -3,13 +3,10 @@
 import re
 
 from app.rmmz.game_data import BaseItem, EventCommand
-from app.rmmz.mv_namebox import (
-    MvVirtualNameboxRule,
-    parse_mv_virtual_speaker_line,
-    runtime_mv_virtual_namebox_rules,
-)
+from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.rmmz.schema import Code, GameData
 from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .schemas import (
@@ -66,7 +63,7 @@ class TerminologyExtraction:
         """初始化提取器。"""
         self.game_data: GameData = game_data
         self.text_rules: TextRules = text_rules if text_rules is not None else get_default_text_rules()
-        self.mv_virtual_namebox_rules: tuple[MvVirtualNameboxRule, ...] = runtime_mv_virtual_namebox_rules(
+        self.mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] = (
             mv_virtual_namebox_rule_records or []
         )
 
@@ -91,6 +88,17 @@ class TerminologyExtraction:
             database_contexts,
         )
 
+    def extract_registry(self) -> TerminologyRegistry:
+        """只提取术语表形状，不生成导出用上下文。"""
+        speaker_dialogue_map = self._collect_speaker_dialogue_map()
+        registry, _database_contexts = self._collect_database_terms(include_contexts=False)
+        return registry.model_copy(
+            update={
+                "speaker_names": {name: "" for name in sorted(speaker_dialogue_map)},
+                "map_display_names": {name: "" for name in self._collect_map_display_names()},
+            }
+        )
+
     def _collect_map_display_names(self) -> list[str]:
         """收集所有非空地图显示名。"""
         display_names: set[str] = set()
@@ -100,7 +108,11 @@ class TerminologyExtraction:
                 display_names.add(source_text)
         return sorted(display_names)
 
-    def _collect_database_terms(self) -> tuple[TerminologyRegistry, list[DatabaseTermContext]]:
+    def _collect_database_terms(
+        self,
+        *,
+        include_contexts: bool = True,
+    ) -> tuple[TerminologyRegistry, list[DatabaseTermContext]]:
         """收集标准数据库名称与系统类型术语。"""
         category_map: dict[TerminologyCategory, dict[str, str]] = {}
         database_contexts: list[DatabaseTermContext] = []
@@ -113,25 +125,27 @@ class TerminologyExtraction:
                 source_name = item.name.strip()
                 if self._is_translatable_terminology_source(source_name):
                     category_map.setdefault(category, {})[source_name] = ""
-                    database_contexts.append(
-                        DatabaseTermContext(
-                            category=category,
-                            source_text=source_name,
-                            context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                    if include_contexts:
+                        database_contexts.append(
+                            DatabaseTermContext(
+                                category=category,
+                                source_text=source_name,
+                                context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                            )
                         )
-                    )
                 if file_name != "Actors.json":
                     continue
                 nickname = item.nickname.strip()
                 if self._is_translatable_terminology_source(nickname):
                     category_map.setdefault("actor_nicknames", {})[nickname] = ""
-                    database_contexts.append(
-                        DatabaseTermContext(
-                            category="actor_nicknames",
-                            source_text=nickname,
-                            context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                    if include_contexts:
+                        database_contexts.append(
+                            DatabaseTermContext(
+                                category="actor_nicknames",
+                                source_text=nickname,
+                                context_lines=_build_database_context_lines(file_name=file_name, item=item),
+                            )
                         )
-                    )
 
         for field_name, category in SYSTEM_TERM_CATEGORIES.items():
             values = _read_system_term_values(game_data=self.game_data, field_name=field_name)
@@ -140,13 +154,14 @@ class TerminologyExtraction:
                 if not self._is_translatable_terminology_source(source_text):
                     continue
                 category_map.setdefault(category, {})[source_text] = ""
-                database_contexts.append(
-                    DatabaseTermContext(
-                        category=category,
-                        source_text=source_text,
-                        context_lines=[],
+                if include_contexts:
+                    database_contexts.append(
+                        DatabaseTermContext(
+                            category=category,
+                            source_text=source_text,
+                            context_lines=[],
+                        )
                     )
-                )
 
         return TerminologyRegistry.from_category_map(category_map), database_contexts
 
@@ -181,39 +196,21 @@ class TerminologyExtraction:
         return dialogue_map
 
     def _collect_mv_speaker_dialogue_map(self) -> dict[str, list[str]]:
-        """按 MV `401` 正文首行协议聚合说话人与对白。"""
+        """按 native speaker requirements 聚合 MV 说话人与对白。"""
         dialogue_map: dict[str, list[str]] = {}
-
-        for file_name, map_data in self.game_data.map_data.items():
-            for event in map_data.events:
-                if event is None:
-                    continue
-                for page_index, page in enumerate(event.pages):
-                    self._append_mv_page_dialogue(
-                        dialogue_map,
-                        page.commands,
-                        command_path_prefix=f"{file_name}/{event.id}/{page_index}",
-                    )
-
-        for common_event in self.game_data.common_events:
-            if common_event is None:
+        native_scan = scan_native_mv_virtual_namebox(
+            game_data=self.game_data,
+            records=self.mv_virtual_namebox_rule_records,
+        )
+        if native_scan.rule_errors:
+            raise ValueError("MV 虚拟名字框规则存在错误，无法导出说话人术语")
+        for requirement in native_scan.speaker_requirements:
+            if not requirement.requires_speaker_name:
                 continue
-            self._append_mv_page_dialogue(
-                dialogue_map,
-                common_event.commands,
-                command_path_prefix=f"CommonEvents.json/{common_event.id}",
-            )
-
-        for troop in self.game_data.troops:
-            if troop is None:
+            source_text = requirement.source_text.strip()
+            if not self._is_translatable_terminology_source(source_text):
                 continue
-            for page_index, page in enumerate(troop.pages):
-                self._append_mv_page_dialogue(
-                    dialogue_map,
-                    page.commands,
-                    command_path_prefix=f"Troops.json/{troop.id}/{page_index}",
-                )
-
+            dialogue_map.setdefault(source_text, []).extend(requirement.sample_body_lines)
         return dialogue_map
 
     def _append_page_dialogue(
@@ -230,40 +227,6 @@ class TerminologyExtraction:
                 continue
             lines = collect_following_dialogue_lines(commands, command_index)
             dialogue_map.setdefault(source_text, []).extend(lines)
-
-    def _append_mv_page_dialogue(
-        self,
-        dialogue_map: dict[str, list[str]],
-        commands: list[EventCommand],
-        command_path_prefix: str,
-    ) -> None:
-        """从 MV 单个事件页的正文首行收集说话人与对白。"""
-        for command_index, command in enumerate(commands):
-            if command.code != Code.NAME:
-                continue
-            lines = collect_following_dialogue_lines(commands, command_index)
-            first_line_index = first_non_empty_dialogue_line_index(lines)
-            if first_line_index is None:
-                continue
-            virtual_speaker = parse_mv_virtual_speaker_line(
-                text=lines[first_line_index],
-                game_data=self.game_data,
-                rules=self.mv_virtual_namebox_rules,
-                location_path=f"{command_path_prefix}/{command_index + 1 + first_line_index}",
-            )
-            if virtual_speaker is None:
-                continue
-            if not virtual_speaker.requires_translation:
-                continue
-            source_text = virtual_speaker.speaker
-            if not self._is_translatable_terminology_source(source_text):
-                continue
-            body_lines = _build_mv_virtual_speaker_context_lines(
-                lines=lines,
-                first_line_index=first_line_index,
-                first_body_text=virtual_speaker.body_text,
-            )
-            dialogue_map.setdefault(source_text, []).extend(body_lines)
 
     def _is_translatable_terminology_source(self, source_text: str) -> bool:
         """按当前源语言判断字段术语是否需要填写译名。"""
@@ -301,7 +264,7 @@ def is_translatable_terminology_source(source_text: str, text_rules: TextRules |
         return False
     rules = text_rules if text_rules is not None else get_default_text_rules()
     if rules.setting.source_language == "en":
-        return rules.should_translate_source_text(normalized_text)
+        return is_source_text_required(rules, normalized_text)
     return True
 
 
@@ -356,28 +319,6 @@ def first_non_empty_dialogue_line(lines: list[str]) -> str | None:
     return None
 
 
-def first_non_empty_dialogue_line_index(lines: list[str]) -> int | None:
-    """读取连续对白中第一条非空文本的下标。"""
-    for index, line in enumerate(lines):
-        if line.strip():
-            return index
-    return None
-
-
-def _build_mv_virtual_speaker_context_lines(
-    *,
-    lines: list[str],
-    first_line_index: int,
-    first_body_text: str,
-) -> list[str]:
-    """剥离 MV 虚拟名字框后生成给术语 Agent 阅读的对白样本。"""
-    context_lines: list[str] = []
-    if first_body_text:
-        context_lines.append(first_body_text)
-    context_lines.extend(lines[first_line_index + 1 :])
-    return context_lines
-
-
 __all__: list[str] = [
     "ACTOR_NAME_CONTROL_PATTERN",
     "BASE_NAME_CATEGORIES",
@@ -389,7 +330,6 @@ __all__: list[str] = [
     "build_speaker_sample_file_name",
     "collect_following_dialogue_lines",
     "first_non_empty_dialogue_line",
-    "first_non_empty_dialogue_line_index",
     "is_translatable_terminology_source",
     "read_name_box_text",
 ]

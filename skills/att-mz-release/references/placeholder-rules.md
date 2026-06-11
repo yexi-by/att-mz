@@ -4,6 +4,8 @@
 
 结构化占位符规则是并列能力，用于“固定协议外壳必须保留，中间显示文本需要翻译”的场景，见 `structured-placeholder-rules.md`。
 
+普通占位符最终规则仍由主代理负责，但必须经过审查子代理反向检查。审查只找风险，不替主代理生成最终规则；存在未关闭 `blocker` 时禁止导入。
+
 ## 作用范围
 
 普通占位符规则只作用于当前已经进入正文翻译集合的文本：
@@ -16,7 +18,7 @@
 
 它不能让未被插件规则、事件指令规则或 Note 标签规则选中的字符串进入翻译，也不能替代理解游戏私有协议语法、拆分字符串叶子或判断自然语言是否玩家可见。
 
-三类外部规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`。插件源码规则改变后同样重新执行这些命令。
+三类外部规则、非标准 data 规则、插件源码规则或 MV 虚拟名字框规则改变后，必须重新运行 `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates` 和 `import-placeholder-rules`。如果存在结构化占位符候选，也必须重新校验、扫描并导入结构化占位符规则，然后重建当前文本索引。
 
 ## 编写原则
 
@@ -26,6 +28,12 @@
 - 角色名牌、语音触发标记和自动替换触发标记如果进入正文翻译，优先作为必须原样保留的游戏控制符处理。
 - 完整标准 RPG Maker 控制符如果被报告为未覆盖，先停下报告工具异常；裸缺参数片段需要查 RPG Maker 常识和当前游戏协议后再判断。
 - 小写 `\n` 是游戏文本中的字面量换行，处理裸大写 `\N` 插件标记时不得使用忽略大小写的宽规则。
+
+## 正则语法契约
+
+`placeholder-rules.json` 的键是 PCRE2 正则表达式。`validate-placeholder-rules`、`import-placeholder-rules`、工作区验收和当前游戏已保存规则检查都会提前预检，不再等到质量检查或写文件阶段才失败。
+
+请按 PCRE2 当前契约编写，例如普通分组、字符类、量词、锚点、内联 flag 和 PCRE2 命名分组 `(?<name>...)`。需要命名分组时统一使用 `(?<name>...)`，不要写成其它正则方言的命名分组。
 
 ## 混合协议文本
 
@@ -59,7 +67,10 @@
 ```
 
 6. 审查 `summary.uncovered_count` 和候选详情；如果报告是 `summary.report_detail_mode=sampled`，只把 `samples` 当样本，完整候选必须看 `--output` 写出的 full 报告。确实需要保护的协议片段必须修规则后重新 validate 和 scan，确认无需写规则的误报或特殊候选可以在导入时确认风险。
-7. 覆盖风险已处理或已确认后运行：
+7. 派发 `placeholder_rule_review` 审查任务。审查子代理读取规则草稿、validate/scan 报告、预览样本和外部规则变化范围，可以在 `<工作区>/agent-scratch/placeholder_closure/placeholder_rule_review/` 下写一次性脚本复核覆盖和误伤。
+8. 审查必须检查：未覆盖疑似控制符、规则吞掉玩家可见文本、规则过宽或过窄、外部规则变化后未重扫、sampled 报告是否被误当完整候选、`validate --sample` 预览去掉占位符后是否仍保留应翻译文本。
+9. 主代理读取审查报告，写入 `<工作区>/review-decisions/placeholder_closure.json`；存在未关闭 `blocker` 时停止。
+10. 覆盖风险已处理或已确认，且主代理裁决为 `approved` 后运行：
 
 ```powershell
 .\att-mz.exe import-placeholder-rules --game <游戏标题> --input <工作区>/placeholder-rules.json
@@ -67,12 +78,10 @@
 
 空规则必须加 `--confirm-empty` 才能导入；即使当前仍有未覆盖候选，也允许在主代理审查后保存“已审查但不写规则”的确认状态。非空规则导入后如果仍有未覆盖候选，导入报告会返回 warning 并保存“剩余风险已确认”的状态。扫描命中不等于规则一定正确，禁止为了消除计数而编造会吞文本或误保护的规则。
 
-确认风险后的未覆盖候选仍会在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中作为 warning 可见，但不会阻止正文翻译或写进游戏文件。旧版前 100 个候选样本 hash 只由工具自动兼容并提示 `*_legacy_hash` warning；重新导入规则后会写入完整候选 hash。确认风险不是允许翻坏协议片段；如果模型或人工译文删除、改写未覆盖疑似控制符，保存前校验、质量检查或写文件前检查必须报 error。
+确认风险后的未覆盖候选仍会在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中作为 warning 可见，但不会阻止正文翻译或写进游戏文件。已保存确认只在当前候选范围一致时有效；候选范围变化时，必须重新审查并导入当前规则。确认风险不是允许翻坏协议片段；如果模型或人工译文删除、改写未覆盖疑似控制符，保存前校验、质量检查或写文件前检查必须报 error。
 
 ## 字符级保留
 
 `original_lines`、`text_for_model_lines` 和待填 `translation_lines` 中凡是出现反斜杠开头的 RPG Maker 控制片段、内置游戏控制符占位符或自定义占位符，都必须当成不可翻译标记。
 
 填写 `translation_lines` 时只能使用 `original_lines` 里的游戏原始控制符，禁止复制程序占位符。看起来不标准的控制片段也必须按原文保留，例如原文是 `\F3[66」「` 时，译文也保留 `\F3[66」「`，不能改括号、编号或紧邻边界。
-
-

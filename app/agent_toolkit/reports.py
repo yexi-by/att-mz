@@ -1,7 +1,7 @@
 """Agent 工具包报告模型。"""
 
 import json
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,8 +19,8 @@ class AgentIssue(BaseModel):
     message: str
 
 
-class AgentReport(BaseModel):
-    """供终端和外部 Agent 使用的统一报告结构。"""
+class AgentReportEnvelope(BaseModel):
+    """供终端和外部 Agent 使用的统一 stdout JSON envelope。"""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
@@ -38,7 +38,7 @@ class AgentReport(BaseModel):
         warnings: list[AgentIssue],
         summary: JsonObject,
         details: JsonObject,
-    ) -> "AgentReport":
+    ) -> Self:
         """根据错误和告警集合构造报告状态。"""
         errors = _deduplicate_issues(errors)
         warnings = _deduplicate_issues(warnings)
@@ -56,9 +56,29 @@ class AgentReport(BaseModel):
             details=details,
         )
 
+    @classmethod
+    def from_error(
+        cls,
+        *,
+        code: str,
+        message: str,
+        details: JsonObject | None = None,
+    ) -> Self:
+        """构造顶层 CLI 错误报告。"""
+        return cls.from_parts(
+            errors=[AgentIssue(code=code, message=message)],
+            warnings=[],
+            summary={},
+            details=details or {},
+        )
+
     def to_json_text(self) -> str:
         """序列化为稳定的 UTF-8 JSON 文本。"""
         return json.dumps(self.model_dump(mode="json"), ensure_ascii=False, indent=2)
+
+
+class AgentReport(AgentReportEnvelope):
+    """`AgentReportEnvelope` 的项目内通用公开名称。"""
 
 
 def issue(code: str, message: str) -> AgentIssue:
@@ -80,6 +100,7 @@ def _deduplicate_issues(items: list[AgentIssue]) -> list[AgentIssue]:
 
 
 __all__: list[str] = [
+    "AgentReportEnvelope",
     "AgentIssue",
     "AgentReport",
     "AgentReportStatus",

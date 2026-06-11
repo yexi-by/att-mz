@@ -1,5 +1,6 @@
 use super::models::{MvVirtualNameboxRule, MvVirtualSpeaker, MvVirtualSpeakerPolicy};
 use super::utils::render_format_template;
+use crate::native_core::rule_runtime::engine::Pcre2CaptureMatch;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -17,21 +18,23 @@ pub(super) fn parse_mv_virtual_speaker_line(
     for rule in rules {
         let captures = rule
             .pattern
-            .captures(normalized_text)
-            .map_err(|error| format!("MV 虚拟名字框规则匹配失败 {}: {error}", rule.rule_name))?;
-        let Some(captures) = captures else {
+            .captures_iter(normalized_text)
+            .map_err(|error| {
+                format!(
+                    "MV 虚拟名字框规则匹配失败 {}: {}",
+                    rule.rule_name, error.message
+                )
+            })?;
+        let Some(capture_match) = captures.into_iter().find(|capture_match| {
+            capture_match.full_span.start == 0
+                && capture_match.full_span.end == normalized_text.len()
+        }) else {
             continue;
         };
-        let Some(full_match) = captures.get(0) else {
-            continue;
-        };
-        if full_match.start() != 0 || full_match.end() != normalized_text.len() {
-            continue;
-        }
         matches.push(build_mv_virtual_speaker(
             data_files,
             rule,
-            &captures,
+            &capture_match,
             normalized_text,
         )?);
     }
@@ -51,20 +54,19 @@ pub(super) fn parse_mv_virtual_speaker_line(
 pub(super) fn build_mv_virtual_speaker(
     data_files: &BTreeMap<String, Value>,
     rule: &MvVirtualNameboxRule,
-    captures: &fancy_regex::Captures<'_>,
+    captures: &Pcre2CaptureMatch,
     matched_text: &str,
 ) -> Result<MvVirtualSpeaker, String> {
     let mut group_values: HashMap<String, String> = HashMap::new();
     for group_name in &rule.group_names {
-        let value = captures
-            .name(group_name)
-            .map(|matched| matched.as_str().to_string())
-            .unwrap_or_default();
+        let value = capture_group(matched_text, captures, group_name)
+            .unwrap_or_default()
+            .to_string();
         group_values.insert(group_name.clone(), value);
     }
-    let source_speaker_text = captures
-        .name(&rule.speaker_group)
-        .map(|matched| matched.as_str().trim().to_string())
+    let source_speaker_text = capture_group(matched_text, captures, &rule.speaker_group)
+        .map(str::trim)
+        .map(str::to_string)
         .unwrap_or_default();
     if source_speaker_text.is_empty() {
         return Err(format!(
@@ -75,9 +77,8 @@ pub(super) fn build_mv_virtual_speaker(
     let body_text = if rule.body_group.is_empty() {
         String::new()
     } else {
-        captures
-            .name(&rule.body_group)
-            .map(|matched| matched.as_str().to_string())
+        capture_group(matched_text, captures, &rule.body_group)
+            .map(str::to_string)
             .unwrap_or_default()
     };
     let speaker = match rule.speaker_policy {
@@ -105,6 +106,14 @@ pub(super) fn build_mv_virtual_speaker(
         speaker_group: rule.speaker_group.clone(),
         body_group: rule.body_group.clone(),
     })
+}
+
+fn capture_group<'a>(
+    text: &'a str,
+    captures: &Pcre2CaptureMatch,
+    group_name: &str,
+) -> Option<&'a str> {
+    captures.named_text(text, group_name)
 }
 
 pub(super) fn read_mv_render_speaker(

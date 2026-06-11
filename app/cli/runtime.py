@@ -18,7 +18,6 @@ from app.cli.arguments import (
     read_optional_bool_arg,
     read_optional_float_arg,
     read_optional_int_arg,
-    read_optional_int_list_arg,
     read_optional_pair_list_arg,
     read_optional_path_arg,
     read_optional_positive_int_arg,
@@ -183,10 +182,6 @@ def build_setting_overrides(args: argparse.Namespace) -> SettingOverrides:
             args,
             "replacement_font_path",
         ),
-        event_command_default_codes=read_optional_int_list_arg(
-            args,
-            "event_command_default_codes",
-        ),
         strip_wrapping_punctuation_pairs=read_optional_pair_list_arg(
             args,
             "strip_wrapping_punctuation_pair",
@@ -216,6 +211,18 @@ def build_setting_overrides(args: argparse.Namespace) -> SettingOverrides:
         source_residual_segment_pattern=read_optional_str_arg(
             args,
             "source_residual_segment_pattern",
+        ),
+        source_residual_detection_profile=read_optional_str_arg(
+            args,
+            "source_residual_detection_profile",
+        ),
+        english_source_copy_min_words=read_optional_int_arg(
+            args,
+            "english_source_copy_min_words",
+        ),
+        english_source_copy_min_letters=read_optional_int_arg(
+            args,
+            "english_source_copy_min_letters",
         ),
         residual_escape_sequence_pattern=read_optional_str_arg(
             args,

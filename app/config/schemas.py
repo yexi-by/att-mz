@@ -6,7 +6,7 @@
 占位符规则由当前游戏数据库或 CLI 显式输入提供。
 """
 
-from typing import Annotated, ClassVar
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,6 +14,7 @@ from app.language import (
     DEFAULT_SOURCE_LANGUAGE,
     SUPPORTED_SOURCE_LANGUAGES,
     SourceLanguage,
+    SourceResidualDetectionProfile,
     SourceTextExclusionProfile,
 )
 from app.llm_request_body_extra import LLMRequestBodyExtra, normalize_request_body_extra
@@ -84,28 +85,15 @@ class TextTranslationSetting(StrictBaseModel):
 
 
 type EventCommandCode = Annotated[int, Field(ge=0, strict=True)]
+REQUIRED_EVENT_COMMAND_ENGINE_KINDS: frozenset[EngineKind] = frozenset(("mv", "mz"))
 
 
 class EventCommandTextSetting(StrictBaseModel):
     """事件指令参数外部规则配置。"""
 
-    default_command_codes: list[EventCommandCode] = Field(
-        min_length=1,
-        title="默认导出的事件指令编码",
-    )
     default_command_codes_by_engine: dict[EngineKind, list[EventCommandCode]] = Field(
-        default_factory=dict,
         title="按引擎区分的默认事件指令编码",
     )
-
-    @field_validator("default_command_codes")
-    @classmethod
-    def _validate_default_command_codes(cls, value: list[int]) -> list[int]:
-        """默认事件指令编码必须是非空、非负且去重后的数组。"""
-        return normalize_event_command_codes(
-            value,
-            context="event_command_text.default_command_codes",
-        )
 
     @field_validator("default_command_codes_by_engine")
     @classmethod
@@ -113,7 +101,11 @@ class EventCommandTextSetting(StrictBaseModel):
         cls,
         value: dict[EngineKind, list[int]],
     ) -> dict[EngineKind, list[int]]:
-        """按引擎配置的事件指令编码必须逐项非空并去重。"""
+        """按引擎配置的事件指令编码必须覆盖 MV/MZ 且逐项非空。"""
+        missing_engine_kinds = sorted(REQUIRED_EVENT_COMMAND_ENGINE_KINDS.difference(value))
+        if missing_engine_kinds:
+            missing_label = "、".join(missing_engine_kinds)
+            raise ValueError(f"event_command_text.default_command_codes_by_engine 缺少引擎: {missing_label}")
         normalized_map: dict[EngineKind, list[int]] = {}
         for engine_kind, command_codes in value.items():
             normalized_map[engine_kind] = normalize_event_command_codes(
@@ -123,11 +115,8 @@ class EventCommandTextSetting(StrictBaseModel):
         return normalized_map
 
     def default_codes_for_engine(self, engine_kind: EngineKind) -> list[int]:
-        """按引擎返回默认事件指令编码，引擎配置优先于旧配置。"""
-        engine_codes = self.default_command_codes_by_engine.get(engine_kind)
-        if engine_codes is not None:
-            return list(engine_codes)
-        return list(self.default_command_codes)
+        """按引擎返回默认事件指令编码。"""
+        return list(self.default_command_codes_by_engine[engine_kind])
 
 
 def normalize_event_command_codes(value: list[int], *, context: str) -> list[int]:
@@ -149,6 +138,59 @@ class WriteBackSetting(StrictBaseModel):
     """游戏文件写回阶段配置。"""
 
     replacement_font_path: str | None = Field(default=None, title="用户确认覆盖字体后使用的候选字体路径")
+
+
+type RuntimeRustThreads = Literal["auto"] | Annotated[int, Field(gt=0, strict=True)]
+
+
+class RuntimeSetting(StrictBaseModel):
+    """Rust 原生核心运行时配置。"""
+
+    rust_threads: RuntimeRustThreads = Field(
+        default="auto",
+        title="Rust 原生线程数",
+        description="auto 使用 Rayon 默认线程数；正整数使用局部线程池限制并发。",
+    )
+
+
+type DebugLogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+type DebugTimingDetailLevel = Literal["standard"]
+
+
+class DebugLoggingSetting(StrictBaseModel):
+    """debug 模式下的日志输出配置。"""
+
+    enabled: bool = Field(default=True, title="是否启用 debug 日志")
+    console_level: DebugLogLevel = Field(default="DEBUG", title="debug 终端日志等级")
+    file_level: DebugLogLevel = Field(default="DEBUG", title="debug 文件日志等级")
+
+
+class DebugTimingsSetting(StrictBaseModel):
+    """debug 模式下的统一计时诊断配置。"""
+
+    enabled: bool = Field(default=True, title="是否启用统一计时诊断")
+    write_file: bool = Field(default=True, title="是否写出完整诊断 JSON 文件")
+    include_summary_in_report: bool = Field(default=True, title="是否在 stdout 报告中追加诊断摘要")
+    detail_level: DebugTimingDetailLevel = Field(default="standard", title="计时诊断详细程度")
+
+
+class DebugLLMMessagesSetting(StrictBaseModel):
+    """debug 模式下的 LLM 消息观测配置。"""
+
+    enabled: bool = Field(default=True, title="是否启用 LLM 消息观测")
+    output_dir: str = Field(default="output/debug/llm-messages", title="LLM 消息观测输出目录")
+
+
+class DebugSetting(StrictBaseModel):
+    """项目 debug 配置域。"""
+
+    enabled: bool = Field(default=False, title="是否进入 debug 模式")
+    logging: DebugLoggingSetting = Field(default_factory=DebugLoggingSetting, title="debug 日志配置")
+    timings: DebugTimingsSetting = Field(default_factory=DebugTimingsSetting, title="debug 计时配置")
+    llm_messages: DebugLLMMessagesSetting = Field(
+        default_factory=DebugLLMMessagesSetting,
+        title="debug LLM 消息观测配置",
+    )
 
 
 class TextRulesSetting(StrictBaseModel):
@@ -212,13 +254,14 @@ class TextRulesSetting(StrictBaseModel):
     )
     long_text_line_width_limit: int = Field(default=26, gt=0)
     line_width_count_pattern: str = Field(default=r"\S")
-    source_text_required_pattern: str = Field(
-        default=r"[\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+"
-    )
+    source_text_required_pattern: str = Field(default=r"[ぁ-んァ-ヶ一-龯ー]+")
     source_text_exclusion_profile: SourceTextExclusionProfile = Field(default="none")
-    source_residual_segment_pattern: str = Field(default=r"[\u3040-\u309F\u30A0-\u30FF]+")
+    source_residual_segment_pattern: str = Field(default=r"[ぁ-んァ-ヶー]+")
     allowed_source_residual_terms: list[str] = Field(default_factory=list)
     source_residual_terms_ignore_case: bool = Field(default=False)
+    source_residual_detection_profile: SourceResidualDetectionProfile = Field(default="japanese_strict")
+    english_source_copy_min_words: int = Field(default=4, gt=0)
+    english_source_copy_min_letters: int = Field(default=12, gt=0)
     residual_escape_sequence_pattern: str = Field(default=r"\\[nrt]")
 
 
@@ -230,12 +273,22 @@ class Setting(StrictBaseModel):
     text_translation: TextTranslationSetting = Field(title="正文翻译配置")
     event_command_text: EventCommandTextSetting = Field(title="事件指令参数外部规则配置")
     write_back: WriteBackSetting = Field(default_factory=WriteBackSetting, title="写回配置")
+    runtime: RuntimeSetting = Field(default_factory=RuntimeSetting, title="运行时配置")
+    debug: DebugSetting = Field(default_factory=DebugSetting, title="debug 配置")
     text_rules: TextRulesSetting = Field(default_factory=TextRulesSetting, title="文本规则")
 
 
 __all__: list[str] = [
     "EventCommandTextSetting",
+    "DebugLogLevel",
+    "DebugLLMMessagesSetting",
+    "DebugLoggingSetting",
+    "DebugSetting",
+    "DebugTimingDetailLevel",
+    "DebugTimingsSetting",
     "LLMSetting",
+    "RuntimeRustThreads",
+    "RuntimeSetting",
     "Setting",
     "StrictBaseModel",
     "TextRulesSetting",

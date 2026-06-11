@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
+from app.rmmz.game_file_view import GameFileView
 from app.rmmz.control_codes import (
     LITERAL_LINE_BREAK_PLACEHOLDER,
     REAL_LINE_BREAK_MARKER,
@@ -29,6 +30,14 @@ type TranslationRunStatus = Literal["running", "completed", "blocked", "cancelle
 type SourceResidualRuleType = Literal["position", "structural"]
 type MvVirtualNameboxSpeakerPolicy = Literal["translate", "preserve", "actor_name"]
 type PluginSourceRuntimeMappingKind = Literal["translated", "excluded"]
+type PluginSourceRuntimeLiteralKind = Literal[
+    "regex_pattern",
+    "packer_code",
+    "eval_code",
+    "user_visible_candidate",
+    "unknown",
+]
+type PluginSourceRuntimeLiteralAuditSeverity = Literal["blocking", "warning", "ignore"]
 type LlmFailureCategory = Literal[
     "rate_limit",
     "timeout",
@@ -55,6 +64,9 @@ class Code(IntEnum):
 class TranslationItem(BaseModel):
     """单个翻译条目，负责维护控制符占位符与译文恢复。"""
 
+    fact_id: str | None = Field(default=None, exclude=True)
+    source_fact_raw_hash: str | None = Field(default=None, exclude=True)
+    source_fact_translatable_hash: str | None = Field(default=None, exclude=True)
     role: str | None = None
     location_path: str
     item_type: ItemType
@@ -65,6 +77,8 @@ class TranslationItem(BaseModel):
     translation_lines: list[str] = Field(default_factory=list)
     placeholder_map: dict[str, str] = Field(default_factory=dict)
     placeholder_counts: dict[str, int] = Field(default_factory=dict)
+    terminology_owner_terms: list[str] = Field(default_factory=list, exclude=True)
+    translation_dedupe_key: str | None = Field(default=None, exclude=True)
 
     def build_placeholders(self, text_rules: TextRules | None = None) -> None:
         """为原文中的 RM 控制符构建语义化占位符。"""
@@ -242,10 +256,12 @@ def _format_control_counts(counts: dict[str, int]) -> str:
 class TranslationErrorItem(BaseModel):
     """正文翻译错误记录。"""
 
+    fact_id: str = Field(exclude=True)
     location_path: str
     item_type: ItemType
     role: str | None
     original_lines: list[str] = Field(default_factory=list)
+    translation_dedupe_key: str | None = Field(default=None, exclude=True)
     translation_lines: list[str] = Field(default_factory=list)
     error_type: ErrorType
     error_detail: list[str] = Field(default_factory=list)
@@ -397,6 +413,8 @@ class PluginSourceRuntimeStringLiteralCacheRecord(BaseModel):
     start_index: int = Field(ge=0)
     end_index: int = Field(ge=0)
     context: str
+    literal_kind: PluginSourceRuntimeLiteralKind
+    audit_default_severity: PluginSourceRuntimeLiteralAuditSeverity
 
 
 class PluginSourceRuntimeScanCacheRecord(BaseModel):
@@ -404,6 +422,9 @@ class PluginSourceRuntimeScanCacheRecord(BaseModel):
 
     file_name: str
     file_hash: str
+    rust_contract_version: int
+    parser_contract_version: int
+    audit_contract_version: int
     syntax_error: str = ""
     literals: list[PluginSourceRuntimeStringLiteralCacheRecord] = Field(default_factory=list)
     created_at: str
@@ -506,6 +527,7 @@ class GameLayout:
 class GameData:
     """游戏数据聚合模型。"""
 
+    view: GameFileView
     layout: GameLayout
     data: dict[str, JsonValue]
     writable_data: dict[str, JsonValue]

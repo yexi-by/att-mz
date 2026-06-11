@@ -5,32 +5,39 @@ RPG Maker 原始数据结构模型模块。
 提取和回写流程共享。
 """
 
-from typing import cast
+from typing import ClassVar, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
+from app.external_input import ExternalInputModel, ExternalInt, ExternalStr, normalize_external_int
 from app.rmmz.text_rules import JsonValue
 
 
-class BaseItem(BaseModel):
+class RmmzDataModel(ExternalInputModel):
+    """RPG Maker 标准 data 模型基类，只解析本工具关心的字段。"""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", strict=True)
+
+
+class BaseItem(RmmzDataModel):
     """RPG Maker 数据库基础条目通用模型。"""
 
-    id: int
-    name: str
-    note: str = ""
-    nickname: str = ""
-    profile: str = ""
-    description: str = ""
-    message1: str = ""
-    message2: str = ""
-    message3: str = ""
-    message4: str = ""
+    id: ExternalInt
+    name: ExternalStr
+    note: ExternalStr = ""
+    nickname: ExternalStr = ""
+    profile: ExternalStr = ""
+    description: ExternalStr = ""
+    message1: ExternalStr = ""
+    message2: ExternalStr = ""
+    message3: ExternalStr = ""
+    message4: ExternalStr = ""
 
 
-class EventCommand(BaseModel):
+class EventCommand(RmmzDataModel):
     """RPG Maker 事件指令模型。"""
 
-    code: int
+    code: ExternalInt
     parameters: list[JsonValue]
 
     @model_validator(mode="before")
@@ -40,68 +47,72 @@ class EventCommand(BaseModel):
         if not isinstance(data, dict):
             return data
         raw_data = cast(dict[object, object], data)
-        if raw_data.get("code") != 0 or "parameters" in raw_data:
+        try:
+            is_end_command = normalize_external_int(raw_data.get("code"), "code") == 0
+        except TypeError:
+            return raw_data
+        if not is_end_command or "parameters" in raw_data:
             return raw_data
         normalized_data: dict[object, object] = dict(raw_data)
         normalized_data["parameters"] = []
         return normalized_data
 
 
-class Page(BaseModel):
+class Page(RmmzDataModel):
     """事件页模型。"""
 
     commands: list[EventCommand] = Field(..., alias="list")
 
 
-class Event(BaseModel):
+class Event(RmmzDataModel):
     """地图事件模型。"""
 
-    id: int
-    name: str
-    note: str
+    id: ExternalInt
+    name: ExternalStr
+    note: ExternalStr
     pages: list[Page]
 
 
-class MapData(BaseModel):
+class MapData(RmmzDataModel):
     """地图数据模型，对应 `data/MapXXX.json`。"""
 
-    displayName: str
-    note: str
+    displayName: ExternalStr
+    note: ExternalStr
     events: list[Event | None]
 
 
-class Terms(BaseModel):
+class Terms(RmmzDataModel):
     """系统基础词汇模型。"""
 
-    basic: list[str]
-    commands: list[str | None]
-    params: list[str]
-    messages: dict[str, str]
+    basic: list[ExternalStr]
+    commands: list[ExternalStr | None]
+    params: list[ExternalStr]
+    messages: dict[ExternalStr, ExternalStr]
 
 
-class System(BaseModel):
+class System(RmmzDataModel):
     """系统全局配置模型，对应 `data/System.json`。"""
 
-    gameTitle: str
+    gameTitle: ExternalStr
     terms: Terms
-    elements: list[str]
-    skillTypes: list[str]
-    weaponTypes: list[str]
-    armorTypes: list[str]
-    equipTypes: list[str]
+    elements: list[ExternalStr]
+    skillTypes: list[ExternalStr]
+    weaponTypes: list[ExternalStr]
+    armorTypes: list[ExternalStr]
+    equipTypes: list[ExternalStr]
 
 
-class Troop(BaseModel):
+class Troop(RmmzDataModel):
     """敌群战役模型，对应 `data/Troops.json`。"""
 
-    id: int
+    id: ExternalInt
     pages: list[Page]
 
 
-class CommonEvent(BaseModel):
+class CommonEvent(RmmzDataModel):
     """全局公共事件模型，对应 `data/CommonEvents.json`。"""
 
-    id: int
+    id: ExternalInt
     commands: list[EventCommand] = Field(..., alias="list")
 
 
@@ -112,6 +123,7 @@ __all__: list[str] = [
     "EventCommand",
     "MapData",
     "Page",
+    "RmmzDataModel",
     "System",
     "Terms",
     "Troop",

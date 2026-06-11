@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
 from app.native_quality import collect_native_note_tag_sources
-from app.rmmz.schema import MAP_PATTERN, PLUGINS_FILE_NAME, GameData
+from app.rmmz.schema import MAP_PATTERN, PLUGINS_FILE_NAME, GameData, NoteTagTextRuleRecord
 from app.rmmz.text_rules import ensure_json_object, ensure_json_string_list
 
 MAP_NOTE_FILE_PATTERN = "Map*.json"
@@ -56,6 +56,23 @@ def note_file_pattern_matches(*, file_name: str, file_pattern: str) -> bool:
     return fnmatchcase(file_name, file_pattern)
 
 
+def note_tag_location_path_matches_rule(
+    *,
+    location_path: str,
+    rule_record: NoteTagTextRuleRecord,
+) -> bool:
+    """判断已保存译文定位是否属于指定 Note 标签规则。"""
+    parts = location_path.split("/")
+    if len(parts) < 3 or parts[-2] != "note":
+        return False
+    file_name = parts[0]
+    tag_name = parts[-1]
+    return (
+        tag_name in rule_record.tag_names
+        and note_file_pattern_matches(file_name=file_name, file_pattern=rule_record.file_name)
+    )
+
+
 def matched_note_file_names(*, game_data: GameData, file_pattern: str) -> list[str]:
     """返回规则文件模式命中的标准 data 文件名。"""
     return sorted(_iter_data_file_names(game_data=game_data, file_pattern=file_pattern))
@@ -82,4 +99,5 @@ __all__: list[str] = [
     "collect_note_tag_sources",
     "matched_note_file_names",
     "note_file_pattern_matches",
+    "note_tag_location_path_matches_rule",
 ]

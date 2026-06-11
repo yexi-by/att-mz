@@ -5,130 +5,175 @@ description: 仅在用户明确要求使用 A.T.T MZ 发行版执行或继续 RP
 
 # A.T.T MZ 发行版 Skill
 
-本 Skill 是翻译任务执行协议，不是项目说明书。主文件只描述阶段、边界、必读参考资料和停止条件；命令细节、JSON 结构、样例、任务单和失败恢复都按阶段读取 `references/`。
+本 Skill 是翻译任务执行协议，不是项目说明书。主文件只做路由：触发边界、运行面、阶段索引和硬停止规则。阶段细节、JSON 结构、任务契约和失败恢复按需读取 `references/`。
 
 ## 核心原则
 
 - 业务数据只通过 A.T.T MZ CLI、工作区 JSON、当前游戏目录和用户明确提供的信息流转。
 - 任何会消耗模型额度、导入规则、保存译文或写进游戏文件的动作，都必须先满足当前阶段的通过标准。
-- 对用户报告时，把内部状态、字段名和命令结果转成业务影响与下一步动作；只有排障或解释 JSON 结构时才保留原字段名。
+- 主代理是总控与裁决者：用户确认、规则导入、译文保存、写回许可、字体覆盖和最终风险判断不能交给子代理。
+- 默认自动推进：除写文件、危险回溯、完整重译、源码/Skill 修改、接受不可逆或用户风险、显著增加额度/时间成本等真实决策外，主代理应自行诊断、修规则、重跑校验、导入修复和收束报告，不把可由流程判断的问题改成中途选择题。
+- 子代理分为工作席和审查席：工作子代理主动发现并产出候选，审查子代理反向检查漏选、误选、偷懒、原文残留、过拟合和规则风险；子代理输出只是证据和候选，主代理必须裁决。
 - 第一次写进游戏文件只表示生成第一版可试玩汉化结果，稳定版本依赖用户试玩反馈继续补漏。
+- 源码仓库中的 `docs/wiki/` 是维护者资料，不是发行版翻译流程执行契约；执行翻译时不要读取源码 wiki、数据库表或维护者文档来替代本 Skill、CLI JSON 输出和当前工作区文件。
 
-## 运行边界
+## 运行面
 
-- `<发行版目录>` 是 A.T.T MZ 发行包目录。发行版默认命令是 `.\att-mz.exe <命令> ...`。
-- 不要运行 `uv run python main.py`，不要安装 Python、Rust、uv 或 maturin，不要读取项目源码。
-- `<游戏目录>` 是目标 RPG Maker MV/MZ 游戏目录。首次注册必须使用没有 `data_origin`、`js/plugins_origin.js` 和 `js/plugins_source_origin` 的干净原始目录；注册游戏时由 CLI 创建这组可信源快照。
-- `<工作区>` 是任务临时目录。导出文件、规则草稿、任务包、临时脚本和手动填写译文表都放在这里，不能散落到发行版目录或游戏根目录。
-- `reset-game` 是危险的时光回溯命令，只能在用户明确要求注销、重置游戏或恢复到注册前状态时使用；普通翻译、补规则、重译、写回和试玩反馈流程不得主动调用。
+- `<发行版目录>` 是 A.T.T MZ 发行包目录。默认命令是 `.\att-mz.exe <命令> ...`。
+- 翻译流程内 `<发行版目录>` 默认只读。未经用户明确允许，严禁修改源码、测试、配置、提示词、Skill、文档、构建脚本、发行脚本或任何项目文件；不得把“顺手修复”“排障需要”“测试失败”“格式化一下”当作源码修改许可。
+- `<游戏目录>` 是目标 RPG Maker MV/MZ 游戏目录。首次注册必须使用没有 `data_origin`、`js/plugins_origin.js` 和 `js/plugins_source_origin` 的干净原始目录；注册游戏时由 CLI 创建可信源快照。
+- `<工作区>` 是任务临时工作目录。导出文件、规则草稿、任务包、临时脚本和手动填写译文表都放在这里，不能散落到 `<发行版目录>` 或游戏根目录。
+- `reset-game` 是危险的时光回溯命令，只能在用户明确要求注销、重置游戏或恢复到注册前状态时使用。
 - 模型地址、API Key、路径、业务参数和可调开关只从环境变量、本地配置或 CLI 参数读取，不写进任务文件、报告或提交。
-- 首次执行阶段命令时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；只有命令必需定位参数、用户明确指定值、CLI 契约要求显式传入，或默认配置已被 CLI 输出证明不适合当前阶段时，才用环境变量或 CLI 参数做最小覆盖，并在报告中说明原因。
-- 所有工作区 JSON、规则文件、临时脚本和报告按 UTF-8 读写。终端乱码或控制符边界异常时，先核验原始字符，再继续导入、翻译或写回。
 - CLI stdout 只读取最终 JSON；长任务的 stderr 进度行是阶段进展，不是结果 JSON。
-- 长任务先沿用 `setting.toml` 与当前环境中的线程配置；如果默认配置导致吞吐明显不足、CLI 输出提示线程配置不合适、用户要求性能优先，或当前机器是专用运行机器，再把 `ATT_MZ_RUST_THREADS` 设为合适的逻辑处理器数量。不要把 `4` 当上限；`4` 只用于可重复性能验收基线。
 
 ## 按需参考资料
 
 | 主要工作 | 必读参考资料 | 读取时机 |
 | --- | --- | --- |
-| 命令调用与成功判断 | `references/cli-command-contract.md` | 运行或排查任一 CLI 阶段前 |
-| 工作区文件与 JSON 结构 | `references/workspace-schema.md` | 读取、填写或修复工作区 JSON 前 |
-| RPG Maker MV/MZ 常识 | `references/rpg-maker-mv-mz-world-knowledge.md` | 判断引擎协议、事件指令、数据库字段、插件和 Note 标签语义时 |
-| MV 虚拟名字框 | `references/mv-virtual-namebox-rules.md` | MV 游戏第零轮规则编写、审查或修复前 |
-| 术语工程 | `references/terminology-workflow.md` 与 `references/translation-rule-examples.md` 的术语小节 | 进入术语工程、派发术语候选、合并字段译名表或制作正文术语表前 |
-| 外部文本规则 | `references/external-rules-workflow.md`、`references/plugin-rules-agent-task.md`、`references/event-command-rules-agent-task.md`、`references/note-tag-rules-agent-task.md` 和 `references/translation-rule-examples.md` 的三类外部规则小节 | 处理插件、事件指令或 Note 标签规则前 |
-| 非标准 data 文本 | `references/nonstandard-data-agent-task.md` 与 `references/workspace-schema.md` 的非标准 data 小节 | `nonstandard-data-risk-report.json` 提示高风险，或用户要求处理非标准 `data/*.json` 前 |
-| 插件源码文本 | `references/plugin-source-text-agent-task.md` 与 `references/workspace-schema.md` 的插件源码小节 | `plugin-source-risk-report.json` 提示高风险，或用户要求处理 `js/plugins/*.js` 源码文本前 |
-| 普通占位符规则 | `references/placeholder-rules.md` 与 `references/translation-rule-examples.md` 的占位符小节 | 编写、审查、覆盖扫描或修复普通占位符规则前 |
-| 结构化占位符规则 | `references/structured-placeholder-rules.md` | 处理固定协议外壳包住可翻译显示文本时 |
-| 外部协作任务包 | `references/subtask-package-mode.md` | 用户选择外部协作任务包或混合处理时 |
-| 翻译失败与手动修复 | `references/failure-recovery.md` | 质量检查失败、剩余文本不下降、源文残留或需要重置译文时 |
-| 试玩反馈迭代 | `references/feedback-iteration.md` | 用户反馈漏翻、误翻、显示异常或插件界面残留源语言文本时 |
+| 启动与注册 | `cli-command-contract.md`、`workspace-schema.md` | 运行或排查启动、注册、状态检查和危险回溯前 |
+| 工作区与基础候选 | `cli-command-contract.md`、`workspace-schema.md`、`agent-review-workflow.md`、`subtask-package-mode.md` | 读取、填写、修复、审查、分发任务包或清理工作区 JSON 前 |
+| MV 虚拟名字框 | `agent-review-workflow.md`、`mv-virtual-namebox-rules.md`、`rpg-maker-mv-mz-world-knowledge.md` | MV 游戏第零轮规则发现、审查、编写或修复前 |
+| 术语工程 | `agent-review-workflow.md`、`terminology-workflow.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` | 进入术语工程、派发术语候选、分发术语任务包、审查术语质量、合并字段译名表或制作正文术语表前 |
+| 外部文本规则 | `agent-review-workflow.md`、`external-rules-workflow.md`、`plugin-rules-agent-task.md`、`event-command-rules-agent-task.md`、`note-tag-rules-agent-task.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` | 处理、主动发现、分发任务包或审查插件、事件指令、Note 标签规则前 |
+| 非标准 data 与插件源码支线 | `agent-review-workflow.md`、`nonstandard-data-agent-task.md`、`plugin-source-text-agent-task.md`、`workspace-schema.md`、`subagent-collaboration.md` | 风险报告提示高风险，或用户要求处理、主动发现、审查非标准 data / 插件源码文本前 |
+| 占位符收束 | `agent-review-workflow.md`、`placeholder-rules.md`、`structured-placeholder-rules.md`、`translation-rule-examples.md`、`subagent-collaboration.md` | 编写、审查、覆盖扫描或修复普通/结构化占位符规则前 |
+| 正文翻译与手动修复 | `cli-command-contract.md`、`failure-recovery.md`、`placeholder-rules.md`、`structured-placeholder-rules.md` | 启动正文翻译、解释失败、导出修复表、导入手动译文或重置译文前 |
+| 写进游戏文件 | `cli-command-contract.md`、`failure-recovery.md`、`subagent-collaboration.md` | 写进游戏文件、重建当前运行文件、术语专用写入或当前运行审计前 |
+| 试玩反馈 | `feedback-iteration.md`、`failure-recovery.md`、`subagent-collaboration.md` | 用户反馈漏翻、误翻、显示异常或插件界面残留源语言文本时 |
 
 不要把参考资料全文复制进模型 prompt、交付报告或子代理任务单；只读取当前阶段需要的小节，并继续以 CLI 输出和当前工作区文件为准。
 
-## 主要工作矩阵
+## 阶段索引
 
-| 主要工作 | 目标 | 输入 | 输出 | 通过标准 | 停止条件 |
-| --- | --- | --- | --- | --- | --- |
-| 启动与注册 | 确认发行版、游戏、工作区、源语言和模型配置可用 | `<发行版目录>`、`<游戏目录>`、源语言探测报告、`<工作区>` | 已注册 `<游戏标题>` 与可用工作区 | `doctor`、`probe-source-language`、`add-game` 和游戏检查成功 | 游戏结构无效、源语言探测不确定且用户未确认、工作区不可写、模型配置缺失且本轮需要翻译 |
-| MV 虚拟名字框 | 为 MV 游戏确认首行虚拟名字框规则 | `mv-virtual-namebox-candidates.json` | 已导入 MV 虚拟名字框规则或确认空规则 | validate 无 error，新增命中样本均经主代理确认 | MZ 游戏误跑本阶段、MV 新命中未审查、空规则未确认 |
-| 术语概念 | 区分字段写回表和正文提示词术语表 | `terminology-workflow.md`、字段译名表、正文术语表 | 已明确字段写回条目和正文规范术语的边界 | 主代理已阅读术语概念与清洗规则，正文术语表不是字段译名表副本 | 未阅读术语概念、把字段包装形式、整句或一次性枚举直接塞进正文术语表 |
-| 术语工程 | 统一字段译名和正文术语 | 字段译名表、正文术语表、术语上下文、术语子任务源文件 | 已导入字段译名表和正文术语表 | 主代理审查并导入成功，无空译名和明显冲突 | 子代理直接改最终表、机械音译、源文残留、同一术语冲突 |
-| 外部文本规则 | 判断插件参数、事件指令参数和 Note 标签中的玩家可见文本 | 三类候选文件与草稿规则 | 已导入插件、事件指令、Note 标签规则或确认空结果 | 对应 validate/import 成功 | 猜测路径、选中资源/脚本/机器协议、未说明空结果理由 |
-| 非标准 data 文本 | 处理少见的非标准 `data/*.json` 玩家可见文本 | 风险报告、候选清单、源 JSON 副本、规则草稿 | 候选全部归入翻译路径、排除路径或用户确认跳过，并导入成功 | 高风险时先询问用户，按任务契约全量归类，再 validate/import 成功 | 未获用户确认、高风险未处理、候选未归类、路径失效、把 skipped 当成无风险 |
-| 插件源码文本 | 处理少见的 `js/plugins` 源码硬编码显示文本 | `plugin-source-risk-report.json`、AST 地图、只读插件源码、源码规则草稿 | 活跃源语言候选全部归入翻译 selector 或排除 selector，并导入成功 | 高风险时先询问用户，肯定后用 AST 地图筛选并只读源码交叉验证，再 validate/import 成功 | 未获用户确认、高风险未处理、selector 未归类、selector 失效、试图扫描 plugins 外目录 |
-| 占位符收束 | 保护必须原样保留的游戏控制符和协议片段 | 当前会进入正文翻译的完整文本集合、占位符候选和规则草稿 | 已导入普通占位符规则与结构化占位符规则 | validate 通过，覆盖扫描风险已处理或已确认 | 未覆盖候选未修复也未确认风险、规则吞掉玩家可见文本、外部规则变化后未重新扫描 |
-| 正文翻译 | 从小批量到全量保存可检查译文 | 当前游戏状态、模型配置、已导入规则 | 已保存译文或可解释的剩余文本 | 小批量稳定，续跑剩余量下降，质量报告无规则性事故 | 规则性事故、控制符风险扩大、同类失败多轮不下降 |
-| 手动修复 | 修复质量失败和剩余文本 | 质量修复表、待补译表、源文保留例外或重置清单 | 已保存修复译文或已精确重置坏译文 | 导入成功，质量检查通过或剩余风险已解释 | 改定位字段、用空译文伪造重置、用源文保留例外掩盖整句漏翻 |
-| 写进游戏文件 | 生成可试玩汉化结果 | 已保存译文、审计报告、质量报告、用户许可 | 译文写进游戏目录 | `audit-coverage` 和 `quality-report` 无 error，可信源快照有效，正文译文完整，warning 已确认，用户允许写回，写入后当前运行文件验收通过 | 未获写回许可、质量 error、还没成功保存译文的文本未清、写入后当前运行文件仍有漏翻、坏控制符或 JS 语法错误、字体覆盖未单独确认 |
-| 试玩反馈 | 根据实际游玩反馈继续补规则或补译文 | 截图、场景、原文片段、现译文或反馈清单 | 重新检查并按需再次写进游戏文件 | 反馈可定位，修复后重新检查，必要时 `verify-feedback-text` 闭环 | 凭空猜测、直接全量重译、直接手改游戏 data 文件 |
-| 工具排障 | 识别合法输入反复失败或 Skill/CLI 契约冲突 | 合法工作区文件、CLI 错误输出 | 需要源码级排障的结论 | 已确认发行版流程无法继续 | 尝试读取源码、直接改数据库或绕过 CLI |
+| 阶段 | 目标 | 命令 | 必读参考 |
+| --- | --- | --- | --- |
+| 启动与注册 | 确认工具入口、游戏结构、工作区、源语言和模型配置可用 | `doctor`、`probe-source-language`、`add-game`、`list`、`reset-game` | `cli-command-contract.md`、`workspace-schema.md` |
+| 工作区与基础候选 | 建立 Agent 分析边界并导出候选、草稿规则和术语上下文 | `prepare-agent-workspace`、`validate-agent-workspace`、`cleanup-agent-workspace`、`export-plugins-json`、`export-event-commands-json` | `cli-command-contract.md`、`workspace-schema.md`、`agent-review-workflow.md`、`subtask-package-mode.md` |
+| MV 虚拟名字框 | 为 MV 游戏确认首行虚拟名字框规则 | `export-mv-virtual-namebox-candidates`、`validate-mv-virtual-namebox-rules`、`import-mv-virtual-namebox-rules` | `agent-review-workflow.md`、`mv-virtual-namebox-rules.md`、`rpg-maker-mv-mz-world-knowledge.md` |
+| 术语工程 | 统一字段译名和正文术语，避免字段写回表与提示词术语表混用 | `export-terminology`、`import-terminology` | `agent-review-workflow.md`、`terminology-workflow.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` |
+| 外部文本规则 | 判断插件参数、事件指令参数和 Note 标签中的玩家可见文本 | `validate-plugin-rules`、`import-plugin-rules`、`validate-event-command-rules`、`import-event-command-rules`、`export-note-tag-candidates`、`validate-note-tag-rules`、`import-note-tag-rules` | `agent-review-workflow.md`、`external-rules-workflow.md`、`plugin-rules-agent-task.md`、`event-command-rules-agent-task.md`、`note-tag-rules-agent-task.md`、`translation-rule-examples.md`、`subagent-collaboration.md`、`subtask-package-mode.md` |
+| 非标准 data 与插件源码支线 | 处理少见的非标准 data 文本和 js/plugins 源码硬编码显示文本 | `scan-nonstandard-data`、`export-nonstandard-data-json`、`validate-nonstandard-data-rules`、`import-nonstandard-data-rules`、`scan-plugin-source-text`、`export-plugin-source-ast-map`、`validate-plugin-source-rules`、`import-plugin-source-rules` | `agent-review-workflow.md`、`nonstandard-data-agent-task.md`、`plugin-source-text-agent-task.md`、`workspace-schema.md`、`subagent-collaboration.md` |
+| 占位符收束 | 保护必须原样保留的控制符和协议片段，同时不吞掉玩家可见文本 | `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates`、`import-placeholder-rules`、`validate-structured-placeholder-rules`、`scan-structured-placeholder-candidates`、`import-structured-placeholder-rules` | `agent-review-workflow.md`、`placeholder-rules.md`、`structured-placeholder-rules.md`、`translation-rule-examples.md`、`subagent-collaboration.md` |
+| 正文翻译与手动修复 | 用小批量发现严重风险，再靠全量多轮重试保存译文，最后小规模手动收尾 | `rebuild-text-index`、`translate`、`translation-status`、`text-scope`、`audit-coverage`、`quality-report`、`export-quality-fix-template`、`export-pending-translations`、`import-manual-translations`、`reset-translations`、`validate-source-residual-rules`、`import-source-residual-rules`、`run-all` | `cli-command-contract.md`、`failure-recovery.md`、`placeholder-rules.md`、`structured-placeholder-rules.md` |
+| 写进游戏文件 | 生成可试玩汉化结果，并验收当前运行文件 | `write-back`、`rebuild-active-runtime`、`write-terminology`、`restore-font`、`audit-active-runtime`、`diagnose-active-runtime`、`run-all` | `cli-command-contract.md`、`failure-recovery.md`、`subagent-collaboration.md` |
+| 试玩反馈 | 根据实际游玩反馈继续补规则、补译文或定位写入缺口 | `verify-feedback-text`、`quality-report`、`audit-active-runtime`、`diagnose-active-runtime`、`write-back` | `feedback-iteration.md`、`failure-recovery.md`、`subagent-collaboration.md` |
 
 ## 新游戏主流程
 
-1. 在 `<发行版目录>` 运行静态检查，确认 CLI 可启动；`doctor` 无 `--game` 时只说明默认语言档案和模型配置，不能当作当前游戏源语言依据。注册游戏前必须运行 `probe-source-language --path <游戏目录>`，只按玩家可见文本确认源语言，再显式传入 `--source-language ja` 或 `--source-language en`。探测命令只提供分析结果，不会注册游戏或改变主流程状态；探测结果不确定或与用户认知冲突时，必须停下来向用户展示样本确认；禁止只靠 grep 假名、英文字符或资源名判断源语言。
+1. 在 `<发行版目录>` 运行静态检查，确认 CLI 可启动；注册游戏前必须运行 `probe-source-language --path <游戏目录>`，只按玩家可见文本确认源语言。
 2. 运行游戏检查，准备 `<工作区>`，读取 `manifest.json` 判断引擎类型。
-3. MV 游戏执行第零轮虚拟名字框规则；MZ 游戏跳过。
-4. 向用户确认候选分析方式：当前会话完成、外部协作任务包或混合处理。用户未选择前，不启动大量子代理任务。
-5. 第一轮只处理术语候选。进入本阶段前必须先阅读 `terminology-workflow.md` 的术语概念和正文术语表清洗规则；子代理只能写候选文件，主代理必须亲自审查、合并字段译名表和正文术语表，再导入。
-6. 第二轮处理插件规则、事件指令规则和 Note 标签规则。每类规则可以为空，但必须确认空结果理由并通过对应导入流程保存。
-7. 非标准 data 文本和插件源码文本都是少见支线；普通流程不把这两类文件当默认语义分析对象，普通流程不自动读取插件源码做语义分析。若 `nonstandard-data-risk-report.json` 或 `plugin-source-risk-report.json` 为高风险，或试玩反馈明确指向对应文件，必须先询问用户；用户肯定后读取对应任务契约，把每个活跃候选归入翻译、排除或按规则确认跳过并导入规则；用户未确认或仍有未归类候选时停止正文翻译。
-8. 三类外部规则和必要的非标准 data、插件源码规则全部导入后，主代理亲自收束普通占位符规则；存在协议外壳包住显示文本时，再处理结构化占位符规则。
-   - 确认普通或结构化占位符候选风险只表示“已审查但不写规则也允许继续流程”，不表示允许译文改坏协议片段。未覆盖疑似控制符、内置控制符和自定义占位符仍必须在正文翻译、手动补译、质量检查和写进游戏文件前保持同一套原样保留要求。
-9. 运行工作区总体验收。任一规则未完成、校验失败或占位符覆盖不清楚时，不启动正文翻译。
-10. 先执行小批量翻译，再查看翻译进度、文本范围、覆盖审计和质量报告。
-11. 稳定后按第 N 轮续跑继续降低剩余数量。只要剩余数量明显下降且没有规则性事故，就继续翻译。
-12. 剩余量适合手动处理，或连续多轮同类失败不下降并已说明原因时，导出手动填写译文表或质量修复表。
-13. 确认确需保留源语言片段时，使用源文保留例外规则；禁止全局关闭源文残留检测。
-14. 写进游戏文件前，必须通过覆盖审计和质量检查，并取得用户写回许可；重建当前运行文件也属于写文件操作，不能绕过这些检查。字体覆盖必须单独确认。写入后必须验收当前运行文件。
-15. 写回后要求用户试玩，反馈漏翻、误翻、显示异常、插件界面残留源语言文本和图片文字等问题。
+3. MV 游戏执行第零轮虚拟名字框发现与审查；MZ 游戏跳过。工作子代理发现当前游戏发言人/名牌模式，审查子代理反向检查过拟合、漏同类和误伤，主代理写裁决后才 validate/import。
+4. 开局确定候选分析方式和高风险支线策略；用户没有特别要求时，默认当前会话自动完成并自动处理高风险支线，不把后续可判断的支线处理变成中途选择题。
+5. 第一轮处理术语候选；工作子代理产出分组候选和证据，术语审查子代理检查原文照抄、中英混杂、机械拼接和转换风险，主代理合并字段译名表和正文术语表并写裁决后再导入。
+6. 第二轮处理插件规则、事件指令规则和 Note 标签规则；每类规则可以为空，但必须有工作报告、审查报告、空结果理由和主代理裁决，再通过对应导入流程保存。
+7. 非标准 data 文本和插件源码文本只在高风险或用户明确要求时进入支线；默认按开局策略自动处理。只有缺少策略且会显著增加成本/风险、审查 blocker 未关闭或仍有未归类候选时停止正文翻译。
+8. 三类外部规则和必要支线规则全部导入后，主代理收束普通占位符规则；存在协议外壳包住显示文本时，再处理结构化占位符规则。两类占位符都必须经过审查子代理检查吞文本、漏保护、过宽、过窄和结构化需求。
+9. 运行工作区总体验收。任一规则未完成、校验失败、审查 blocker 未关闭、主代理裁决缺失或占位符覆盖不清楚时，不启动正文翻译。
+10. 大型游戏先运行 `rebuild-text-index`，再执行小批量翻译、查看翻译进度、文本范围、覆盖审计和质量报告；小批量只用于观察模型、规则和控制符风险，不以 0 失败作为指标。
+11. 小批量出现还没成功保存译文或检查没通过译文是正常现象；禁止为了让小批量样本完美而导出手动修复表、手填译文或重置译文。
+12. 进入全量续跑后，只要剩余数量明显下降且没有规则性事故，就继续翻译；主要依靠多轮重试收敛。
+13. 全量多轮后剩余量已经很小、适合人工收尾，或连续多轮同类失败不下降时，先自动诊断主要错误类型并尝试修规则、换提示上下文允许的模型策略、导出质量修复表或待补译表、精确重置坏译文；只有需要用户承担额外成本、接受风险或选择完整重译时才询问用户。
+14. 确认确需保留源语言片段时，使用源文保留例外规则；禁止全局关闭源文残留检测。
+15. 写进游戏文件前，必须通过覆盖审计和质量检查，并取得用户写回许可；字体覆盖必须单独确认。写入后必须验收当前运行文件。
+16. 写回后要求用户试玩，反馈漏翻、误翻、显示异常、插件界面残留源语言文本和图片文字等问题。
 
-## 二次翻译主流程
+## 子代理协作
 
-- 不把二次翻译当新游戏重做。先检查当前游戏状态、翻译进度、覆盖审计和质量报告。
-- 已保存译文会复用；CLI 只处理当前规则范围里还没成功保存译文的文本。
-- 游戏文件、插件配置、事件指令结构或自定义控制符发生变化时，重新准备工作区并重新分析对应规则。
-- 如果发现遗漏的控制符规则且已有大量译文成功保存，先向用户说明影响范围、继续补翻成本、精确重置成本和完整重译成本；未经用户明确选择，不执行完整重译。
-
-## 子代理与外部协作
-
-- 子代理流程固定两轮：第一轮术语候选，第二轮插件规则、事件指令规则和 Note 标签规则；非标准 data 文本和插件源码文本只在高风险且用户确认后作为支线任务处理，非标准 data 子代理只能读取工作区副本，插件源码子代理可只读对应 `js/plugins` 直接源码文件交叉验证。
-- 当前平台支持子代理时，当前会话完成模式必须并行处理无依赖候选；不支持子代理时才允许串行处理。
+- 子代理的优势是并行探索、隔离噪声、独立审查和压缩证据；它们不是“替主代理拍板”的执行者。
+- 分析与规则产出阶段采用审查型工作流：工作子代理产出候选和证据，审查子代理用 `blocker`、`warning`、`info` 分级反向审查，主代理写 `review-decisions/<阶段ID>.json` 后才允许 validate/import。
+- 子代理可以在任务授权范围内把一次性 Python、PowerShell、Node.js 或其他本机可用脚本写到 `<工作区>/agent-scratch/<阶段ID>/<任务ID>/scripts/`，也可以运行只读、导出、扫描、诊断和 validate 类 CLI 命令；禁止任何 import、写回、重建、重置、数据库写入或游戏文件写入。
+- 外部协作任务包只用于术语候选、插件规则、事件指令规则和 Note 标签规则的工作候选；生成、回收和验收任务包前必须读取 `references/subtask-package-mode.md`，任务包不能替代审查子代理或主代理裁决。
+- 当前平台支持子代理时，当前会话完成模式必须并行处理无依赖候选；不支持子代理时，按同一任务契约串行执行或使用外部协作任务包。
+- 用户未明确选择外部任务包时，默认使用当前会话完成模式；只有用户表示额度/时间有限、希望带走任务包，或当前会话无法承载候选分析时，才中断询问任务包方案。
 - 每个子代理或任务包都必须有明确输入、逻辑、唯一输出、空结果条件、校验命令和完成报告。
 - 派发子代理时不能只概括任务，必须复制对应任务契约并填入 `<发行版目录>`、`<工作区>`、`<游戏标题>`、必要时的 `<游戏目录>`、输入文件、唯一可写文件和校验命令。
-- 每个子代理或任务包的完成报告必须包含交叉验证摘要：选中项依据、排除项依据、空结果依据、仍需主代理确认的风险。
-- 主代理必须等待候选全部完成，逐项读取结果并二次审查；用户或外部代理返回内容一律只是候选答案。
-- 主代理导入任何候选前必须做交叉验证：抽样核对选中项、重点排除项、空结果理由和校验命中样本；证据不足时先修任务文件或要求重做，不用候选答案直接导入。
-- 占位符最终生成、最终术语表合并、正文翻译、重置译文、写进游戏文件和字体覆盖不能导出为普通任务包。
+- 工作子代理必须返回 `selected`、`excluded`、`uncertain`、`active_discoveries`、`evidence`、`risk`、`needs_main_review`、`recommended_next_action`，并列出读取文件、脚本、统计产物和 CLI 命令。
+- 审查子代理必须返回 `findings`，每条 finding 都有 `severity`、`target`、`evidence`、`impact` 和 `recommended_resolution`；未关闭 `blocker` 时主代理禁止导入。
+- 主代理必须等待工作和审查全部完成，逐项读取结果并写阶段裁决；用户或外部代理返回内容一律只是候选答案。
+- 详细角色、权限、报告结构和交叉审查关系见 `references/agent-review-workflow.md` 与 `references/subagent-collaboration.md`。
 
 ## 写进游戏文件前硬门槛
 
-- 用户明确允许写回。
-- `audit-coverage` 和 `quality-report` 没有 error；需要在检查报告里查看写入可行性时加 `--include-write-probe`；普通写回和重建当前运行文件都要求当前规则范围内正文译文完整，并会执行写文件前检查。
-- `write-terminology` 是术语专用写入，只允许正文仍有还没成功保存译文的文本；术语表、规则前置、可信源快照、写入目标和已保存译文质量仍必须通过检查。
-- 若当前运行文件已损坏，需要从可信源快照和已保存译文记录重建，使用 `rebuild-active-runtime`；普通写入和重建都必须先通过写文件前检查，并在写入后验收当前运行文件。
-- `audit-active-runtime` 默认只把当前运行插件源码读取失败和 JS 语法错误当作完成阻断；插件源码文本支线已启动或已有写回映射时，才把可确定属于已管理 selector 的坏控制符、已翻译文本残留和未映射残留纳入诊断。若命令有 error，先运行 `diagnose-active-runtime --output <诊断文件>`。诊断只解释会阻止写入验收的问题，并使用写回映射精确反推已保存译文记录；`mapped_excluded` 表示已审查但不翻译，不能加入重置清单；没有写回映射时只报告无法反推，禁止按当前 JS 文本、行号、上下文或 AST 顺序猜测。JS 语法错误和文件读取失败没有字符串 selector，只能先恢复或修复当前运行文件。其他修复必须落到规则、已保存译文记录、重置或手动导入，再重新写回。
-- 所有 warning 已逐项确认，并且不会影响本轮写进游戏文件。
-- 字段译名表、正文术语表、三类外部规则、普通占位符规则和结构化占位符规则已经导入；空规则和未覆盖候选风险必须通过对应导入命令确认。
-- 已确认的占位符候选风险只能作为 warning 继续；如果译文改坏未覆盖疑似控制符或已保护占位符，质量检查和写文件前检查必须报 error，不能继续写进游戏文件。
-- 如需放行确实不应翻译的源语言片段，源文保留例外必须先通过校验并导入；质量检查没有提示源文残留时，不把空源文保留例外当写回前置。
-- 目标游戏目录可写。普通写回不覆盖字体；只有用户单独允许字体覆盖时，才使用字体覆盖参数。
+- 用户明确允许写回
+- audit-coverage 没有 error
+- quality-report 没有 error
+- 可信源快照有效
+- 当前规则范围内正文译文完整
+- 普通 warning 已由主代理逐项确认；只有接受风险类 warning 需要用户确认
+- 字体覆盖已单独确认
+- 写入后当前运行文件验收通过
 
 ## 工具排障边界
 
-- 发行版翻译任务保持黑盒，不靠源码、数据库表结构或 Python 对象猜外部规则格式。
-- 工具排障只识别发行版翻译流程内的合法输入反复失败或 Skill/CLI 契约冲突。
-- 需要阅读或修改 A.T.T MZ 项目源码时，必须切换到源码仓库和开发版 Skill。
-- 发行版同一合法工作区文件反复触发无法解释的 CLI 错误时，停止翻译流程并报告需要源码级排障；不要在发行版目录内尝试修工具。
+- 正常翻译任务保持黑盒，不靠源码、数据库表结构或 Python 对象猜外部规则格式。
+- 工具排障只处理翻译流程内的合法输入反复失败或 Skill/CLI 契约冲突。普通源码开发、代码审查、测试修复、重构和发布维护按项目开发规范处理，不作为本 Skill 的触发条件。
+- 需要阅读或修改 A.T.T MZ 项目源码时，必须切换到源码仓库和发行版 Skill。发行版同一合法工作区文件反复触发无法解释的 CLI 错误时，停止翻译流程并报告需要源码级排障；不要在发行版目录内尝试修工具。
+- 用户同意源码修改后，源码修复必须作为独立源码排障任务执行，遵守项目开发规范；修复后继续翻译时，必须回到公开 CLI 和工作区 JSON 流程重新校验。
+
+## 硬停止规则
+
+- 启动与注册：游戏结构无效
+- 启动与注册：源语言探测不确定且用户未确认
+- 启动与注册：模型配置缺失且本轮需要翻译
+- 启动与注册：工作区不可写
+- 工作区与基础候选：manifest 缺失或工作区不可写
+- 工作区与基础候选：validate-agent-workspace 有 error
+- 工作区与基础候选：stdout sampled 明细被当成完整候选使用
+- MV 虚拟名字框：MZ 游戏误跑本阶段
+- MV 虚拟名字框：MV 发现或审查报告缺失
+- MV 虚拟名字框：审查 blocker 未关闭
+- MV 虚拟名字框：MV 新命中未审查
+- MV 虚拟名字框：空规则未确认
+- 术语工程：子代理直接改最终表
+- 术语工程：术语工作或审查报告缺失
+- 术语工程：审查 blocker 未关闭
+- 术语工程：正文术语表是字段译名表副本
+- 术语工程：把字段包装形式、整句或定位信息写进正文术语表
+- 术语工程：同一术语冲突
+- 外部文本规则：猜测路径
+- 外部文本规则：审查 blocker 未关闭
+- 外部文本规则：选中资源、脚本或机器协议
+- 外部文本规则：空结果未说明理由
+- 外部文本规则：插件配置变化后未重新准备当前工作区
+- 非标准 data 与插件源码支线：高风险支线策略缺失且当前候选处理会显著增加成本或风险
+- 非标准 data 与插件源码支线：高风险未处理也未按已确认策略跳过
+- 非标准 data 与插件源码支线：审查 blocker 未关闭
+- 非标准 data 与插件源码支线：候选未归类
+- 非标准 data 与插件源码支线：路径或 selector 失效
+- 非标准 data 与插件源码支线：试图扫描 plugins 外目录
+- 占位符收束：审查 blocker 未关闭
+- 占位符收束：未覆盖候选未修复也未确认风险
+- 占位符收束：规则吞掉玩家可见文本
+- 占位符收束：候选范围变化后未重新审查并导入当前规则
+- 占位符收束：外部规则变化后未重新扫描
+- 正文翻译与手动修复：规则性事故
+- 正文翻译与手动修复：控制符风险扩大
+- 正文翻译与手动修复：小批量阶段手动修复或追求 0 失败
+- 正文翻译与手动修复：全量同类失败多轮不下降且已完成自动诊断后仍需要用户承担成本、风险或策略取舍
+- 正文翻译与手动修复：用源文保留例外掩盖整句漏翻
+- 写进游戏文件：未获写回许可
+- 写进游戏文件：质量 error
+- 写进游戏文件：还没成功保存译文的文本未清
+- 写进游戏文件：当前运行文件仍有漏翻、坏控制符或 JS 语法错误
+- 写进游戏文件：字体覆盖未单独确认
+- 试玩反馈：凭空猜测
+- 试玩反馈：无证据扩大规则
+- 试玩反馈：补外部规则后跳过占位符收束
+- 试玩反馈：直接全量重译
+- 试玩反馈：直接手改游戏 data 文件
+- 试玩反馈：反馈无法定位且未向用户补充上下文
 
 ## 禁止做法
 
 - 在 `<发行版目录>` 写翻译临时脚本、中间 JSON、抽样报告或手动译文表。
-- 运行 `uv run python main.py`、安装开发依赖或读取源码。
+- 运行发行版 Python 入口、安装开发依赖、读取源码，或修改发行包外的项目文件。
 - 用临时脚本直接 `import app...` 操作数据库或游戏数据。
 - 把看不懂的结构当成没有内容，或为了让规则非空而编造规则。
 - 子代理未完成、规则未导入、占位符未覆盖就启动正文翻译。
+- 分析与规则产出阶段缺少工作报告、审查报告或主代理裁决就 validate/import。
+- 审查报告仍有未关闭 `blocker` 时 validate/import。
+- 子代理执行 `import-*`、`write-back`、`rebuild-active-runtime`、`reset-game`、`reset-translations`、`run-all` 或直接写数据库/游戏文件。
 - 质量检查有 error 仍写进游戏文件。
 - 绕过 CLI 手改数据库、手动改游戏 `data/*.json`，或用空译文伪造重置。
 - 用源文保留例外掩盖整句漏翻，或关闭源文残留检测。

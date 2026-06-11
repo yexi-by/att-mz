@@ -52,16 +52,6 @@ class TextScopeEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class TextScopeRuleHit:
-    """外部规则命中的字符串叶子。"""
-
-    location_path: str
-    source_type: TextSourceType
-    rule_source: str
-    original_text: str
-
-
-@dataclass(frozen=True, slots=True)
 class StalePluginRule:
     """已经不匹配当前插件配置的插件规则。"""
 

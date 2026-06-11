@@ -19,6 +19,7 @@ from app.config.overrides import SettingOverrides, apply_setting_overrides
 from app.config.schemas import Setting
 from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.language_profiles import apply_language_profile_to_raw_config
+from app.native_quality import configure_native_runtime_threads
 from app.observability.logging import logger
 from app.runtime_paths import resolve_app_path
 
@@ -86,6 +87,7 @@ def load_setting(
     raw_config_snapshot = copy.deepcopy(raw_config)
 
     setting = Setting.model_validate(raw_config)
+    configure_native_runtime_threads(setting.runtime.rust_threads)
     logger.info(
         _build_setting_summary(
             setting=setting,
@@ -135,12 +137,6 @@ def _inject_text_translation_prompt_text(
 ) -> None:
     """注入正文翻译提示词文本。"""
     text_translation = _read_config_section(raw_config, "text_translation")
-    if "system_prompt_file" in text_translation:
-        message = (
-            "配置项 text_translation.system_prompt_file 已废弃，请改用 "
-            "[text_translation.system_prompt_files] 下的 ja/en 显式提示词配置"
-        )
-        raise ValueError(message)
     if overrides is not None and overrides.text_translation_system_prompt is not None:
         text_translation["selected_system_prompt_file"] = "<cli>"
         text_translation["system_prompt"] = overrides.text_translation_system_prompt
@@ -295,8 +291,9 @@ def _build_setting_summary(
         f"正文切块: 目标 [tag.count]{setting.translation_context.token_size}[/tag.count] token，换算系数 [tag.count]{setting.translation_context.factor}[/tag.count]，同角色最多连续 [tag.count]{setting.translation_context.max_command_items}[/tag.count] 条",
         f"正文翻译: [tag.count]{setting.text_translation.worker_count}[/tag.count] 个 worker，RPM [tag.count]{setting.text_translation.rpm or '不限'}[/tag.count]，失败重试 [tag.count]{setting.text_translation.retry_count}[/tag.count] 次，间隔 [tag.count]{setting.text_translation.retry_delay}[/tag.count] 秒",
         f"模型输出原文对照: [tag.count]{'开启' if setting.text_translation.include_source_lines else '关闭'}[/tag.count]",
-        f"事件指令参数默认: 兼容旧配置编码 [tag.count]{', '.join(map(str, setting.event_command_text.default_command_codes))}[/tag.count]，按引擎有效默认 [tag.count]{engine_code_label}[/tag.count]",
+        f"事件指令参数默认: 按引擎有效默认 [tag.count]{engine_code_label}[/tag.count]",
         f"字体覆盖候选配置: [tag.path]{setting.write_back.replacement_font_path or '未配置'}[/tag.path]（只有显式确认字体覆盖时使用）",
+        f"Rust 原生线程: [tag.count]{setting.runtime.rust_threads}[/tag.count]",
         f"文本规则: 行切分标点 [tag.count]{len(setting.text_rules.line_split_punctuations)}[/tag.count] 个，长文本宽度 [tag.count]{setting.text_rules.long_text_line_width_limit}[/tag.count]，提取剥离标点 [tag.count]{len(setting.text_rules.strip_wrapping_punctuation_pairs)}[/tag.count] 组，译文保形标点 [tag.count]{len(setting.text_rules.preserve_wrapping_punctuation_pairs)}[/tag.count] 组",
         f"提示词文件: 本次=[tag.path]{setting.text_translation.selected_system_prompt_file}[/tag.path]，日文=[tag.path]{ja_prompt_file}[/tag.path]，英文=[tag.path]{en_prompt_file}[/tag.path]",
     ]

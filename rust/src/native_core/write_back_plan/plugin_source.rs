@@ -24,6 +24,11 @@ pub(super) fn write_plugin_source_files(
     let mut items_by_file: HashMap<String, Vec<(String, TranslationItem)>> = HashMap::new();
     for item in items {
         let (file_name, selector) = parse_plugin_source_location_path(&item.location_path)?;
+        let selector = if item.selector.is_empty() {
+            selector
+        } else {
+            item.selector.clone()
+        };
         items_by_file
             .entry(file_name)
             .or_default()
@@ -101,11 +106,6 @@ pub(super) fn write_single_plugin_source_file(
         return Err(format!("插件源码 JS 语法检查失败: {file_name}"));
     }
     let source_file_hash = sha256_text(source);
-    if let Some(rule_record) = rule
-        && rule_record.file_hash != source_file_hash
-    {
-        return Err(format!("插件源码规则文件哈希已失效: {file_name}"));
-    }
     let mut spans_by_selector: HashMap<String, (JavaScriptStringSpan, String, String)> =
         HashMap::new();
     for span in scan.spans {
@@ -123,9 +123,33 @@ pub(super) fn write_single_plugin_source_file(
             .get(&selector)
             .ok_or_else(|| format!("插件源码 selector 已失效: {}", item.location_path))?
             .clone();
-        if item.original_lines != vec![visible_text.clone()] {
+        if item.raw_text.is_empty() {
             return Err(format!(
-                "插件源码原文已变化，请重新导出 AST 地图: {}",
+                "插件源码缺少当前写回所需源文信息，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                item.location_path
+            ));
+        }
+        if item.visible_text.is_empty() {
+            return Err(format!(
+                "插件源码缺少当前写回所需可见文本，不能写进游戏文件；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                item.location_path
+            ));
+        }
+        if item.raw_hash.is_empty() {
+            return Err(format!(
+                "插件源码缺少当前写回所需源文校验信息，不能生成 runtime map；请重新运行 rebuild-text-index 并重新导出 pending translations: {}",
+                item.location_path
+            ));
+        }
+        if item.raw_text != raw_text {
+            return Err(format!(
+                "插件源码原始字符串已变化，请重新导出 AST 地图: {}",
+                item.location_path
+            ));
+        }
+        if item.visible_text != visible_text {
+            return Err(format!(
+                "插件源码可见文本已变化，请重新导出 AST 地图: {}",
                 item.location_path
             ));
         }
@@ -147,7 +171,6 @@ pub(super) fn write_single_plugin_source_file(
             item,
             span,
             raw_text,
-            visible_text,
             written_text,
             source_file_hash: source_file_hash.clone(),
         });
@@ -171,7 +194,7 @@ pub(super) fn write_single_plugin_source_file(
             source_file_name: file_name.to_string(),
             source_selector: result.replacement.selector.clone(),
             source_file_hash: result.replacement.source_file_hash.clone(),
-            source_text_hash: sha256_text(&result.replacement.visible_text),
+            source_text_hash: result.replacement.item.raw_hash.clone(),
             translation_lines_hash: sha256_translation_lines(
                 &result.replacement.item.translation_lines,
             )?,
@@ -409,7 +432,7 @@ pub(super) fn parse_plugin_source_location_path(
     Ok((file_name.to_string(), selector.to_string()))
 }
 
-pub(super) fn candidate_selector_for_span(
+pub(crate) fn candidate_selector_for_span(
     start_index: usize,
     end_index: usize,
     raw_text: &str,
@@ -439,7 +462,7 @@ pub(super) fn escape_js_string_content(text: &str, quote: &str) -> String {
     escaped.replace('"', "\\\"")
 }
 
-pub(super) fn unescape_js_text(text: &str) -> String {
+pub(crate) fn unescape_js_text(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut decoded = String::new();
     let mut index = 0usize;
@@ -465,6 +488,22 @@ pub(super) fn unescape_js_text(text: &str) -> String {
             'f' => decoded.push('\u{000c}'),
             'v' => decoded.push('\u{000b}'),
             '0' => decoded.push('\0'),
+            'x' if has_hex_digits(&chars, index + 2, 2) => {
+                if let Some(decoded_char) = decode_hex_char(&chars, index + 2, index + 4) {
+                    decoded.push(decoded_char);
+                    index += 4;
+                    continue;
+                }
+                decoded.push(escaped);
+            }
+            'u' => {
+                if let Some((decoded_char, next_index)) = decode_unicode_escape(&chars, index + 2) {
+                    decoded.push(decoded_char);
+                    index = next_index;
+                    continue;
+                }
+                decoded.push(escaped);
+            }
             '\n' | '\r' => {
                 index += 2;
                 if escaped == '\r' && index < chars.len() && chars[index] == '\n' {
@@ -479,7 +518,41 @@ pub(super) fn unescape_js_text(text: &str) -> String {
     decoded
 }
 
-pub(super) fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
+fn has_hex_digits(chars: &[char], start_index: usize, count: usize) -> bool {
+    let end_index = start_index + count;
+    end_index <= chars.len()
+        && chars[start_index..end_index]
+            .iter()
+            .all(char::is_ascii_hexdigit)
+}
+
+fn decode_unicode_escape(chars: &[char], start_index: usize) -> Option<(char, usize)> {
+    if start_index < chars.len() && chars[start_index] == '{' {
+        let mut end_index = start_index + 1;
+        while end_index < chars.len() && chars[end_index] != '}' {
+            end_index += 1;
+        }
+        if end_index >= chars.len() || end_index == start_index + 1 {
+            return None;
+        }
+        return decode_hex_char(chars, start_index + 1, end_index)
+            .map(|decoded_char| (decoded_char, end_index + 1));
+    }
+    if !has_hex_digits(chars, start_index, 4) {
+        return None;
+    }
+    decode_hex_char(chars, start_index, start_index + 4)
+        .map(|decoded_char| (decoded_char, start_index + 4))
+}
+
+fn decode_hex_char(chars: &[char], start_index: usize, end_index: usize) -> Option<char> {
+    let hex_text: String = chars[start_index..end_index].iter().collect();
+    u32::from_str_radix(&hex_text, 16)
+        .ok()
+        .and_then(char::from_u32)
+}
+
+pub(crate) fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
     let mut current = raw_text.to_string();
     loop {
         let trimmed = current.trim();
@@ -491,5 +564,190 @@ pub(super) fn normalize_visible_text_for_extraction(raw_text: &str) -> String {
             Ok(text) => current = text,
             Err(_error) => return current.trim().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        candidate_selector_for_span, normalize_visible_text_for_extraction,
+        write_single_plugin_source_file,
+    };
+    use crate::native_core::javascript_ast::parse_javascript_string_spans;
+    use crate::native_core::write_back_plan::models::{PluginSourceTextRule, TranslationItem};
+
+    fn selector_for_visible_text(source: &str, expected_visible_text: &str) -> String {
+        let scan = parse_javascript_string_spans(source).expect("JS 字符串扫描应成功");
+        let span = scan
+            .spans
+            .into_iter()
+            .find(|span| {
+                let raw_text = &source[span.content_start_byte_index..span.content_end_byte_index];
+                normalize_visible_text_for_extraction(&super::unescape_js_text(raw_text))
+                    == expected_visible_text
+            })
+            .expect("应找到目标字符串");
+        let raw_text = &source[span.content_start_byte_index..span.content_end_byte_index];
+        candidate_selector_for_span(span.start_index, span.end_index, raw_text)
+    }
+
+    fn translation_item(
+        file_name: &str,
+        selector: &str,
+        original: &str,
+        translated: &str,
+    ) -> TranslationItem {
+        TranslationItem {
+            location_path: format!("js/plugins/{file_name}/{selector}"),
+            item_type: "short_text".to_string(),
+            role: None,
+            raw_text: original.to_string(),
+            visible_text: original.to_string(),
+            raw_hash: super::sha256_text(original),
+            original_lines: vec![original.to_string()],
+            source_line_paths: Vec::new(),
+            translation_lines: vec![translated.to_string()],
+            ..TranslationItem::default()
+        }
+    }
+
+    fn translation_item_with_current_identity(
+        file_name: &str,
+        selector: &str,
+        raw_text: &str,
+        visible_text: &str,
+        translated: &str,
+    ) -> TranslationItem {
+        TranslationItem {
+            raw_text: raw_text.to_string(),
+            visible_text: visible_text.to_string(),
+            raw_hash: super::sha256_text(raw_text),
+            ..translation_item(file_name, selector, visible_text, translated)
+        }
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_generates_translated_and_excluded_runtime_maps() {
+        let source = "const a = \"古い本文\";\nconst b = \"除外\";";
+        let translated_selector = selector_for_visible_text(source, "古い本文");
+        let excluded_selector = selector_for_visible_text(source, "除外");
+        let item = translation_item(
+            "Sample.js",
+            &translated_selector,
+            "古い本文",
+            "新しい本文です",
+        );
+        let rule = PluginSourceTextRule {
+            file_name: "Sample.js".to_string(),
+            file_hash: "stale-hash-is-not-used-for-selector-write".to_string(),
+            selectors: vec![translated_selector.clone()],
+            excluded_selectors: vec![excluded_selector.clone()],
+        };
+
+        let (content, maps) = write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(translated_selector.clone(), item)],
+            Some(&rule),
+            "2026-06-06T00:00:00Z",
+        )
+        .expect("插件源码写回应成功");
+
+        assert!(content.contains("新しい本文です"));
+        assert_eq!(maps.len(), 2);
+        assert!(maps.iter().any(|map| map.mapping_kind == "translated"
+            && map.source_selector == translated_selector
+            && map.runtime_selector != translated_selector));
+        assert!(maps.iter().any(|map| map.mapping_kind == "excluded"
+            && map.source_selector == excluded_selector
+            && map.runtime_line == 2));
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_rejects_original_text_mismatch() {
+        let source = "const a = \"現在の本文\";";
+        let selector = selector_for_visible_text(source, "現在の本文");
+        let item = translation_item_with_current_identity(
+            "Sample.js",
+            &selector,
+            "古い本文",
+            "古い本文",
+            "新しい本文",
+        );
+
+        let error = match write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(selector, item)],
+            None,
+            "2026-06-06T00:00:00Z",
+        ) {
+            Ok(_) => panic!("selector 存在但原文不一致时应失败"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("插件源码原始字符串已变化"));
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_rejects_missing_v2_raw_or_visible_identity() {
+        let source = "const a = \"現在の本文\";";
+        let selector = selector_for_visible_text(source, "現在の本文");
+        let mut item = translation_item_with_current_identity(
+            "Sample.js",
+            &selector,
+            "現在の本文",
+            "現在の本文",
+            "新しい本文",
+        );
+        item.raw_text.clear();
+        item.visible_text.clear();
+
+        let error = match write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(selector, item)],
+            None,
+            "2026-06-06T00:00:00Z",
+        ) {
+            Ok(_) => panic!("插件源码缺少当前写回所需源文信息时必须失败"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("缺少当前写回所需源文信息")
+                || error.contains("缺少当前写回所需可见文本"),
+            "错误文案应说明缺少当前写回所需源文信息: {error}",
+        );
+    }
+
+    #[test]
+    fn write_single_plugin_source_file_rejects_missing_v2_raw_hash() {
+        let source = "const a = \"現在の本文\";";
+        let selector = selector_for_visible_text(source, "現在の本文");
+        let mut item = translation_item_with_current_identity(
+            "Sample.js",
+            &selector,
+            "現在の本文",
+            "現在の本文",
+            "新しい本文",
+        );
+        item.raw_hash.clear();
+
+        let error = match write_single_plugin_source_file(
+            "Sample.js",
+            source,
+            vec![(selector, item)],
+            None,
+            "2026-06-06T00:00:00Z",
+        ) {
+            Ok(_) => panic!("插件源码缺少当前写回所需源文校验信息时必须失败"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("缺少当前写回所需源文校验信息"),
+            "错误文案应说明缺少当前写回所需源文校验信息: {error}",
+        );
     }
 }

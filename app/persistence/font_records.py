@@ -33,7 +33,7 @@ class FontRecordSessionMixin(SessionMixinBase):
                 INSERT_FONT_REPLACEMENT_RECORD,
                 serialized_records,
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_font_replacement_records(self) -> list[FontReplacementRecord]:
         """读取当前游戏最近一次字体覆盖产生的候选覆盖字体记录。"""
@@ -53,5 +53,5 @@ class FontRecordSessionMixin(SessionMixinBase):
     async def clear_font_replacement_records(self) -> int:
         """清空当前游戏已经完成处理的字体覆盖记录。"""
         cursor = await self.connection.execute(DELETE_ALL_FONT_REPLACEMENT_RECORDS)
-        await self.connection.commit()
+        await self.commit()
         return max(cursor.rowcount, 0)

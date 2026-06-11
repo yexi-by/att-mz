@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import cast
 
-from app.plugin_text.paths import expand_rule_to_leaf_paths
+from app.json_path_protocol import ResolvedLeaf, expand_rule_to_leaf_paths
 from app.rmmz.loader import resolve_data_source_dir
-from app.rmmz.schema import GameLayout, NonstandardDataTextRuleRecord
+from app.rmmz.schema import GameLayout, NonstandardDataTextRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, coerce_json_value
+from app.source_residual import check_source_residual_for_item
 
-from .scanner import resolve_nonstandard_data_leaves
+from .scanner import resolve_nonstandard_data_file_leaves_native
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,15 +133,16 @@ def audit_active_runtime_nonstandard_data(
                 )
             )
 
+    leaves_by_file = resolve_nonstandard_data_file_leaves_native(active_files)
     for record in sorted(rule_records, key=lambda item: item.file_name):
         if record.skipped:
             continue
-        active_value = active_files.get(record.file_name)
-        if active_value is None:
+        resolved_leaves = leaves_by_file.get(record.file_name)
+        if resolved_leaves is None:
             continue
         file_issues, file_managed_path_count = _audit_record_paths(
             record=record,
-            active_value=active_value,
+            resolved_leaves=list(resolved_leaves),
             text_rules=text_rules,
         )
         issues.extend(file_issues)
@@ -170,11 +172,10 @@ def _read_active_nonstandard_data_file(*, data_dir: Path, file_name: str) -> Jso
 def _audit_record_paths(
     *,
     record: NonstandardDataTextRuleRecord,
-    active_value: JsonValue,
+    resolved_leaves: list[ResolvedLeaf],
     text_rules: TextRules,
 ) -> tuple[list[ActiveRuntimeNonstandardDataIssue], int]:
     """审计一条规则记录在当前运行 JSON 中命中的字符串叶子。"""
-    resolved_leaves = resolve_nonstandard_data_leaves(active_value)
     string_leaf_map = {
         leaf.path: leaf.value
         for leaf in resolved_leaves
@@ -246,18 +247,43 @@ def _audit_managed_text(
                 fragment=candidate.original,
             )
         )
-    try:
-        text_rules.check_source_residual([text])
-    except ValueError as error:
+    source_residual_error = _source_residual_error_for_runtime_text(
+        file_name=file_name,
+        json_path=json_path,
+        text=text,
+        text_rules=text_rules,
+    )
+    if source_residual_error is not None:
         issues.append(
             ActiveRuntimeNonstandardDataIssue(
                 code="active_runtime_nonstandard_data_source_residual",
-                message=f"当前游戏运行文件里的非标准 data 文本仍有源文残留: {error}",
+                message=f"当前游戏运行文件里的非标准 data 文本仍有源文残留: {source_residual_error}",
                 file_name=file_name,
                 json_path=json_path,
             )
         )
     return issues
+
+
+def _source_residual_error_for_runtime_text(
+    *,
+    file_name: str,
+    json_path: str,
+    text: str,
+    text_rules: TextRules,
+) -> str | None:
+    """用 native 质检判断运行非标准 data 文本是否残留源文。"""
+    item = TranslationItem(
+        location_path=f"{file_name}/{json_path}",
+        item_type="short_text",
+        original_lines=[],
+        translation_lines=[text],
+    )
+    try:
+        check_source_residual_for_item(item=item, text_rules=text_rules, rule_set=None)
+    except ValueError as error:
+        return str(error)
+    return None
 
 
 def _deduplicate_issues(

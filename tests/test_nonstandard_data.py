@@ -6,25 +6,47 @@ from typing import cast
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_nonstandard_data_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
+from app.agent_toolkit.reports import AgentReport
+from app.application.handler import TranslationHandler, TranslationRunLimits
 from app.application.flow_gate import collect_workflow_gate_errors
+from app.application.use_cases.translation_run import TranslationRunState
+from app.llm import LLMHandler
+from app.native_scope_index import (
+    NativeRuleCandidatesResult,
+    scan_native_rule_candidates as real_scan_native_rule_candidates,
+)
 from app.nonstandard_data import (
-    build_nonstandard_data_scan,
-    build_nonstandard_data_file_hash,
-    NonstandardDataTextExtraction,
+    NonstandardDataRuleImportFile,
+    NonstandardDataRuleValidationResult,
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
+)
+from app.nonstandard_data.scanner import (
+    NonstandardDataScan,
+    build_nonstandard_data_file_hash,
+    build_nonstandard_data_scan,
 )
 from app.persistence import GameRegistry
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.loader import load_translation_source_game_data, resolve_game_layout
-from app.rmmz.schema import NonstandardDataTextRuleRecord
-from app.rmmz.text_rules import TextRules
-from app.text_scope import TextScopeService
+from app.rmmz.schema import NonstandardDataTextRuleRecord, TranslationItem
+from app.rmmz.text_rules import JsonObject, TextRules
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import write_data_text
+from tests.agent_toolkit_contract_fixtures import (
+    _install_minimal_workflow_gate_prerequisites,
+    _translated_test_line_preserving_protocol_candidates,
+    make_writable_current_translation_items_for_test,
+    write_current_translation_items_for_test,
+)
 from tests.conftest import EXAMPLE_SETTING_PATH, write_json
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
 
 def _write_high_risk_nonstandard_data(game_root: Path) -> None:
@@ -32,13 +54,39 @@ def _write_high_risk_nonstandard_data(game_root: Path) -> None:
     write_json(game_root / "data" / "UnknownPluginData.json", [{"id": 1, "name": "これは無視される"}])
 
 
+def _workflow_gate_source_branch(report: object, source_branch: str) -> JsonObject:
+    """读取报告中的 Rust source branch gate 摘要。"""
+    if not isinstance(report, AgentReport):
+        raise TypeError("report 必须是 AgentReport")
+    workflow_gate = ensure_json_object(report.details["workflow_gate"], "workflow_gate")
+    source_branches = ensure_json_object(workflow_gate["source_branches"], "workflow_gate.source_branches")
+    return ensure_json_object(
+        source_branches[source_branch],
+        f"workflow_gate.source_branches.{source_branch}",
+    )
+
+
 @pytest.mark.asyncio
-async def test_nonstandard_data_scan_reports_high_risk_candidates(minimal_game_dir: Path) -> None:
-    """扫描只把非标准 data JSON 中的源语言自然文本列为候选。"""
+async def test_nonstandard_data_scan_uses_native_candidate_scan(
+    minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非标准 data 扫描用 Rust 候选入口筛选候选和展开叶子。"""
     _write_high_risk_nonstandard_data(minimal_game_dir)
     layout = resolve_game_layout(minimal_game_dir)
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
+    native_payloads: list[JsonObject] = []
+
+    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        native_payloads.append(payload)
+        return real_scan_native_rule_candidates(payload)
+
+    monkeypatch.setattr(
+        "app.nonstandard_data.scanner.scan_native_rule_candidates",
+        counting_scan_native_rule_candidates,
+        raising=False,
+    )
 
     scan = await build_nonstandard_data_scan(
         layout=layout,
@@ -46,42 +94,18 @@ async def test_nonstandard_data_scan_reports_high_risk_candidates(minimal_game_d
         text_rules=text_rules,
     )
 
+    assert len(native_payloads) == 1
+    native_payload = native_payloads[0]
+    assert "nonstandard_data_files" in native_payload
+    assert "text_rules" in native_payload
     assert scan.high_risk
     assert [candidate.json_path for candidate in scan.candidates] == ["$[0]['name']"]
     assert scan.candidates[0].file_name == "UnknownPluginData.json"
     assert scan.candidates[0].source_text == "これは無視される"
-
-
-@pytest.mark.asyncio
-async def test_nonstandard_data_scan_respects_english_protocol_noise(
-    minimal_english_game_dir: Path,
-) -> None:
-    """英文项目不会把资源名、公式和协议值误报为高风险。"""
-    data_dir = minimal_english_game_dir / "data"
-    write_json(
-        data_dir / "Recipes.json",
-        [
-            {
-                "id": "recipe_001",
-                "icon": "img/pictures/Meal.png",
-                "enabled": "true",
-                "formula": "a.hpRate() >= 0.5",
-            }
-        ],
-    )
-    layout = resolve_game_layout(minimal_english_game_dir)
-    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="en")
-    text_rules = TextRules.from_setting(setting.text_rules)
-
-    scan = await build_nonstandard_data_scan(
-        layout=layout,
-        source_view=GameFileView.ACTIVE_RUNTIME,
-        text_rules=text_rules,
-    )
-
-    assert not scan.high_risk
-    assert scan.summary_json()["nonstandard_file_count"] == 1
-    assert scan.summary_json()["candidate_count"] == 0
+    assert scan.file_scans[0].string_leaf_count == 1
+    assert scan.file_scans[0].candidate_count == 1
+    leaves = scan.leaves_by_file["UnknownPluginData.json"]
+    assert {leaf.path for leaf in leaves} == {"$[0]['id']", "$[0]['name']"}
 
 
 @pytest.mark.asyncio
@@ -149,6 +173,7 @@ async def test_prepare_agent_workspace_exports_nonstandard_data_branch(
 
     assert report.status == "ok"
     assert report.summary["nonstandard_data_high_risk"] is True
+    assert "nonstandard_data_export" in report.details
     assert (workspace / "nonstandard-data-rules.json").read_text(encoding="utf-8").strip() == "[]"
     assert (workspace / "nonstandard-data" / "source" / "UnknownPluginData.json").is_file()
     assert ensure_json_object(risk_report["summary"], "summary")["candidate_count"] == 1
@@ -179,10 +204,11 @@ async def test_validate_agent_workspace_blocks_empty_nonstandard_data_review(
 
 
 @pytest.mark.asyncio
-async def test_nonstandard_data_rules_validate_full_classification(
+async def test_nonstandard_data_rules_validate_uses_native_rule_coverage(
     minimal_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """规则必须把全部源语言自然文本候选归入翻译或排除。"""
+    """规则覆盖统计复用 native candidates/leaves，不走 Python 路径模板展开。"""
     _write_high_risk_nonstandard_data(minimal_game_dir)
     layout = resolve_game_layout(minimal_game_dir)
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
@@ -205,12 +231,28 @@ async def test_nonstandard_data_rules_validate_full_classification(
             ensure_ascii=False,
         )
     )
+    native_payloads: list[JsonObject] = []
+
+    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        native_payloads.append(payload)
+        return real_scan_native_rule_candidates(payload)
+
+    monkeypatch.setattr(
+        "app.nonstandard_data.rules.scan_native_rule_candidates",
+        counting_scan_native_rule_candidates,
+        raising=False,
+    )
 
     validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
 
+    assert len(native_payloads) == 1
+    assert "nonstandard_data_rule_coverage" in native_payloads[0]
     assert validation.rule_count == 1
     assert validation.reviewed_candidate_count == 1
     assert validation.unreviewed_candidate_paths == ()
+    assert validation.details["translated_candidates"] == [
+        {"file": "UnknownPluginData.json", "json_path": "$[0]['name']"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -306,12 +348,28 @@ async def test_nonstandard_data_skipped_warning_persists_in_reports(
 async def test_nonstandard_data_rules_import_persists_records(
     minimal_game_dir: Path,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """导入规则会保存当前源文件哈希和路径分类。"""
     _write_high_risk_nonstandard_data(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    validation_count = 0
+
+    def counting_validate_nonstandard_data_rules(
+        *,
+        scan: NonstandardDataScan,
+        import_file: NonstandardDataRuleImportFile,
+    ) -> NonstandardDataRuleValidationResult:
+        nonlocal validation_count
+        validation_count += 1
+        return validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.nonstandard_data.validate_nonstandard_data_rules",
+        counting_validate_nonstandard_data_rules,
+    )
 
     report = await service.import_nonstandard_data_rules(
         game_title="テストゲーム",
@@ -334,6 +392,7 @@ async def test_nonstandard_data_rules_import_persists_records(
     origin_text = (minimal_game_dir / "data_origin" / "UnknownPluginData.json").read_bytes().decode("utf-8")
 
     assert report.status == "ok"
+    assert validation_count == 1
     assert (minimal_game_dir / "data_origin" / "UnknownPluginData.json").is_file()
     assert "data_origin/UnknownPluginData.json" in {record.relative_path for record in snapshot_records}
     assert records == [
@@ -361,12 +420,18 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
+        before_scope = await rebuild_current_text_fact_scope_for_test(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
         before_errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=before_scope,
         )
 
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -385,17 +450,121 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
         ),
     )
     async with await registry.open_game("テストゲーム") as session:
+        after_scope = await rebuild_current_text_fact_scope_for_test(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
         after_errors = await collect_workflow_gate_errors(
             session=session,
             game_data=game_data,
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=after_scope,
         )
 
     assert "nonstandard_data_high_risk" in {error.code for error in before_errors}
     assert import_report.status == "ok"
     assert "nonstandard_data_high_risk" not in {error.code for error in after_errors}
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_data_import_cold_rebuild_translate_and_write_back_share_rust_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非标准 data 规则导入后，翻译和写回共享冷重建保存的 Rust gate facts。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    import_report = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+
+    async def fake_run_text_translation_batches(*args: object, **kwargs: object) -> TranslationRunState:
+        """截断真实模型调用，只验证 translate 入口已通过 indexed gate。"""
+        _ = (args, kwargs)
+        return TranslationRunState(total_batch_count=0, total_item_count=0)
+
+    monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", fake_run_text_translation_batches)
+    translate_handler = TranslationHandler(registry, LLMHandler())
+    try:
+        translate_summary = await translate_handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=1),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await translate_handler.close()
+
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        translated_items = await make_writable_current_translation_items_for_test(
+            session,
+            text_rules=text_rules,
+        )
+        for translated_item in translated_items:
+            translated_item.translation_lines = [
+                _translated_test_line_preserving_protocol_candidates(line, text_rules)
+                for line in translated_item.original_lines
+            ]
+        await write_current_translation_items_for_test(session, translated_items)
+        metadata = await session.read_text_index_metadata()
+        assert metadata is not None
+        stored_nonstandard_gate = ensure_json_object(
+            metadata.workflow_gate_facts["nonstandard_data"],
+            "metadata.workflow_gate_facts.nonstandard_data",
+        )
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    write_handler = TranslationHandler(registry, LLMHandler())
+    try:
+        write_summary = await write_handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await write_handler.close()
+    async with await registry.open_game("テストゲーム") as session:
+        metadata_after_write = await session.read_text_index_metadata()
+        assert metadata_after_write is not None
+        stored_nonstandard_gate_after_write = ensure_json_object(
+            metadata_after_write.workflow_gate_facts["nonstandard_data"],
+            "metadata_after_write.workflow_gate_facts.nonstandard_data",
+        )
+    workflow_gate = ensure_json_object(quality_report.details["workflow_gate"], "workflow_gate")
+    quality_nonstandard_gate = _workflow_gate_source_branch(quality_report, "nonstandard_data")
+
+    assert import_report.status == "ok"
+    assert rebuild_report.status == "ok"
+    assert translate_summary.text_index_status == "used"
+    assert translate_summary.blocked_reason is None
+    assert workflow_gate["source"] == "rust_text_index_gate_facts"
+    assert quality_nonstandard_gate["status"] == "pass"
+    assert quality_nonstandard_gate["scope_hash"] == stored_nonstandard_gate["scope_hash"]
+    assert stored_nonstandard_gate_after_write["scope_hash"] == stored_nonstandard_gate["scope_hash"]
+    assert write_summary.data_item_count > 0
 
 
 @pytest.mark.asyncio
@@ -412,7 +581,12 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
     game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_nonstandard_data_text_rules(
+        scope = await rebuild_current_text_fact_scope_for_test(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await seed_native_nonstandard_data_text_rules(session,
             [
                 NonstandardDataTextRuleRecord(
                     file_name="UnknownPluginData.json",
@@ -427,6 +601,7 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
             setting=setting,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
+            scope=scope,
         )
 
     assert "stale_nonstandard_data_rules" in {error.code for error in errors}
@@ -457,12 +632,11 @@ async def test_nonstandard_data_rules_enter_unified_text_scope(
     )
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
-    game_data = await load_translation_source_game_data(minimal_game_dir)
 
     async with await registry.open_game("テストゲーム") as session:
-        scope = await TextScopeService().build(
+        scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
-            game_data=game_data,
+            setting=setting,
             text_rules=text_rules,
         )
 
@@ -473,6 +647,57 @@ async def test_nonstandard_data_rules_enter_unified_text_scope(
     )
     assert entry.source_type == "nonstandard_data"
     assert entry.rule_source == "非标准 data 文件文本规则"
+    assert entry.original_lines == ["これは無視される"]
+    assert entry.enters_translation is True
+    item = next(
+        item
+        for data in scope.translation_data_map.values()
+        for item in data.translation_items
+        if item.location_path == entry.location_path
+    )
+    assert item.fact_id
+    assert item.source_fact_raw_hash
+    assert item.source_fact_translatable_hash
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_data_text_scope_uses_native_leaves_for_imported_rules(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """统一文本清单处理已导入非标准 data 规则。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+
+    async with await registry.open_game("テストゲーム") as session:
+        scope = await rebuild_current_text_fact_scope_for_test(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+
+    entry = next(
+        item
+        for item in scope.entries
+        if item.location_path.startswith("nonstandard-data/UnknownPluginData.json/")
+    )
     assert entry.original_lines == ["これは無視される"]
     assert entry.enters_translation is True
 
@@ -503,12 +728,18 @@ async def test_nonstandard_data_write_back_updates_managed_json_leaf(
     game_data = await load_translation_source_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         records = await session.read_nonstandard_data_text_rules()
-    items = NonstandardDataTextExtraction(game_data, records).extract_all_text()[
-        "nonstandard-data/UnknownPluginData.json"
-    ].translation_items
-    items[0].translation_lines = ["非标准译文"]
+    location_path = "nonstandard-data/UnknownPluginData.json/$[0]['name']"
+    items = [
+        TranslationItem(
+            location_path=location_path,
+            item_type="short_text",
+            original_lines=["これは無視される"],
+            source_line_paths=[location_path],
+            translation_lines=["非标准译文"],
+        )
+    ]
 
-    write_data_text(game_data, items)
+    write_data_text(game_data, items, nonstandard_data_rule_records=records)
 
     written_raw = cast(
         object,
@@ -552,6 +783,35 @@ async def test_active_runtime_audit_reports_nonstandard_data_source_residual(
 
 
 @pytest.mark.asyncio
+async def test_active_runtime_audit_uses_native_nonstandard_data_leaves(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """当前运行审计处理已管理非标准 data 路径。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    report = await service.audit_active_runtime(game_title="テストゲーム")
+
+    assert "active_runtime_nonstandard_data_source_residual" in {error.code for error in report.errors}
+    assert report.summary["active_runtime_nonstandard_data_managed_path_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_nonstandard_data_rules_reject_skipped_with_paths(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -591,6 +851,77 @@ def test_nonstandard_data_rules_reject_dot_jsonpath() -> None:
                         "file": "Recipes.json",
                         "paths": ["$.Name"],
                         "excluded_paths": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_nonstandard_data_rule_import_normalizes_integer_file_before_business_validation() -> None:
+    """非标准 data 规则导入中的整数 file 按文本字段规范化后再执行业务校验。"""
+    with pytest.raises(ValueError, match="file 必须是 JSON 文件名"):
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": 123,
+                        "paths": [],
+                        "excluded_paths": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_nonstandard_data_rule_import_normalizes_integer_path_before_business_validation() -> None:
+    """非标准 data 规则导入中的整数路径按文本字段规范化后再执行业务校验。"""
+    with pytest.raises(ValueError, match="JSONPath"):
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "Recipes.json",
+                        "paths": [123],
+                        "excluded_paths": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_nonstandard_data_rule_import_rejects_boolean_path() -> None:
+    """非标准 data 规则导入中的布尔路径无效。"""
+    with pytest.raises(Exception) as error_info:
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "Recipes.json",
+                        "paths": [True],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        )
+
+    assert "bool" in str(error_info.value)
+
+
+@pytest.mark.parametrize("skipped_value", [1, "true"])
+def test_nonstandard_data_rule_import_requires_boolean_skipped(skipped_value: object) -> None:
+    """非标准 data 规则导入中的 skipped 只接受真实布尔值。"""
+    with pytest.raises(Exception):
+        _ = parse_nonstandard_data_rule_import_text(
+            json.dumps(
+                [
+                    {
+                        "file": "Recipes.json",
+                        "paths": [],
+                        "excluded_paths": [],
+                        "skipped": skipped_value,
                     }
                 ],
                 ensure_ascii=False,

@@ -11,8 +11,8 @@ from .common import (
     StructuredPlaceholderRule,
     TargetGameSession,
     TextRules,
-    TextScopeService,
     TranslationData,
+    TranslationItem,
     build_source_residual_rule_records_from_import,
     load_active_runtime_game_data,
     load_game_data_for_view,
@@ -21,8 +21,17 @@ from .common import (
     parse_source_residual_rule_import_text,
     read_fresh_plugin_text_rules,
 )
+from app.plugin_source_text import PluginSourceScan
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
+from app.text_index import (
+    detect_text_index_invalidations,
+    rebuild_text_index_native_storage,
+)
+from app.text_facts import (
+    read_current_text_fact_translation_data_map,
+    read_current_text_fact_translation_items_by_paths,
+)
 
 
 class CoreAgentMixin:
@@ -33,15 +42,17 @@ class CoreAgentMixin:
         session: TargetGameSession,
         *,
         source_view: GameFileView,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """按显式视图加载单游戏数据，并在翻译源视图绑定会话。"""
         game_data = await load_game_data_for_view(
             session.game_path,
-            source_view=source_view,
+            view=source_view,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
         if source_view == GameFileView.TRANSLATION_SOURCE:
             snapshot_records = await session.read_source_snapshot_records()
@@ -58,8 +69,9 @@ class CoreAgentMixin:
         self: AgentServiceContext,
         session: TargetGameSession,
         *,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """加载翻译源视图，完整原始备份存在时优先读取备份。"""
         return await self._load_game_data_for_view(
@@ -67,20 +79,23 @@ class CoreAgentMixin:
             source_view=GameFileView.TRANSLATION_SOURCE,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
 
     async def _load_active_runtime_game_data(
         self: AgentServiceContext,
         session: TargetGameSession,
         *,
-        include_plugin_source_files: bool = True,
+        include_plugin_source_files: bool = False,
         include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
     ) -> GameData:
         """加载当前运行视图，不读取任何 origin 备份。"""
         return await load_active_runtime_game_data(
             session.game_path,
             include_plugin_source_files=include_plugin_source_files,
             include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
 
     async def _extract_active_translation_data_map(
@@ -89,15 +104,35 @@ class CoreAgentMixin:
         session: TargetGameSession,
         game_data: GameData,
         text_rules: TextRules,
+        plugin_source_scan: PluginSourceScan | None = None,
     ) -> dict[str, TranslationData]:
-        """按当前数据库规则提取本轮正文条目，不执行写入探针。"""
-        scope = await TextScopeService().build(
+        """从当前文本事实读取正文条目。"""
+        _ = (game_data, plugin_source_scan)
+        return await self._read_active_translation_data_map_from_text_index(
             session=session,
-            game_data=game_data,
             text_rules=text_rules,
-            include_write_probe=False,
         )
-        return scope.translation_data_map
+
+    async def _read_active_translation_data_map_from_text_index(
+        self: AgentServiceContext,
+        *,
+        session: TargetGameSession,
+        text_rules: TextRules,
+    ) -> dict[str, TranslationData]:
+        """确认持久索引有效后，读取当前文本事实正文映射。"""
+        text_index_invalidations = await detect_text_index_invalidations(
+            session=session,
+            text_rules=text_rules,
+        )
+        if text_index_invalidations:
+            setting = load_setting(self.setting_path, source_language=session.source_language)
+            _ = await rebuild_text_index_native_storage(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
+                include_write_probe=False,
+            )
+        return await read_current_text_fact_translation_data_map(session)
 
     async def _build_source_residual_rule_records(
         self: AgentServiceContext,
@@ -105,32 +140,44 @@ class CoreAgentMixin:
         game_title: str,
         rules_text: str,
     ) -> list[SourceResidualRuleRecord]:
-        """解析并按当前游戏提取结果校验源文残留例外规则。"""
+        """解析并按当前索引事实校验源文残留例外规则。"""
         import_file = parse_source_residual_rule_import_text(rules_text)
+        position_paths = sorted(import_file.position_rules)
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            custom_rules = await self._resolve_custom_rules(
-                session=session,
-                custom_placeholder_rules_text=None,
-            )
-            structured_rules = await self._resolve_structured_rules(session=session)
-            text_rules = TextRules.from_setting(
-                setting.text_rules,
-                custom_placeholder_rules=custom_rules,
-                structured_placeholder_rules=structured_rules,
-            )
-            game_data = await self._load_translation_source_game_data(session)
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            active_items = [
-                item
-                for translation_data in translation_data_map.values()
-                for item in translation_data.translation_items
-            ]
-            translated_items = await session.read_translated_items()
+            active_items: list[TranslationItem] = []
+            translated_items: list[TranslationItem] = []
+            if position_paths:
+                custom_rules = await self._resolve_custom_rules(
+                    session=session,
+                    custom_placeholder_rules_text=None,
+                )
+                structured_rules = await self._resolve_structured_rules(session=session)
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
+                text_index_invalidations = await detect_text_index_invalidations(
+                    session=session,
+                    text_rules=text_rules,
+                )
+                if text_index_invalidations:
+                    reason_details = "；".join(item.detail for item in text_index_invalidations)
+                    message = (
+                        "源文残留例外规则校验前需要当前文本事实契约文本事实；"
+                        "当前文本范围索引缺失或已过期，请先运行 rebuild-text-index"
+                    )
+                    if reason_details:
+                        message = f"{message}: {reason_details}"
+                    raise RuntimeError(
+                        message
+                    )
+                active_items = await read_current_text_fact_translation_items_by_paths(
+                    session,
+                    position_paths,
+                )
+                translated_items = await session.read_translated_items_by_paths(position_paths)
         return build_source_residual_rule_records_from_import(
             import_file=import_file,
             active_items=active_items,

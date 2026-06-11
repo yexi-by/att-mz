@@ -1,5 +1,7 @@
 """OpenAI 兼容聊天客户端门面。"""
 
+from datetime import datetime, timezone
+
 from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -9,6 +11,11 @@ from openai.types.chat import (
 )
 
 from app.llm_request_body_extra import LLMRequestBodyExtra, normalize_request_body_extra
+from app.observability.llm_messages import (
+    LLMMessageRequest,
+    current_llm_message_recorder,
+    validate_llm_message_task_key,
+)
 
 from .errors import EmptyLLMResponseError
 from .schemas import ChatMessage
@@ -26,11 +33,15 @@ class LLMHandler:
         """初始化尚未配置的 LLM 客户端。"""
         self.client: AsyncOpenAI | None = None
         self.request_body_extra: LLMRequestBodyExtra = {}
+        self.base_url: str = ""
+        self.api_key_display: str = "<redacted>"
 
     def clean(self) -> None:
         """清空已配置客户端。"""
         self.client = None
         self.request_body_extra = {}
+        self.base_url = ""
+        self.api_key_display = "<redacted>"
 
     def configure(
         self,
@@ -51,6 +62,8 @@ class LLMHandler:
             timeout=timeout,
         )
         self.request_body_extra = normalized_request_body_extra
+        self.base_url = base_url
+        self.api_key_display = _redact_api_key(api_key)
 
     async def get_ai_response(
         self,
@@ -58,6 +71,8 @@ class LLMHandler:
         messages: list[ChatMessage],
         model: str,
         temperature: float | None = None,
+        task_key: str = "llm",
+        task_label: str = "LLM 调用",
     ) -> str:
         """
         发起一次不带重试的 OpenAI 兼容聊天请求。
@@ -78,7 +93,11 @@ class LLMHandler:
         if self.client is None:
             raise ValueError("LLM 客户端尚未配置")
 
+        validate_llm_message_task_key(task_key)
+        llm_message_recorder = current_llm_message_recorder()
+        llm_message_sequence = llm_message_recorder.reserve_sequence()
         request_messages = format_chat_messages(messages)
+        request_started_at = _now_iso()
         if temperature is None:
             response = await self.client.chat.completions.create(
                 model=model,
@@ -99,6 +118,22 @@ class LLMHandler:
         content = response.choices[0].message.content
         if not content:
             raise EmptyLLMResponseError("LLM 响应中未返回文本内容")
+        _ = llm_message_recorder.record_success(
+            request=LLMMessageRequest(
+                task_key=task_key,
+                task_label=task_label,
+                model=model,
+                base_url=self.base_url,
+                api_key_display=self.api_key_display,
+                temperature=temperature,
+                extra_body=self.request_body_extra,
+                messages=messages,
+                request_started_at=request_started_at,
+            ),
+            assistant_text=content,
+            response_received_at=_now_iso(),
+            sequence=llm_message_sequence,
+        )
         return content
 
 
@@ -119,6 +154,16 @@ def format_chat_messages(messages: list[ChatMessage]) -> list[ChatCompletionMess
                 ChatCompletionAssistantMessageParam(role="assistant", content=message.text)
             )
     return request_messages
+
+
+def _redact_api_key(api_key: str) -> str:
+    """返回适合写入 debug 文件的密钥展示值。"""
+    _ = api_key
+    return "<redacted>"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 __all__: list[str] = [

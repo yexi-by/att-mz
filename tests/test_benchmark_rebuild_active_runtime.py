@@ -14,6 +14,7 @@ from scripts.benchmark_rebuild_active_runtime import (
     BenchmarkOptions,
     PreparedBenchmark,
     build_cli_env,
+    prepare_app_home_assets,
     build_threshold_failures,
     collect_game_sample_stats,
     extract_last_json_object,
@@ -31,20 +32,58 @@ def test_extract_last_json_object_reads_report_after_progress() -> None:
             "进度 重建运行文件 | [--------------------] | 0/1",
             '{"status":"debug"}',
             "进度 重建运行文件 | [####################] | 1/1",
-            '{"status":"ok","summary":{"rust_plan_ms":12}}',
+            '{"status":"ok","summary":{"planned_file_count":12}}',
         ]
     )
 
     report = extract_last_json_object(text)
 
     assert report["status"] == "ok"
-    assert report["summary"] == {"rust_plan_ms": 12}
+    assert report["summary"] == {"planned_file_count": 12}
 
 
 def test_extract_last_json_object_rejects_missing_report() -> None:
     """stdout 没有 JSON 对象时直接报错。"""
     with pytest.raises(RuntimeError, match="没有找到 JSON"):
         _ = extract_last_json_object("进度 重建运行文件")
+
+
+def stdout_report_with_diagnostics(
+    *,
+    app_home: Path,
+    status: str,
+    summary: dict[str, object],
+    timings: dict[str, int],
+) -> str:
+    """构造带 diagnostics 文件的 fake CLI stdout。"""
+    diagnostics_dir = app_home / "logs" / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_path = diagnostics_dir / f"run-{len(list(diagnostics_dir.glob('*.json'))) + 1}.json"
+    _ = diagnostics_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "command": "rebuild-active-runtime",
+                "status": "ok",
+                "timings": timings,
+                "counters": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    payload = {
+        "status": status,
+        "summary": {
+            **summary,
+            "diagnostics": {
+                "enabled": True,
+                "timings_enabled": True,
+                "file": str(diagnostics_path),
+            },
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def test_resolve_content_root_supports_direct_and_www_layouts(tmp_path: Path) -> None:
@@ -160,12 +199,23 @@ def test_parse_args_rejects_non_positive_rust_threads(tmp_path: Path) -> None:
         ])
 
 
-def test_build_cli_env_sets_att_mz_home_and_rust_threads(tmp_path: Path) -> None:
-    """性能命令环境显式携带临时应用目录和 Rust 线程数。"""
+def test_build_cli_env_sets_att_mz_home(tmp_path: Path) -> None:
+    """性能命令环境只携带临时应用目录，Rust 线程数由 setting.toml 控制。"""
     env = build_cli_env(app_home=tmp_path / "app-home", rust_threads=4)
 
     assert env["ATT_MZ_HOME"] == str(tmp_path / "app-home")
-    assert env["ATT_MZ_RUST_THREADS"] == "4"
+
+
+def test_prepare_app_home_assets_writes_runtime_thread_setting(tmp_path: Path) -> None:
+    """benchmark 显式线程数必须写入临时 setting.toml。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+
+    prepare_app_home_assets(app_home, rust_threads=4)
+
+    setting_text = (app_home / "setting.toml").read_text(encoding="utf-8")
+    assert "[runtime]" in setting_text
+    assert "rust_threads = 4" in setting_text
 
 
 def test_collect_game_sample_stats_records_copied_sample_scale(tmp_path: Path) -> None:
@@ -279,24 +329,24 @@ def test_run_benchmark_records_rust_threads_and_passes_child_env(
         return subprocess.CompletedProcess(
             args="uv run python main.py",
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "status": "ok",
-                    "summary": {
-                        "rust_plan_ms": 1,
-                        "file_replacement_ms": 2,
-                        "post_write_audit_ms": 3,
-                        "planned_file_count": 4,
-                        "skipped_file_count": 5,
-                        "plugin_source_ast_source_scan_file_count": 9,
-                        "plugin_source_ast_runtime_scan_file_count": 10,
-                        "plugin_source_runtime_map_count": 11,
-                        "data_item_count": 6,
-                        "plugin_item_count": 7,
-                        "terminology_written_count": 8,
-                    },
+            stdout=stdout_report_with_diagnostics(
+                app_home=Path(env["ATT_MZ_HOME"]),
+                status="ok",
+                summary={
+                    "planned_file_count": 4,
+                    "skipped_file_count": 5,
+                    "plugin_source_ast_source_scan_file_count": 9,
+                    "plugin_source_ast_runtime_scan_file_count": 10,
+                    "plugin_source_runtime_map_count": 11,
+                    "data_item_count": 6,
+                    "plugin_item_count": 7,
+                    "terminology_written_count": 8,
                 },
-                ensure_ascii=False,
+                timings={
+                    "rebuild_active_runtime.rust_plan.total": 1,
+                    "rebuild_active_runtime.file_replacement": 2,
+                    "rebuild_active_runtime.post_write_audit": 3,
+                },
             ),
             stderr="",
         )
@@ -306,7 +356,6 @@ def test_run_benchmark_records_rust_threads_and_passes_child_env(
     result = rebuild_benchmark.run_benchmark(options, prepared)
 
     assert captured_env["ATT_MZ_HOME"] == str(prepared.app_home)
-    assert captured_env["ATT_MZ_RUST_THREADS"] == "4"
     assert result["command"] == rebuild_benchmark.rebuild_active_runtime_command("测试游戏")
     assert result["sample_stats"] == collect_game_sample_stats(prepared.game_path)
     runs = cast(list[dict[str, object]], result["runs"])
@@ -407,7 +456,7 @@ def test_main_returns_nonzero_when_threshold_fails_and_cleans_temp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """性能脚本阈值失败时返回非 0，并清理临时目录。"""
+    """性能脚本阈值失败时返回非 0，并清理临时工作目录。"""
     temp_root = tmp_path / "bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -432,7 +481,7 @@ def test_main_returns_nonzero_when_threshold_fails_and_cleans_temp(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     monkeypatch.setattr(rebuild_benchmark, "prepare_benchmark", fake_prepare_benchmark)
@@ -472,7 +521,7 @@ def test_prepare_benchmark_cleans_temp_when_metadata_update_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """准备阶段已创建临时目录后失败时必须清理目录。"""
+    """准备阶段已创建临时工作目录后失败时必须清理目录。"""
     sample = tmp_path / "sample"
     data_dir = sample / "data"
     js_dir = sample / "js"
@@ -491,7 +540,7 @@ def test_prepare_benchmark_cleans_temp_when_metadata_update_fails(
     temp_root = tmp_path / "bench-temp"
 
     def fake_mkdtemp(*, prefix: str) -> str:
-        """返回可断言的临时目录路径。"""
+        """返回可断言的临时工作目录路径。"""
         assert prefix == "att_mz_rebuild_benchmark_"
         temp_root.mkdir()
         return str(temp_root)
@@ -524,7 +573,7 @@ def test_main_reports_unprepared_error_when_prepare_fails_before_temp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """临时目录创建前准备失败时也输出结构化 JSON。"""
+    """临时工作目录创建前准备失败时也输出结构化 JSON。"""
     options = BenchmarkOptions(
         sample_path=tmp_path / "sample",
         game_title="测试游戏",
@@ -541,7 +590,7 @@ def test_main_reports_unprepared_error_when_prepare_fails_before_temp(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """模拟还没创建临时目录就失败。"""
+        """模拟还没创建临时工作目录就失败。"""
         raise FileNotFoundError("源数据库不存在")
 
     monkeypatch.setattr(rebuild_benchmark, "prepare_benchmark", fake_prepare_benchmark)
@@ -616,7 +665,7 @@ def test_main_reports_cleanup_error_without_failing_benchmark(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """临时目录删除失败时报告清理错误，但不改变性能阈值结果。"""
+    """临时工作目录删除失败时报告清理错误，但不改变性能阈值结果。"""
     temp_root = tmp_path / "bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -640,7 +689,7 @@ def test_main_reports_cleanup_error_without_failing_benchmark(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     monkeypatch.setattr(rebuild_benchmark, "prepare_benchmark", fake_prepare_benchmark)
@@ -677,7 +726,7 @@ def test_main_cleans_temp_and_reports_json_when_run_raises(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """运行阶段异常时仍清理临时目录并输出结构化错误。"""
+    """运行阶段异常时仍清理临时工作目录并输出结构化错误。"""
     temp_root = tmp_path / "bench"
     prepared = PreparedBenchmark(
         temp_root=temp_root,
@@ -702,7 +751,7 @@ def test_main_cleans_temp_and_reports_json_when_run_raises(
     monkeypatch.setattr(rebuild_benchmark, "parse_args", lambda: options)
 
     def fake_prepare_benchmark(_options: BenchmarkOptions) -> PreparedBenchmark:
-        """返回预置临时目录。"""
+        """返回预置临时工作目录。"""
         return prepared
 
     def fake_run_benchmark(_options: BenchmarkOptions, _prepared: PreparedBenchmark) -> dict[str, object]:

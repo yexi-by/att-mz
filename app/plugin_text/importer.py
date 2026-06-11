@@ -2,12 +2,14 @@
 
 import json
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import cast
 
 import aiofiles
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
+from app.external_input import ExternalInputModel, ExternalInt, ExternalStr
 from app.rmmz.schema import GameData, PluginTextRuleRecord
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, get_default_text_rules
 
@@ -20,18 +22,12 @@ from .common import (
 )
 
 
-class StrictPluginRuleModel(BaseModel):
-    """插件规则导入文件的严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
-
-
-class PluginRuleSpec(StrictPluginRuleModel):
+class PluginRuleSpec(ExternalInputModel):
     """单个插件参数文本规则。"""
 
-    plugin_index: int = Field(ge=0)
-    plugin_name: str
-    paths: list[str] = Field(default_factory=list)
+    plugin_index: ExternalInt = Field(ge=0)
+    plugin_name: ExternalStr
+    paths: list[ExternalStr] = Field(default_factory=list)
 
     @field_validator("plugin_name")
     @classmethod
@@ -149,7 +145,7 @@ def build_plugin_rule_record(
             if leaf_value is None:
                 continue
             normalized_value = normalize_visible_text_for_extraction(leaf_value)
-            if text_rules.should_translate_source_text(normalized_value):
+            if is_source_text_required(text_rules, normalized_value):
                 translatable_hit_found = True
                 break
         if not translatable_hit_found:

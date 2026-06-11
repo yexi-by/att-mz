@@ -6,15 +6,14 @@ import json
 import re
 from dataclasses import dataclass
 from string import Formatter
-from typing import ClassVar, cast
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
-from app.rmmz.commands import iter_all_commands
-from app.rmmz.game_data import EventCommand
-from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value
+from app.external_input import ExternalInputModel, ExternalStr
+from app.native_rule_runtime import RuleRuntimeMvVirtualNameboxMatch, match_mv_virtual_namebox_rules
+from app.rmmz.json_types import JsonObject, coerce_json_value, ensure_json_object
 from app.rmmz.schema import (
-    Code,
     GameData,
     MvVirtualNameboxRuleRecord,
     MvVirtualNameboxSpeakerPolicy,
@@ -28,22 +27,12 @@ MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME = "mv-virtual-namebox-candidates.json"
 
 
 @dataclass(frozen=True, slots=True)
-class MvVirtualNameboxCandidate:
-    """MV `101` 后首条非空 `401` 候选。"""
-
-    location_path: str
-    text: str
-    following_lines: list[str]
-
-
-@dataclass(frozen=True, slots=True)
 class MvVirtualNameboxRule:
     """已编译的 MV 虚拟名字框规则。"""
 
     rule_order: int
     rule_name: str
     pattern_text: str
-    pattern: re.Pattern[str]
     speaker_group: str
     body_group: str
     speaker_policy: MvVirtualNameboxSpeakerPolicy
@@ -52,10 +41,8 @@ class MvVirtualNameboxRule:
     @classmethod
     def from_record(cls, record: MvVirtualNameboxRuleRecord) -> "MvVirtualNameboxRule":
         """从数据库记录创建运行时规则。"""
-        compiled_pattern = re.compile(record.pattern_text)
-        validate_compiled_rule(
+        validate_rule_template_shape(
             rule_name=record.rule_name,
-            pattern=compiled_pattern,
             speaker_group=record.speaker_group,
             body_group=record.body_group,
             render_template=record.render_template,
@@ -64,7 +51,6 @@ class MvVirtualNameboxRule:
             rule_order=record.rule_order,
             rule_name=record.rule_name,
             pattern_text=record.pattern_text,
-            pattern=compiled_pattern,
             speaker_group=record.speaker_group,
             body_group=record.body_group,
             speaker_policy=record.speaker_policy,
@@ -115,21 +101,15 @@ class MvVirtualSpeaker:
         return self.render_template.format_map(values)
 
 
-class StrictMvNameboxRuleModel(BaseModel):
-    """MV 虚拟名字框规则严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
-
-
-class MvVirtualNameboxRuleSpec(StrictMvNameboxRuleModel):
+class MvVirtualNameboxRuleSpec(ExternalInputModel):
     """单条 MV 虚拟名字框外部规则。"""
 
-    name: str
-    pattern: str
-    speaker_group: str
+    name: ExternalStr
+    pattern: ExternalStr
+    speaker_group: ExternalStr
     speaker_policy: MvVirtualNameboxSpeakerPolicy
-    render_template: str
-    body_group: str = ""
+    render_template: ExternalStr
+    body_group: ExternalStr = ""
 
     @field_validator("name", "pattern", "speaker_group", "render_template")
     @classmethod
@@ -147,7 +127,7 @@ class MvVirtualNameboxRuleSpec(StrictMvNameboxRuleModel):
         return value.strip()
 
 
-class MvVirtualNameboxImportFile(StrictMvNameboxRuleModel):
+class MvVirtualNameboxImportFile(ExternalInputModel):
     """MV 虚拟名字框规则导入文件。"""
 
     rules: list[MvVirtualNameboxRuleSpec] = Field(default_factory=list)
@@ -160,13 +140,27 @@ _MV_NAMEBOX_IMPORT_ADAPTER: TypeAdapter[MvVirtualNameboxImportFile] = TypeAdapte
 
 def parse_mv_virtual_namebox_rule_import_text(raw_text: str) -> list[MvVirtualNameboxRuleRecord]:
     """解析 MV 虚拟名字框规则 JSON 文本。"""
+    import_file = parse_mv_virtual_namebox_rule_import(raw_text)
+    return build_mv_virtual_namebox_rule_records(import_file.rules)
+
+
+def parse_mv_virtual_namebox_rule_import_payload(raw_text: str) -> JsonObject:
+    """解析 MV 虚拟名字框规则 JSON 文本并返回 rule_runtime 原始载荷。"""
+    import_file = parse_mv_virtual_namebox_rule_import(raw_text)
+    return ensure_json_object(
+        coerce_json_value(import_file.model_dump(mode="json")),
+        "mv_virtual_namebox_rule_import",
+    )
+
+
+def parse_mv_virtual_namebox_rule_import(raw_text: str) -> MvVirtualNameboxImportFile:
+    """解析 MV 虚拟名字框规则 JSON 文本为外部导入模型。"""
     stripped_text = raw_text.strip()
     if not stripped_text:
         raise ValueError("MV 虚拟名字框规则 JSON 不能为空")
     decoded_raw = cast(object, json.loads(stripped_text))
     decoded = coerce_json_value(decoded_raw)
-    import_file = _MV_NAMEBOX_IMPORT_ADAPTER.validate_python(decoded)
-    return build_mv_virtual_namebox_rule_records(import_file.rules)
+    return _MV_NAMEBOX_IMPORT_ADAPTER.validate_python(decoded)
 
 
 def build_mv_virtual_namebox_rule_records(
@@ -179,14 +173,6 @@ def build_mv_virtual_namebox_rule_records(
         if spec.name in seen_names:
             raise ValueError(f"MV 虚拟名字框规则名重复: {spec.name}")
         seen_names.add(spec.name)
-        pattern = re.compile(spec.pattern)
-        validate_compiled_rule(
-            rule_name=spec.name,
-            pattern=pattern,
-            speaker_group=spec.speaker_group,
-            body_group=spec.body_group,
-            render_template=spec.render_template,
-        )
         records.append(
             MvVirtualNameboxRuleRecord(
                 rule_order=index,
@@ -198,28 +184,25 @@ def build_mv_virtual_namebox_rule_records(
                 render_template=spec.render_template,
             )
         )
+    for record in records:
+        validate_rule_template_shape(
+            rule_name=record.rule_name,
+            speaker_group=record.speaker_group,
+            body_group=record.body_group,
+            render_template=record.render_template,
+        )
     return records
 
 
-def validate_compiled_rule(
+def validate_rule_template_shape(
     *,
     rule_name: str,
-    pattern: re.Pattern[str],
     speaker_group: str,
     body_group: str,
     render_template: str,
 ) -> None:
-    """校验已编译规则的命名分组和模板字段。"""
-    group_names = set(pattern.groupindex)
-    if speaker_group not in group_names:
-        raise ValueError(f"MV 虚拟名字框规则 {rule_name} 缺少说话人命名分组: {speaker_group}")
-    if body_group and body_group not in group_names:
-        raise ValueError(f"MV 虚拟名字框规则 {rule_name} 缺少正文命名分组: {body_group}")
+    """校验模板字段基础语法，不解释正则 capture。"""
     template_fields = read_template_fields(render_template)
-    allowed_fields = group_names | {"speaker", "body"}
-    unknown_fields = sorted(template_fields - allowed_fields)
-    if unknown_fields:
-        raise ValueError(f"MV 虚拟名字框规则 {rule_name} 的模板引用未知字段: {', '.join(unknown_fields)}")
     if speaker_group not in template_fields and "speaker" not in template_fields:
         raise ValueError(f"MV 虚拟名字框规则 {rule_name} 的模板没有引用说话人分组")
     if body_group and body_group not in template_fields and "body" not in template_fields:
@@ -261,12 +244,23 @@ def parse_mv_virtual_speaker_line(
     if not normalized_text:
         return None
     matches: list[MvVirtualSpeaker] = []
-    for rule in rules:
-        match = rule.pattern.fullmatch(normalized_text)
-        if match is None:
-            continue
+    rules_by_order = {rule.rule_order: rule for rule in rules}
+    for matched in _match_mv_virtual_namebox_rules(
+        text=normalized_text,
+        rules=rules,
+    ):
+        rule = rules_by_order.get(matched.rule_order)
+        if rule is None:
+            raise ValueError(f"MV 虚拟名字框规则命中未知规则序号: {matched.rule_order}")
         try:
-            matches.append(_build_virtual_speaker(game_data=game_data, rule=rule, match=match))
+            matches.append(
+                _build_virtual_speaker(
+                    game_data=game_data,
+                    rule=rule,
+                    matched_text=matched.matched_text,
+                    group_values=matched.group_values,
+                )
+            )
         except ValueError as error:
             if location_path is None:
                 raise
@@ -278,134 +272,6 @@ def parse_mv_virtual_speaker_line(
     if not matches:
         return None
     return matches[0]
-
-
-def validate_mv_virtual_namebox_rules_against_game(
-    *,
-    game_data: GameData,
-    records: list[MvVirtualNameboxRuleRecord],
-) -> tuple[JsonArray, JsonArray]:
-    """校验规则在当前游戏样本上的命中冲突和源文重建能力。"""
-    rules = runtime_mv_virtual_namebox_rules(records)
-    errors: JsonArray = []
-    details: JsonArray = []
-    for candidate in collect_mv_virtual_namebox_candidates(game_data):
-        matching_rules: list[str] = []
-        virtual_speakers: list[MvVirtualSpeaker] = []
-        for rule in rules:
-            match = rule.pattern.fullmatch(candidate.text.strip())
-            if match is None:
-                continue
-            matching_rules.append(rule.rule_name)
-            try:
-                virtual_speaker = _build_virtual_speaker(
-                    game_data=game_data,
-                    rule=rule,
-                    match=match,
-                )
-                virtual_speakers.append(virtual_speaker)
-            except Exception as error:
-                errors.append(
-                    {
-                        "location_path": candidate.location_path,
-                        "rule_name": rule.rule_name,
-                        "text": candidate.text,
-                        "message": f"{type(error).__name__}: {error}",
-                    }
-                )
-                continue
-            if (
-                virtual_speaker.speaker_policy == "translate"
-                and is_actor_name_control_text(virtual_speaker.source_speaker_text)
-            ):
-                errors.append(
-                    {
-                        "location_path": candidate.location_path,
-                        "rule_name": rule.rule_name,
-                        "text": candidate.text,
-                        "source_speaker": virtual_speaker.source_speaker_text,
-                        "message": "标准角色名控制符被 translate 规则命中，请改用 preserve 或 actor_name 规则，并收紧普通规则",
-                    }
-                )
-            if virtual_speaker.render_source() != candidate.text.strip():
-                errors.append(
-                    {
-                        "location_path": candidate.location_path,
-                        "rule_name": virtual_speaker.rule_name,
-                        "message": "规则模板无法重建源文本",
-                        "source": candidate.text.strip(),
-                        "rendered": virtual_speaker.render_source(),
-                    }
-                )
-        if len(matching_rules) > 1:
-            errors.append(
-                {
-                    "location_path": candidate.location_path,
-                    "message": f"同一候选命中多条规则: {', '.join(matching_rules)}",
-                }
-            )
-        if matching_rules:
-            matching_rule_values: JsonArray = [rule_name for rule_name in matching_rules]
-            following_lines: JsonArray = [line for line in candidate.following_lines[:3]]
-            match_values: JsonArray = [
-                {
-                    "rule_name": virtual_speaker.rule_name,
-                    "speaker": virtual_speaker.speaker,
-                    "source_speaker": virtual_speaker.source_speaker_text,
-                    "speaker_policy": virtual_speaker.speaker_policy,
-                }
-                for virtual_speaker in virtual_speakers
-            ]
-            detail: JsonObject = {
-                "location_path": candidate.location_path,
-                "text": candidate.text,
-                "following_lines": following_lines,
-                "matching_rules": matching_rule_values,
-                "matches": match_values,
-            }
-            details.append(detail)
-    return errors, details
-
-
-def collect_mv_virtual_namebox_candidates(game_data: GameData) -> list[MvVirtualNameboxCandidate]:
-    """收集 MV `101` 后首条非空 `401` 候选。"""
-    candidates: list[MvVirtualNameboxCandidate] = []
-    command_snapshots = list(iter_all_commands(game_data))
-    commands_by_prefix: dict[tuple[str | int, ...], list[tuple[list[str | int], EventCommand]]] = {}
-    for path, _display_name, command in command_snapshots:
-        commands_by_prefix.setdefault(tuple(path[:-1]), []).append((path, command))
-    for command_group in commands_by_prefix.values():
-        for index, (path, command) in enumerate(command_group):
-            if command.code != Code.NAME:
-                continue
-            candidate = _candidate_after_name_command(command_group=command_group, start_index=index)
-            if candidate is not None:
-                candidates.append(candidate)
-    return candidates
-
-
-def mv_virtual_namebox_candidate_details(game_data: GameData) -> JsonArray:
-    """生成供外部 Agent 阅读的 MV 虚拟名字框候选摘要。"""
-    details: JsonArray = []
-    for candidate in collect_mv_virtual_namebox_candidates(game_data):
-        following_lines: JsonArray = [line for line in candidate.following_lines[:3]]
-        detail: JsonObject = {
-            "location_path": candidate.location_path,
-            "text": candidate.text,
-            "following_lines": following_lines,
-        }
-        details.append(detail)
-    return details
-
-
-def mv_virtual_namebox_candidates_payload(game_data: GameData) -> JsonObject:
-    """生成 MV 虚拟名字框候选导出 JSON。"""
-    candidates = mv_virtual_namebox_candidate_details(game_data)
-    return {
-        "engine_kind": game_data.layout.engine_kind,
-        "candidate_count": len(candidates),
-        "candidates": candidates,
-    }
 
 
 def mv_virtual_namebox_rule_records_to_import_json(
@@ -427,57 +293,14 @@ def mv_virtual_namebox_rule_records_to_import_json(
     }
 
 
-def _candidate_after_name_command(
-    *,
-    command_group: list[tuple[list[str | int], EventCommand]],
-    start_index: int,
-) -> MvVirtualNameboxCandidate | None:
-    """读取单个 `101` 后首条非空 `401`。"""
-    following_lines: list[str] = []
-    next_index = start_index + 1
-    first_path: list[str | int] | None = None
-    first_text: str | None = None
-    while next_index < len(command_group):
-        path, command = command_group[next_index]
-        if command.code != Code.TEXT:
-            break
-        text = _read_first_parameter_text(command)
-        if text is not None and text.strip():
-            following_lines.append(text)
-            if first_text is None:
-                first_path = path
-                first_text = text
-        next_index += 1
-    if first_path is None or first_text is None:
-        return None
-    return MvVirtualNameboxCandidate(
-        location_path="/".join(map(str, first_path)),
-        text=first_text.strip(),
-        following_lines=following_lines[1:],
-    )
-
-
-def _read_first_parameter_text(command: EventCommand) -> str | None:
-    """读取事件指令第一个字符串参数。"""
-    if not command.parameters:
-        return None
-    value = command.parameters[0]
-    if not isinstance(value, str):
-        return None
-    return value
-
-
 def _build_virtual_speaker(
     *,
     game_data: GameData,
     rule: MvVirtualNameboxRule,
-    match: re.Match[str],
+    matched_text: str,
+    group_values: dict[str, str],
 ) -> MvVirtualSpeaker:
     """把正则命中结果转换为虚拟名字框对象。"""
-    group_values = {
-        key: value
-        for key, value in match.groupdict("").items()
-    }
     source_speaker_text = group_values[rule.speaker_group].strip()
     if not source_speaker_text:
         raise ValueError(f"MV 虚拟名字框规则 {rule.rule_name} 命中了空说话人")
@@ -488,7 +311,7 @@ def _build_virtual_speaker(
     return MvVirtualSpeaker(
         speaker=speaker,
         body_text=body_text,
-        matched_text=match.string.strip(),
+        matched_text=matched_text,
         rule_name=rule.rule_name,
         speaker_policy=rule.speaker_policy,
         source_speaker_text=source_speaker_text,
@@ -514,6 +337,29 @@ def _actor_name_from_control(*, game_data: GameData, text: str) -> str:
     raise ValueError(f"actor_name 规则无法解析角色 ID: {actor_id}")
 
 
+def _match_mv_virtual_namebox_rules(
+    *,
+    text: str,
+    rules: tuple[MvVirtualNameboxRule, ...],
+) -> list[RuleRuntimeMvVirtualNameboxMatch]:
+    """通过 Rust PCRE2 运行时匹配 MV 虚拟名字框规则。"""
+    return match_mv_virtual_namebox_rules(
+        {
+            "text": text,
+            "rules": [
+                {
+                    "rule_order": rule.rule_order,
+                    "rule_name": rule.rule_name,
+                    "pattern_text": rule.pattern_text,
+                    "speaker_group": rule.speaker_group,
+                    "body_group": rule.body_group,
+                }
+                for rule in rules
+            ],
+        }
+    )
+
+
 def is_actor_name_control_text(text: str) -> bool:
     """判断文本是否是 RPG Maker 标准角色名控制符。"""
     return ACTOR_NAME_CONTROL_PATTERN.fullmatch(text.strip()) is not None
@@ -521,18 +367,15 @@ def is_actor_name_control_text(text: str) -> bool:
 
 __all__: list[str] = [
     "is_actor_name_control_text",
-    "MvVirtualNameboxCandidate",
     "MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME",
     "MvVirtualNameboxRule",
     "MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME",
     "MvVirtualNameboxRuleSpec",
     "MvVirtualSpeaker",
-    "collect_mv_virtual_namebox_candidates",
-    "mv_virtual_namebox_candidates_payload",
-    "mv_virtual_namebox_candidate_details",
     "mv_virtual_namebox_rule_records_to_import_json",
+    "parse_mv_virtual_namebox_rule_import",
+    "parse_mv_virtual_namebox_rule_import_payload",
     "parse_mv_virtual_namebox_rule_import_text",
     "parse_mv_virtual_speaker_line",
     "runtime_mv_virtual_namebox_rules",
-    "validate_mv_virtual_namebox_rules_against_game",
 ]

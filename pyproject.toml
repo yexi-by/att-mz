@@ -7,6 +7,7 @@ dependencies = [
     "aiofiles>=25.1.0",
     "aiosqlite>=0.22.1",
     "demjson3>=3.0.6",
+    "json-repair>=0.59.10",
     "loguru>=0.7.3",
     "openai>=2.26.0",
     "pydantic>=2.12.5",
@@ -45,6 +46,10 @@ exclude = [
 ]
 pythonVersion = "3.14"
 stubPath = "typings"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_agent_toolkit_*.py" = ["F403", "F405"]
+"tests/test_rmmz_*.py" = ["F403", "F405"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

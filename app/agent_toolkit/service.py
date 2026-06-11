@@ -20,6 +20,7 @@ from .services.nonstandard_data import NonstandardDataAgentMixin
 from .services.placeholder_rules import PlaceholderRuleAgentMixin
 from .services.quality import QualityAgentMixin
 from .services.rule_validation import RuleValidationAgentMixin
+from .services.text_index import TextIndexAgentMixin
 from .services.workspace import WorkspaceAgentMixin
 
 
@@ -33,6 +34,7 @@ class AgentToolkitService(
     ManualTranslationAgentMixin,
     NonstandardDataAgentMixin,
     RuleValidationAgentMixin,
+    TextIndexAgentMixin,
     WorkspaceAgentMixin,
 ):
     """面向外部 Agent 的只读诊断与报告服务。"""

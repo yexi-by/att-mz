@@ -1,39 +1,20 @@
 # CLI 命令契约
 
-本文件记录发行版 Skill 使用的命令入口、阶段用途、成功判断和失败处理。命令必须在 `<发行版目录>` 执行，默认前缀是：
+本文件是发行版翻译流程 Agent 的执行契约，只记录如何安全调用 A.T.T MZ CLI、如何判断阶段结果、失败后回到哪一步。源码维护者用的逐命令事实地图位于 `docs/wiki/cli.md`，但它不是 Agent 执行依据，不能替代本文件、CLI 实际 JSON 输出或当前工作区文件。
+
+命令必须在 `<发行版目录>` 执行，默认前缀是：
 
 ```powershell
 .\att-mz.exe <命令> ...
 ```
 
-所有命令 stdout 默认输出机器可读 JSON；需要完整明细或业务文件时使用 `--output <文件>`。长任务会在 stderr 输出无 ANSI 进度行，stdout 的最终 JSON 才是命令结果。
+## 通用调用规则
 
-`validate-agent-workspace` 和 `validate-mv-virtual-namebox-rules` 的 stdout 是摘要报告；需要完整 `details` 明细时加 `--output <完整报告>`，stdout 仍只读摘要。
-
-规则候选、覆盖扫描和大数组报告会在 `summary.report_detail_mode` 标明明细模式：`sampled` 表示 stdout 只含 `{count, samples, omitted_count}` 样本，不能据此计算 hash、确认范围或补规则；`full` 表示报告含完整 `{count, items}` 或等价完整字段。需要审查全部候选、排查覆盖计数或派发外部 Agent 时，必须使用 `--output <完整报告>` 读取 full 明细。
-
-文件型规则一律用 `--input <文件>`，不要用 `--rules "$(cat ...)"`，不要把大 JSON 塞进命令行。
-
-## 配置与参数选择
-
-- 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传当前命令必需的定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`，以及已满足前置条件的确认参数。
-- 用户明确指定值、CLI 契约要求显式传入，或 CLI 输出说明默认配置缺失、冲突、不适合当前游戏或当前阶段时，立即改用最小范围覆盖：一次性差异用 CLI 参数，运行时性能差异用环境变量，长期稳定差异再调整本地配置。
-- 不要反复用同一套失败配置重试。确认是配置问题后，先根据 CLI 摘要、工作区文件和用户已给信息自行选择合理覆盖；只有涉及模型密钥、费用风险、写文件许可或多种业务结果都合理时，才停下来问用户。
-- 使用覆盖参数后，后续关联命令必须保持同一语义。例如工作区用显式 `--code` 导出事件指令候选时，导入空事件指令规则也要传同一组 `--code CODE`。
-
-## 性能与 Rust 线程
-
-- Rust 热路径线程数由环境变量 `ATT_MZ_RUST_THREADS` 控制；该值没有 `4` 的上限，必须是非负整数。
-- `ATT_MZ_RUST_THREADS=0` 或不设置时使用 Rayon 默认线程池；默认先沿用 `setting.toml` 与当前环境，不为了性能基线一开始固定传线程数。
-- 默认线程配置导致吞吐明显不足、CLI 输出提示线程配置不合适、用户要求性能优先，或当前机器是专用运行机器时，再显式设置为合适的逻辑处理器数量。Windows PowerShell 可用 `(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors` 获取逻辑处理器数量。
-- 如果用户指定线程数，以用户指定为准。不要把性能门禁里的 `4` 当运行上限，`4` 只是可重复基线和阈值比较用配置。
-
-## 编码与 Windows 终端
-
-- 所有工作区 JSON、临时脚本、手动填写译文表、规则文件和交付报告都必须按 UTF-8 读写，禁止依赖 Windows 默认编码、ANSI、GBK 或 Shift-JIS。
-- 写 JSON 时保持中日英原文可读性；Python 使用 `json.dumps(..., ensure_ascii=False)` 并显式 `encoding="utf-8"`。发行版流程不得要求用户安装 Python、Node.js 或其他开发运行时；只在当前环境已经具备且用户允许时，才用临时脚本辅助处理工作区文件。
-- 自写临时脚本必须显式声明编码：Python 使用 `Path.read_text/write_text(..., encoding="utf-8")` 或 `open(..., encoding="utf-8")`；Node.js 使用 `fs.readFile/writeFile(..., "utf8")`；PowerShell 写文件必须显式 `-Encoding utf8`。
-- Windows 终端 stdout 出现乱码时，先在同一 shell 设置 UTF-8 后重跑命令，不要基于乱码内容修改 JSON、规则或译文。
+- stdout 只读取最终 JSON；stderr 的长任务进度行只表示阶段进展，不是结果 JSON。
+- 需要完整明细或业务文件时使用 `--output <文件>`。如果 stdout 的 `summary.report_detail_mode=sampled`，其中的数组只含样本，不能据此计算 hash、确认覆盖范围或补规则；需要全量候选时读取 `--output` 写出的完整报告。
+- 文件型规则一律使用 `--input <文件>`；不要把大 JSON 塞进命令行，也不要用 `--rules "$(cat ...)"` 传大文件。
+- 用户可写正则会在 validate/import、工作区验收和读取当前游戏已保存规则时预检。普通占位符、结构化占位符、MV 虚拟名字框、源文残留结构规则和 `[text_rules]` 配置正则统一使用 PCRE2 当前契约；命名分组统一使用 `(?<name>...)`。Note 标签文件键是 `fnmatch` 通配模式，不是正则。
+- 所有工作区 JSON、临时脚本、手动填写译文表、规则文件和报告都按 UTF-8 读写。Windows 终端乱码时先设置 UTF-8 后重跑命令，不要基于乱码修改规则或译文。
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new()
@@ -41,120 +22,105 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 ```
 
-- 控制符、括号和引号边界不能只看终端显示；遇到乱码、非 ASCII 引号、全角括号或 `\` 控制片段异常时，必须核验 Unicode code point 或原始字节，再决定规则和译文。
-- 正文译文保存和写进游戏文件前会自动按源文槽位整理 `「」「『』` 包裹符号；这属于标点整理能力，不作为 `quality-report` 问题项。
-- CLI stdout 只读取最终 JSON；stderr 进度行不能当作命令结果 JSON。
+## 配置与性能
 
-## 环境与注册
+- 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传必需定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`，以及已满足前置条件的确认参数。
+- 用户明确指定值、CLI 输出说明默认配置缺失或不适合当前阶段，或 CLI 契约要求显式传入时，才做最小范围覆盖。一次性差异用 CLI 参数，运行时性能差异用环境变量，长期稳定差异再调整本地配置。
+- 模型地址和 API Key 使用 `ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。
+- Rust 热路径线程数由 `ATT_MZ_RUST_THREADS` 控制；不设置或设为 `0` 时使用默认线程池。不要把性能基线里的 `4` 当运行上限。
+- 需要解释重建索引或翻译阶段耗时时，使用 `--debug --debug-timings`，读取 `summary.diagnostics` 或完整诊断 JSON 中的 `text_index.rebuild.*` 计时与 `runtime.native_thread_count` 计数。普通 summary 只作为业务结果。
 
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `list` | 列出当前可读取的已注册游戏；旧库、坏库或外部 SQLite 会进入 warning 并跳过 | 命令返回 0，`summary.game_count` 和 `summary.skipped_database_count` 可解释 | 需要继续使用被跳过游戏时，按 warning 说明重新注册或修复对应库 |
-| `doctor --no-check-llm` | 检查项目静态环境，不请求模型服务；无 `--game` 时日志里的语言档案只是默认配置，不是当前游戏源语言 | `status` 不是 `error`，`summary.llm_connection_status` 为 `skipped` | 修环境后重跑，不启动翻译，不把默认语言档案当作注册依据 |
-| `probe-source-language --path <游戏目录> --output <探测报告>` | 注册前只按玩家可见文本探测源语言，排除资源名、公式、ID、脚本和协议值 | `summary.recommended_source_language` 为 `ja`、`en` 或 `uncertain`；命令不注册游戏、不写数据库、不创建可信源快照 | 不确定或与用户认知冲突时展示样本让用户确认，禁止用 grep 假名或英文字符代替 |
-| `add-game --path <游戏目录> --source-language ja` | 按日文源语言注册干净原始游戏目录 | `summary.game_title` 可用于后续 `--game` | 目录已有可信源快照时换用干净原始游戏目录 |
-| `add-game --path <游戏目录> --source-language en` | 按英文源语言注册干净原始游戏目录 | `summary.game_title` 可用于后续 `--game` | 目录已有可信源快照时换用干净原始游戏目录 |
-| `doctor --game <游戏标题> --no-check-llm` | 检查游戏绑定和规则状态；当前游戏源语言只看 `summary.source_language` | `status` 不是 `error`，`summary.llm_connection_status` 为 `skipped` | 缺规则时只允许继续准备工作区，不启动翻译或写回 |
-| `reset-game --game <游戏标题> --dry-run` | 危险回溯预演：只列出将恢复的运行文件和将删除的注册痕迹 | `summary.changed` 为 `false`，`details.restore` 和 `details.delete.paths` 可解释 | 真正执行前把计划转述给用户确认 |
-| `reset-game --game <游戏标题> --confirm-game-title <游戏标题>` | 用户明确要求时，把当前运行文件恢复到可信源快照，再删除 `data_origin`、`plugins_origin.js`、`plugins_source_origin`、`gamefont_origin.css` 和游戏数据库 | `summary.changed` 为 `true`；后续该游戏不再注册，需要重新 `add-game` | 确认标题不匹配、可信源快照缺失或校验失败时停止；禁止手动删库绕过恢复 |
+## 当前文本索引
 
-注册游戏必须先运行 `probe-source-language --path <游戏目录>`，再显式传 `--source-language ja` 或 `--source-language en`。探测命令只提供分析报告，`add-game` 不读取探测报告，也不会自动替用户决定或阻止源语言选择。
+- `rebuild-text-index --game <游戏标题>` 会生成当前文本索引，后续翻译、质量检查、手动补译、覆盖审计、反馈定位和写进游戏文件都读取当前文本索引。
+- 当前文本索引区分原始片段、玩家可见文本、模型翻译正文、写回结构片段和 hash；不要从工作区文件、当前运行文件或诊断输出反推当前文本范围。
+- 索引缺失、范围不一致或不满足当前契约时，命令必须按错误提示回到 `rebuild-text-index --game <游戏标题>`。
+- 工作区校验失败、manifest 不匹配、范围信息不可用或不满足当前契约时，重新运行 `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>`；不要手补 manifest 或复用未列入 manifest 的候选文件。
+- 当前运行文件审计或反馈定位缺少可用写回映射时，先运行 `rebuild-text-index --game <游戏标题>`，再按需要运行 `rebuild-active-runtime --game <游戏标题>` 重建当前运行文件；不要把当前运行文件当作翻译源。
+- 不满足当前契约的输入只作为无效输入处理；按错误提示重新生成当前索引、当前工作区、当前运行文件或重新导入当前规则。
 
-`reset-game` 只能在用户明确要求注销、重置或恢复到注册前状态时使用。执行顺序固定为先恢复当前运行文件，再删除注册痕迹；如果报告提示字体文件清单没有注册快照，只能说明该边界，不能自行删除无法证明由本项目创建的字体文件。
+## 阶段命令
 
-## 工作区与规则导入
+### 0. 启动、注册与危险回溯
 
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>` | 导出候选文件、规则草稿和已保存规则；需要覆盖事件指令默认编码时加 `--code CODE` | 工作区文件存在，`summary.workspace` 指向目标目录，`summary.event_command_codes` 可解释 | 删除不完整工作区后重跑 |
-| `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>` | 总体验收工作区和规则覆盖；stdout 摘要、完整明细写入报告文件 | 无 `errors` | 逐项修工作区 JSON 后重跑 |
-| `cleanup-agent-workspace --workspace <工作区>` | 清理 CLI 生成的工作区文件 | 命令返回 0 | 缺 `manifest.json` 时先人工确认范围 |
-| `export-plugins-json --game <游戏标题> --output <plugins.json>` | 单独导出当前插件配置 JSON | 输出文件存在 | 重新检查游戏注册和 `js/plugins.js` |
-| `export-event-commands-json --game <游戏标题> --output <候选文件>` | 单独导出配置默认编码的事件指令候选 | 输出文件存在，`summary.command_codes` 和候选数量可解释 | 需要覆盖默认编码时显式加 `--code CODE` 后重跑 |
+| 场景 | 命令 | 判断与下一步 |
+| --- | --- | --- |
+| 静态环境检查 | `doctor --no-check-llm` | `status` 不是 `error`；无 `--game` 时只说明默认配置，不代表当前游戏源语言。 |
+| 源语言探测 | `probe-source-language --path <游戏目录> --output <探测报告>` | 只按玩家可见文本判断；结果不确定或与用户认知冲突时，展示样本让用户确认。 |
+| 注册日文游戏 | `add-game --path <游戏目录> --source-language ja` | `summary.game_title` 是后续 `--game` 值；目录已有可信源快照时换干净原始目录。 |
+| 注册英文游戏 | `add-game --path <游戏目录> --source-language en` | 同上；`add-game` 不读取探测报告，也不会替用户决定源语言。 |
+| 游戏状态检查 | `doctor --game <游戏标题> --no-check-llm` | 当前游戏源语言只看 `summary.source_language`；缺规则时只能继续准备工作区，不启动翻译或写回。 |
+| 查看注册列表 | `list` | 不符合当前 schema 的游戏进入 warning；需要继续使用被跳过游戏时，按 warning 重新注册或修复。 |
+| 危险回溯预演 | `reset-game --game <游戏标题> --dry-run` | 只转述恢复和删除计划，不修改文件。 |
+| 危险回溯执行 | `reset-game --game <游戏标题> --confirm-game-title <游戏标题>` | 只能在用户明确要求注销、重置或恢复注册前状态时使用；禁止手动删库绕过恢复。 |
 
-## MV 虚拟名字框
+### 1. 工作区与基础候选
 
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `export-mv-virtual-namebox-candidates --game <游戏标题> --output <候选文件>` | 单独导出 MV 候选 | 输出文件存在；MZ 调用返回 error | 候选为空时可确认空规则 |
-| `validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件> --output <完整报告>` | 校验正则、模板和新增命中；stdout 摘要、完整明细写入报告文件 | `status` 不是 `error`，且新增命中样本已确认 | 修规则文件后重跑 |
-| `import-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件>` | 保存当前 MV 游戏规则 | `status` 为 `ok`；空规则需 `--confirm-empty` | 导入后重新准备工作区 |
+| 场景 | 命令 | 判断与下一步 |
+| --- | --- | --- |
+| 准备规则分析工作区 | `prepare-agent-workspace --game <游戏标题> --output-dir <工作区>` | 工作区文件存在，`summary.workspace` 指向目标目录；需要覆盖事件指令默认编码时加 `--code CODE`，后续空规则导入保持同一组 code。 |
+| 验收工作区 | `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>` | 无 `errors` 才能进入正文翻译；stdout 是摘要，完整明细读输出文件。 |
+| 清理工作区 | `cleanup-agent-workspace --workspace <工作区>` | 只清理 CLI manifest 记录的文件；缺 manifest 时先人工确认范围。 |
+| 单独导出插件配置 | `export-plugins-json --game <游戏标题> --output <plugins.json>` | 输出文件存在；用于排查插件配置候选。 |
+| 单独导出事件指令 | `export-event-commands-json --game <游戏标题> --output <候选文件>` | 输出文件存在，`summary.command_codes` 可解释；需要覆盖默认编码时加 `--code CODE`。 |
 
-## 术语与外部文本规则
+### 2. 规则导入
 
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `export-terminology --game <游戏标题> --output-dir <术语工作目录>` | 导出术语表工程 JSON 和只读上下文 | 输出目录包含字段译名表、正文术语表和子任务文件 | 删除不完整目录后重跑 |
-| `import-terminology --game <游戏标题> --input <字段译名表> --glossary-input <正文术语表>` | 保存字段译名表和正文术语表 | `status` 为 `ok` | 修结构、空值或冲突后重跑 |
-| `validate-plugin-rules --game <游戏标题> --input <规则文件>` | 校验插件规则路径、字符串叶子命中和当前插件配置哈希 | `status` 为 `ok` | 修 `plugin-rules.json` 后重跑；如果提示插件哈希或当前配置不一致，重新准备工作区，不猜路径 |
-| `import-plugin-rules --game <游戏标题> --input <规则文件>` | 保存插件文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
-| `export-plugin-source-ast-map --game <游戏标题> --output <AST地图文件>` | 用户确认高风险后导出插件源码 AST 地图；默认 `--view translation-source` | 输出文件存在，风险摘要、候选数量和 `summary.source_view` 可解释 | 只处理 `js/plugins` 直接 `.js` 文件；需要审计当前运行文件时显式传 `--view active-runtime` |
-| `validate-plugin-source-rules --game <游戏标题> --input <规则文件>` | 校验插件源码 selector、排除 selector 和当前源码哈希 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 修 `plugin-source-rules.json` 后重跑；selector 失效时重新导出 AST 地图 |
-| `import-plugin-source-rules --game <游戏标题> --input <规则文件>` | 保存插件源码文本规则 | `status` 为 `ok`，且高风险或已启动支线时未审查 selector 数为 0 | 导入后重新扫描占位符候选，再进入正文翻译 |
-| `scan-nonstandard-data --game <游戏标题> --output <风险报告文件>` | 扫描非标准 data 文件文本风险摘要 | 输出文件存在；高风险时返回 warning 并给出候选数量 | 高风险时导出候选并填写规则，或按文件确认跳过 |
-| `export-nonstandard-data-json --game <游戏标题> --output-dir <工作区>/nonstandard-data` | 导出非标准 data 文件候选报告和原始 JSON 副本 | 输出目录包含 `candidates.json` 和 `source/*.json` | 删除不完整目录后重跑，不读源码猜路径 |
-| `validate-nonstandard-data-rules --game <游戏标题> --input <规则文件>` | 校验非标准 data 文件文本规则、路径命中和候选全量归类 | 无 `errors`；跳过文件只允许出现 warning | 修 `nonstandard-data-rules.json` 后重跑；路径失效时重新导出候选 |
-| `import-nonstandard-data-rules --game <游戏标题> --input <规则文件>` | 保存非标准 data 文件文本规则 | `status` 为 `ok`；跳过文件只允许出现 warning | 导入后重新扫描占位符候选，再进入正文翻译 |
-| `validate-event-command-rules --game <游戏标题> --input <规则文件>` | 校验事件指令编码、match 和路径 | 无 `errors` | 修 `event-command-rules.json` 后重跑 |
-| `import-event-command-rules --game <游戏标题> --input <规则文件>` | 保存事件指令文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty`；若候选用 `--code` 导出，空规则导入也传同一组 `--code CODE`；或备份 warning 已记录 | 导错时先导入正确规则，再用备份恢复译文 |
-| `export-note-tag-candidates --game <游戏标题> --output <文件>` | 单独导出 Note 标签候选 | 输出文件存在，候选数量可解释 | 异常时检查游戏注册和文件结构 |
-| `validate-note-tag-rules --game <游戏标题> --input <规则文件>` | 校验 Note 标签规则 | 无 `errors` | 修 `note-tag-rules.json` 后重跑 |
-| `import-note-tag-rules --game <游戏标题> --input <规则文件>` | 保存 Note 标签文本规则 | `status` 为 `ok`；空规则需 `--confirm-empty` | 导错时先导入正确规则，再用备份恢复译文 |
+所有规则都遵循同一顺序：先导出或读取候选，再编辑规则文件，再运行对应 validate，最后 import。空规则只有在已审查当前候选并能说明空结果理由时才加 `--confirm-empty`。导入后若出现 `deleted_translations_backed_up` warning，表示已保存译文因规则变化被清理；确认导错时，先导入正确规则，再用备份文件运行 `import-manual-translations` 恢复。
 
-导入命令返回 `deleted_translations_backed_up` warning 时，表示规则变化清理了不再属于当前规则范围的已保存译文。备份文件路径在 `summary.deleted_translation_backup_path` 或 `details.deleted_translation_backup.path`。确认导错时，先导入正确规则，再用备份文件通过 `import-manual-translations` 恢复。
+| 领域 | 命令组 | 关键判断 |
+| --- | --- | --- |
+| MV 虚拟名字框 | `export-mv-virtual-namebox-candidates`、`validate-mv-virtual-namebox-rules`、`import-mv-virtual-namebox-rules` | 仅 MV 游戏运行；MZ 游戏跳过。新增命中样本必须经主代理确认。 |
+| 术语 | `export-terminology`、`import-terminology` | 字段译名表和正文术语表是不同文件；主代理亲自审查后导入。 |
+| 插件参数 | `validate-plugin-rules`、`import-plugin-rules` | 插件哈希或当前配置不一致时重新准备工作区，不猜路径。 |
+| 事件指令 | `validate-event-command-rules`、`import-event-command-rules` | 事件编码覆盖要从导出、validate 到 import 保持一致。 |
+| Note 标签 | `export-note-tag-candidates`、`validate-note-tag-rules`、`import-note-tag-rules` | 文件键是 `fnmatch`；空规则必须说明理由。 |
+| 非标准 data 支线 | `scan-nonstandard-data`、`export-nonstandard-data-json`、`validate-nonstandard-data-rules`、`import-nonstandard-data-rules` | 高风险或用户要求时才进入；候选必须归入翻译、排除或用户确认跳过。 |
+| 插件源码支线 | `scan-plugin-source-text`、`export-plugin-source-ast-map`、`validate-plugin-source-rules`、`import-plugin-source-rules` | 高风险或反馈指向源码时按开局支线策略处理；默认自动处理并使用 `--view translation-source`，审计当前运行文件才用 `--view active-runtime`。 |
+| 普通占位符 | `build-placeholder-rules`、`validate-placeholder-rules`、`scan-placeholder-candidates`、`import-placeholder-rules` | 未覆盖候选必须修规则或确认风险；warning 不表示译文可以改坏协议片段。 |
+| 结构化占位符 | `validate-structured-placeholder-rules`、`scan-structured-placeholder-candidates`、`import-structured-placeholder-rules` | 处理固定协议外壳包住可翻译显示文本的情况。 |
+| 源文保留例外 | `validate-source-residual-rules`、`import-source-residual-rules` | 只用于确实不应翻译且被报告的片段；禁止用来掩盖整句漏翻或关闭全局检测。 |
 
-## 占位符规则
+### 3. 翻译、检查与手动修复
 
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `build-placeholder-rules --game <游戏标题> --output <规则文件>` | 基于当前正文集合生成普通占位符草稿 | 输出文件存在 | 查看 `errors`，不要手写替代导出 |
-| `validate-placeholder-rules --game <游戏标题> --input <规则文件>` | 校验正则、模板和样本文本往返 | `status` 为 `ok` 或只有可接受 warning | 修规则后重跑 |
-| `scan-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描普通占位符候选覆盖 | 规则命中可解释，未覆盖候选已修规则或确认风险 | 未覆盖且无法确认时修规则，再 validate 和 scan |
-| `import-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存普通占位符规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
-| `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 校验结构化规则 | `status` 不是 `error` | 修规则后重跑 |
-| `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>` | 扫描结构化候选覆盖 | 规则命中可解释，覆盖风险已处理或已确认 | 未覆盖且无法确认时修规则，再 validate 和 scan |
-| `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>` | 保存结构化规则 | `status` 为 `ok` 或可接受 warning；空规则需 `--confirm-empty`；未覆盖候选会保存已确认风险 | 导入失败时回到 validate/scan 修规则，不编造规则 |
+| 场景 | 命令 | 判断与下一步 |
+| --- | --- | --- |
+| 建立 warm index | `rebuild-text-index --game <游戏标题>` | `summary.index_status=rebuilt`，索引数量可解释；大型游戏规则导入、源文件变化或规则变化后先运行。 |
+| 小批量试跑 | `translate --game <游戏标题> --max-items 3` | 只用于观察模型、规则和控制符风险；不以 0 失败作为指标。正常结束，`summary.pending_count` 是本轮数量，`summary.total_pending_count` 是总剩余，`summary.text_index_status` 可解释索引来源。小批量阶段禁止导出修复表、手填译文或重置译文。 |
+| 持续正文翻译 | `translate --game <游戏标题>` | 剩余量下降且没有规则性事故就继续，主要靠全量多轮重试收敛；同类失败多轮不下降或剩余量已很小时，才转修规则、换模型或手动处理。 |
+| 查看进度 | `translation-status --game <游戏标题>` | 数量能解释；需按当前范围刷新时加 `--refresh-scope`。 |
+| 查看文本范围 | `text-scope --game <游戏标题>` | `status` 为 `ok`；加 `--include-write-probe` 只标记索引可写状态，不执行写回级检查。 |
+| 覆盖审计 | `audit-coverage --game <游戏标题>` | `status` 为 `ok`；发现规则命中、译文或范围缺口时先补规则、补译文或精确重置。 |
+| 普通质量报告 | `quality-report --game <游戏标题>` | `status` 不是 `error`；有 error 禁止写回。需要 Rust 写回级检查时加 `--include-write-probe`。 |
+| 导出质量修复表 | `export-quality-fix-template --game <游戏标题> --output <文件>` | 只改中文译文行后导入；`--include-write-probe` 只标记请求和索引可写状态。 |
+| 导出待补译表 | `export-pending-translations --game <游戏标题> --output <文件>` | 可加 `--limit N`；抽样仍适合模型时回到 `translate`。 |
+| 导入手动译文 | `import-manual-translations --game <游戏标题> --input <文件>` | `status` 为 `ok`；质量错误时只修中文译文行后重跑。 |
+| 精确重置 | `reset-translations --game <游戏标题> --input <文件>` | `summary.mode=input` 且数量可解释；输入路径不属于当前范围时整体失败，不部分删除。 |
+| 完整重译 | `reset-translations --game <游戏标题> --all` | 只能在用户明确选择完整重译时使用。 |
+| 跳过写回流水线 | `run-all --game <游戏标题> --skip-write-back` | 规则或质量错误未清前不写回。 |
+| 最终流水线 | `run-all --game <游戏标题> --confirm-font-overwrite` | 只有用户单独确认字体覆盖时使用。 |
 
-普通占位符未确认风险时使用 `placeholder_uncovered` error，确认风险后在 `doctor`、`text-scope`、`audit-coverage` 和 `quality-report` 中使用 `placeholder_uncovered_reviewed` warning。结构化占位符对应 `structured_placeholder_uncovered` error 和 `structured_placeholder_uncovered_reviewed` warning。旧版本若保存过前 100 个候选样本 hash，当前版本会以 `*_legacy_hash` warning 兼容放行；重新导入对应规则后会升级为完整候选 hash。warning 只表示流程可继续，不表示译文可以改坏协议片段；坏控制符仍会在保存或写文件前成为质量 error。
+### 4. 写进游戏文件、重建与反馈
 
-## 翻译、检查和手动修复
+`write-back`、`rebuild-active-runtime` 和不跳过写入的 `run-all` 都是写文件操作。执行前必须满足：用户允许写回、`audit-coverage` 无 error、`quality-report` 无 error、可信源快照有效、当前规则范围内正文译文完整、普通 warning 已由主代理确认、接受风险类 warning 已获用户确认、字体覆盖已单独确认。
 
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `translate --game <游戏标题> --max-batches 1` | 小批量试跑正文翻译 | 命令正常结束，质量报告无新增规则性事故 | 看状态和质量报告，不盲目全量 |
-| `translate --game <游戏标题>` | 继续翻译还没成功保存译文的文本 | 剩余量下降且质量风险可解释 | 连续多轮不下降时转修规则、换模型或手动处理 |
-| `run-all --game <游戏标题> --skip-write-back` | 按固定顺序翻译正文但不写进游戏文件 | `status` 为 `ok`，摘要说明写文件阶段已跳过 | 规则或质量错误未清前不写回 |
-| `run-all --game <游戏标题> --confirm-font-overwrite` | 翻译后执行最终写回并允许字体覆盖 | 用户已单独确认字体覆盖，摘要包含翻译和写文件结果 | 未确认字体覆盖时不使用 |
-| `translation-status --game <游戏标题>` | 快速查看最近运行、已保存译文和模型失败数量 | 数量能解释；需重新扫描当前文本范围时加 `--refresh-scope` | 数量下降时继续翻译，停滞时分析失败类型 |
-| `text-scope --game <游戏标题>` | 查看统一文本范围和规则来源 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 发现规则命中但不可翻译时先修规则 |
-| `audit-coverage --game <游戏标题>` | 对比规则命中、译文和当前文本范围 | `status` 为 `ok`；需检查写入可行性时加 `--include-write-probe` | 补规则、补译文或精确重置 |
-| `audit-active-runtime --game <游戏标题>` | 审计当前运行插件源码完整性；默认只阻断读取失败和 JS 语法错误，插件源码支线已启动或已有写回映射时才审计已管理 selector 的文本残留和坏控制符 | `status` 为 `ok`，`summary.source_view` 为 `active-runtime`；普通流程不要把源语言字符串告警当漏翻清单 | 有 error 时运行 `diagnose-active-runtime` 反推已保存译文记录或确认映射缺失 |
-| `diagnose-active-runtime --game <游戏标题> --output <诊断文件>` | 用写回映射诊断当前运行插件源码阻塞问题 | 输出文件存在，`summary.diagnosis_issue_count` 与 error 数量可解释；`mapped_excluded` 不进入重置清单 | 映射缺失时报告无法反推；已映射翻译问题回到规则、重置或手动译文 |
-| `quality-report --game <游戏标题>` | 判断已保存译文记录、规则、控制符、源文残留、行宽和可生成性是否允许写回 | `status` 不是 `error`；需检查写入可行性时加 `--include-write-probe` | 按明细修译文或规则；有 error 禁止写回 |
-| `export-quality-fix-template --game <游戏标题> --output <文件>` | 导出检查没通过译文的修复表 | 输出文件存在，数量可解释；需检查写入可行性时加 `--include-write-probe` | 只改中文译文行后导入 |
-| `export-pending-translations --game <游戏标题> --output <文件>` | 导出还没成功保存译文的文本表 | 输出文件存在；可加 `--limit N`；需检查写入可行性时加 `--include-write-probe` | 抽样显示仍适合模型时回到翻译 |
-| `import-manual-translations --game <游戏标题> --input <文件>` | 检查并保存手动填写译文 | `status` 为 `ok` | 修中文译文行后重跑 |
-| `reset-translations --game <游戏标题> --input <文件>` | 精确删除坏译文，让模型重译 | `summary.mode=input` 且数量可解释 | 非法路径整体失败；修输入文件 |
-| `reset-translations --game <游戏标题> --all` | 用户明确选择完整重译时删除当前提取范围译文 | `summary.mode=all` 且数量可解释 | 数量异常时先解释，不手工拼全集 |
-| `validate-source-residual-rules --game <游戏标题> --input <规则文件>` | 校验源文保留例外 | `status` 为 `ok` | 修例外规则，不关闭全局检测 |
-| `import-source-residual-rules --game <游戏标题> --input <规则文件>` | 保存源文保留例外 | `status` 为 `ok` | 回到 validate 修规则 |
+| 场景 | 命令 | 判断与下一步 |
+| --- | --- | --- |
+| 写进游戏文件 | `write-back --game <游戏标题>` | 写文件前检查无 error，命令返回 0 且摘要可读；失败时按错误修质量、规则或已保存译文记录。 |
+| 字体覆盖写回 | `write-back --game <游戏标题> --confirm-font-overwrite` | 只有用户单独确认字体覆盖时使用。 |
+| 重建当前运行文件 | `rebuild-active-runtime --game <游戏标题>` | 当前运行文件损坏或需要从可信源快照重建时使用；写入后再验收当前运行文件。 |
+| 字体覆盖重建 | `rebuild-active-runtime --game <游戏标题> --confirm-font-overwrite` | 只有用户单独确认字体覆盖时使用。 |
+| 术语专用写入 | `write-terminology --game <游戏标题>` | 允许正文仍有 pending，但术语表、规则前置、可信源快照、写入目标和已保存译文质量仍必须通过检查。 |
+| 字体还原 | `restore-font --game <游戏标题>` | 缺原始备份或替换字体信息时停止说明。 |
+| 当前运行文件审计 | `audit-active-runtime --game <游戏标题>` | 默认只阻断插件源码读取失败和 JS 语法错误；插件源码支线已启动或已有写回映射时才审计已管理 selector 的残留和坏控制符。 |
+| 阻塞诊断 | `diagnose-active-runtime --game <游戏标题> --output <诊断文件>` | 有 active runtime error 时运行；`mapped_excluded` 不进入重置清单，映射缺失时只报告无法反推。 |
+| 试玩反馈反查 | `verify-feedback-text --game <游戏标题> --input <反馈原文清单>` | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理；禁止凭空猜测或直接全量重译。 |
 
-日文和英文游戏都使用通用源文残留命令。源文保留例外只用于确实不应翻译的片段，不能掩盖整句漏翻。
+## 停止条件
 
-## 写进游戏文件与反馈定位
-
-`write-back` 和 `rebuild-active-runtime` 都是写文件操作，成功前提相同：覆盖审计和质量报告没有 error、可信源快照有效、当前规则范围内正文译文完整、字体覆盖已单独确认。`write-terminology` 是术语专用写入，允许正文仍有还没成功保存译文的文本，但不能跳过术语表、规则前置、可信源快照、写入目标和已保存译文质量检查。
-
-| 命令 | 用途 | 成功判断 | 失败处理 |
-| --- | --- | --- | --- |
-| `write-back --game <游戏标题>` | 把译文写进游戏文件 | 写文件前检查无 error，命令返回 0 且摘要可读 | 停止交付，按错误修质量、规则或已保存译文记录 |
-| `write-back --game <游戏标题> --confirm-font-overwrite` | 写回并覆盖字体引用 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
-| `rebuild-active-runtime --game <游戏标题>` | 从可信源快照和已保存译文重建当前运行文件 | 写文件前检查无 error，命令返回 0，随后 `audit-active-runtime` 无 error；未启动插件源码支线时不要求处理插件源码内部源语言字符串 | 质量问题未清时先修规则、手动译文或精确重置 |
-| `rebuild-active-runtime --game <游戏标题> --confirm-font-overwrite` | 重建运行文件并允许字体覆盖 | 用户已单独确认字体覆盖，摘要可解释 | 未确认字体覆盖时不使用 |
-| `write-terminology --game <游戏标题>` | 术语专用写入，并保留已保存且可写的正文译文 | `status` 为 `ok`，摘要包含术语写入和保留正文译文数量 | 术语表、规则前置、可信源快照或已保存译文质量未通过时停止 |
-| `write-terminology --game <游戏标题> --confirm-font-overwrite` | 写入稳定名词并允许字体覆盖 | 用户已单独确认字体覆盖，且写回前流程检查通过，摘要可解释 | 未确认字体覆盖时不使用 |
-| `restore-font --game <游戏标题>` | 按原件还原项目覆盖过的字体引用 | 摘要可解释 | 缺原始备份或替换字体信息时停止说明 |
-| `verify-feedback-text --game <游戏标题> --input <反馈原文清单>` | 在真实游戏文件中反查反馈原文 | `status` 为 `ok`，分类可解释 | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理 |
-| `scan-plugin-source-text --game <游戏标题> --output <风险报告文件>` | 扫描插件源码文本风险摘要；默认 `--view translation-source` | 输出文件存在，且不包含 AST selector 或完整候选列表，`summary.source_view` 可解释 | 高风险时暂停正文翻译；需要看当前运行文件时显式传 `--view active-runtime` |
-
-
+- 源语言探测不确定且用户未确认。
+- 规则未导入、工作区验收有 error、占位符覆盖风险未处理也未确认。
+- 非标准 data 或插件源码高风险已触发，但缺少开局支线策略、处理会显著增加成本或风险，或候选未归类。
+- 翻译质量报告有 error，或写文件前检查失败。
+- 当前运行文件审计有阻断问题且无法通过规则、译文、重置或重建解释。
+- 用户未允许写回、未单独确认字体覆盖，或要求执行危险回溯但没有完整确认标题。

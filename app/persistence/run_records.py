@@ -11,16 +11,20 @@ from .rows import decode_string_list, row_int, row_item_type, row_optional_str, 
 from .session_base import SessionMixinBase
 from .session_utils import current_timestamp_text, parse_error_type, parse_llm_failure_category, parse_translation_run_status
 from .sql import (
+    COUNT_TRANSLATION_QUALITY_ERRORS_BY_RUN,
     DELETE_ALL_TRANSLATION_QUALITY_ERRORS,
     INSERT_LLM_FAILURE,
     INSERT_TRANSLATION_QUALITY_ERROR,
     SELECT_LATEST_TRANSLATION_RUN,
     SELECT_LLM_FAILURES_BY_RUN,
+    SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN,
     SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN,
     SELECT_TRANSLATION_RUN,
     TRANSLATION_QUALITY_ERRORS_TABLE_NAME,
     UPSERT_TRANSLATION_RUN,
 )
+
+PATH_QUERY_BATCH_SIZE = 500
 
 
 class RunRecordSessionMixin(SessionMixinBase):
@@ -136,9 +140,16 @@ class RunRecordSessionMixin(SessionMixinBase):
     ) -> None:
         """写入没通过项目检查的最终译文。"""
         if items:
+            for error_item in items:
+                if not error_item.fact_id:
+                    message = (
+                        f"质量错误缺少 fact_id，无法保存当前文本事实的检查结果: {error_item.location_path}"
+                    )
+                    raise ValueError(message)
             serialized_items = [
                 (
                     run_id,
+                    error_item.fact_id,
                     error_item.location_path,
                     error_item.item_type,
                     error_item.role,
@@ -160,22 +171,85 @@ class RunRecordSessionMixin(SessionMixinBase):
         """读取指定运行中没通过项目检查的最终译文。"""
         async with self.connection.execute(SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN, (run_id,)) as cursor:
             rows = await cursor.fetchall()
+        return [self._decode_translation_quality_error(row) for row in rows]
+
+    async def read_translation_quality_errors_by_paths(
+        self,
+        run_id: str,
+        location_paths: set[str],
+    ) -> list[TranslationErrorItem]:
+        """按输入定位路径读取指定运行中没通过项目检查的译文。"""
+        sorted_paths = sorted(location_paths)
+        if not sorted_paths:
+            return []
+        quality_errors: list[TranslationErrorItem] = []
+        for batch in _chunks(sorted_paths, PATH_QUERY_BATCH_SIZE):
+            placeholders = ", ".join("?" for _path in batch)
+            async with self.connection.execute(
+                f"""
+--sql
+                    SELECT *
+                    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+                    WHERE run_id = ? AND location_path IN ({placeholders})
+                    ORDER BY location_path, fact_id
+                ;
+                """,
+                (run_id, *batch),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            quality_errors.extend(self._decode_translation_quality_error(row) for row in rows)
+        return sorted(quality_errors, key=lambda item: (item.location_path, item.fact_id))
+
+    async def read_translation_quality_errors_by_fact_ids(
+        self,
+        run_id: str,
+        fact_ids: set[str],
+    ) -> list[TranslationErrorItem]:
+        """按 current text fact_id 读取指定运行中没通过项目检查的译文。"""
+        sorted_fact_ids = sorted(fact_ids)
+        if not sorted_fact_ids:
+            return []
+        quality_errors_by_fact_id: dict[str, TranslationErrorItem] = {}
+        for batch in _chunks(sorted_fact_ids, PATH_QUERY_BATCH_SIZE):
+            placeholders = ", ".join("?" for _fact_id in batch)
+            async with self.connection.execute(
+                f"""
+--sql
+                    SELECT *
+                    FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+                    WHERE run_id = ? AND fact_id IN ({placeholders})
+                    ORDER BY location_path, fact_id
+                ;
+                """,
+                (run_id, *batch),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                item = self._decode_translation_quality_error(row)
+                if item.fact_id:
+                    quality_errors_by_fact_id[item.fact_id] = item
         return [
-            TranslationErrorItem(
-                location_path=row_str(row, "location_path", self.db_path),
-                item_type=row_item_type(row, "item_type", self.db_path),
-                role=row_optional_str(row, "role", self.db_path),
-                original_lines=decode_string_list(row_str(row, "original_lines", self.db_path), "original_lines"),
-                translation_lines=decode_string_list(
-                    row_str(row, "translation_lines", self.db_path),
-                    "translation_lines",
-                ),
-                error_type=parse_error_type(row_str(row, "error_type", self.db_path), self.db_path),
-                error_detail=decode_string_list(row_str(row, "error_detail", self.db_path), "error_detail"),
-                model_response=row_str(row, "model_response", self.db_path),
-            )
-            for row in rows
+            quality_errors_by_fact_id[fact_id]
+            for fact_id in sorted_fact_ids
+            if fact_id in quality_errors_by_fact_id
         ]
+
+    async def count_translation_quality_errors(self, run_id: str) -> int:
+        """统计指定运行还剩多少条没通过项目检查的译文。"""
+        async with self.connection.execute(COUNT_TRANSLATION_QUALITY_ERRORS_BY_RUN, (run_id,)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return 0
+        return row_int(row, "quality_error_count", self.db_path)
+
+    async def count_translation_quality_errors_by_type(self, run_id: str) -> dict[str, int]:
+        """按错误类型统计指定运行的质量错误。"""
+        async with self.connection.execute(SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN, (run_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return {
+            row_str(row, "error_type", self.db_path): row_int(row, "error_count", self.db_path)
+            for row in rows
+        }
 
     async def delete_translation_quality_errors_by_paths(self, location_paths: set[str]) -> int:
         """按文本内部位置清理已经修好的译文检查失败明细。"""
@@ -193,6 +267,26 @@ class RunRecordSessionMixin(SessionMixinBase):
         )
         await self.connection.commit()
         return max(cursor.rowcount, 0)
+
+    async def delete_translation_quality_errors_by_fact_ids(self, fact_ids: set[str]) -> int:
+        """按 current text fact_id 清理已经修好的译文检查失败明细。"""
+        sorted_fact_ids = sorted(fact_ids)
+        if not sorted_fact_ids:
+            return 0
+        deleted_rows = 0
+        for batch in _chunks(sorted_fact_ids, PATH_QUERY_BATCH_SIZE):
+            placeholders = ", ".join("?" for _fact_id in batch)
+            cursor = await self.connection.execute(
+                f"""
+--sql
+                    DELETE FROM [{TRANSLATION_QUALITY_ERRORS_TABLE_NAME}]
+                    WHERE fact_id IN ({placeholders})
+                """,
+                tuple(batch),
+            )
+            deleted_rows += max(cursor.rowcount, 0)
+        await self.connection.commit()
+        return deleted_rows
 
     def _decode_translation_run(self, row: aiosqlite.Row) -> TranslationRunRecord:
         """把 SQLite 行转换成正文翻译运行状态。"""
@@ -212,3 +306,25 @@ class RunRecordSessionMixin(SessionMixinBase):
             stop_reason=row_str(row, "stop_reason", self.db_path),
             last_error=row_str(row, "last_error", self.db_path),
         )
+
+    def _decode_translation_quality_error(self, row: aiosqlite.Row) -> TranslationErrorItem:
+        """把 SQLite 行转换成质量错误记录。"""
+        return TranslationErrorItem(
+            fact_id=row_str(row, "fact_id", self.db_path),
+            location_path=row_str(row, "location_path", self.db_path),
+            item_type=row_item_type(row, "item_type", self.db_path),
+            role=row_optional_str(row, "role", self.db_path),
+            original_lines=decode_string_list(row_str(row, "original_lines", self.db_path), "original_lines"),
+            translation_lines=decode_string_list(
+                row_str(row, "translation_lines", self.db_path),
+                "translation_lines",
+            ),
+            error_type=parse_error_type(row_str(row, "error_type", self.db_path), self.db_path),
+            error_detail=decode_string_list(row_str(row, "error_detail", self.db_path), "error_detail"),
+            model_response=row_str(row, "model_response", self.db_path),
+        )
+
+
+def _chunks(values: list[str], size: int) -> list[list[str]]:
+    """把路径列表分块，避免 SQLite 参数过多。"""
+    return [values[index:index + size] for index in range(0, len(values), size)]

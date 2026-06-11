@@ -54,7 +54,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     for record in records
                 ],
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_plugin_source_runtime_write_maps(self) -> list[PluginSourceRuntimeWriteMapRecord]:
         """读取全部插件源码当前运行写回映射。"""
@@ -85,7 +85,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
     async def clear_plugin_source_runtime_write_maps(self) -> None:
         """清空插件源码当前运行写回映射。"""
         _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS)
-        await self.connection.commit()
+        await self.commit()
 
     async def replace_plugin_source_runtime_scan_cache(
         self,
@@ -100,6 +100,9 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     (
                         record.file_name,
                         record.file_hash,
+                        record.rust_contract_version,
+                        record.parser_contract_version,
+                        record.audit_contract_version,
                         record.syntax_error,
                         json.dumps(
                             [literal.model_dump() for literal in record.literals],
@@ -111,7 +114,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     for record in records
                 ],
             )
-        await self.connection.commit()
+        await self.commit()
 
     async def read_plugin_source_runtime_scan_cache(self) -> list[PluginSourceRuntimeScanCacheRecord]:
         """读取当前运行插件源码 AST 扫描缓存。"""
@@ -125,11 +128,22 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                     coerce_json_value(cast(object, json.loads(literals_json))),
                     "plugin_source_runtime_scan_cache.literals_json",
                 )
+                literal_objects = [
+                    ensure_json_object(raw_literal, "plugin_source_runtime_scan_cache.literal")
+                    for raw_literal in raw_literals
+                ]
+                if any(
+                    "literal_kind" not in raw_literal
+                    or "audit_default_severity" not in raw_literal
+                    for raw_literal in literal_objects
+                ):
+                    await self.clear_plugin_source_runtime_scan_cache()
+                    return []
                 literals = [
                     PluginSourceRuntimeStringLiteralCacheRecord.model_validate(
-                        ensure_json_object(raw_literal, "plugin_source_runtime_scan_cache.literal")
+                        raw_literal
                     )
-                    for raw_literal in raw_literals
+                    for raw_literal in literal_objects
                 ]
             except Exception as error:
                 raise RuntimeError(f"当前运行插件源码扫描缓存损坏，请重新执行当前运行审计: {self.db_path}") from error
@@ -137,6 +151,9 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
                 PluginSourceRuntimeScanCacheRecord(
                     file_name=row_str(row, "file_name", self.db_path),
                     file_hash=row_str(row, "file_hash", self.db_path),
+                    rust_contract_version=row_int(row, "rust_contract_version", self.db_path),
+                    parser_contract_version=row_int(row, "parser_contract_version", self.db_path),
+                    audit_contract_version=row_int(row, "audit_contract_version", self.db_path),
                     syntax_error=row_str(row, "syntax_error", self.db_path),
                     literals=literals,
                     created_at=row_str(row, "created_at", self.db_path),
@@ -147,7 +164,7 @@ class PluginSourceRuntimeRecordSessionMixin(SessionMixinBase):
     async def clear_plugin_source_runtime_scan_cache(self) -> None:
         """清空当前运行插件源码 AST 扫描缓存。"""
         _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE)
-        await self.connection.commit()
+        await self.commit()
 
 
 __all__ = ["PluginSourceRuntimeRecordSessionMixin"]

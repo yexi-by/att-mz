@@ -1,17 +1,8 @@
-"""应用层公共导出入口。"""
+"""应用层当前公开入口的懒加载导出。"""
 
-from .handler import (
-    EventCommandJsonExportSummary,
-    EventCommandRuleImportSummary,
-    PluginJsonExportSummary,
-    PluginRuleImportSummary,
-    TerminologyImportSummary,
-    TerminologyWriteSummary,
-    TextTranslationSummary,
-    TranslationHandler,
-)
+from typing import cast
 
-__all__: list[str] = [
+_APPLICATION_EXPORTS = {
     "EventCommandJsonExportSummary",
     "EventCommandRuleImportSummary",
     "PluginJsonExportSummary",
@@ -20,4 +11,14 @@ __all__: list[str] = [
     "TerminologyWriteSummary",
     "TextTranslationSummary",
     "TranslationHandler",
-]
+}
+
+
+def __getattr__(name: str) -> object:
+    """按需返回 handler 中的当前公开入口。"""
+    if name not in _APPLICATION_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import handler
+
+    value = cast(object, getattr(handler, name))
+    return value

@@ -18,7 +18,7 @@ class SourceSnapshotRecordSessionMixin(SessionMixinBase):
         self,
         records: list[SourceSnapshotFileRecord],
     ) -> None:
-        """用当前可信源快照 manifest 替换数据库旧记录。"""
+        """用当前可信源快照 manifest 替换数据库现有记录。"""
         _ = await self.connection.execute(DELETE_ALL_SOURCE_SNAPSHOT_FILES)
         if records:
             _ = await self.connection.executemany(

@@ -10,6 +10,7 @@ from typing import Literal, cast
 import aiofiles
 
 from app.agent_toolkit.reports import AgentIssue, AgentReport, issue
+from app.external_input import normalize_external_int, normalize_external_str
 from app.language import SourceLanguage
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.rmmz.schema import (
@@ -21,6 +22,7 @@ from app.rmmz.schema import (
     GameLayout,
 )
 from app.rmmz.loader import resolve_game_layout, validate_data_directory_integrity
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 
 type SourceLanguageProbeClassification = Literal["ja", "en", "mixed", "other"]
@@ -264,7 +266,11 @@ def _collect_base_item_texts(
         if not isinstance(item, dict):
             continue
         raw_id = item.get("id")
-        item_id = raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else item_index
+        item_id = (
+            normalize_external_int(raw_id, f"{file_name}[{item_index}].id")
+            if raw_id is not None
+            else item_index
+        )
         for field_name in sorted(visible_fields):
             _append_visible_text(
                 texts,
@@ -298,17 +304,18 @@ def _collect_event_command_texts(
             if not isinstance(command, dict):
                 continue
             code_value = command.get("code")
-            if isinstance(code_value, bool) or not isinstance(code_value, int):
+            if code_value is None:
                 continue
+            location_prefix = f"{list_path}/{command_index}"
+            code = normalize_external_int(code_value, f"{location_prefix}/code")
             parameters = command.get("parameters")
             if not isinstance(parameters, list):
                 continue
-            location_prefix = f"{list_path}/{command_index}"
-            if code_value == Code.TEXT:
+            if code == Code.TEXT:
                 _append_visible_text(texts, file_name, location_prefix, "event_text", _list_get(parameters, 0))
-            elif code_value == Code.SCROLL_TEXT:
+            elif code == Code.SCROLL_TEXT:
                 _append_visible_text(texts, file_name, location_prefix, "event_scroll_text", _list_get(parameters, 0))
-            elif code_value == Code.CHOICES:
+            elif code == Code.CHOICES:
                 choices = _list_get(parameters, 0)
                 if not isinstance(choices, list):
                     continue
@@ -320,7 +327,7 @@ def _collect_event_command_texts(
                         "event_choice",
                         choice,
                     )
-            elif code_value == Code.NAME:
+            elif code == Code.NAME:
                 _append_visible_text(texts, file_name, f"{location_prefix}/name", "event_namebox", _list_get(parameters, 4))
 
 
@@ -357,9 +364,9 @@ def _append_visible_text(
     value: JsonValue | object,
 ) -> None:
     """把非空字符串加入可见文本集合。"""
-    if not isinstance(value, str):
+    if value is None:
         return
-    normalized_text = value.strip()
+    normalized_text = normalize_external_str(value, location_path).strip()
     if not normalized_text:
         return
     texts.append(
@@ -462,13 +469,7 @@ def _classify_visible_text(
 
 def _contains_required_source_text(*, text: str, rules: TextRules) -> bool:
     """只按源语言字符规则判断玩家可见文本，避免把断词对白当协议噪音。"""
-    normalized_text = rules.normalize_extraction_text(text)
-    if not normalized_text:
-        return False
-    detection_text = rules.strip_rm_control_sequences(normalized_text)
-    if not detection_text:
-        return False
-    return rules.source_text_required_pattern.search(detection_text) is not None
+    return is_source_text_required(rules, text, apply_exclusion_profile=False)
 
 
 def _recommend_source_language(

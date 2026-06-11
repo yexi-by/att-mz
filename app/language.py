@@ -5,6 +5,7 @@ from typing import Literal
 type SourceLanguage = Literal["ja", "en"]
 type TargetLanguage = Literal["zh-Hans"]
 type SourceTextExclusionProfile = Literal["none", "english_protocol_noise"]
+type SourceResidualDetectionProfile = Literal["japanese_strict", "english_source_copy"]
 
 DEFAULT_SOURCE_LANGUAGE: SourceLanguage = "ja"
 DEFAULT_TARGET_LANGUAGE: TargetLanguage = "zh-Hans"
@@ -36,6 +37,7 @@ __all__: list[str] = [
     "DEFAULT_TARGET_LANGUAGE",
     "SUPPORTED_SOURCE_LANGUAGES",
     "SourceLanguage",
+    "SourceResidualDetectionProfile",
     "SourceTextExclusionProfile",
     "TargetLanguage",
     "parse_source_language",

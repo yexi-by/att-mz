@@ -11,7 +11,7 @@ from main import main
 import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
-from app.agent_toolkit import AgentReport
+from app.agent_toolkit import AgentReport, AgentReportEnvelope
 from app.cli import build_parser
 from app.cli import build_progress_reporter
 from app.cli import build_translate_summary_report
@@ -20,18 +20,23 @@ from app.cli import parser_command_names
 from app.cli import registered_command_names
 from app.cli import write_report_outputs
 from app.cli.errors import CliArgumentError
-from app.cli.reports import build_sampled_stdout_report, build_write_back_summary_report
+from app.cli.reports import SAMPLED_STDOUT_REPORT_POLICY, build_write_back_summary_report
 from app.cli.commands.rules import (
     build_deleted_translation_backup_details,
     build_deleted_translation_warnings,
+    run_scan_placeholder_candidates_command,
     run_scan_nonstandard_data_command,
 )
+from app.cli.commands.translation import run_import_manual_translations_command, run_text_scope_command
 from app.cli.commands.registry import run_list_command
 from app.cli.commands.write_back import run_all_command
 from app.cli.runtime import build_setting_overrides
 from app.application.errors import WorkflowGateError
 from app.application.summaries import TerminologyWriteSummary, TextTranslationSummary, WriteBackSummary
+from app.runtime_paths import APP_HOME_ENV_NAME
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,123 @@ def test_add_game_requires_explicit_source_language() -> None:
     assert getattr(reset_args, "dry_run") is True
 
 
+def test_global_debug_switches_parse() -> None:
+    """debug 总开关和子功能开关必须作为全局 CLI 参数解析。"""
+    parser = build_parser()
+
+    enabled_args = parser.parse_args(
+        [
+            "--debug",
+            "--debug-timings",
+            "--debug-llm-messages",
+            "--no-debug-logging",
+            "translate",
+            "--game",
+            "demo",
+        ]
+    )
+    disabled_args = parser.parse_args(
+        [
+            "--no-debug",
+            "--no-debug-timings",
+            "--no-debug-llm-messages",
+            "--debug-logging",
+            "quality-report",
+            "--game",
+            "demo",
+        ]
+    )
+
+    assert getattr(enabled_args, "debug") is True
+    assert getattr(enabled_args, "debug_timings") is True
+    assert getattr(enabled_args, "debug_llm_messages") is True
+    assert getattr(enabled_args, "debug_logging") is False
+    assert getattr(disabled_args, "debug") is False
+    assert getattr(disabled_args, "debug_timings") is False
+    assert getattr(disabled_args, "debug_llm_messages") is False
+    assert getattr(disabled_args, "debug_logging") is True
+
+
+def test_debug_llm_messages_cli_requires_debug_enabled(
+    capsys: CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """显式开启 LLM 消息观测时必须同时开启 debug 总开关。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path))
+
+    exit_code = main(["--debug-llm-messages", "translate", "--game", "demo"])
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    errors = ensure_json_array(payload["errors"], "errors")
+    first_error = ensure_json_object(errors[0], "errors[0]")
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    message = first_error["message"]
+    assert isinstance(message, str)
+    assert "--debug-llm-messages" in message
+    assert "--debug" in message
+
+
+def test_debug_llm_messages_cli_rejects_non_llm_command(
+    capsys: CaptureFixture[str],
+) -> None:
+    """显式开启 LLM 消息观测只能用于 translate/run-all。"""
+    exit_code = main(
+        [
+            "--debug",
+            "--debug-llm-messages",
+            "quality-report",
+            "--game",
+            "demo",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    errors = ensure_json_array(payload["errors"], "errors")
+    first_error = ensure_json_object(errors[0], "errors[0]")
+
+    assert exit_code == 2
+    assert first_error["code"] == "argument_error"
+    message = first_error["message"]
+    assert isinstance(message, str)
+    assert "debug.llm_messages" in message
+    assert "quality-report" in message
+
+
+def test_debug_llm_messages_setting_or_env_on_non_llm_command_is_ignored(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """配置或环境变量开启 LLM 消息观测时，非 LLM 命令不报错也不创建空目录。"""
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(tmp_path))
+    monkeypatch.setenv("ATT_MZ_DEBUG", "1")
+    monkeypatch.setenv("ATT_MZ_DEBUG_LLM_MESSAGES", "1")
+
+    async def fake_dispatch_command(args: object) -> int:
+        """模拟非 LLM 命令成功。"""
+        from app.cli.reports import print_report
+
+        assert getattr(args, "command") == "quality-report"
+        print_report(AgentReport(status="ok", summary={"command": "quality-report"}))
+        return 0
+
+    monkeypatch.setattr("app.cli_main.dispatch_command", fake_dispatch_command)
+
+    exit_code = main(["quality-report", "--game", "demo"])
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert not (tmp_path / "output" / "debug" / "llm-messages").exists()
+
+
 def test_add_game_existing_source_snapshot_reports_business_error(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -100,7 +222,7 @@ def test_add_game_existing_source_snapshot_reports_business_error(
             _ = source_language
             raise FileExistsError("目标目录已存在可信源快照，请使用干净游戏目录")
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话，避免触碰本机注册表。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -118,7 +240,7 @@ def test_add_game_existing_source_snapshot_reports_business_error(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.registry.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.registry.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(
         [
@@ -215,12 +337,14 @@ def test_json_command_reports_unexpected_error_as_parseable_json(
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
     payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    envelope = AgentReportEnvelope.model_validate(payload)
     errors = payload["errors"]
     assert isinstance(errors, list)
     first_error = errors[0]
     assert isinstance(first_error, dict)
 
     assert exit_code == 1
+    assert envelope.status == "error"
     assert payload["status"] == "error"
     assert first_error["code"] == "unexpected_error"
     assert "CLI 运行开始" not in captured.out
@@ -302,7 +426,7 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
             assert kwargs["game_title"] == "demo"
             raise WorkflowGateError("检查没通过，不能继续写进游戏文件：quality gate 有 error")
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话，避免触碰本机注册表和数据库。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -325,7 +449,7 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
         _ = args
         return "demo"
 
-    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+    async def translate_text_for_run_all_report(**kwargs: object) -> TextTranslationSummary:
         """模拟正文翻译阶段成功。"""
         calls.append("translate")
         _ = kwargs
@@ -338,9 +462,9 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
             error_count=0,
         )
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
     monkeypatch.setattr("app.cli.commands.write_back.resolve_target_game_title", fake_resolve_target_game_title)
-    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", translate_text_for_run_all_report)
 
     with pytest.raises(WorkflowGateError, match="quality gate"):
         _ = await run_all_command(args)
@@ -348,11 +472,11 @@ async def test_run_all_write_phase_uses_write_back_gate(monkeypatch: MonkeyPatch
     assert calls == ["translate", "write_back"]
 
 
-def test_write_back_json_summary_reports_handler_timing_fields(
+def test_write_back_json_summary_hides_timing_fields_in_ordinary_mode(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`write-back` 必须输出 handler 返回的写回阶段耗时字段。"""
+    """普通 `write-back` 报告只输出业务摘要，不泄漏写回阶段耗时。"""
 
     class FakeHandler:
         """返回固定写回摘要。"""
@@ -379,7 +503,7 @@ def test_write_back_json_summary_reports_handler_timing_fields(
                 post_write_audit_ms=17,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -397,7 +521,7 @@ def test_write_back_json_summary_reports_handler_timing_fields(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(["write-back", "--game", "demo"])
 
@@ -407,20 +531,20 @@ def test_write_back_json_summary_reports_handler_timing_fields(
     summary = ensure_json_object(payload["summary"], "CLI JSON summary")
 
     assert exit_code == 0
-    assert summary["pre_write_check_ms"] == 7
-    assert summary["rust_plan_ms"] == 11
-    assert summary["file_replacement_ms"] == 13
-    assert summary["post_write_audit_ms"] == 17
+    assert "pre_write_check_ms" not in summary
+    assert "rust_plan_ms" not in summary
+    assert "file_replacement_ms" not in summary
+    assert "post_write_audit_ms" not in summary
     assert summary["plugin_source_ast_source_scan_file_count"] == 6
     assert summary["plugin_source_ast_runtime_scan_file_count"] == 7
     assert summary["plugin_source_runtime_map_count"] == 8
 
 
-def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
+def test_rebuild_active_runtime_json_summary_hides_timing_fields_in_ordinary_mode(
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    """`rebuild-active-runtime` 必须输出 handler 返回的写回阶段耗时字段。"""
+    """普通 `rebuild-active-runtime` 报告不泄漏写回阶段耗时。"""
 
     class FakeHandler:
         """返回固定重建摘要。"""
@@ -447,7 +571,7 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
                 post_write_audit_ms=29,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -465,7 +589,7 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(["rebuild-active-runtime", "--game", "demo"])
 
@@ -475,10 +599,10 @@ def test_rebuild_active_runtime_json_summary_reports_handler_timing_fields(
     summary = ensure_json_object(payload["summary"], "CLI JSON summary")
 
     assert exit_code == 0
-    assert summary["pre_write_check_ms"] == 17
-    assert summary["rust_plan_ms"] == 19
-    assert summary["file_replacement_ms"] == 23
-    assert summary["post_write_audit_ms"] == 29
+    assert "pre_write_check_ms" not in summary
+    assert "rust_plan_ms" not in summary
+    assert "file_replacement_ms" not in summary
+    assert "post_write_audit_ms" not in summary
     assert summary["plugin_source_ast_source_scan_file_count"] == 10
     assert summary["plugin_source_ast_runtime_scan_file_count"] == 11
     assert summary["plugin_source_runtime_map_count"] == 12
@@ -501,7 +625,7 @@ def test_write_terminology_json_summary_reports_handler_fields(
                 preserved_translation_count=5,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -519,7 +643,7 @@ def test_write_terminology_json_summary_reports_handler_fields(
             _ = exc
             _ = traceback
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
 
     exit_code = main(["write-terminology", "--game", "demo"])
 
@@ -557,7 +681,7 @@ def test_run_all_json_summary_reports_translation_and_write_back(
                 skipped_file_count=9,
             )
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -575,7 +699,7 @@ def test_run_all_json_summary_reports_translation_and_write_back(
             _ = exc
             _ = traceback
 
-    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+    async def translate_text_for_run_all_report(**kwargs: object) -> TextTranslationSummary:
         """模拟正文翻译阶段成功。"""
         _ = kwargs
         return TextTranslationSummary(
@@ -589,8 +713,8 @@ def test_run_all_json_summary_reports_translation_and_write_back(
             run_id="run-1",
         )
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
-    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", translate_text_for_run_all_report)
 
     exit_code = main(["run-all", "--game", "demo"])
 
@@ -623,7 +747,7 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
             _ = kwargs
             raise AssertionError("skip-write-back 不应调用写回")
 
-    class FakeHandlerSession:
+    class CliCommandSessionDouble:
         """替换真实 handler 会话。"""
 
         async def __aenter__(self) -> FakeHandler:
@@ -641,7 +765,7 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
             _ = exc
             _ = traceback
 
-    async def fake_translate_text_for_handler(**kwargs: object) -> TextTranslationSummary:
+    async def translate_text_for_run_all_report(**kwargs: object) -> TextTranslationSummary:
         """模拟正文翻译阶段成功。"""
         _ = kwargs
         return TextTranslationSummary(
@@ -654,8 +778,8 @@ def test_run_all_skip_write_back_json_summary_reports_skipped_phase(
             run_id="run-skip",
         )
 
-    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", FakeHandlerSession)
-    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", fake_translate_text_for_handler)
+    monkeypatch.setattr("app.cli.commands.write_back.HandlerSession", CliCommandSessionDouble)
+    monkeypatch.setattr("app.cli.commands.write_back.translate_text_for_handler", translate_text_for_run_all_report)
 
     exit_code = main(["run-all", "--game", "demo", "--skip-write-back"])
 
@@ -681,22 +805,24 @@ def test_unknown_command_reports_json_argument_error(
     captured = capsys.readouterr()
     raw_payload = cast(object, json.loads(captured.out))
     payload = ensure_json_object(coerce_json_value(raw_payload), "CLI JSON 输出")
+    envelope = AgentReportEnvelope.model_validate(payload)
     errors = ensure_json_array(payload["errors"], "CLI JSON errors")
     first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
     message = first_error["message"]
 
     assert exit_code == 2
+    assert envelope.status == "error"
     assert first_error["code"] == "argument_error"
     assert isinstance(message, str)
     assert "unknown-command" in message
     assert "可能想用" not in message
 
 
-def test_removed_output_mode_flags_report_argument_error(
+def test_unknown_global_argument_returns_json_argument_error(
     capsys: CaptureFixture[str],
 ) -> None:
-    """旧输出模式参数已删除，传入时返回 JSON 参数错误。"""
-    exit_code = main(["list", "--json"])
+    """未知全局参数返回 JSON 参数错误。"""
+    exit_code = main(["list", "--not-a-current-option"])
 
     captured = capsys.readouterr()
     payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
@@ -707,20 +833,42 @@ def test_removed_output_mode_flags_report_argument_error(
     assert exit_code == 2
     assert first_error["code"] == "argument_error"
     assert isinstance(message, str)
-    assert "--json" in message
+    assert "--not-a-current-option" in message
     assert "CLI 运行开始" not in captured.out
 
-    exit_code = main(["--agent-mode", "list"])
+
+def test_debug_timings_cli_run_writes_single_diagnostics_file(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """debug timings 开启时，CLI 入口每次运行只写一个 diagnostics 文件。"""
+    app_home = tmp_path / "app-home"
+    app_home.mkdir()
+    monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
+
+    exit_code = main(["--debug", "list"])
+
     captured = capsys.readouterr()
     payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "CLI JSON 输出")
-    errors = ensure_json_array(payload["errors"], "CLI JSON errors")
-    first_error = ensure_json_object(errors[0], "CLI JSON errors[0]")
-    message = first_error["message"]
+    summary = ensure_json_object(payload["summary"], "CLI JSON summary")
+    diagnostics = ensure_json_object(summary["diagnostics"], "CLI JSON summary.diagnostics")
+    diagnostics_dir = app_home / "logs" / "diagnostics"
+    diagnostics_files = list(diagnostics_dir.glob("*.json"))
 
-    assert exit_code == 2
-    assert first_error["code"] == "argument_error"
-    assert isinstance(message, str)
-    assert "--agent-mode" in message
+    assert exit_code == 0
+    assert diagnostics["enabled"] is True
+    assert diagnostics["timings_enabled"] is True
+    assert len(diagnostics_files) == 1
+    assert Path(str(diagnostics["file"])) == diagnostics_files[0]
+    diagnostics_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(diagnostics_files[0].read_text(encoding="utf-8")))),
+        "diagnostics JSON",
+    )
+    timings = ensure_json_object(diagnostics_payload["timings"], "diagnostics.timings")
+    assert diagnostics_payload["command"] == "list"
+    assert diagnostics_payload["status"] == "ok"
+    assert "command.total" in timings
 
 
 def test_placeholder_rule_commands_accept_input_files() -> None:
@@ -1051,6 +1199,38 @@ def test_translate_quality_errors_do_not_fail_process() -> None:
     assert report.summary["quality_error_count"] == 2
 
 
+def test_translate_summary_report_includes_text_index_status() -> None:
+    """小批翻译摘要会暴露索引来源，但普通模式不输出阶段耗时。"""
+    summary = TextTranslationSummary(
+        total_extracted_items=10,
+        pending_count=3,
+        deduplicated_count=3,
+        batch_count=1,
+        success_count=3,
+        error_count=0,
+        total_pending_count=10,
+        text_index_status="cold_rebuilt",
+        text_index_rebuild_summary={
+            "index_status": "rebuilt",
+            "indexed_count": 10,
+        },
+        stage_timings={
+            "prepare_local_ms": 11,
+            "model_request_ms": 7,
+            "response_verify_ms": 13,
+            "save_results_ms": 17,
+            "local_total_excluding_model_ms": 41,
+        },
+    )
+
+    report = build_translate_summary_report(summary)
+
+    assert report.summary["text_index_status"] == "cold_rebuilt"
+    rebuild_summary = ensure_json_object(report.summary["text_index_rebuild_summary"], "rebuild_summary")
+    assert rebuild_summary["index_status"] == "rebuilt"
+    assert "stage_timings" not in report.summary
+
+
 def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
     """规则导入 JSON 报告必须提醒 Agent 已清理译文和恢复位置。"""
     backup_path = "outputs/rule-import-backups/demo/plugin-rules-20260101-010101.json"
@@ -1073,8 +1253,8 @@ def test_rule_import_json_warns_about_deleted_translation_backup() -> None:
     assert "import-manual-translations" in restore_step
 
 
-def test_write_back_summary_report_keeps_timing_fields_separate() -> None:
-    """写回 JSON 摘要必须保留 Rust 计划、文件替换和写后审计的独立耗时语义。"""
+def test_write_back_summary_report_hides_timing_fields_in_ordinary_mode() -> None:
+    """写回 JSON 摘要保留业务数量，但普通模式不输出耗时字段。"""
     report = build_write_back_summary_report(
         WriteBackSummary(
             data_item_count=3,
@@ -1096,10 +1276,10 @@ def test_write_back_summary_report_keeps_timing_fields_separate() -> None:
         )
     )
 
-    assert report.summary["pre_write_check_ms"] == 9
-    assert report.summary["rust_plan_ms"] == 11
-    assert report.summary["file_replacement_ms"] == 13
-    assert report.summary["post_write_audit_ms"] == 17
+    assert "pre_write_check_ms" not in report.summary
+    assert "rust_plan_ms" not in report.summary
+    assert "file_replacement_ms" not in report.summary
+    assert "post_write_audit_ms" not in report.summary
     assert report.summary["planned_file_count"] == 6
     assert report.summary["skipped_file_count"] == 7
     assert report.summary["plugin_source_ast_source_scan_file_count"] == 8
@@ -1142,6 +1322,12 @@ def test_translate_command_accepts_source_residual_override_names() -> None:
             "よ",
             "--source-residual-segment-pattern",
             "[ぁ-ん]+",
+            "--source-residual-detection-profile",
+            "english_source_copy",
+            "--english-source-copy-min-words",
+            "2",
+            "--english-source-copy-min-letters",
+            "6",
         ]
     )
     overrides = build_setting_overrides(args)
@@ -1149,6 +1335,9 @@ def test_translate_command_accepts_source_residual_override_names() -> None:
     assert overrides.source_residual_allowed_chars == ["ー"]
     assert overrides.source_residual_allowed_tail_chars == ["よ"]
     assert overrides.source_residual_segment_pattern == "[ぁ-ん]+"
+    assert overrides.source_residual_detection_profile == "english_source_copy"
+    assert overrides.english_source_copy_min_words == 2
+    assert overrides.english_source_copy_min_letters == 6
 
 
 def test_write_file_commands_reject_translation_override_names() -> None:
@@ -1281,6 +1470,79 @@ def test_manual_translation_export_commands_are_black_box_friendly() -> None:
     assert getattr(limited_args, "limit") == 20
 
 
+def test_manual_translation_import_command_accepts_partial_import_flags() -> None:
+    """人工补译导入命令显式支持保存有效项和无效项报告。"""
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "import-manual-translations",
+            "--game",
+            "demo",
+            "--input",
+            "manual-translations.json",
+            "--import-valid",
+            "--report-invalid",
+            "invalid-manual-translations.json",
+        ]
+    )
+
+    assert namespace_optional_str(args, "input") == "manual-translations.json"
+    assert getattr(args, "import_valid") is True
+    assert namespace_optional_str(args, "report_invalid") == "invalid-manual-translations.json"
+
+
+@pytest.mark.asyncio
+async def test_import_manual_translations_command_passes_partial_import_flags(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """CLI 命令必须把部分导入参数全链路传给服务。"""
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def import_manual_translations(
+            self,
+            *,
+            game_title: str,
+            input_path: Path,
+            import_valid: bool,
+            report_invalid_path: Path | None,
+        ) -> AgentReport:
+            assert game_title == "demo"
+            assert input_path == (tmp_path / "manual-translations.json").resolve()
+            assert import_valid is True
+            assert report_invalid_path == (tmp_path / "invalid-manual-translations.json").resolve()
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={"imported_count": 1},
+                details={},
+            )
+
+    monkeypatch.setattr(
+        "app.cli.commands.translation.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(
+        game="demo",
+        game_path=None,
+        input=str(tmp_path / "manual-translations.json"),
+        import_valid=True,
+        report_invalid=str(tmp_path / "invalid-manual-translations.json"),
+        output=None,
+    )
+
+    exit_code = await run_import_manual_translations_command(args)
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    assert exit_code == 0
+    assert ensure_json_object(payload["summary"], "summary")["imported_count"] == 1
+
+
 def test_quality_fix_and_reset_commands_are_black_box_friendly() -> None:
     """质量修复模板和显式重置命令提供稳定文件型接口。"""
     parser = build_parser()
@@ -1371,6 +1633,45 @@ def test_report_output_can_leave_data_output_file_untouched(
     assert output_path.read_text(encoding="utf-8") == data_json
 
 
+def test_report_output_injects_diagnostics_summary_when_debug_timings_enabled(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """stdout JSON 统一出口必须在 debug timings 开启时注入摘要。"""
+    from app.observability.diagnostics import (
+        DebugRuntimeSettings,
+        DiagnosticsContext,
+        bind_diagnostics_context,
+    )
+
+    context = DiagnosticsContext.create_for_command(
+        command="quality-report",
+        settings=DebugRuntimeSettings(enabled=True, timings_enabled=True),
+        diagnostics_dir=tmp_path,
+    )
+    report = AgentReport(status="ok", summary={"candidate_count": 1})
+
+    with bind_diagnostics_context(context):
+        context.record_timing("quality.native_quality", 1800)
+        write_report_outputs(
+            report=report,
+            args=Namespace(output=None),
+            title="翻译质量报告",
+        )
+
+    captured = capsys.readouterr()
+    payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    summary = ensure_json_object(payload["summary"], "summary")
+    diagnostics = ensure_json_object(summary["diagnostics"], "summary.diagnostics")
+    slowest = ensure_json_array(diagnostics["slowest_timings"], "summary.diagnostics.slowest_timings")
+    slowest_first = ensure_json_object(slowest[0], "summary.diagnostics.slowest_timings[0]")
+
+    assert diagnostics["enabled"] is True
+    assert diagnostics["timings_enabled"] is True
+    assert str(diagnostics["file"]).endswith(".json")
+    assert slowest_first == {"name": "quality.native_quality", "duration_ms": 1800}
+
+
 def test_validation_report_output_writes_full_file_and_prints_summary(
     tmp_path: Path,
     capsys: CaptureFixture[str],
@@ -1393,9 +1694,9 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
 
     write_report_outputs(
         report=report,
-        stdout_report=build_sampled_stdout_report(report),
         args=Namespace(output=str(output_path)),
         title="校验报告",
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
     )
 
     captured = capsys.readouterr()
@@ -1419,6 +1720,33 @@ def test_validation_report_output_writes_full_file_and_prints_summary(
     assert stdout_matches["omitted_count"] == 5
     assert first_sample_matches["count"] == 3
     assert len(output_matches) == 25
+
+
+def test_large_report_commands_use_detail_policy() -> None:
+    """大输出命令必须通过统一报告策略声明 stdout 采样。"""
+    sampled_handlers: list[tuple[Path, str]] = [
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_scan_nonstandard_data_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_export_nonstandard_data_json_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_validate_nonstandard_data_rules_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_import_nonstandard_data_rules_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_scan_placeholder_candidates_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_scan_structured_placeholder_candidates_command"),
+        (ROOT / "app" / "cli" / "commands" / "rules.py", "run_validate_mv_virtual_namebox_rules_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_quality_report_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_text_scope_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_audit_coverage_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_audit_active_runtime_command"),
+        (ROOT / "app" / "cli" / "commands" / "translation.py", "run_verify_feedback_text_command"),
+        (ROOT / "app" / "cli" / "commands" / "workspace.py", "run_validate_agent_workspace_command"),
+    ]
+
+    for path, function_name in sampled_handlers:
+        source = path.read_text(encoding="utf-8")
+        start = source.index(f"async def {function_name}")
+        next_function = source.find("\n\nasync def ", start + 1)
+        function_source = source[start:] if next_function == -1 else source[start:next_function]
+        assert "stdout_report=build_sampled_stdout_report" not in source
+        assert "detail_policy=SAMPLED_STDOUT_REPORT_POLICY" in function_source
 
 
 @pytest.mark.asyncio
@@ -1458,6 +1786,134 @@ async def test_scan_nonstandard_data_command_samples_stdout_and_writes_full_outp
     args = Namespace(game="demo", game_path=None, output=str(output_path))
 
     exit_code = await run_scan_nonstandard_data_command(args)
+
+    captured = capsys.readouterr()
+    stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    output_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(output_path.read_text(encoding="utf-8")))),
+        "output JSON",
+    )
+    stdout_summary = ensure_json_object(stdout_payload["summary"], "stdout summary")
+    output_summary = ensure_json_object(output_payload["summary"], "output summary")
+    stdout_details = ensure_json_object(stdout_payload["details"], "stdout details")
+    output_details = ensure_json_object(output_payload["details"], "output details")
+    stdout_candidates = ensure_json_object(stdout_details["candidates"], "stdout candidates")
+    output_candidates = ensure_json_array(output_details["candidates"], "output candidates")
+
+    assert exit_code == 0
+    assert stdout_summary["report_detail_mode"] == "sampled"
+    assert output_summary["report_detail_mode"] == "full"
+    assert stdout_candidates["count"] == 25
+    assert len(ensure_json_array(stdout_candidates["samples"], "stdout candidates.samples")) == 20
+    assert stdout_candidates["omitted_count"] == 5
+    assert len(output_candidates) == 25
+
+
+@pytest.mark.asyncio
+async def test_text_scope_command_output_requests_full_service_details(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """text-scope --output 写完整报告时必须向服务层请求 full entries。"""
+
+    detail_limits: list[int | None] = []
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def text_scope(
+            self,
+            *,
+            game_title: str,
+            include_write_probe: bool,
+            detail_limit: int | None = 1000,
+        ) -> AgentReport:
+            assert game_title == "demo"
+            assert include_write_probe is False
+            detail_limits.append(detail_limit)
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={"text_fact_count": 25},
+                details={
+                    "detail_mode": "full",
+                    "entries": [{"index": index} for index in range(25)],
+                    "entry_omitted_count": 0,
+                },
+            )
+
+    output_path = tmp_path / "text-scope-report.json"
+    monkeypatch.setattr(
+        "app.cli.commands.translation.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(
+        game="demo",
+        game_path=None,
+        output=str(output_path),
+        include_write_probe=False,
+    )
+
+    exit_code = await run_text_scope_command(args)
+
+    captured = capsys.readouterr()
+    stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")
+    output_payload = ensure_json_object(
+        coerce_json_value(cast(object, json.loads(output_path.read_text(encoding="utf-8")))),
+        "output JSON",
+    )
+    output_summary = ensure_json_object(output_payload["summary"], "output summary")
+    output_details = ensure_json_object(output_payload["details"], "output details")
+
+    assert exit_code == 0
+    assert detail_limits == [None]
+    assert ensure_json_object(stdout_payload["summary"], "stdout summary")["report_detail_mode"] == "sampled"
+    assert output_summary["report_detail_mode"] == "full"
+    assert output_details["detail_mode"] == "full"
+    assert len(ensure_json_array(output_details["entries"], "output entries")) == 25
+
+
+@pytest.mark.asyncio
+async def test_scan_placeholder_candidates_command_samples_stdout_and_writes_full_output(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """普通占位符候选扫描 stdout 采样，--output 写完整报告。"""
+
+    class FakeAgentToolkitService:
+        """命令层测试用 Agent 工具箱替身。"""
+
+        async def scan_placeholder_candidates(
+            self,
+            *,
+            game_title: str,
+            custom_placeholder_rules_text: str | None,
+        ) -> AgentReport:
+            assert game_title == "demo"
+            assert custom_placeholder_rules_text is None
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=[],
+                summary={"candidate_count": 25},
+                details={"candidates": [{"index": index} for index in range(25)]},
+            )
+
+    output_path = tmp_path / "placeholder-candidates-report.json"
+    monkeypatch.setattr(
+        "app.cli.commands.rules.AgentToolkitService",
+        FakeAgentToolkitService,
+    )
+    args = Namespace(
+        game="demo",
+        game_path=None,
+        placeholder_rules=None,
+        input=None,
+        output=str(output_path),
+    )
+
+    exit_code = await run_scan_placeholder_candidates_command(args)
 
     captured = capsys.readouterr()
     stdout_payload = ensure_json_object(coerce_json_value(cast(object, json.loads(captured.out))), "stdout JSON")

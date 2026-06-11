@@ -2,12 +2,13 @@
 
 import json
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import cast
 
 import aiofiles
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
-from app.plugin_text.paths import (
+from app.external_input import ExternalInputModel, ExternalStr
+from app.json_path_protocol import (
     build_json_string_leaf_path_hint,
     expand_rule_to_leaf_paths,
     resolve_event_command_leaves,
@@ -22,17 +23,11 @@ from app.rmmz.schema import (
 from app.rmmz.text_rules import JsonValue, coerce_json_value
 
 
-class StrictEventCommandRuleModel(BaseModel):
-    """事件指令规则严格模型基类。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-
-class EventCommandRuleSpec(StrictEventCommandRuleModel):
+class EventCommandRuleSpec(ExternalInputModel):
     """同一类事件指令参数文本规则。"""
 
-    match: dict[str, str] = Field(default_factory=dict)
-    paths: list[str] = Field(default_factory=list)
+    match: dict[ExternalStr, ExternalStr] = Field(default_factory=dict)
+    paths: list[ExternalStr] = Field(default_factory=list)
 
     @field_validator("paths")
     @classmethod
@@ -44,7 +39,7 @@ class EventCommandRuleSpec(StrictEventCommandRuleModel):
         return normalized_paths
 
 
-type EventCommandRuleImportFile = dict[str, list[EventCommandRuleSpec]]
+type EventCommandRuleImportFile = dict[ExternalStr, list[EventCommandRuleSpec]]
 _EVENT_COMMAND_RULE_IMPORT_ADAPTER: TypeAdapter[EventCommandRuleImportFile] = TypeAdapter(
     EventCommandRuleImportFile
 )
@@ -84,6 +79,31 @@ def build_event_command_rule_records_from_import(
                 command_code=command_code,
                 parameter_filters=filters,
                 path_templates=spec.paths,
+            )
+            key = event_command_rule_key(record)
+            existing_record = records_by_key.get(key)
+            if existing_record is None:
+                records_by_key[key] = record
+                continue
+            existing_record.path_templates = normalize_path_templates(
+                [*existing_record.path_templates, *record.path_templates]
+            )
+    return list(records_by_key.values())
+
+
+def build_event_command_rule_records_from_import_shape(
+    *,
+    import_file: EventCommandRuleImportFile,
+) -> list[EventCommandTextRuleRecord]:
+    """把外部事件指令路径映射转换成未扫描校验的数据库记录。"""
+    records_by_key: dict[tuple[int, tuple[tuple[int, str], ...]], EventCommandTextRuleRecord] = {}
+    for command_code_text, specs in import_file.items():
+        command_code = parse_command_code(command_code_text)
+        for spec in specs:
+            record = EventCommandTextRuleRecord(
+                command_code=command_code,
+                parameter_filters=parse_parameter_filters(spec.match),
+                path_templates=normalize_path_templates(spec.paths),
             )
             key = event_command_rule_key(record)
             existing_record = records_by_key.get(key)
@@ -158,9 +178,10 @@ def parse_command_code(value: str) -> int:
 def parse_parameter_filters(match: dict[str, str]) -> list[EventCommandParameterFilter]:
     """把外部 match 对象转换成参数过滤条件。"""
     filters: list[EventCommandParameterFilter] = []
-    for index_text, expected_value in sorted(match.items(), key=lambda item: int(item[0])):
+    for index_text in match:
         if not index_text.isdecimal():
             raise ValueError(f"match 的键必须是参数索引: {index_text}")
+    for index_text, expected_value in sorted(match.items(), key=lambda item: int(item[0])):
         filters.append(EventCommandParameterFilter(index=int(index_text), value=expected_value))
     return filters
 
@@ -205,6 +226,7 @@ __all__: list[str] = [
     "EventCommandRuleImportFile",
     "EventCommandRuleSpec",
     "build_event_command_rule_records_from_import",
+    "build_event_command_rule_records_from_import_shape",
     "command_matches_filters",
     "event_command_rule_key",
     "load_event_command_rule_import_file",

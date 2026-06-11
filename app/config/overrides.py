@@ -20,7 +20,6 @@ class SettingOverrides:
     text_translation_retry_delay: int | None = None
     text_translation_include_source_lines: bool | None = None
     text_translation_system_prompt: str | None = None
-    event_command_default_codes: list[int] | None = None
     write_back_replacement_font_path: str | None = None
     strip_wrapping_punctuation_pairs: list[tuple[str, str]] | None = None
     preserve_wrapping_punctuation_pairs: list[tuple[str, str]] | None = None
@@ -31,6 +30,9 @@ class SettingOverrides:
     line_width_count_pattern: str | None = None
     source_text_required_pattern: str | None = None
     source_residual_segment_pattern: str | None = None
+    source_residual_detection_profile: str | None = None
+    english_source_copy_min_words: int | None = None
+    english_source_copy_min_letters: int | None = None
     residual_escape_sequence_pattern: str | None = None
 
     def has_any(self) -> bool:
@@ -48,7 +50,6 @@ class SettingOverrides:
                 self.text_translation_retry_delay is not None,
                 self.text_translation_include_source_lines is not None,
                 self.text_translation_system_prompt is not None,
-                self.event_command_default_codes is not None,
                 self.write_back_replacement_font_path is not None,
                 self.strip_wrapping_punctuation_pairs is not None,
                 self.preserve_wrapping_punctuation_pairs is not None,
@@ -59,6 +60,9 @@ class SettingOverrides:
                 self.line_width_count_pattern is not None,
                 self.source_text_required_pattern is not None,
                 self.source_residual_segment_pattern is not None,
+                self.source_residual_detection_profile is not None,
+                self.english_source_copy_min_words is not None,
+                self.english_source_copy_min_letters is not None,
                 self.residual_escape_sequence_pattern is not None,
             )
         )
@@ -104,13 +108,6 @@ def apply_setting_overrides(
         text_translation["system_prompt"] = overrides.text_translation_system_prompt
         text_translation["selected_system_prompt_file"] = "<cli>"
 
-    event_command_text = _read_or_create_section(raw_config, "event_command_text")
-    _set_if_present(
-        event_command_text,
-        "default_command_codes",
-        overrides.event_command_default_codes,
-    )
-
     write_back = _read_or_create_section(raw_config, "write_back")
     _set_if_present(
         write_back,
@@ -155,6 +152,21 @@ def apply_setting_overrides(
         text_rules,
         "source_residual_segment_pattern",
         overrides.source_residual_segment_pattern,
+    )
+    _set_if_present(
+        text_rules,
+        "source_residual_detection_profile",
+        overrides.source_residual_detection_profile,
+    )
+    _set_if_present(
+        text_rules,
+        "english_source_copy_min_words",
+        overrides.english_source_copy_min_words,
+    )
+    _set_if_present(
+        text_rules,
+        "english_source_copy_min_letters",
+        overrides.english_source_copy_min_letters,
     )
     _set_if_present(
         text_rules,

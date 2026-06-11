@@ -10,6 +10,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHANGELOG_PATH = ROOT / "CHANGELOG.md"
+GENERIC_RELEASE_NOTE_PATTERNS = (
+    "例行更新",
+    "若干优化",
+    "自动生成 Release notes",
+    "自动生成 release notes",
+)
+VERIFICATION_COMMAND_PATTERN = re.compile(
+    r"\b(?:uv\s+run\s+(?:basedpyright|pytest)|cargo\s+(?:fmt|clippy|test))\b"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +67,58 @@ def extract_release_notes_section(*, changelog_text: str, tag: str) -> str:
     notes = changelog_text[match.start():end_index].strip()
     if not notes:
         raise ValueError(f"CHANGELOG.md 中发布标签没有正文: {normalized_tag}")
+    validate_release_notes_section(notes=notes, tag=normalized_tag)
     return notes + "\n"
+
+
+def validate_release_notes_section(*, notes: str, tag: str) -> None:
+    """校验 GitHub Release 正文包含实际内容、验证命令和发行包信息。"""
+    body = _release_notes_body(notes=notes, tag=tag)
+    meaningful_lines = [
+        line.strip()
+        for line in body.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not meaningful_lines:
+        raise ValueError(f"CHANGELOG.md 中发布标签没有正文: {tag}")
+    empty_bullets = [line for line in body.splitlines() if re.match(r"^\s*[-*]\s*$", line)]
+    if empty_bullets:
+        raise ValueError(f"CHANGELOG.md 中发布标签存在空条目: {tag}")
+    if _release_notes_body_is_generic(meaningful_lines):
+        raise ValueError(f"CHANGELOG.md 中发布正文过于空泛: {tag}")
+    if VERIFICATION_COMMAND_PATTERN.search(body) is None:
+        raise ValueError(f"CHANGELOG.md 中发布标签缺少验证命令: {tag}")
+    if "att-mz-windows-x86_64.zip" not in body:
+        raise ValueError(f"CHANGELOG.md 中发布标签缺少发行包下载信息: {tag}")
+
+
+def _release_notes_body(*, notes: str, tag: str) -> str:
+    """去掉版本标题，返回 Release 正文。"""
+    lines = notes.splitlines()
+    if not lines:
+        return ""
+    heading_pattern = re.compile(rf"^##\s+{re.escape(tag)}(?:\s+-\s+.*)?\s*$")
+    if heading_pattern.match(lines[0].strip()):
+        return "\n".join(lines[1:]).strip()
+    return "\n".join(lines).strip()
+
+
+def _release_notes_body_is_generic(lines: list[str]) -> bool:
+    """判断 Release 正文是否只有空泛描述。"""
+    content_lines: list[str] = []
+    for line in lines:
+        cleaned_line = line.lstrip("-* ").strip()
+        if VERIFICATION_COMMAND_PATTERN.search(cleaned_line):
+            continue
+        if "att-mz-windows-x86_64.zip" in cleaned_line:
+            continue
+        content_lines.append(cleaned_line)
+    if not content_lines:
+        return True
+    return all(
+        any(pattern in line for pattern in GENERIC_RELEASE_NOTE_PATTERNS)
+        for line in content_lines
+    )
 
 
 def write_release_notes(options: ReleaseNotesOptions) -> None:

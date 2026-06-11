@@ -6,9 +6,12 @@
 """
 
 import asyncio
+from typing import ClassVar
 
-from pydantic import BaseModel, RootModel
+from json_repair import repair_json
+from pydantic import ConfigDict, RootModel
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.rmmz.schema import ErrorType, TranslationErrorItem, TranslationItem
 from app.rmmz.placeholder_mapping import (
     build_original_placeholder_queues,
@@ -31,11 +34,13 @@ ERR_ARRAY_LINE_COUNT: ErrorType = "选项行数不匹配"
 ERR_EMPTY_TRANSLATION: ErrorType = "AI漏翻"
 
 
-class TranslationResponseItem(BaseModel):
+class TranslationResponseItem(ExternalInputModel):
     """模型返回的单条对照译文。"""
 
-    id: str | int
-    translation_lines: list[str]
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", strict=True)
+
+    id: ExternalStr
+    translation_lines: list[ExternalStr]
 
 
 class TranslationResponse(RootModel[list[TranslationResponseItem]]):
@@ -57,7 +62,7 @@ async def verify_translation_batch(
     error_items: list[TranslationErrorItem] = []
 
     try:
-        response_items = TranslationResponse.model_validate_json(ai_result).root
+        response_items = _parse_translation_response_items(ai_result)
         prompt_id_by_location_path = _validate_prompt_id_map(
             items=items,
             prompt_ids_by_location_path=prompt_ids_by_location_path,
@@ -70,10 +75,12 @@ async def verify_translation_batch(
         for item in items:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
                     original_lines=list(item.original_lines),
+                    translation_dedupe_key=item.translation_dedupe_key,
                     translation_lines=[],
                     error_type=ERR_PARSE_FAILED,
                     error_detail=["模型返回无法解析为 JSON 数组", f"详细错误: {error}"],
@@ -90,10 +97,12 @@ async def verify_translation_batch(
         if model_translation_lines is None:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
                     original_lines=list(item.original_lines),
+                    translation_dedupe_key=item.translation_dedupe_key,
                     translation_lines=[],
                     error_type=ERR_MISSING_KEY,
                     error_detail=[f"AI漏翻: 未找到键 {prompt_id}"],
@@ -104,10 +113,12 @@ async def verify_translation_batch(
         if _is_empty_translation_lines(model_translation_lines):
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
                     original_lines=list(item.original_lines),
+                    translation_dedupe_key=item.translation_dedupe_key,
                     translation_lines=list(model_translation_lines),
                     error_type=ERR_EMPTY_TRANSLATION,
                     error_detail=["AI漏翻: 模型返回空译文"],
@@ -135,10 +146,12 @@ async def verify_translation_batch(
             if len(translation_lines) != len(item.original_lines):
                 error_items.append(
                     TranslationErrorItem(
+                        fact_id=_require_translation_error_fact_id(item),
                         location_path=item.location_path,
                         item_type=item.item_type,
                         role=item.role,
                         original_lines=list(item.original_lines),
+                        translation_dedupe_key=item.translation_dedupe_key,
                         translation_lines=list(translation_lines),
                         error_type=ERR_ARRAY_LINE_COUNT,
                         error_detail=[f"选项行数不匹配: 期望 {len(item.original_lines)} 行, 实际 {len(translation_lines)} 行"],
@@ -171,10 +184,12 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
                     original_lines=list(item.original_lines),
+                    translation_dedupe_key=item.translation_dedupe_key,
                     translation_lines=list(translation_lines),
                     error_type=ERR_TEXT_STRUCTURE,
                     error_detail=str(error).split(";\n"),
@@ -189,10 +204,12 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
                     original_lines=list(item.original_lines),
+                    translation_dedupe_key=item.translation_dedupe_key,
                     translation_lines=list(item.translation_lines_with_placeholders),
                     error_type=ERR_PLACEHOLDER_MISMATCH,
                     error_detail=str(error).split(";\n"),
@@ -210,10 +227,12 @@ async def verify_translation_batch(
         except ValueError as error:
             error_items.append(
                 TranslationErrorItem(
+                    fact_id=_require_translation_error_fact_id(item),
                     location_path=item.location_path,
                     item_type=item.item_type,
                     role=item.role,
                     original_lines=list(item.original_lines),
+                    translation_dedupe_key=item.translation_dedupe_key,
                     translation_lines=list(item.translation_lines),
                     error_type=ERR_SOURCE_RESIDUAL,
                     error_detail=[str(error)],
@@ -231,6 +250,28 @@ async def verify_translation_batch(
         await error_queue.put(error_items)
 
 
+def _require_translation_error_fact_id(item: TranslationItem) -> str:
+    """返回质量错误所属当前文本事实身份，缺失时显式失败。"""
+    if not item.fact_id:
+        raise ValueError(f"质量错误缺少 fact_id，无法记录当前文本事实的检查结果: {item.location_path}")
+    return item.fact_id
+
+
+def _parse_translation_response_items(ai_result: str) -> list[TranslationResponseItem]:
+    """解析模型响应；严格 JSON 失败时只修复 JSON 语法和外层包裹。"""
+    try:
+        return TranslationResponse.model_validate_json(ai_result).root
+    except Exception as strict_error:
+        try:
+            repaired_json = repair_json(ai_result, ensure_ascii=False)
+            return TranslationResponse.model_validate_json(repaired_json).root
+        except Exception as repair_error:
+            raise ValueError(
+                "严格 JSON 解析失败，修复后仍无法解析为 JSON 数组；"
+                + f"严格解析错误: {strict_error}; 修复后解析错误: {repair_error}"
+            ) from repair_error
+
+
 def _build_translation_line_map(
     *,
     response_items: list[TranslationResponseItem],
@@ -239,7 +280,7 @@ def _build_translation_line_map(
     """按本地批次条目收窄模型译文，忽略无关字段和未知 ID。"""
     translation_map: dict[str, list[str]] = {}
     for response_item in response_items:
-        response_id = str(response_item.id)
+        response_id = response_item.id
         if response_id not in valid_prompt_ids:
             continue
         if response_id in translation_map:

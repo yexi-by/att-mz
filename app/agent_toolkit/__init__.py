@@ -2,13 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from .placeholder_scan import (
-    PlaceholderCandidate,
-    count_uncovered_candidates,
-    placeholder_candidates_to_details,
-    scan_placeholder_candidates,
-)
-from .reports import AgentIssue, AgentReport, AgentReportStatus
+from .reports import AgentIssue, AgentReport, AgentReportEnvelope, AgentReportStatus
 
 if TYPE_CHECKING:
     from .service import AgentToolkitService
@@ -25,10 +19,7 @@ def __getattr__(name: str) -> object:
 __all__: list[str] = [
     "AgentIssue",
     "AgentReport",
+    "AgentReportEnvelope",
     "AgentReportStatus",
     "AgentToolkitService",
-    "PlaceholderCandidate",
-    "count_uncovered_candidates",
-    "placeholder_candidates_to_details",
-    "scan_placeholder_candidates",
 ]

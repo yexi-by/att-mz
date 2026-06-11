@@ -1,0 +1,253 @@
+"""结构化 QualityGateResult 测试。"""
+
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+
+import pytest
+
+from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
+from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
+
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+)
+
+from app.agent_toolkit import AgentToolkitService
+from app.application.flow_gate import (
+    event_command_rule_scope_hash_for_setting,
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
+)
+from app.native_quality import NativeQualityDetails
+from app.native_scope_index import collect_native_plugin_config_scope_hash
+from app.persistence import GameRegistry
+from app.rmmz.loader import load_translation_source_game_data
+from app.rmmz.schema import TranslationItem
+from app.rmmz.text_rules import JsonArray, TextRules
+from app.rule_review import (
+    EVENT_COMMAND_TEXT_RULE_DOMAIN,
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    PLUGIN_TEXT_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+)
+from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_fact_core import TextFactContractError
+from app.text_facts import read_text_fact_quality_items_for_translations
+from app.text_index import text_index_item_to_translation_item
+from app.utils.config_loader_utils import load_setting
+
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+@pytest.mark.asyncio
+async def test_quality_item_rehydrate_requires_current_text_fact(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """质量检查重建已保存译文源文时必须读取当前文本事实。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        async with session.connection.execute(
+            """
+--sql
+            SELECT facts.location_path
+            FROM text_facts AS facts
+            INNER JOIN text_index_items AS indexed
+                ON indexed.location_path = facts.location_path
+            WHERE indexed.writable = 1
+            ORDER BY indexed.location_path, facts.domain, facts.fact_id
+            LIMIT 1
+            ;
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        target_path = cast(str, row["location_path"])
+        saved_item = TranslationItem(
+            location_path=target_path,
+            item_type="short_text",
+            role=None,
+            original_lines=["非当前 original_lines 不应参与"],
+            source_line_paths=[target_path],
+            translation_lines=["译文"],
+        )
+        await write_current_translation_items_for_test(session, [saved_item])
+        _ = await session.connection.execute(
+            "DELETE FROM text_facts WHERE location_path = ?",
+            (target_path,),
+        )
+        await session.connection.commit()
+
+        with pytest.raises(TextFactContractError) as exc_info:
+            _ = await read_text_fact_quality_items_for_translations(
+                session,
+                [saved_item],
+                source_text="translatable",
+            )
+        assert "当前文本事实" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_quality_report_write_probe_renders_structured_quality_gate_result(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """include-write-probe 的 summary/details 必须来自同一结构化质量结果。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        game_data = await load_translation_source_game_data(
+            minimal_game_dir,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
+        )
+        scope = await rebuild_current_text_fact_scope_for_test(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+            scope_hash=collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+            scope_hash=event_command_rule_scope_hash_for_setting(
+                game_data=game_data,
+                setting=setting,
+            ),
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                text_rules=text_rules,
+            ),
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=scope.translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
+        )
+        target_item = next(item for item in scope.active_items() if item.item_type != "array")
+        target_path = target_item.location_path
+        await write_current_translation_items_for_test(session,
+            [
+                TranslationItem(
+                    location_path=target_path,
+                    item_type=target_item.item_type,
+                    role=target_item.role,
+                    original_lines=list(target_item.original_lines),
+                    source_line_paths=list(target_item.source_line_paths),
+                    translation_lines=["结构化质量结果测试译文"],
+                )
+            ]
+        )
+    _ = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title="テストゲーム")
+    async with await registry.open_game("テストゲーム") as session:
+        index_items = await session.read_text_index_items()
+        translated_items: list[TranslationItem] = []
+        for index_item in index_items:
+            item = text_index_item_to_translation_item(index_item)
+            item.translation_lines = ["结构化质量结果测试译文" for _line in item.original_lines]
+            translated_items.append(item)
+        await write_current_translation_items_for_test(session, translated_items)
+
+    def fake_native_quality_details(**kwargs: object) -> NativeQualityDetails:
+        _ = kwargs
+        return NativeQualityDetails(
+            source_residual_items=[
+                {"location_path": target_path, "reason": "源文残留明细"}
+            ],
+            text_structure_items=[],
+            placeholder_risk_items=[],
+            overwide_line_items=[
+                {"location_path": target_path, "reason": "行宽明细"}
+            ],
+        )
+
+    def fake_write_protocol_details(**kwargs: object) -> JsonArray:
+        _ = kwargs
+        return [{"location_path": target_path, "reason": "写回协议明细"}]
+
+    def fake_rust_quality_gate(**kwargs: object) -> object:
+        _ = kwargs
+        return SimpleNamespace(
+            summary=SimpleNamespace(
+                data_item_count=1,
+                plugin_item_count=0,
+                terminology_written_count=0,
+                plugin_source_runtime_map_count=0,
+            ),
+            timings_ms={"quality_gate": 1, "total": 2},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.collect_agent_service_native_quality_details",
+        fake_native_quality_details,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.collect_agent_service_native_write_protocol_details",
+        fake_write_protocol_details,
+    )
+    monkeypatch.setattr(
+        "app.agent_toolkit.services.quality.build_native_write_back_plan",
+        fake_rust_quality_gate,
+    )
+
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).quality_report(game_title="テストゲーム", include_write_probe=True)
+
+    assert report.summary["source_residual_count"] == 1
+    assert report.summary["overwide_line_count"] == 1
+    assert report.summary["write_back_protocol_count"] == 1
+    assert report.details["source_residual_items"] == [
+        {"location_path": target_path, "reason": "源文残留明细"}
+    ]
+    assert report.details["overwide_line_items"] == [
+        {"location_path": target_path, "reason": "行宽明细"}
+    ]
+    assert report.details["write_back_protocol_items"] == [
+        {"location_path": target_path, "reason": "写回协议明细"}
+    ]
+    assert {"source_residual", "overwide_line", "write_back_protocol"} <= {
+        error.code for error in report.errors
+    }

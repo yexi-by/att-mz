@@ -153,3 +153,115 @@ fn parse_quoted_key(
     }
     Err(format!("非标准 data JSONPath 对象键不完整: {context}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{nonstandard_data_file_name, write_nonstandard_data_item};
+    use crate::native_core::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig};
+    use crate::native_core::write_back_plan::models::{TextPlanRules, TranslationItem};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn text_plan_rules() -> TextPlanRules {
+        TextPlanRules {
+            long_text_line_width_limit: 20,
+            line_width_count_pattern: Pcre2Engine::compile(
+                r"[\s\S]",
+                &Pcre2EngineConfig::default_runtime(),
+            )
+            .expect("行宽正则应合法"),
+            line_split_punctuations: vec!["，".to_string(), "。".to_string()],
+            preserve_wrapping_punctuation_pairs: Vec::new(),
+            protected_macro_pattern: regex::Regex::new(r"_[A-Z][A-Z0-9]+_")
+                .expect("宏保护正则应合法"),
+        }
+    }
+
+    fn item(location_path: &str, translation: &str) -> TranslationItem {
+        TranslationItem {
+            location_path: location_path.to_string(),
+            item_type: "short_text".to_string(),
+            role: None,
+            original_lines: vec!["原文".to_string()],
+            source_line_paths: Vec::new(),
+            translation_lines: vec![translation.to_string()],
+            ..TranslationItem::default()
+        }
+    }
+
+    #[test]
+    fn write_nonstandard_data_item_updates_only_target_string_leaf() {
+        let mut data_files = BTreeMap::from([(
+            "UnknownPluginData.json".to_string(),
+            json!({
+                "items": [
+                    {
+                        "name'jp": "古い名前",
+                        "description": "説明"
+                    }
+                ]
+            }),
+        )]);
+
+        write_nonstandard_data_item(
+            &mut data_files,
+            &item(
+                r"nonstandard-data/UnknownPluginData.json/$['items'][0]['name\'jp']",
+                "新しい名前",
+            ),
+            &text_plan_rules(),
+        )
+        .expect("非标准 data 写回应成功");
+
+        let data = data_files
+            .get("UnknownPluginData.json")
+            .expect("文件应存在");
+        assert_eq!(data["items"][0]["name'jp"], json!("新しい名前"));
+        assert_eq!(data["items"][0]["description"], json!("説明"));
+    }
+
+    #[test]
+    fn write_nonstandard_data_item_rejects_wildcard_and_non_string_targets() {
+        let mut data_files = BTreeMap::from([(
+            "UnknownPluginData.json".to_string(),
+            json!({"items": [{"name": 1}]}),
+        )]);
+        let wildcard = write_nonstandard_data_item(
+            &mut data_files,
+            &item(
+                "nonstandard-data/UnknownPluginData.json/$['items'][*]['name']",
+                "译文",
+            ),
+            &text_plan_rules(),
+        )
+        .expect_err("通配符写回路径应失败");
+        assert!(wildcard.contains("不能包含通配符"));
+
+        let non_string = write_nonstandard_data_item(
+            &mut data_files,
+            &item(
+                "nonstandard-data/UnknownPluginData.json/$['items'][0]['name']",
+                "译文",
+            ),
+            &text_plan_rules(),
+        )
+        .expect_err("非字符串目标应失败");
+        assert!(non_string.contains("当前不是字符串"));
+    }
+
+    #[test]
+    fn nonstandard_data_file_name_requires_json_file_and_jsonpath() {
+        assert_eq!(
+            nonstandard_data_file_name("nonstandard-data/UnknownPluginData.json/$['name']"),
+            Some("UnknownPluginData.json")
+        );
+        assert_eq!(
+            nonstandard_data_file_name("nonstandard-data/UnknownPluginData.txt/$['name']"),
+            None
+        );
+        assert_eq!(
+            nonstandard_data_file_name("nonstandard-data/UnknownPluginData.json/name"),
+            None
+        );
+    }
+}

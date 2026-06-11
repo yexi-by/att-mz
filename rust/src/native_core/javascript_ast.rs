@@ -1,11 +1,17 @@
 //! JavaScript AST 字符串节点扫描。
 //!
-//! 本模块只解析源码并返回稳定范围，不判断游戏私有语义。
+//! 本模块解析源码，返回稳定范围，并输出运行审计需要的字符串分类事实。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tree_sitter::{Node, Parser};
 
+use super::controls::{
+    ControlCodeHint, collect_control_code_hints, collect_unprotected_control_sequences,
+};
+use super::models::{CompiledRules, NativeTextRules};
 use super::pool::run_with_optional_pool;
+use super::rules::compile_rules;
 use rayon::prelude::*;
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +30,36 @@ struct JavaScriptAstBatchInput {
     source: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RuntimeLiteralIssueFactsPayload {
+    literals: Vec<RuntimeLiteralIssueFactsInput>,
+    text_rules: NativeTextRules,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeLiteralIssueFactsInput {
+    id: String,
+    raw_text: String,
+    text: String,
+    literal_kind: String,
+    audit_default_severity: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeLiteralIssueFactsResult {
+    facts: Vec<RuntimeLiteralIssueFactOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeLiteralIssueFactOutput {
+    id: String,
+    literal_kind: String,
+    audit_default_severity: String,
+    issue_codes: Vec<String>,
+    placeholder_fragments: Vec<String>,
+    control_code_hints: Vec<ControlCodeHint>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct JavaScriptStringSpan {
     pub(crate) kind: String,
@@ -36,6 +72,8 @@ pub(crate) struct JavaScriptStringSpan {
     #[serde(skip_serializing)]
     pub(crate) content_end_byte_index: usize,
     pub(crate) ast_context: JavaScriptStringAstContext,
+    pub(crate) literal_kind: String,
+    pub(crate) audit_default_severity: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -88,6 +126,117 @@ pub(crate) fn parse_javascript_string_spans_batch_impl(
     })??;
     let output = JavaScriptAstBatchOutput { files };
     serde_json::to_string(&output).map_err(|error| format!("批量 JS AST 输出 JSON 失败: {error}"))
+}
+
+pub(crate) fn collect_runtime_literal_issue_facts_impl(
+    payload_json: &str,
+) -> Result<String, String> {
+    let payload: RuntimeLiteralIssueFactsPayload = serde_json::from_str(payload_json)
+        .map_err(|error| format!("运行源码字符串风险事实输入不是有效 JSON: {error}"))?;
+    let rules = compile_rules(payload.text_rules)?;
+    let mut facts = Vec::with_capacity(payload.literals.len());
+    for literal in payload.literals {
+        facts.push(collect_runtime_literal_issue_fact(literal, &rules)?);
+    }
+    let output = RuntimeLiteralIssueFactsResult { facts };
+    serde_json::to_string(&output)
+        .map_err(|error| format!("运行源码字符串风险事实输出 JSON 失败: {error}"))
+}
+
+fn collect_runtime_literal_issue_fact(
+    literal: RuntimeLiteralIssueFactsInput,
+    rules: &CompiledRules,
+) -> Result<RuntimeLiteralIssueFactOutput, String> {
+    let mut fragments = BTreeSet::new();
+    fragments.extend(collect_linebreak_control_fragments(
+        &literal.raw_text,
+        &literal.text,
+    ));
+    let lines = vec![literal.text.clone()];
+    for (fragment, _count) in collect_unprotected_control_sequences(&lines, rules)? {
+        fragments.insert(fragment);
+    }
+    let control_code_hints = collect_control_code_hints(&lines, rules);
+    let placeholder_fragments = fragments.into_iter().collect::<Vec<_>>();
+    let issue_codes = if placeholder_fragments.is_empty() {
+        Vec::new()
+    } else {
+        vec!["active_runtime_placeholder_risk".to_string()]
+    };
+    Ok(RuntimeLiteralIssueFactOutput {
+        id: literal.id,
+        literal_kind: literal.literal_kind,
+        audit_default_severity: literal.audit_default_severity,
+        issue_codes,
+        placeholder_fragments,
+        control_code_hints,
+    })
+}
+
+fn collect_linebreak_control_fragments(raw_text: &str, text: &str) -> BTreeSet<String> {
+    let mut fragments = BTreeSet::new();
+    let mut search_start = 0usize;
+    while let Some(relative_index) = raw_text[search_start..].find(r"\n") {
+        let marker_index = search_start + relative_index;
+        if marker_index == 0 || !raw_text[..marker_index].ends_with('\\') {
+            let fragment_start = marker_index + 2;
+            if let Some(fragment) = read_visible_control_fragment(raw_text, fragment_start) {
+                fragments.insert(fragment);
+            }
+        }
+        search_start = marker_index + 2;
+    }
+    for (byte_index, char_value) in text.char_indices() {
+        if char_value != '\n' && char_value != '\r' {
+            continue;
+        }
+        let fragment_start = byte_index + char_value.len_utf8();
+        if let Some(fragment) = read_visible_control_fragment(text, fragment_start) {
+            fragments.insert(fragment);
+        }
+    }
+    fragments
+}
+
+fn read_visible_control_fragment(text: &str, byte_start: usize) -> Option<String> {
+    let tail = text.get(byte_start..)?;
+    let mut chars = tail.char_indices().peekable();
+    let mut has_letter = false;
+    while let Some((_relative_index, char_value)) = chars.peek().copied() {
+        if !char_value.is_ascii_alphabetic() {
+            break;
+        }
+        has_letter = true;
+        chars.next();
+    }
+    if !has_letter {
+        return None;
+    }
+    while let Some((_relative_index, char_value)) = chars.peek().copied() {
+        if !char_value.is_ascii_digit() {
+            break;
+        }
+        chars.next();
+    }
+    let (_relative_index, char_value) = chars.next()?;
+    if char_value != '[' {
+        return None;
+    }
+    let mut bracket_content_len = 0usize;
+    for (relative_index, char_value) in chars {
+        if char_value == '\r' || char_value == '\n' {
+            return None;
+        }
+        if char_value == ']' {
+            let end = byte_start + relative_index + char_value.len_utf8();
+            return text.get(byte_start..end).map(str::to_string);
+        }
+        bracket_content_len += 1;
+        if bracket_content_len > 64 {
+            return None;
+        }
+    }
+    None
 }
 
 fn parse_javascript_file_spans(
@@ -165,6 +314,10 @@ fn build_string_span(
     }
     let content_start_byte = start_byte + quote.len_utf8();
     let content_end_byte = end_byte.checked_sub(quote.len_utf8())?;
+    let raw_text = source.get(content_start_byte..content_end_byte)?;
+    let ast_context = build_ast_context(node, source);
+    let (literal_kind, audit_default_severity) =
+        classify_javascript_literal(raw_text, &ast_context);
     Some(JavaScriptStringSpan {
         kind: node.kind().to_string(),
         quote: quote.to_string(),
@@ -174,7 +327,9 @@ fn build_string_span(
         content_end_index: end_index - 1,
         content_start_byte_index: content_start_byte,
         content_end_byte_index: content_end_byte,
-        ast_context: build_ast_context(node, source),
+        ast_context,
+        literal_kind,
+        audit_default_severity,
     })
 }
 
@@ -190,6 +345,10 @@ fn build_template_fragment_span(
     if end_index <= start_index {
         return None;
     }
+    let raw_text = source.get(start_byte..end_byte)?;
+    let ast_context = build_ast_context(node, source);
+    let (literal_kind, audit_default_severity) =
+        classify_javascript_literal(raw_text, &ast_context);
     Some(JavaScriptStringSpan {
         kind: "template_fragment".to_string(),
         quote: "`".to_string(),
@@ -199,8 +358,108 @@ fn build_template_fragment_span(
         content_end_index: end_index,
         content_start_byte_index: start_byte,
         content_end_byte_index: end_byte,
-        ast_context: build_ast_context(node, source),
+        ast_context,
+        literal_kind,
+        audit_default_severity,
     })
+}
+
+fn classify_javascript_literal(
+    raw_text: &str,
+    context: &JavaScriptStringAstContext,
+) -> (String, String) {
+    if is_eval_call_context(&context.call_name) {
+        return ("eval_code".to_string(), "warning".to_string());
+    }
+    if looks_like_packer_code(raw_text) {
+        return ("packer_code".to_string(), "warning".to_string());
+    }
+    if looks_like_regex_pattern(raw_text) {
+        return ("regex_pattern".to_string(), "warning".to_string());
+    }
+    if looks_like_user_visible_context(context) {
+        return ("user_visible_candidate".to_string(), "blocking".to_string());
+    }
+    ("unknown".to_string(), "warning".to_string())
+}
+
+fn is_eval_call_context(call_name: &str) -> bool {
+    call_name == "eval" || call_name.ends_with(".eval")
+}
+
+fn looks_like_packer_code(raw_text: &str) -> bool {
+    let compact_text: String = raw_text
+        .chars()
+        .filter(|char| !char.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    compact_text.contains("function(p,a,c,k,e")
+        || compact_text.contains("function(p,h,e")
+        || (compact_text.contains("eval(function(") && compact_text.contains(".split('|')"))
+}
+
+fn looks_like_regex_pattern(raw_text: &str) -> bool {
+    let compact_text = raw_text.trim();
+    if compact_text.is_empty() {
+        return false;
+    }
+    let escaped_regex_tokens = [
+        "\\\\w", "\\\\W", "\\\\d", "\\\\D", "\\\\s", "\\\\S", "\\\\b", "\\\\B", "\\\\p{", "\\\\P{",
+    ];
+    if escaped_regex_tokens
+        .iter()
+        .any(|token| compact_text.contains(token))
+    {
+        return true;
+    }
+    let regex_groups = ["(?:", "(?=", "(?!", "(?<=", "(?<!", "(?<"];
+    if regex_groups
+        .iter()
+        .any(|token| compact_text.contains(token))
+    {
+        return true;
+    }
+    let has_character_class = compact_text.contains('[') && compact_text.contains(']');
+    let has_regex_quantifier = compact_text.contains('*')
+        || compact_text.contains('+')
+        || compact_text.contains('?')
+        || compact_text.contains('{');
+    has_character_class && has_regex_quantifier
+}
+
+fn looks_like_user_visible_context(context: &JavaScriptStringAstContext) -> bool {
+    const STRONG_TEXT_KEYS: &[&str] = &[
+        "body",
+        "caption",
+        "description",
+        "help",
+        "helpLines",
+        "label",
+        "longDescription",
+        "message",
+        "name",
+        "nickName",
+        "param1",
+        "param2",
+        "shortDescription",
+        "stanceDescription",
+        "text",
+        "title",
+    ];
+    const STRONG_CALL_SUFFIXES: &[&str] = &[
+        "addCommand",
+        "addText",
+        "drawText",
+        "drawTextEx",
+        "setText",
+        "$gameMessage.add",
+    ];
+    if STRONG_TEXT_KEYS.contains(&context.property_key.as_str()) {
+        return true;
+    }
+    STRONG_CALL_SUFFIXES
+        .iter()
+        .any(|suffix| context.call_name == *suffix || context.call_name.ends_with(suffix))
 }
 
 fn build_ast_context(node: Node<'_>, source: &str) -> JavaScriptStringAstContext {
@@ -447,6 +706,135 @@ mod tests {
     }
 
     #[test]
+    fn classifies_runtime_literal_audit_facts() {
+        let payload = json!({
+            "source": concat!(
+                "function matcher() { return '\\\\w+'; }\n",
+                "eval('packed source');\n",
+                "const config = { title: '未審査テキスト' };\n",
+                "const misc = '未分類';\n"
+            )
+        });
+        let output =
+            parse_javascript_string_spans_impl(&payload.to_string()).expect("JS AST 扫描应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let spans = value["spans"].as_array().expect("spans 应为数组");
+
+        assert_eq!(spans[0]["literal_kind"], json!("regex_pattern"));
+        assert_eq!(spans[0]["audit_default_severity"], json!("warning"));
+        assert_eq!(spans[1]["literal_kind"], json!("eval_code"));
+        assert_eq!(spans[1]["audit_default_severity"], json!("warning"));
+        assert_eq!(spans[2]["literal_kind"], json!("user_visible_candidate"));
+        assert_eq!(spans[2]["audit_default_severity"], json!("blocking"));
+        assert_eq!(spans[3]["literal_kind"], json!("unknown"));
+        assert_eq!(spans[3]["audit_default_severity"], json!("warning"));
+    }
+
+    #[test]
+    fn runtime_literal_issue_facts_report_control_fragments_and_hints() {
+        let payload = json!({
+            "literals": [
+                {
+                    "id": "plain",
+                    "raw_text": "\\\\ii[1]",
+                    "text": "\\ii[1]",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning"
+                },
+                {
+                    "id": "linebreak",
+                    "raw_text": "prefix\\nN[1]",
+                    "text": "prefix\nN[1]",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning"
+                },
+                {
+                    "id": "hint",
+                    "raw_text": "\\\\fb21st",
+                    "text": "\\fb21st",
+                    "literal_kind": "unknown",
+                    "audit_default_severity": "warning"
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+        });
+        let output = collect_runtime_literal_issue_facts_impl(&payload.to_string())
+            .expect("运行字符串风险事实应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let facts = value["facts"].as_array().expect("facts 应为数组");
+
+        assert_eq!(facts[0]["id"], json!("plain"));
+        assert_eq!(
+            facts[0]["issue_codes"],
+            json!(["active_runtime_placeholder_risk"])
+        );
+        assert_eq!(facts[0]["placeholder_fragments"], json!(["\\ii[1]"]));
+        assert_eq!(facts[1]["placeholder_fragments"], json!(["N[1]"]));
+        assert_eq!(facts[2]["placeholder_fragments"], json!(["\\fb21"]));
+        assert_eq!(
+            facts[2]["control_code_hints"][0]["original"],
+            json!("\\fb21st")
+        );
+        assert_eq!(
+            facts[2]["control_code_hints"][0]["hint_kind"],
+            json!("possible_control_split")
+        );
+    }
+
+    #[test]
+    fn runtime_literal_issue_facts_preserve_ast_literal_classification() {
+        let payload = json!({
+            "literals": [
+                {
+                    "id": "regex",
+                    "raw_text": "\\\\w+",
+                    "text": "\\w+",
+                    "literal_kind": "regex_pattern",
+                    "audit_default_severity": "warning"
+                },
+                {
+                    "id": "visible",
+                    "raw_text": "未審査テキスト",
+                    "text": "未審査テキスト",
+                    "literal_kind": "user_visible_candidate",
+                    "audit_default_severity": "blocking"
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+        });
+        let output = collect_runtime_literal_issue_facts_impl(&payload.to_string())
+            .expect("运行字符串风险事实应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        let facts = value["facts"].as_array().expect("facts 应为数组");
+
+        assert_eq!(facts[0]["id"], json!("regex"));
+        assert_eq!(facts[0]["literal_kind"], json!("regex_pattern"));
+        assert_eq!(facts[0]["audit_default_severity"], json!("warning"));
+        assert_eq!(facts[1]["id"], json!("visible"));
+        assert_eq!(facts[1]["literal_kind"], json!("user_visible_candidate"));
+        assert_eq!(facts[1]["audit_default_severity"], json!("blocking"));
+    }
+
+    #[test]
+    fn runtime_literal_issue_facts_reject_missing_literal_classification() {
+        let payload = json!({
+            "literals": [
+                {
+                    "id": "missing",
+                    "raw_text": "\\\\w+",
+                    "text": "\\w+"
+                }
+            ],
+            "text_rules": minimal_text_rules(),
+        });
+
+        let error = collect_runtime_literal_issue_facts_impl(&payload.to_string())
+            .expect_err("运行字符串风险事实输入缺少分类字段时必须显式失败");
+
+        assert!(error.contains("literal_kind"));
+    }
+
+    #[test]
     fn parses_string_nodes_for_batch_files() {
         let payload = json!({
             "files": [
@@ -467,8 +855,27 @@ mod tests {
         );
     }
 
+    fn minimal_text_rules() -> Value {
+        json!({
+            "custom_placeholder_rules": [],
+            "structured_placeholder_rules": [],
+            "source_residual_allowed_chars": [],
+            "source_residual_allowed_tail_chars": [],
+            "source_residual_segment_pattern": r"[ぁ-んァ-ヶ一-龯]+",
+            "source_residual_label": "日文",
+            "allowed_source_residual_terms": [],
+            "source_residual_terms_ignore_case": true,
+            "source_residual_detection_profile": "japanese_strict",
+            "english_source_copy_min_words": 4,
+            "english_source_copy_min_letters": 12,
+            "line_width_count_pattern": r"\S",
+            "residual_escape_sequence_pattern": r"\\[nrt]",
+            "long_text_line_width_limit": 26
+        })
+    }
+
     #[test]
-    fn batch_ast_accepts_thread_pool_env_on_hot_path() {
+    fn batch_ast_accepts_thread_pool_config_on_hot_path() {
         let payload = json!({
             "files": [
                 {"file_name": "A.js", "source": "const a = '日文';"},
@@ -480,14 +887,14 @@ mod tests {
             crate::native_core::pool::with_thread_count_override_for_test(Some("1"), || {
                 parse_javascript_string_spans_batch_impl(&payload.to_string())
             });
-        let output = result.expect("批量 JS AST 热路径应接受 ATT_MZ_RUST_THREADS");
+        let output = result.expect("批量 JS AST 热路径应接受 runtime.rust_threads 配置");
         let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
 
         assert_eq!(value["files"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]
-    fn batch_ast_rejects_invalid_thread_pool_env_on_hot_path() {
+    fn batch_ast_rejects_invalid_thread_pool_config_on_hot_path() {
         let payload = json!({
             "files": [
                 {"file_name": "A.js", "source": "const a = '日文';"}
@@ -498,10 +905,10 @@ mod tests {
             crate::native_core::pool::with_thread_count_override_for_test(Some("invalid"), || {
                 parse_javascript_string_spans_batch_impl(&payload.to_string())
             })
-            .expect_err("批量 JS AST 热路径必须读取并校验 ATT_MZ_RUST_THREADS");
+            .expect_err("批量 JS AST 热路径必须读取并校验 runtime.rust_threads");
 
         assert!(
-            error.contains("ATT_MZ_RUST_THREADS 必须是非负整数"),
+            error.contains("runtime.rust_threads 必须是正整数或 auto"),
             "错误文案应说明线程配置非法，实际为 {error}",
         );
     }

@@ -11,6 +11,7 @@ from app.llm import (
     is_recoverable_llm_error,
 )
 from app.observability import logger
+from app.observability.llm_messages import LLMMessageWriteError
 
 
 async def request_with_recoverable_retry(
@@ -21,6 +22,7 @@ async def request_with_recoverable_retry(
     retry_count: int,
     retry_delay: int,
     task_label: str,
+    task_key: str = "llm",
     temperature: float | None = None,
 ) -> str:
     """
@@ -48,8 +50,12 @@ async def request_with_recoverable_retry(
                 messages=messages,
                 model=model,
                 temperature=temperature,
+                task_key=task_key,
+                task_label=task_label,
             )
         except Exception as error:
+            if isinstance(error, LLMMessageWriteError):
+                raise
             info = classify_llm_error(error)
             if not is_recoverable_llm_error(error):
                 logger.error(

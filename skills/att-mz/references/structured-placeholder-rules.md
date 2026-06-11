@@ -6,6 +6,8 @@
 
 外部只通过 `<工作区>/structured-placeholder-rules.json` 和三条 CLI 命令与程序交互。规则导入成功后，翻译、质量检查和写进游戏文件流程只读取当前游戏已经保存的规则，不直接读取外部 JSON；不要手工改数据库，也不要让子代理阅读源码猜格式。
 
+结构化占位符最终规则仍由主代理负责，但必须经过审查子代理反向检查。审查只找风险，不替主代理生成最终规则；存在未关闭 `blocker` 时禁止导入。
+
 ## 文件格式
 
 文件名固定为 `structured-placeholder-rules.json`。合法空结构如下：
@@ -23,7 +25,7 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
   "paired_shell_rules": [
     {
       "name": "PROTOCOL_LABEL",
-      "pattern": "(?P<open><Protocol\\s+Label:\\s*)(?P<text>[^<>\\r\\n]*?)(?P<close>>)",
+      "pattern": "(?<open><Protocol\\s+Label:\\s*)(?<text>[^<>\\r\\n]*?)(?<close>>)",
       "translatable_group": "text",
       "protected_groups": {
         "open": "[CUSTOM_PROTOCOL_LABEL_OPEN_{index}]",
@@ -40,20 +42,29 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 - `protected_groups`：必须原样保留的命名分组和占位符模板。
 - 占位符模板必须生成形如 `[CUSTOM_NAME_1]` 的方括号占位符，推荐保留 `{index}`。
 
+## 正则语法契约
+
+`pattern` 必须是 PCRE2 正则；`validate-structured-placeholder-rules`、`import-structured-placeholder-rules`、工作区验收和当前游戏已保存规则检查都会提前预检。命名分组统一使用 PCRE2 写法 `(?<name>...)`，所有 `translatable_group` 和 `protected_groups` 必须来自这种命名分组，不要使用其它正则方言的命名分组写法。
+
+请按 PCRE2 当前契约编写，例如普通分组、字符类、量词、锚点、内联 flag 和 `(?<name>...)`。
+
 ## 工作流程
 
 1. 确认目标文本已经进入正文翻译集合。结构化规则不会让未被提取的插件参数、事件指令参数或 Note 标签值自动进入翻译。
 2. 编写或修改 `<工作区>/structured-placeholder-rules.json`。
 3. 运行 `validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
 4. 运行 `scan-structured-placeholder-candidates --game <游戏标题> --input <规则文件>`，检查候选覆盖和未覆盖风险；如果报告是 `summary.report_detail_mode=sampled`，只把样本当提示，完整候选必须看 `--output` 写出的 full 报告。
-5. 校验通过且覆盖风险已处理或已确认后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
-6. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`，确保工作区整体可继续。
+5. 派发 `structured_placeholder_rule_review` 审查任务。审查子代理读取结构化规则、普通占位符规则、validate/scan 报告和候选样本，可以在 `<工作区>/agent-scratch/placeholder_closure/structured_placeholder_rule_review/` 下写一次性脚本复核重叠、抢占和误伤。
+6. 审查必须检查：是否有成对外壳被错误拆成普通占位符，`translatable_group` 是否真是玩家可见文本，`protected_groups` 是否只保护固定外壳，普通占位符与结构化规则是否重叠，两条结构化规则是否抢同一段文本，是否为通过扫描而编造规则，空结构是否确实已审查。
+7. 主代理读取审查报告，写入 `<工作区>/review-decisions/placeholder_closure.json`；存在未关闭 `blocker` 时停止。
+8. 校验通过、覆盖风险已处理或已确认，且主代理裁决为 `approved` 后，运行 `import-structured-placeholder-rules --game <游戏标题> --input <规则文件>`。
+9. 再运行 `validate-agent-workspace --game <游戏标题> --workspace <工作区> --output <完整报告>`，确保工作区整体可继续。
 
 这套流程和普通正则占位符规则是并列关系：普通规则继续负责整段不可翻译片段，结构化规则只保护固定协议外壳并暴露中间显示文本。两者都必须通过 CLI 校验后保存为当前游戏有效规则，不能互相覆盖保护范围。
 
 覆盖扫描会主动寻找多类常见协议外壳候选，包括尖括号标签、带全角冒号的标签、含属性赋值的标签、`◆<...>ｔ` 这类触发前缀，以及 `【标签：文本】` 这类成对包裹格式。扫描命中不等于规则一定正确，只表示这段文本需要主代理人工判断是否应写结构化规则；扫描未命中也不能替代人工审查所有当前正文。
 
-空结构 `{ "paired_shell_rules": [] }` 必须加 `--confirm-empty` 才能导入；如果仍有未覆盖候选，导入会保存“已审查但不写结构化规则”的确认状态并返回 warning。非空规则导入后仍有未覆盖候选时，也会保存“剩余风险已确认”的状态并持续 warning。旧版前 100 个候选样本 hash 只由工具自动兼容并提示 `structured_placeholder_uncovered_reviewed_legacy_hash`，重新导入规则后会写入完整候选 hash。不要为了通过扫描而编造结构化规则；无法确认外壳和可翻译分组时，优先报告风险或补外部文本规则。
+空结构 `{ "paired_shell_rules": [] }` 必须加 `--confirm-empty` 才能导入；如果仍有未覆盖候选，导入会保存“已审查但不写结构化规则”的确认状态并返回 warning。非空规则导入后仍有未覆盖候选时，也会保存“剩余风险已确认”的状态并持续 warning。已保存确认只在当前候选范围一致时有效；候选范围变化时，必须重新审查并导入当前规则。不要为了通过扫描而编造结构化规则；无法确认外壳和可翻译分组时，优先报告风险或补外部文本规则。
 
 确认结构化候选风险只允许流程继续，不允许译文改坏协议外壳；如果模型或人工译文删除、改写未覆盖结构化候选或已保护外壳，质量检查或写文件前检查必须报 error。
 

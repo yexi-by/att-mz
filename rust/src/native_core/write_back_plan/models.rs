@@ -1,6 +1,6 @@
 use crate::native_core::javascript_ast::JavaScriptStringSpan;
 use crate::native_core::models::NativeTextRules;
-use fancy_regex::Regex as FancyRegex;
+use crate::native_core::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -13,14 +13,39 @@ pub(super) const DATA_ORIGIN_DIRECTORY_NAME: &str = "data_origin";
 pub(super) const PLUGINS_ORIGIN_FILE_NAME: &str = "plugins_origin.js";
 pub(super) const PLUGIN_SOURCE_ORIGIN_DIRECTORY_NAME: &str = "plugins_source_origin";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct TranslationItem {
+    pub(super) fact_id: String,
     pub(super) location_path: String,
     pub(super) item_type: String,
     pub(super) role: Option<String>,
+    pub(super) selector: String,
+    pub(super) raw_text: String,
+    pub(super) visible_text: String,
+    pub(super) raw_hash: String,
+    pub(super) render_parts: Vec<TextFactRenderPart>,
     pub(super) original_lines: Vec<String>,
     pub(super) source_line_paths: Vec<String>,
     pub(super) translation_lines: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct TextFactRenderPart {
+    pub(super) fact_id: String,
+    pub(super) part_order: i64,
+    pub(super) part_kind: String,
+    pub(super) raw_text: String,
+    pub(super) template_key: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MvVirtualNameboxFactTemplate {
+    pub(super) location_path: String,
+    pub(super) role: String,
+    pub(super) raw_text: String,
+    pub(super) body_text: String,
+    pub(super) source_line_paths: Vec<String>,
+    pub(super) render_parts: Vec<TextFactRenderPart>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,7 +54,6 @@ pub(super) struct PluginSourceReplacement {
     pub(super) item: TranslationItem,
     pub(super) span: JavaScriptStringSpan,
     pub(super) raw_text: String,
-    pub(super) visible_text: String,
     pub(super) written_text: String,
     pub(super) source_file_hash: String,
 }
@@ -131,7 +155,7 @@ pub(super) enum EngineKind {
 
 pub(super) struct MvVirtualNameboxRule {
     pub(super) rule_name: String,
-    pub(super) pattern: FancyRegex,
+    pub(super) pattern: Pcre2Pattern,
     pub(super) speaker_group: String,
     pub(super) body_group: String,
     pub(super) speaker_policy: MvVirtualSpeakerPolicy,
@@ -204,7 +228,7 @@ impl WritePlanMode {
 
 pub(super) struct TextPlanRules {
     pub(super) long_text_line_width_limit: usize,
-    pub(super) line_width_count_pattern: regex::Regex,
+    pub(super) line_width_count_pattern: Pcre2Pattern,
     pub(super) line_split_punctuations: Vec<String>,
     pub(super) preserve_wrapping_punctuation_pairs: Vec<(String, String)>,
     pub(super) protected_macro_pattern: regex::Regex,
@@ -229,8 +253,11 @@ impl TextPlanRules {
             .ok_or_else(|| "写回计划缺少 preserve_wrapping_punctuation_pairs".to_string())?;
         Ok(Self {
             long_text_line_width_limit,
-            line_width_count_pattern: regex::Regex::new(line_width_count_pattern)
-                .map_err(|error| format!("文本行宽计数字符正则无效: {error}"))?,
+            line_width_count_pattern: Pcre2Engine::compile(
+                line_width_count_pattern,
+                &Pcre2EngineConfig::default_runtime(),
+            )
+            .map_err(|error| format!("文本行宽计数字符 PCRE2 正则无效: {}", error.message))?,
             line_split_punctuations,
             preserve_wrapping_punctuation_pairs,
             protected_macro_pattern: regex::Regex::new(r"_[A-Z][A-Z0-9]+_")
@@ -241,6 +268,7 @@ impl TextPlanRules {
     pub(super) fn is_line_width_counted_char(&self, character: char) -> bool {
         self.line_width_count_pattern
             .is_match(&character.to_string())
+            .unwrap_or(false)
     }
 }
 
@@ -261,5 +289,29 @@ impl FontPlanSummary {
             copied: false,
             records: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_width_count_pattern_uses_pcre2_runtime() {
+        let rules = TextPlanRules::from_payload(&SettingPayload {
+            quality_text_rules: None,
+            replacement_font_path: None,
+            source_font_names: None,
+            allowed_translation_paths: None,
+            long_text_line_width_limit: Some(26),
+            line_width_count_pattern: Some(r"(?=.)\S".to_string()),
+            line_split_punctuations: Some(vec!["。".to_string()]),
+            preserve_wrapping_punctuation_pairs: Some(vec![("「".to_string(), "」".to_string())]),
+            plan_content_output_dir: None,
+        })
+        .expect("PCRE2-only line width pattern should compile");
+
+        assert!(rules.is_line_width_counted_char('A'));
+        assert!(!rules.is_line_width_counted_char(' '));
     }
 }

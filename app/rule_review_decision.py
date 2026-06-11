@@ -25,7 +25,6 @@ type RuleConfirmationStatus = Literal[
     "not_needed",
     "missing",
     "confirmed",
-    "confirmed_legacy_hash",
     "stale",
 ]
 type ReportDetailMode = Literal["full", "sampled"]
@@ -116,14 +115,12 @@ async def build_rule_review_decision(
     reviewed_code: str,
     reviewed_message: str,
     custom_rules_supplied: bool = False,
-    legacy_scope_hashes: tuple[str, ...] = (),
 ) -> RuleReviewDecision:
     """按统一候选覆盖结果和数据库确认状态生成阶段决策。"""
     confirmation_status, reviewed_empty = await read_confirmation_status(
         session=session,
         rule_domain=coverage.rule_domain,
         scope_hash=coverage.scope_hash,
-        legacy_scope_hashes=legacy_scope_hashes,
     )
     samples = [item for item in coverage.candidates[: coverage.sample_limit]]
     if coverage.uncovered_count <= 0:
@@ -140,18 +137,13 @@ async def build_rule_review_decision(
             rule_count=coverage.rule_count,
             samples=samples,
         )
-    if confirmation_status in {"confirmed", "confirmed_legacy_hash"} and not custom_rules_supplied:
-        message = reviewed_message
-        code = reviewed_code
-        if confirmation_status == "confirmed_legacy_hash":
-            code = f"{reviewed_code}_legacy_hash"
-            message = f"{reviewed_message}；当前数据库使用旧版截断候选确认 hash，本次按兼容规则放行，重新导入规则后会升级为完整 hash"
+    if confirmation_status == "confirmed" and not custom_rules_supplied:
         return RuleReviewDecision(
             rule_domain=coverage.rule_domain,
             stage=stage,
             severity="warning",
-            code=code,
-            message=message,
+            code=reviewed_code,
+            message=reviewed_message,
             scope_hash=coverage.scope_hash,
             confirmation_status=confirmation_status,
             reviewed_empty=reviewed_empty,
@@ -187,29 +179,20 @@ async def build_empty_rule_review_decision(
     stale_severity: RuleReviewSeverity,
     missing_message: str | None = None,
     stale_message: str | None = None,
-    legacy_scope_hashes: tuple[str, ...] = (),
 ) -> RuleReviewDecision:
     """按统一规则生成空规则确认状态决策。"""
     confirmation_status, reviewed_empty = await read_confirmation_status(
         session=session,
         rule_domain=rule_domain,
         scope_hash=scope_hash,
-        legacy_scope_hashes=legacy_scope_hashes,
     )
-    if confirmation_status in {"confirmed", "confirmed_legacy_hash"} and reviewed_empty is True:
-        code = ""
-        message = ""
-        severity: RuleReviewSeverity = "ok"
-        if confirmation_status == "confirmed_legacy_hash":
-            code = f"{rule_domain}_legacy_empty_confirmation"
-            message = f"{label}空规则确认使用旧版 hash，本阶段按兼容规则放行，重新导入规则后会升级为完整 hash"
-            severity = "warning"
+    if confirmation_status == "confirmed" and reviewed_empty is True:
         return RuleReviewDecision(
             rule_domain=rule_domain,
             stage=stage,
-            severity=severity,
-            code=code,
-            message=message,
+            severity="ok",
+            code="",
+            message="",
             scope_hash=scope_hash,
             confirmation_status=confirmation_status,
             reviewed_empty=reviewed_empty,
@@ -251,16 +234,13 @@ async def read_confirmation_status(
     session: TargetGameSession,
     rule_domain: RuleReviewDomain,
     scope_hash: str,
-    legacy_scope_hashes: tuple[str, ...] = (),
 ) -> tuple[RuleConfirmationStatus, bool | None]:
-    """读取当前规则域确认状态，并兼容旧 hash。"""
+    """读取当前规则域确认状态。"""
     state = await session.read_rule_review_state(rule_domain=rule_domain)
     if state is None:
         return "missing", None
     if state.scope_hash == scope_hash:
         return "confirmed", state.reviewed_empty
-    if state.scope_hash in legacy_scope_hashes:
-        return "confirmed_legacy_hash", state.reviewed_empty
     return "stale", state.reviewed_empty
 
 

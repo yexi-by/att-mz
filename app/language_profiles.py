@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from app.config.schemas import TextRulesSetting
-from app.language import SourceLanguage, SourceTextExclusionProfile
+from app.language import SourceLanguage, SourceResidualDetectionProfile, SourceTextExclusionProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +16,9 @@ class LanguageProfile:
     source_text_required_pattern: str
     source_text_exclusion_profile: SourceTextExclusionProfile
     source_residual_segment_pattern: str
+    source_residual_detection_profile: SourceResidualDetectionProfile
+    english_source_copy_min_words: int = 4
+    english_source_copy_min_letters: int = 12
     source_residual_allowed_chars: tuple[str, ...] = field(default_factory=tuple)
     source_residual_allowed_tail_chars: tuple[str, ...] = field(default_factory=tuple)
     allowed_source_residual_terms: tuple[str, ...] = field(default_factory=tuple)
@@ -25,9 +28,10 @@ class LanguageProfile:
 JAPANESE_PROFILE = LanguageProfile(
     source_language="ja",
     residual_label="日文",
-    source_text_required_pattern=r"[\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+",
+    source_text_required_pattern=r"[ぁ-んァ-ヶ一-龯ー]+",
     source_text_exclusion_profile="none",
-    source_residual_segment_pattern=r"[\u3040-\u309F\u30A0-\u30FF]+",
+    source_residual_segment_pattern=r"[ぁ-んァ-ヶー]+",
+    source_residual_detection_profile="japanese_strict",
     source_residual_allowed_chars=("っ", "ッ", "ー", "・", "。", "～", "…"),
     source_residual_allowed_tail_chars=(
         "あ",
@@ -52,49 +56,7 @@ ENGLISH_PROFILE = LanguageProfile(
     source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
     source_text_exclusion_profile="english_protocol_noise",
     source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-    allowed_source_residual_terms=(
-        "HP",
-        "MP",
-        "TP",
-        "AP",
-        "JP",
-        "EXP",
-        "XP",
-        "Lv",
-        "LV",
-        "OK",
-        "BGM",
-        "BGS",
-        "ME",
-        "SE",
-        "NPC",
-        "ATK",
-        "DEF",
-        "MAT",
-        "MDF",
-        "AGI",
-        "LUK",
-        "HIT",
-        "EVA",
-        "CRI",
-        "CEV",
-        "MEV",
-        "MRF",
-        "CNT",
-        "HRG",
-        "MRG",
-        "TRG",
-        "TGR",
-        "GRD",
-        "REC",
-        "PHA",
-        "MCR",
-        "TCR",
-        "PDR",
-        "MDR",
-        "FDR",
-        "EXR",
-    ),
+    source_residual_detection_profile="english_source_copy",
     source_residual_terms_ignore_case=True,
 )
 
@@ -118,6 +80,9 @@ def build_text_rules_setting_for_language_profile(source_language: SourceLanguag
         source_text_required_pattern=profile.source_text_required_pattern,
         source_text_exclusion_profile=profile.source_text_exclusion_profile,
         source_residual_segment_pattern=profile.source_residual_segment_pattern,
+        source_residual_detection_profile=profile.source_residual_detection_profile,
+        english_source_copy_min_words=profile.english_source_copy_min_words,
+        english_source_copy_min_letters=profile.english_source_copy_min_letters,
         source_residual_allowed_chars=list(profile.source_residual_allowed_chars),
         source_residual_allowed_tail_chars=list(profile.source_residual_allowed_tail_chars),
         allowed_source_residual_terms=list(profile.allowed_source_residual_terms),
@@ -138,6 +103,9 @@ def apply_language_profile_to_raw_config(
     text_rules["source_text_required_pattern"] = profile.source_text_required_pattern
     text_rules["source_text_exclusion_profile"] = profile.source_text_exclusion_profile
     text_rules["source_residual_segment_pattern"] = profile.source_residual_segment_pattern
+    text_rules["source_residual_detection_profile"] = profile.source_residual_detection_profile
+    text_rules["english_source_copy_min_words"] = profile.english_source_copy_min_words
+    text_rules["english_source_copy_min_letters"] = profile.english_source_copy_min_letters
     text_rules["source_residual_allowed_chars"] = list(profile.source_residual_allowed_chars)
     text_rules["source_residual_allowed_tail_chars"] = list(profile.source_residual_allowed_tail_chars)
     text_rules["allowed_source_residual_terms"] = list(profile.allowed_source_residual_terms)

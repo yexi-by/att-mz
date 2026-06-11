@@ -1,0 +1,119 @@
+[[stages]]
+id = "startup_registration"
+title = "启动与注册"
+target = "确认工具入口、游戏结构、工作区、源语言和模型配置可用"
+inputs = ["<项目目录>", "<游戏目录>", "源语言探测报告", "<工作区>"]
+outputs = ["已注册 <游戏标题>", "可信源快照", "可继续分析的游戏状态"]
+pass_criteria = ["doctor、probe-source-language、add-game 和游戏检查成功", "当前游戏源语言已由玩家可见文本探测或用户确认", "首次注册使用干净原始游戏目录"]
+stop_conditions = ["游戏结构无效", "源语言探测不确定且用户未确认", "模型配置缺失且本轮需要翻译", "工作区不可写"]
+commands = ["doctor", "probe-source-language", "add-game", "list", "reset-game"]
+references = ["cli-command-contract.md", "workspace-schema.md"]
+read_when = "运行或排查启动、注册、状态检查和危险回溯前"
+
+[[stages]]
+id = "workspace"
+title = "工作区与基础候选"
+target = "建立 Agent 分析边界并导出候选、草稿规则和术语上下文"
+inputs = ["已注册 <游戏标题>", "<工作区>", "当前游戏目录和可信源快照"]
+outputs = ["manifest.json", "候选文件", "规则草稿", "术语上下文", "完整工作区验收报告"]
+pass_criteria = ["prepare-agent-workspace 成功", "validate-agent-workspace 无 errors", "需要完整候选时读取 --output 写出的 full 明细"]
+stop_conditions = ["manifest 缺失或工作区不可写", "validate-agent-workspace 有 error", "stdout sampled 明细被当成完整候选使用"]
+commands = ["prepare-agent-workspace", "validate-agent-workspace", "cleanup-agent-workspace", "export-plugins-json", "export-event-commands-json"]
+references = ["cli-command-contract.md", "workspace-schema.md", "agent-review-workflow.md", "subtask-package-mode.md"]
+read_when = "读取、填写、修复、审查、分发任务包或清理工作区 JSON 前"
+
+[[stages]]
+id = "mv_virtual_namebox"
+title = "MV 虚拟名字框"
+target = "为 MV 游戏确认首行虚拟名字框规则"
+inputs = ["mv-virtual-namebox-candidates.json", "mv-virtual-namebox-rules.json"]
+outputs = ["已导入 MV 虚拟名字框规则，或已确认空规则"]
+pass_criteria = ["仅 MV 游戏运行", "发现任务和审查任务完成", "主代理裁决 approved 或确认空规则", "validate 无 error", "新增命中样本均经主代理确认"]
+stop_conditions = ["MZ 游戏误跑本阶段", "MV 发现或审查报告缺失", "审查 blocker 未关闭", "MV 新命中未审查", "空规则未确认"]
+commands = ["export-mv-virtual-namebox-candidates", "validate-mv-virtual-namebox-rules", "import-mv-virtual-namebox-rules"]
+references = ["agent-review-workflow.md", "mv-virtual-namebox-rules.md", "rpg-maker-mv-mz-world-knowledge.md"]
+read_when = "MV 游戏第零轮规则发现、审查、编写或修复前"
+
+[[stages]]
+id = "terminology"
+title = "术语工程"
+target = "统一字段译名和正文术语，避免字段写回表与提示词术语表混用"
+inputs = ["terminology/field-terms.json", "terminology/glossary.json", "术语上下文", "术语子任务源文件"]
+outputs = ["已导入字段译名表", "已导入正文术语表"]
+pass_criteria = ["术语候选工作任务完成", "分组审查和整体术语审查完成", "主代理已阅读术语概念与清洗规则", "主代理裁决 approved 并导入成功", "无空译名、明显冲突、机械音译或无理由原文照抄"]
+stop_conditions = ["子代理直接改最终表", "术语工作或审查报告缺失", "审查 blocker 未关闭", "正文术语表是字段译名表副本", "把字段包装形式、整句或定位信息写进正文术语表", "同一术语冲突"]
+commands = ["export-terminology", "import-terminology"]
+references = ["agent-review-workflow.md", "terminology-workflow.md", "translation-rule-examples.md", "subagent-collaboration.md", "subtask-package-mode.md"]
+read_when = "进入术语工程、派发术语候选、分发术语任务包、审查术语质量、合并字段译名表或制作正文术语表前"
+
+[[stages]]
+id = "external_rules"
+title = "外部文本规则"
+target = "判断插件参数、事件指令参数和 Note 标签中的玩家可见文本"
+inputs = ["plugins.json", "event-commands.json", "note-tag-candidates.json", "三类规则草稿"]
+outputs = ["已导入插件规则、事件指令规则、Note 标签规则，或已确认空结果"]
+pass_criteria = ["对应工作任务和审查任务完成", "主代理裁决 approved", "对应 validate/import 成功", "空结果有明确理由", "选中项和排除项有交叉验证证据"]
+stop_conditions = ["猜测路径", "审查 blocker 未关闭", "选中资源、脚本或机器协议", "空结果未说明理由", "插件配置变化后未重新准备当前工作区"]
+commands = ["validate-plugin-rules", "import-plugin-rules", "validate-event-command-rules", "import-event-command-rules", "export-note-tag-candidates", "validate-note-tag-rules", "import-note-tag-rules"]
+references = ["agent-review-workflow.md", "external-rules-workflow.md", "plugin-rules-agent-task.md", "event-command-rules-agent-task.md", "note-tag-rules-agent-task.md", "translation-rule-examples.md", "subagent-collaboration.md", "subtask-package-mode.md"]
+read_when = "处理、主动发现、分发任务包或审查插件、事件指令、Note 标签规则前"
+
+[[stages]]
+id = "branch_rules"
+title = "非标准 data 与插件源码支线"
+target = "处理少见的非标准 data 文本和 js/plugins 源码硬编码显示文本"
+inputs = ["nonstandard-data-risk-report.json", "plugin-source-risk-report.json", "候选清单", "源 JSON 副本或 AST 地图"]
+outputs = ["已导入必要支线规则，或按开局策略跳过并保留 warning"]
+pass_criteria = ["按开局确定的高风险支线策略执行；默认自动处理，不在中途反复询问", "支线工作任务和一对一审查任务完成", "活跃候选全部归入翻译、排除或按用户已确认策略跳过", "主代理裁决 approved 或 skipped_by_user", "validate/import 成功"]
+stop_conditions = ["高风险支线策略缺失且当前候选处理会显著增加成本或风险", "高风险未处理也未按已确认策略跳过", "审查 blocker 未关闭", "候选未归类", "路径或 selector 失效", "试图扫描 plugins 外目录"]
+commands = ["scan-nonstandard-data", "export-nonstandard-data-json", "validate-nonstandard-data-rules", "import-nonstandard-data-rules", "scan-plugin-source-text", "export-plugin-source-ast-map", "validate-plugin-source-rules", "import-plugin-source-rules"]
+references = ["agent-review-workflow.md", "nonstandard-data-agent-task.md", "plugin-source-text-agent-task.md", "workspace-schema.md", "subagent-collaboration.md"]
+read_when = "风险报告提示高风险，或用户要求处理、主动发现、审查非标准 data / 插件源码文本前"
+
+[[stages]]
+id = "placeholder_closure"
+title = "占位符收束"
+target = "保护必须原样保留的控制符和协议片段，同时不吞掉玩家可见文本"
+inputs = ["当前会进入正文翻译的完整文本集合", "placeholder-candidates.json", "placeholder-rules.json", "structured-placeholder-rules.json"]
+outputs = ["已导入普通占位符规则", "已导入结构化占位符规则", "已确认未覆盖候选风险"]
+pass_criteria = ["validate 通过", "占位符审查完成", "主代理裁决 approved", "覆盖扫描风险已处理或已确认", "协议外壳包住显示文本时走结构化规则"]
+stop_conditions = ["审查 blocker 未关闭", "未覆盖候选未修复也未确认风险", "规则吞掉玩家可见文本", "候选范围变化后未重新审查并导入当前规则", "外部规则变化后未重新扫描"]
+commands = ["build-placeholder-rules", "validate-placeholder-rules", "scan-placeholder-candidates", "import-placeholder-rules", "validate-structured-placeholder-rules", "scan-structured-placeholder-candidates", "import-structured-placeholder-rules"]
+references = ["agent-review-workflow.md", "placeholder-rules.md", "structured-placeholder-rules.md", "translation-rule-examples.md", "subagent-collaboration.md"]
+read_when = "编写、审查、覆盖扫描或修复普通/结构化占位符规则前"
+
+[[stages]]
+id = "translate_repair"
+title = "正文翻译与手动修复"
+target = "用小批量发现严重风险，再靠全量多轮重试保存译文，最后小规模手动收尾"
+inputs = ["当前游戏状态", "模型配置", "已导入规则", "quality-fix-template.json", "pending-translations.json"]
+outputs = ["已保存译文", "已保存修复译文", "已自动诊断并修复可处理失败", "已精确重置坏译文或可解释剩余风险"]
+pass_criteria = ["小批量无规则性事故且不要求 0 失败", "全量续跑剩余量下降", "quality-report 无规则性事故", "全量多轮后的小规模手动导入成功", "同类失败不下降时已进入诊断和修复流程，而不是让用户代选方案"]
+stop_conditions = ["规则性事故", "控制符风险扩大", "小批量阶段手动修复或追求 0 失败", "全量同类失败多轮不下降且已完成自动诊断后仍需要用户承担成本、风险或策略取舍", "用源文保留例外掩盖整句漏翻"]
+commands = ["rebuild-text-index", "translate", "translation-status", "text-scope", "audit-coverage", "quality-report", "export-quality-fix-template", "export-pending-translations", "import-manual-translations", "reset-translations", "validate-source-residual-rules", "import-source-residual-rules", "run-all"]
+references = ["cli-command-contract.md", "failure-recovery.md", "placeholder-rules.md", "structured-placeholder-rules.md"]
+read_when = "启动正文翻译、解释失败、导出修复表、导入手动译文或重置译文前"
+
+[[stages]]
+id = "write_back"
+title = "写进游戏文件"
+target = "生成可试玩汉化结果，并验收当前运行文件"
+inputs = ["已保存译文", "覆盖审计报告", "质量报告", "可信源快照", "用户许可"]
+outputs = ["译文写进游戏目录", "当前运行文件验收结果", "必要时的阻塞诊断"]
+pass_criteria = ["用户明确允许写回", "audit-coverage 没有 error", "quality-report 没有 error", "可信源快照有效", "当前规则范围内正文译文完整", "普通 warning 已由主代理逐项确认；只有接受风险类 warning 需要用户确认", "字体覆盖已单独确认", "写入后当前运行文件验收通过"]
+stop_conditions = ["未获写回许可", "质量 error", "还没成功保存译文的文本未清", "当前运行文件仍有漏翻、坏控制符或 JS 语法错误", "字体覆盖未单独确认"]
+commands = ["write-back", "rebuild-active-runtime", "write-terminology", "restore-font", "audit-active-runtime", "diagnose-active-runtime", "run-all"]
+references = ["cli-command-contract.md", "failure-recovery.md", "subagent-collaboration.md"]
+read_when = "写进游戏文件、重建当前运行文件、术语专用写入或当前运行审计前"
+
+[[stages]]
+id = "feedback_iteration"
+title = "试玩反馈"
+target = "根据实际游玩反馈继续补规则、补译文或定位写入缺口"
+inputs = ["截图", "场景", "原文片段", "现译文", "反馈原文清单"]
+outputs = ["反馈定位结果", "已修复译文或规则", "必要时再次写进游戏文件"]
+pass_criteria = ["反馈可定位", "漏翻、多翻或误翻已按根因分类处理", "补外部规则后已重新收束占位符并重建当前文本索引", "修复后重新检查", "必要时 verify-feedback-text 闭环"]
+stop_conditions = ["凭空猜测", "无证据扩大规则", "补外部规则后跳过占位符收束", "直接全量重译", "直接手改游戏 data 文件", "反馈无法定位且未向用户补充上下文"]
+commands = ["verify-feedback-text", "quality-report", "audit-active-runtime", "diagnose-active-runtime", "write-back"]
+references = ["feedback-iteration.md", "failure-recovery.md", "subagent-collaboration.md"]
+read_when = "用户反馈漏翻、误翻、显示异常或插件界面残留源语言文本时"
