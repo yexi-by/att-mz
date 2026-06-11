@@ -2189,7 +2189,7 @@ fn minimal_setting_payload() -> Value {
             "structured_placeholder_rules": [],
             "source_residual_allowed_chars": [],
             "source_residual_allowed_tail_chars": [],
-            "source_residual_segment_pattern": r"[\p{Hiragana}\p{Katakana}ー]+",
+            "source_residual_segment_pattern": r"[ぁ-んァ-ヶー]+",
             "source_residual_label": "日文",
             "allowed_source_residual_terms": [],
             "source_residual_terms_ignore_case": false,

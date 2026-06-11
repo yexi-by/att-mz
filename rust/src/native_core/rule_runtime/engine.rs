@@ -107,6 +107,14 @@ impl Pcre2Pattern {
         Ok(matches)
     }
 
+    pub(crate) fn find_spans(&self, text: &str) -> Result<Vec<Pcre2Span>, Pcre2EngineError> {
+        Ok(self
+            .captures_iter(text)?
+            .into_iter()
+            .map(|matched| matched.full_span)
+            .collect())
+    }
+
     pub(crate) fn capture_names(&self) -> Vec<String> {
         self.regex
             .capture_names()

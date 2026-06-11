@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
-use super::super::engine::{Pcre2Engine, Pcre2EngineConfig};
+use super::super::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use super::super::errors::RuleRuntimeIssue;
 use super::super::model::{MatcherKind, NormalizedRuleInput, RuleDomain};
 
@@ -129,6 +129,33 @@ pub(crate) fn normalize_mv_virtual_namebox_rules(
     } else {
         Err(issues)
     }
+}
+
+pub(crate) fn compile_mv_virtual_namebox_pattern(
+    rule_name: &str,
+    pattern: &str,
+    speaker_group: &str,
+    body_group: &str,
+) -> Result<Pcre2Pattern, String> {
+    let compiled =
+        Pcre2Engine::compile(pattern, &Pcre2EngineConfig::default_runtime()).map_err(|error| {
+            format!(
+                "MV 虚拟名字框规则 {rule_name} 无法编译 PCRE2 pattern: {}",
+                error.message
+            )
+        })?;
+    let capture_names = compiled.capture_names();
+    if !capture_names.iter().any(|name| name == speaker_group) {
+        return Err(format!(
+            "MV 虚拟名字框规则 {rule_name} 缺少说话人命名分组: {speaker_group}"
+        ));
+    }
+    if !body_group.is_empty() && !capture_names.iter().any(|name| name == body_group) {
+        return Err(format!(
+            "MV 虚拟名字框规则 {rule_name} 缺少正文命名分组: {body_group}"
+        ));
+    }
+    Ok(compiled)
 }
 
 fn required_string<'a>(rule: &'a Map<String, Value>, field: &str) -> Option<&'a str> {

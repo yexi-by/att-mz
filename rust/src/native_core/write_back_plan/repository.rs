@@ -2,10 +2,9 @@ use super::models::{
     MvVirtualNameboxFactTemplate, MvVirtualNameboxRule, MvVirtualSpeakerPolicy,
     PluginSourceTextRule, TextFactRenderPart, TranslationItem,
 };
-use super::utils::collect_python_named_groups;
 use crate::native_core::models::NativeSourceResidualRule;
+use crate::native_core::rule_runtime::adapters::mv_virtual_namebox::compile_mv_virtual_namebox_pattern;
 use crate::native_core::text_facts::CURRENT_TEXT_FACT_CONTRACT_VERSION;
-use fancy_regex::Regex as FancyRegex;
 use rusqlite::{Connection, OpenFlags, params_from_iter};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -848,11 +847,17 @@ pub(super) fn read_mv_virtual_namebox_rules(
     for row in rows {
         let (rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template) =
             row.map_err(|error| format!("读取 MV 虚拟名字框规则行失败: {error}"))?;
-        let pattern = FancyRegex::new(&pattern_text)
-            .map_err(|error| format!("MV 虚拟名字框规则正则损坏 {rule_name}: {error}"))?;
+        let pattern = compile_mv_virtual_namebox_pattern(
+            &rule_name,
+            &pattern_text,
+            &speaker_group,
+            &body_group,
+        )
+        .map_err(|error| format!("MV 虚拟名字框规则正则损坏 {rule_name}: {error}"))?;
+        let group_names = pattern.capture_names();
         rules.push(MvVirtualNameboxRule {
             rule_name,
-            group_names: collect_python_named_groups(&pattern_text),
+            group_names,
             pattern,
             speaker_group,
             body_group,

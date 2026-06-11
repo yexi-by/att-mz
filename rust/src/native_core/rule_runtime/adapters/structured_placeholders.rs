@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
-use super::super::engine::{Pcre2Engine, Pcre2EngineConfig};
+use super::super::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use super::super::errors::RuleRuntimeIssue;
 use super::super::model::{MatcherKind, NormalizedRuleInput, RuleDomain};
 use super::placeholders::validate_custom_placeholder_template;
@@ -131,6 +132,35 @@ pub(crate) fn normalize_structured_placeholder_rules(
     } else {
         Err(issues)
     }
+}
+
+pub(crate) fn compile_structured_placeholder_pattern(
+    rule_name: &str,
+    pattern: &str,
+    translatable_group: &str,
+    protected_groups: &HashMap<String, String>,
+) -> Result<Pcre2Pattern, String> {
+    let compiled =
+        Pcre2Engine::compile(pattern, &Pcre2EngineConfig::default_runtime()).map_err(|error| {
+            format!(
+                "结构化占位符规则 {rule_name} PCRE2 pattern 无效: {}",
+                error.message
+            )
+        })?;
+    let capture_names = compiled.capture_names();
+    if !capture_names.iter().any(|name| name == translatable_group) {
+        return Err(format!(
+            "结构化占位符规则 {rule_name} 缺少可翻译命名分组: {translatable_group}"
+        ));
+    }
+    for group_name in protected_groups.keys() {
+        if !capture_names.iter().any(|name| name == group_name) {
+            return Err(format!(
+                "结构化占位符规则 {rule_name} 缺少保护命名分组: {group_name}"
+            ));
+        }
+    }
+    Ok(compiled)
 }
 
 fn required_string<'a>(rule: &'a Map<String, Value>, field: &str) -> Option<&'a str> {

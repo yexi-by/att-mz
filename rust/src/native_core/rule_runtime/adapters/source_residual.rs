@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use super::super::engine::{Pcre2Engine, Pcre2EngineConfig};
+use super::super::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use super::super::errors::RuleRuntimeIssue;
 use super::super::model::{MatcherKind, NormalizedRuleInput, RuleDomain};
 
@@ -25,6 +25,28 @@ pub(crate) fn normalize_source_residual_rules(
     } else {
         Err(issues)
     }
+}
+
+pub(crate) fn compile_source_residual_structural_pattern(
+    rule_id: &str,
+    pattern: &str,
+    check_group: &str,
+) -> Result<Pcre2Pattern, String> {
+    let compiled =
+        Pcre2Engine::compile(pattern, &Pcre2EngineConfig::default_runtime()).map_err(|error| {
+            format!(
+                "结构性源文保留规则 PCRE2 pattern 损坏: {rule_id}: {}",
+                error.message
+            )
+        })?;
+    if !compiled
+        .capture_names()
+        .iter()
+        .any(|name| name == check_group)
+    {
+        return Err(format!("结构性源文保留规则缺少命名分组: {check_group}"));
+    }
+    Ok(compiled)
 }
 
 fn normalize_position_rules(

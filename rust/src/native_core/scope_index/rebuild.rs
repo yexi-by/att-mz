@@ -4,7 +4,6 @@
 //! Rust 读取 DB/source snapshot/规则表、扫描游戏 data 文件，并在一个 SQLite
 //! 事务中写入持久 text index。
 
-use fancy_regex::{Captures, Regex as FancyRegex};
 use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
@@ -43,6 +42,8 @@ use super::structured_placeholders::{
     StructuredPlaceholderTextInput, scan_structured_placeholder_rule_candidates,
 };
 use super::{RuleCandidateOutput, RuleCandidateTextRules};
+use crate::native_core::rule_runtime::adapters::mv_virtual_namebox::compile_mv_virtual_namebox_pattern;
+use crate::native_core::rule_runtime::engine::{Pcre2CaptureMatch, Pcre2Pattern};
 use crate::native_core::text_facts::{
     CURRENT_TEXT_FACT_CONTRACT_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart,
     TextFactScope, build_fact_id, domains,
@@ -204,7 +205,7 @@ struct RawMvVirtualNameboxRule {
 #[derive(Debug)]
 struct CompiledMvVirtualNameboxRule {
     rule_name: String,
-    pattern: FancyRegex,
+    pattern: Pcre2Pattern,
     speaker_group: String,
     body_group: String,
     speaker_policy: String,
@@ -1780,13 +1781,16 @@ fn compile_mv_virtual_namebox_rules(
                     "mv_virtual_namebox_rules.speaker_policy 非法，请重新导入规则".to_string(),
                 ));
             }
-            let pattern = FancyRegex::new(&rule.pattern_text).map_err(|error| {
+            let pattern = compile_mv_virtual_namebox_pattern(
+                &rule.rule_name,
+                &rule.pattern_text,
+                &rule.speaker_group,
+                &rule.body_group,
+            )
+            .map_err(|error| {
                 structured_error(
                     "scope_index_rebuild_rules_unreadable",
-                    format!(
-                        "MV 虚拟名字框规则 {} 正则编译失败: Rust fancy-regex 不支持当前表达式: {error}",
-                        rule.rule_name
-                    ),
+                    format!("MV 虚拟名字框规则 {} 正则编译失败: {error}", rule.rule_name),
                 )
             })?;
             Ok(CompiledMvVirtualNameboxRule {
@@ -3184,25 +3188,25 @@ fn parse_mv_virtual_speaker_line(
     let mut matches: Vec<ParsedMvVirtualSpeaker> = Vec::new();
     let mut matched_rule_names: Vec<String> = Vec::new();
     for rule in &context.mv_virtual_namebox_rules {
-        let captures = rule.pattern.captures(match_text).map_err(|error| {
+        let captures = rule.pattern.captures_iter(match_text).map_err(|error| {
             structured_error(
                 "scope_index_rebuild_mv_virtual_namebox_failed",
-                format!("MV 虚拟名字框规则匹配失败 {}: {error}", rule.rule_name),
+                format!(
+                    "MV 虚拟名字框规则匹配失败 {}: {}",
+                    rule.rule_name, error.message
+                ),
             )
         })?;
-        let Some(captures) = captures else {
+        let Some(capture_match) = captures.into_iter().find(|capture_match| {
+            capture_match.full_span.start == 0 && capture_match.full_span.end == match_text.len()
+        }) else {
             continue;
         };
-        let Some(full_match) = captures.get(0) else {
-            continue;
-        };
-        if full_match.start() != 0 || full_match.end() != match_text.len() {
-            continue;
-        }
         matches.push(build_mv_virtual_speaker(
             context,
             rule,
-            &captures,
+            &capture_match,
+            match_text,
             text,
             location_path,
         )?);
@@ -3223,23 +3227,24 @@ fn parse_mv_virtual_speaker_line(
 fn build_mv_virtual_speaker(
     context: &RebuildContext,
     rule: &CompiledMvVirtualNameboxRule,
-    captures: &Captures<'_>,
+    captures: &Pcre2CaptureMatch,
+    match_text: &str,
     raw_text: &str,
     location_path: &str,
 ) -> Result<ParsedMvVirtualSpeaker, String> {
     let mut group_values = BTreeMap::new();
-    for capture_name in rule.pattern.capture_names().flatten() {
-        if let Some(value) = capture_group(captures, capture_name) {
-            group_values.insert(capture_name.to_string(), value.to_string());
+    for capture_name in rule.pattern.capture_names() {
+        if let Some(value) = capture_group(match_text, captures, &capture_name) {
+            group_values.insert(capture_name, value.to_string());
         }
     }
-    let source_speaker = capture_group(captures, &rule.speaker_group)
+    let source_speaker = capture_group(match_text, captures, &rule.speaker_group)
         .unwrap_or_default()
         .to_string();
     let raw_body_text = if rule.body_group.is_empty() {
         String::new()
     } else {
-        capture_group(captures, &rule.body_group)
+        capture_group(match_text, captures, &rule.body_group)
             .unwrap_or_default()
             .to_string()
     };
@@ -3286,8 +3291,12 @@ fn build_mv_virtual_speaker(
     })
 }
 
-fn capture_group<'a>(captures: &'a Captures<'_>, group_name: &str) -> Option<&'a str> {
-    captures.name(group_name).map(|matched| matched.as_str())
+fn capture_group<'a>(
+    text: &'a str,
+    captures: &Pcre2CaptureMatch,
+    group_name: &str,
+) -> Option<&'a str> {
+    captures.named_text(text, group_name)
 }
 
 fn actor_name_from_control(

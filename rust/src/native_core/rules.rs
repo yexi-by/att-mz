@@ -2,12 +2,14 @@
 //!
 //! 本模块负责内置正则、用户配置正则和自定义占位符规则的编译与共享。
 
-use fancy_regex::Regex as FancyRegex;
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use super::models::{CompiledCustomRule, CompiledRules, CompiledStructuredRule, NativeTextRules};
+use super::rule_runtime::adapters::placeholders::compile_placeholder_pattern;
+use super::rule_runtime::adapters::structured_placeholders::compile_structured_placeholder_pattern;
+use super::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig};
 
 pub(crate) static INDEXED_STANDARD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\\(?P<code>V|N|P|C|I|PX|PY|FS)\[(?P<param>\d+)\]")
@@ -74,6 +76,7 @@ pub(crate) static MAP_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, String> {
+    let pcre2_config = Pcre2EngineConfig::default_runtime();
     let source_residual_detection_profile = match rules.source_residual_detection_profile.as_str() {
         "japanese_strict" | "english_source_copy" => {
             rules.source_residual_detection_profile.clone()
@@ -91,12 +94,7 @@ pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, Str
 
     let mut custom_placeholder_rules = Vec::new();
     for rule in rules.custom_placeholder_rules {
-        let pattern = FancyRegex::new(&rule.pattern_text).map_err(|error| {
-            format!(
-                "Rust 自定义游戏控制符正则无效: {}: {error}",
-                rule.pattern_text
-            )
-        })?;
+        let pattern = compile_placeholder_pattern(&rule.pattern_text, &rule.placeholder_template)?;
         custom_placeholder_rules.push(CompiledCustomRule {
             pattern,
             placeholder_template: rule.placeholder_template,
@@ -111,31 +109,12 @@ pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, Str
                 rule.rule_type
             ));
         }
-        let pattern = FancyRegex::new(&rule.pattern_text).map_err(|error| {
-            format!(
-                "Rust 结构化游戏控制符正则无效: {}: {error}",
-                rule.pattern_text
-            )
-        })?;
-        let group_names = pattern
-            .capture_names()
-            .flatten()
-            .map(str::to_string)
-            .collect::<HashSet<String>>();
-        if !group_names.contains(&rule.translatable_group) {
-            return Err(format!(
-                "Rust 结构化游戏控制符正则缺少可翻译命名分组: {}",
-                rule.translatable_group
-            ));
-        }
-        for group_name in rule.protected_groups.keys() {
-            if !group_names.contains(group_name) {
-                return Err(format!(
-                    "Rust 结构化游戏控制符正则缺少保护命名分组: {}",
-                    group_name
-                ));
-            }
-        }
+        let pattern = compile_structured_placeholder_pattern(
+            &rule.rule_name,
+            &rule.pattern_text,
+            &rule.translatable_group,
+            &rule.protected_groups,
+        )?;
         structured_placeholder_rules.push(CompiledStructuredRule {
             rule_name: rule.rule_name,
             pattern,
@@ -155,12 +134,20 @@ pub(crate) fn compile_rules(rules: NativeTextRules) -> Result<CompiledRules, Str
         english_source_copy_min_words: rules.english_source_copy_min_words,
         english_source_copy_min_letters: rules.english_source_copy_min_letters,
         source_residual_label: rules.source_residual_label,
-        source_residual_segment_re: Regex::new(&rules.source_residual_segment_pattern)
-            .map_err(|error| format!("Rust 源文残留正则无效: {error}"))?,
-        line_width_count_re: Regex::new(&rules.line_width_count_pattern)
-            .map_err(|error| format!("Rust 行宽正则无效: {error}"))?,
-        residual_escape_sequence_re: Regex::new(&rules.residual_escape_sequence_pattern)
-            .map_err(|error| format!("Rust 残留转义正则无效: {error}"))?,
+        source_residual_segment_re: Pcre2Engine::compile(
+            &rules.source_residual_segment_pattern,
+            &pcre2_config,
+        )
+        .map_err(|error| format!("Rust 源文残留 PCRE2 pattern 无效: {}", error.message))?,
+        line_width_count_re: Pcre2Engine::compile(&rules.line_width_count_pattern, &pcre2_config)
+            .map_err(|error| {
+            format!("Rust 行宽 PCRE2 pattern 无效: {}", error.message)
+        })?,
+        residual_escape_sequence_re: Pcre2Engine::compile(
+            &rules.residual_escape_sequence_pattern,
+            &pcre2_config,
+        )
+        .map_err(|error| format!("Rust 残留转义 PCRE2 pattern 无效: {}", error.message))?,
         long_text_line_width_limit: rules.long_text_line_width_limit,
     })
 }

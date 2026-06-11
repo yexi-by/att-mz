@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::super::engine::{Pcre2Engine, Pcre2EngineConfig};
+use super::super::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use super::super::errors::RuleRuntimeIssue;
 use super::super::model::{MatcherKind, NormalizedRuleInput, RuleDomain};
 
@@ -93,6 +93,26 @@ pub(crate) fn normalize_placeholder_rules(
         Ok(rules)
     } else {
         Err(issues)
+    }
+}
+
+pub(crate) fn compile_placeholder_pattern(
+    pattern: &str,
+    placeholder_template: &str,
+) -> Result<Pcre2Pattern, String> {
+    if pattern.trim().is_empty() {
+        return Err("普通占位符规则的 PCRE2 pattern 不能为空".to_string());
+    }
+    validate_custom_placeholder_template(placeholder_template, "普通占位符模板")?;
+    let compiled = Pcre2Engine::compile(pattern, &Pcre2EngineConfig::default_runtime())
+        .map_err(|error| format!("普通占位符 PCRE2 pattern 无效: {}", error.message))?;
+    match compiled.is_match("") {
+        Ok(false) => Ok(compiled),
+        Ok(true) => Err("普通占位符规则的 PCRE2 pattern 不能匹配空字符串".to_string()),
+        Err(error) => Err(format!(
+            "普通占位符 PCRE2 pattern 空串检测失败: {}",
+            error.message
+        )),
     }
 }
 

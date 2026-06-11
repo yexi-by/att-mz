@@ -254,11 +254,9 @@ class TextRulesSetting(StrictBaseModel):
     )
     long_text_line_width_limit: int = Field(default=26, gt=0)
     line_width_count_pattern: str = Field(default=r"\S")
-    source_text_required_pattern: str = Field(
-        default=r"[\p{Hiragana}\p{Katakana}\p{Han}ー]+"
-    )
+    source_text_required_pattern: str = Field(default=r"[ぁ-んァ-ヶ一-龯ー]+")
     source_text_exclusion_profile: SourceTextExclusionProfile = Field(default="none")
-    source_residual_segment_pattern: str = Field(default=r"[\p{Hiragana}\p{Katakana}ー]+")
+    source_residual_segment_pattern: str = Field(default=r"[ぁ-んァ-ヶー]+")
     allowed_source_residual_terms: list[str] = Field(default_factory=list)
     source_residual_terms_ignore_case: bool = Field(default=False)
     source_residual_detection_profile: SourceResidualDetectionProfile = Field(default="japanese_strict")

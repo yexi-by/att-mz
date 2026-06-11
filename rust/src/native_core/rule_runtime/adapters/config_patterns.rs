@@ -212,8 +212,8 @@ mod tests {
 
     fn valid_runtime_patterns() -> Value {
         serde_json::json!({
-            "source_text_required_pattern": r"[\p{Hiragana}\p{Katakana}\p{Han}ー]+",
-            "source_residual_segment_pattern": r"[\p{Hiragana}\p{Katakana}ー]+",
+            "source_text_required_pattern": r"[ぁ-んァ-ヶ一-龯ー]+",
+            "source_residual_segment_pattern": r"[ぁ-んァ-ヶー]+",
             "line_width_count_pattern": r"\S",
             "residual_escape_sequence_pattern": r"\\[nrt]",
         })

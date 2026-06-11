@@ -1136,7 +1136,7 @@ def test_prepare_rejects_invalid_config_pcre2_pattern() -> None:
             "game_context": {},
             "settings_runtime_patterns": {
                 "source_text_required_pattern": "(?<bad",
-                "source_residual_segment_pattern": "[\\p{Hiragana}]+",
+                "source_residual_segment_pattern": "[ぁ-ん]+",
                 "line_width_count_pattern": "\\S",
                 "residual_escape_sequence_pattern": "\\\\[nrt]",
             },
@@ -1213,8 +1213,8 @@ Call this from `prepare_rule_import_impl` before domain validation.
 Modify `setting.example.toml`:
 
 ```toml
-source_text_required_pattern = "[\\p{Hiragana}\\p{Katakana}\\p{Han}ー]+"
-source_residual_segment_pattern = "[\\p{Hiragana}\\p{Katakana}ー]+"
+source_text_required_pattern = "[ぁ-んァ-ヶ一-龯ー]+"
+source_residual_segment_pattern = "[ぁ-んァ-ヶー]+"
 line_width_count_pattern = "\\S"
 residual_escape_sequence_pattern = "\\\\[nrt]"
 ```

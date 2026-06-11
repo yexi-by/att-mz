@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeSourceResidualRule, NativeTranslationItem};
 use super::super::placeholders::{build_placeholders, mask_translation_controls};
-use super::super::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
+use super::super::rule_runtime::adapters::source_residual::compile_source_residual_structural_pattern;
+use super::super::rule_runtime::engine::Pcre2Pattern;
 use super::super::rules::PLACEHOLDER_RE;
 
 #[derive(Debug, Clone)]
@@ -40,26 +41,11 @@ pub(super) fn index_residual_rules(
                         record.rule_id
                     ));
                 }
-                let pattern = Pcre2Engine::compile(
+                let pattern = compile_source_residual_structural_pattern(
+                    &record.rule_id,
                     &record.pattern_text,
-                    &Pcre2EngineConfig::default_runtime(),
-                )
-                .map_err(|error| {
-                    format!(
-                        "结构性源文保留规则 PCRE2 pattern 损坏: {}: {}",
-                        record.pattern_text, error.message
-                    )
-                })?;
-                if !pattern
-                    .capture_names()
-                    .iter()
-                    .any(|name| name == &record.check_group)
-                {
-                    return Err(format!(
-                        "结构性源文保留规则缺少命名分组: {}",
-                        record.check_group
-                    ));
-                }
+                    &record.check_group,
+                )?;
                 structural_rules.push(CompiledStructuralResidualRule {
                     pattern,
                     allowed_terms: record.allowed_terms,
@@ -98,8 +84,10 @@ pub(super) fn collect_residual_detail(
     rules: &CompiledRules,
     residual_rules: &IndexedResidualRules,
 ) -> Option<Value> {
-    if !translation_has_residual_candidate(&item.translation_lines, rules) {
-        return None;
+    match translation_has_residual_candidate(&item.translation_lines, rules) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(reason) => return Some(residual_error_detail(item, reason)),
     }
     let allowed_terms = residual_rules
         .position_rules
@@ -147,11 +135,27 @@ pub(super) fn collect_residual_detail(
     }
 }
 
-fn translation_has_residual_candidate(lines: &[String], rules: &CompiledRules) -> bool {
-    lines.iter().any(|line| {
-        let cleaned_line = strip_non_content_for_residual(line, rules);
-        rules.source_residual_segment_re.is_match(&cleaned_line)
-    })
+fn residual_error_detail(item: &NativeTranslationItem, reason: String) -> Value {
+    let mut detail = base_detail(item);
+    detail.insert("reason".to_string(), json!(reason));
+    Value::Object(detail)
+}
+
+fn translation_has_residual_candidate(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<bool, String> {
+    for line in lines {
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        if rules
+            .source_residual_segment_re
+            .is_match(&cleaned_line)
+            .map_err(|error| format!("源文残留 PCRE2 pattern 匹配失败: {}", error.message))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn mask_structural_terms(
@@ -308,17 +312,20 @@ fn check_source_residual(
         return check_english_source_copy_residual(original_lines, lines, rules);
     }
     for (index, line) in lines.iter().enumerate() {
-        let cleaned_line = strip_non_content_for_residual(line, rules);
-        let segments: Vec<String> = rules
-            .source_residual_segment_re
-            .find_iter(&cleaned_line)
-            .map(|matched| matched.as_str().to_string())
-            .collect();
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        let segments = pcre2_match_texts(
+            &rules.source_residual_segment_re,
+            &cleaned_line,
+            "源文残留 PCRE2 pattern",
+        )?
+        .into_iter()
+        .map(|matched| matched.text)
+        .collect::<Vec<String>>();
         if segments.is_empty() {
             continue;
         }
 
-        let has_non_source_content = has_non_source_content(&cleaned_line, rules);
+        let has_non_source_content = has_non_source_content(&cleaned_line, rules)?;
         let mut real_residual_segments = Vec::new();
         for segment in segments {
             let filtered: Vec<char> = segment
@@ -371,9 +378,9 @@ fn check_english_source_copy_residual(
     let original_text = original_lines
         .iter()
         .map(|line| strip_non_content_for_residual(line, rules))
-        .collect::<Vec<String>>()
+        .collect::<Result<Vec<String>, String>>()?
         .join("\n");
-    let original_tokens = collect_english_residual_tokens(&original_text, rules);
+    let original_tokens = collect_english_residual_tokens(&original_text, rules)?;
     if original_tokens.is_empty() {
         return check_english_long_residual_without_original(lines, rules);
     }
@@ -382,8 +389,8 @@ fn check_english_source_copy_residual(
         .map(|token| token.normalized.clone())
         .collect::<Vec<String>>();
     for (index, line) in lines.iter().enumerate() {
-        let cleaned_line = strip_non_content_for_residual(line, rules);
-        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules);
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules)?;
         let copied_segments =
             find_english_source_copy_segments(&original_token_values, &translation_tokens, rules);
         if !copied_segments.is_empty() {
@@ -398,28 +405,34 @@ fn check_english_source_copy_residual(
     Ok(())
 }
 
-fn collect_english_residual_tokens(text: &str, rules: &CompiledRules) -> Vec<ResidualToken> {
-    rules
-        .source_residual_segment_re
-        .find_iter(text)
-        .filter_map(|matched| {
-            let value = matched.as_str();
-            if !has_ascii_letter(value) {
-                return None;
-            }
-            let normalized = if rules.source_residual_terms_ignore_case {
-                value.to_ascii_lowercase()
-            } else {
-                value.to_string()
-            };
-            Some(ResidualToken {
-                text: value.to_string(),
-                normalized,
-                start_index: matched.start(),
-                end_index: matched.end(),
-            })
+fn collect_english_residual_tokens(
+    text: &str,
+    rules: &CompiledRules,
+) -> Result<Vec<ResidualToken>, String> {
+    Ok(pcre2_match_texts(
+        &rules.source_residual_segment_re,
+        text,
+        "英文源文残留 PCRE2 pattern",
+    )?
+    .into_iter()
+    .filter_map(|matched| {
+        let value = matched.text.as_str();
+        if !has_ascii_letter(value) {
+            return None;
+        }
+        let normalized = if rules.source_residual_terms_ignore_case {
+            value.to_ascii_lowercase()
+        } else {
+            value.to_string()
+        };
+        Some(ResidualToken {
+            text: value.to_string(),
+            normalized,
+            start_index: matched.start,
+            end_index: matched.end,
         })
-        .collect()
+    })
+    .collect())
 }
 
 fn check_english_long_residual_without_original(
@@ -427,8 +440,8 @@ fn check_english_long_residual_without_original(
     rules: &CompiledRules,
 ) -> Result<(), String> {
     for (index, line) in lines.iter().enumerate() {
-        let cleaned_line = strip_non_content_for_residual(line, rules);
-        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules);
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules)?;
         let residual_segments =
             find_english_long_residual_segments(&cleaned_line, &translation_tokens, rules);
         if !residual_segments.is_empty() {
@@ -550,17 +563,83 @@ fn find_english_source_copy_segments(
     copied_segments
 }
 
-fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> String {
-    let stripped_placeholders = PLACEHOLDER_RE.replace_all(text, "");
-    rules
-        .residual_escape_sequence_re
-        .replace_all(&stripped_placeholders, " ")
-        .to_string()
+#[derive(Debug)]
+struct Pcre2TextMatch {
+    text: String,
+    start: usize,
+    end: usize,
 }
 
-fn has_non_source_content(text: &str, rules: &CompiledRules) -> bool {
-    let text_without_source = rules.source_residual_segment_re.replace_all(text, "");
-    text_without_source.chars().any(char::is_alphanumeric)
+fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> Result<String, String> {
+    let stripped_placeholders = PLACEHOLDER_RE.replace_all(text, "");
+    replace_pcre2_matches(
+        &rules.residual_escape_sequence_re,
+        &stripped_placeholders,
+        " ",
+        "残留转义 PCRE2 pattern",
+    )
+}
+
+fn has_non_source_content(text: &str, rules: &CompiledRules) -> Result<bool, String> {
+    let text_without_source = replace_pcre2_matches(
+        &rules.source_residual_segment_re,
+        text,
+        "",
+        "源文残留 PCRE2 pattern",
+    )?;
+    Ok(text_without_source.chars().any(char::is_alphanumeric))
+}
+
+fn pcre2_match_texts(
+    pattern: &Pcre2Pattern,
+    text: &str,
+    context: &str,
+) -> Result<Vec<Pcre2TextMatch>, String> {
+    let spans = pattern
+        .find_spans(text)
+        .map_err(|error| format!("{context} 匹配失败: {}", error.message))?;
+    spans
+        .into_iter()
+        .map(|span| {
+            let matched_text = text
+                .get(span.start..span.end)
+                .ok_or_else(|| format!("{context} 命中范围不是有效 UTF-8 边界"))?;
+            Ok(Pcre2TextMatch {
+                text: matched_text.to_string(),
+                start: span.start,
+                end: span.end,
+            })
+        })
+        .collect()
+}
+
+fn replace_pcre2_matches(
+    pattern: &Pcre2Pattern,
+    text: &str,
+    replacement: &str,
+    context: &str,
+) -> Result<String, String> {
+    let spans = pattern
+        .find_spans(text)
+        .map_err(|error| format!("{context} 匹配失败: {}", error.message))?;
+    if spans.is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut output = String::new();
+    let mut last_end = 0usize;
+    for span in spans {
+        let unchanged = text
+            .get(last_end..span.start)
+            .ok_or_else(|| format!("{context} 替换范围不是有效 UTF-8 边界"))?;
+        output.push_str(unchanged);
+        output.push_str(replacement);
+        last_end = span.end;
+    }
+    let tail = text
+        .get(last_end..)
+        .ok_or_else(|| format!("{context} 替换尾部不是有效 UTF-8 边界"))?;
+    output.push_str(tail);
+    Ok(output)
 }
 
 fn has_ascii_letter(text: &str) -> bool {

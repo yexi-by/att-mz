@@ -861,7 +861,7 @@ mod tests {
             "structured_placeholder_rules": [],
             "source_residual_allowed_chars": [],
             "source_residual_allowed_tail_chars": [],
-            "source_residual_segment_pattern": r"[\p{Hiragana}\p{Katakana}\p{Han}]+",
+            "source_residual_segment_pattern": r"[ぁ-んァ-ヶ一-龯]+",
             "source_residual_label": "日文",
             "allowed_source_residual_terms": [],
             "source_residual_terms_ignore_case": true,

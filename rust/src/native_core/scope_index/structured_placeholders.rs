@@ -208,16 +208,17 @@ fn structured_rule_covered_ranges(
 ) -> Result<Vec<StructuredCoveredRange>, String> {
     let mut ranges = Vec::new();
     for rule in rules {
-        for captures_result in rule.pattern.captures_iter(text) {
-            let captures = captures_result.map_err(|error| {
-                format!("结构化占位符规则 {} 匹配失败: {error}", rule.rule_name)
-            })?;
-            let full_match = captures
-                .get(0)
-                .ok_or_else(|| format!("结构化占位符规则 {} 缺少完整匹配", rule.rule_name))?;
+        let capture_matches = rule.pattern.captures_iter(text).map_err(|error| {
+            format!(
+                "结构化占位符规则 {} 匹配失败: {}",
+                rule.rule_name, error.message
+            )
+        })?;
+        for captures in capture_matches {
+            let full_match = captures.full_span;
             ranges.push(StructuredCoveredRange {
-                start: full_match.start(),
-                end: full_match.end(),
+                start: full_match.start,
+                end: full_match.end,
                 rule_name: rule.rule_name.clone(),
             });
         }

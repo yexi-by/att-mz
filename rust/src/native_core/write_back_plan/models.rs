@@ -1,6 +1,6 @@
 use crate::native_core::javascript_ast::JavaScriptStringSpan;
 use crate::native_core::models::NativeTextRules;
-use fancy_regex::Regex as FancyRegex;
+use crate::native_core::rule_runtime::engine::Pcre2Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -155,7 +155,7 @@ pub(super) enum EngineKind {
 
 pub(super) struct MvVirtualNameboxRule {
     pub(super) rule_name: String,
-    pub(super) pattern: FancyRegex,
+    pub(super) pattern: Pcre2Pattern,
     pub(super) speaker_group: String,
     pub(super) body_group: String,
     pub(super) speaker_policy: MvVirtualSpeakerPolicy,

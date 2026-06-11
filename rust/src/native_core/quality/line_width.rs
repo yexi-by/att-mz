@@ -136,7 +136,10 @@ fn count_line_width_chars(text: &str, rules: &CompiledRules) -> usize {
             !protected_spans
                 .iter()
                 .any(|(start, end)| *start <= *byte_index && *byte_index < *end)
-                && rules.line_width_count_re.is_match(&char_value.to_string())
+                && matches!(
+                    rules.line_width_count_re.is_match(&char_value.to_string()),
+                    Ok(true)
+                )
         })
         .count()
 }

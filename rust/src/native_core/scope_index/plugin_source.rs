@@ -1188,7 +1188,7 @@ mod tests {
             custom_placeholder_rules: Vec::new(),
             structured_placeholder_rules: Vec::new(),
             strip_wrapping_punctuation_pairs: vec![("「".to_string(), "」".to_string())],
-            source_text_required_pattern: r"[\p{Han}\p{Hiragana}\p{Katakana}]".to_string(),
+            source_text_required_pattern: r"[ぁ-んァ-ヶ一-龯]".to_string(),
             source_text_exclusion_profile: "none".to_string(),
         }
     }

@@ -42,7 +42,7 @@ pub(crate) fn iter_control_sequence_spans(
     rules: &CompiledRules,
 ) -> Result<Vec<ControlSpan>, String> {
     let mut base_spans = iter_standard_control_sequence_spans(text);
-    base_spans.extend(iter_custom_placeholder_spans(text, rules));
+    base_spans.extend(iter_custom_placeholder_spans(text, rules)?);
     let structured_result = iter_structured_placeholder_spans(text, rules)?;
     validate_structured_placeholder_conflicts(
         &base_spans,
@@ -59,7 +59,9 @@ pub(crate) fn iter_control_sequence_spans_lossy(
     rules: &CompiledRules,
 ) -> Vec<ControlSpan> {
     let mut spans = iter_standard_control_sequence_spans(text);
-    spans.extend(iter_custom_placeholder_spans(text, rules));
+    if let Ok(custom_spans) = iter_custom_placeholder_spans(text, rules) {
+        spans.extend(custom_spans);
+    }
     if let Ok(structured_result) = iter_structured_placeholder_spans(text, rules)
         && validate_structured_placeholder_conflicts(
             &spans,
@@ -345,14 +347,26 @@ pub(crate) fn iter_dynamic_literal_escape_spans(
         .collect()
 }
 
-pub(crate) fn iter_custom_placeholder_spans(text: &str, rules: &CompiledRules) -> Vec<ControlSpan> {
+pub(crate) fn iter_custom_placeholder_spans(
+    text: &str,
+    rules: &CompiledRules,
+) -> Result<Vec<ControlSpan>, String> {
     let mut spans = Vec::new();
     for rule in &rules.custom_placeholder_rules {
-        for matched in rule.pattern.find_iter(text).flatten() {
+        let matched_spans = rule.pattern.find_spans(text).map_err(|error| {
+            format!(
+                "自定义占位符规则匹配失败: {}: {}",
+                rule.placeholder_template, error.message
+            )
+        })?;
+        for matched in matched_spans {
+            let original = text
+                .get(matched.start..matched.end)
+                .ok_or_else(|| "自定义占位符命中范围不是有效 UTF-8 边界".to_string())?;
             spans.push(ControlSpan {
-                start: matched.start(),
-                end: matched.end(),
-                original: matched.as_str().to_string(),
+                start: matched.start,
+                end: matched.end,
+                original: original.to_string(),
                 placeholder: None,
                 custom_template: Some(rule.placeholder_template.clone()),
                 custom_index_key: None,
@@ -361,7 +375,7 @@ pub(crate) fn iter_custom_placeholder_spans(text: &str, rules: &CompiledRules) -
             });
         }
     }
-    spans
+    Ok(spans)
 }
 
 pub(crate) fn iter_structured_placeholder_spans(
@@ -371,48 +385,52 @@ pub(crate) fn iter_structured_placeholder_spans(
     let mut spans = Vec::new();
     let mut translatable_ranges = Vec::new();
     for rule in &rules.structured_placeholder_rules {
-        for captures_result in rule.pattern.captures_iter(text) {
-            let captures = captures_result.map_err(|error| {
-                format!("结构化占位符规则 {} 匹配失败: {error}", rule.rule_name)
-            })?;
-            let full_match = captures
-                .get(0)
-                .ok_or_else(|| format!("结构化占位符规则 {} 缺少完整匹配", rule.rule_name))?;
-            let translatable_match = captures.name(&rule.translatable_group).ok_or_else(|| {
-                format!(
-                    "结构化占位符规则 {} 的命名分组未命中: {}",
-                    rule.rule_name, rule.translatable_group
-                )
-            })?;
+        let capture_matches = rule.pattern.captures_iter(text).map_err(|error| {
+            format!(
+                "结构化占位符规则 {} 匹配失败: {}",
+                rule.rule_name, error.message
+            )
+        })?;
+        for captures in capture_matches {
+            let full_match = captures.full_span.clone();
+            let translatable_match =
+                captures
+                    .named_span(&rule.translatable_group)
+                    .ok_or_else(|| {
+                        format!(
+                            "结构化占位符规则 {} 的命名分组未命中: {}",
+                            rule.rule_name, rule.translatable_group
+                        )
+                    })?;
             let translatable_range = ProtectedRange {
-                start: translatable_match.start(),
-                end: translatable_match.end(),
+                start: translatable_match.start,
+                end: translatable_match.end,
             };
             translatable_ranges.push(translatable_range.clone());
+            let matched_text = text
+                .get(full_match.start..full_match.end)
+                .ok_or_else(|| "结构化占位符完整命中范围不是有效 UTF-8 边界".to_string())?;
             let match_key = format!(
                 "structured:{}:{}:{}:{}",
-                rule.rule_name,
-                full_match.start(),
-                full_match.end(),
-                full_match.as_str()
+                rule.rule_name, full_match.start, full_match.end, matched_text
             );
             let mut group_ranges: Vec<ProtectedRange> = Vec::new();
             for (group_name, placeholder_template) in &rule.protected_groups {
-                let group_match = captures.name(group_name).ok_or_else(|| {
+                let group_match = captures.named_span(group_name).ok_or_else(|| {
                     format!(
                         "结构化占位符规则 {} 的命名分组未命中: {}",
                         rule.rule_name, group_name
                     )
                 })?;
-                if group_match.start() == group_match.end() {
+                if group_match.start == group_match.end {
                     return Err(format!(
                         "结构化占位符规则 {} 的保护分组 {} 命中了空文本",
                         rule.rule_name, group_name
                     ));
                 }
                 let protected_range = ProtectedRange {
-                    start: group_match.start(),
-                    end: group_match.end(),
+                    start: group_match.start,
+                    end: group_match.end,
                 };
                 if ranges_overlap_ranges(&protected_range, &translatable_range) {
                     return Err(format!(
@@ -429,10 +447,13 @@ pub(crate) fn iter_structured_placeholder_spans(
                     }
                 }
                 group_ranges.push(protected_range.clone());
+                let group_text = text
+                    .get(protected_range.start..protected_range.end)
+                    .ok_or_else(|| "结构化占位符保护分组范围不是有效 UTF-8 边界".to_string())?;
                 spans.push(ControlSpan {
                     start: protected_range.start,
                     end: protected_range.end,
-                    original: group_match.as_str().to_string(),
+                    original: group_text.to_string(),
                     placeholder: None,
                     custom_template: Some(placeholder_template.clone()),
                     custom_index_key: Some(match_key.clone()),

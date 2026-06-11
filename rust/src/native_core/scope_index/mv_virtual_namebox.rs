@@ -6,10 +6,10 @@ use serde_json::Value;
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::super::rule_runtime::adapters::mv_virtual_namebox::normalize_template_field_name;
-use super::super::rule_runtime::engine::{
-    Pcre2CaptureMatch, Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern,
+use super::super::rule_runtime::adapters::mv_virtual_namebox::{
+    compile_mv_virtual_namebox_pattern, normalize_template_field_name,
 };
+use super::super::rule_runtime::engine::{Pcre2CaptureMatch, Pcre2Pattern};
 use super::RuleCandidateOutput;
 
 const COMMAND_NAME: i64 = 101;
@@ -577,29 +577,12 @@ fn compile_rules(
     sorted_rules
         .into_iter()
         .map(|(rule_index, rule)| {
-            let pattern =
-                Pcre2Engine::compile(&rule.pattern_text, &Pcre2EngineConfig::default_runtime())
-                    .map_err(|error| {
-                        format!(
-                            "MV 虚拟名字框规则 {} 无法编译 PCRE2 pattern: {}",
-                            rule.rule_name, error.message
-                        )
-                    })?;
-            let capture_names = pattern.capture_names();
-            if !capture_names.iter().any(|name| name == &rule.speaker_group) {
-                return Err(format!(
-                    "MV 虚拟名字框规则 {} 缺少说话人命名分组: {}",
-                    rule.rule_name, rule.speaker_group
-                ));
-            }
-            if !rule.body_group.is_empty()
-                && !capture_names.iter().any(|name| name == &rule.body_group)
-            {
-                return Err(format!(
-                    "MV 虚拟名字框规则 {} 缺少正文命名分组: {}",
-                    rule.rule_name, rule.body_group
-                ));
-            }
+            let pattern = compile_mv_virtual_namebox_pattern(
+                &rule.rule_name,
+                &rule.pattern_text,
+                &rule.speaker_group,
+                &rule.body_group,
+            )?;
             Ok(CompiledMvVirtualNameboxRule {
                 rule_index,
                 rule_name: rule.rule_name.clone(),
