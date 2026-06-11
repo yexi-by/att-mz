@@ -7,7 +7,11 @@ from typing import cast
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
+from app.agent_toolkit.reports import AgentReport
+from app.application.handler import TranslationHandler, TranslationRunLimits
 from app.application.flow_gate import collect_workflow_gate_errors
+from app.application.use_cases.translation_run import TranslationRunState
+from app.llm import LLMHandler
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
     scan_native_rule_candidates as real_scan_native_rule_candidates,
@@ -33,6 +37,12 @@ from app.rmmz.text_rules import JsonObject, TextRules
 from app.text_scope.rule_hits import collect_nonstandard_data_rule_hits
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import write_data_text
+from tests.agent_toolkit_contract_fixtures import (
+    _install_minimal_workflow_gate_prerequisites,
+    _translated_test_line_preserving_protocol_candidates,
+    make_writable_current_translation_items_for_test,
+    write_current_translation_items_for_test,
+)
 from tests.conftest import EXAMPLE_SETTING_PATH, write_json
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
@@ -45,6 +55,18 @@ def _forbid_python_nonstandard_data_leaf_resolver(value: object) -> object:
 def _write_high_risk_nonstandard_data(game_root: Path) -> None:
     """写入测试用高风险非标准 data 文件。"""
     write_json(game_root / "data" / "UnknownPluginData.json", [{"id": 1, "name": "これは無視される"}])
+
+
+def _workflow_gate_source_branch(report: object, source_branch: str) -> JsonObject:
+    """读取报告中的 Rust source branch gate 摘要。"""
+    if not isinstance(report, AgentReport):
+        raise TypeError("report 必须是 AgentReport")
+    workflow_gate = ensure_json_object(report.details["workflow_gate"], "workflow_gate")
+    source_branches = ensure_json_object(workflow_gate["source_branches"], "workflow_gate.source_branches")
+    return ensure_json_object(
+        source_branches[source_branch],
+        f"workflow_gate.source_branches.{source_branch}",
+    )
 
 
 @pytest.mark.asyncio
@@ -451,6 +473,104 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
 
 
 @pytest.mark.asyncio
+async def test_nonstandard_data_import_cold_rebuild_translate_and_write_back_share_rust_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非标准 data 规则导入后，翻译和写回共享冷重建保存的 Rust gate facts。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    import_report = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+
+    async def fake_run_text_translation_batches(*args: object, **kwargs: object) -> TranslationRunState:
+        """截断真实模型调用，只验证 translate 入口已通过 indexed gate。"""
+        _ = (args, kwargs)
+        return TranslationRunState(total_batch_count=0, total_item_count=0)
+
+    monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", fake_run_text_translation_batches)
+    translate_handler = TranslationHandler(registry, LLMHandler())
+    try:
+        translate_summary = await translate_handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=1),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await translate_handler.close()
+
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        translated_items = await make_writable_current_translation_items_for_test(
+            session,
+            text_rules=text_rules,
+        )
+        for translated_item in translated_items:
+            translated_item.translation_lines = [
+                _translated_test_line_preserving_protocol_candidates(line, text_rules)
+                for line in translated_item.original_lines
+            ]
+        await write_current_translation_items_for_test(session, translated_items)
+        metadata = await session.read_text_index_metadata()
+        assert metadata is not None
+        stored_nonstandard_gate = ensure_json_object(
+            metadata.workflow_gate_facts["nonstandard_data"],
+            "metadata.workflow_gate_facts.nonstandard_data",
+        )
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    write_handler = TranslationHandler(registry, LLMHandler())
+    try:
+        write_summary = await write_handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await write_handler.close()
+    async with await registry.open_game("テストゲーム") as session:
+        metadata_after_write = await session.read_text_index_metadata()
+        assert metadata_after_write is not None
+        stored_nonstandard_gate_after_write = ensure_json_object(
+            metadata_after_write.workflow_gate_facts["nonstandard_data"],
+            "metadata_after_write.workflow_gate_facts.nonstandard_data",
+        )
+    workflow_gate = ensure_json_object(quality_report.details["workflow_gate"], "workflow_gate")
+    quality_nonstandard_gate = _workflow_gate_source_branch(quality_report, "nonstandard_data")
+
+    assert import_report.status == "ok"
+    assert rebuild_report.status == "ok"
+    assert translate_summary.text_index_status == "used"
+    assert translate_summary.blocked_reason is None
+    assert workflow_gate["source"] == "rust_text_index_gate_facts"
+    assert quality_nonstandard_gate["status"] == "pass"
+    assert quality_nonstandard_gate["scope_hash"] == stored_nonstandard_gate["scope_hash"]
+    assert stored_nonstandard_gate_after_write["scope_hash"] == stored_nonstandard_gate["scope_hash"]
+    assert write_summary.data_item_count > 0
+
+
+@pytest.mark.asyncio
 async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -738,7 +858,7 @@ async def test_nonstandard_data_write_back_updates_managed_json_leaf(
     ].translation_items
     items[0].translation_lines = ["非标准译文"]
 
-    write_data_text(game_data, items)
+    write_data_text(game_data, items, nonstandard_data_rule_records=records)
 
     written_raw = cast(
         object,

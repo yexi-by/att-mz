@@ -45,6 +45,16 @@ def _json_int_for_assert(value: object, label: str) -> int:
     return value
 
 
+def _workflow_gate_source_branch(report: AgentReport, source_branch: str) -> JsonObject:
+    """读取质量报告中的 Rust source branch gate 摘要。"""
+    workflow_gate = ensure_json_object(report.details["workflow_gate"], "workflow_gate")
+    source_branches = ensure_json_object(workflow_gate["source_branches"], "workflow_gate.source_branches")
+    return ensure_json_object(
+        source_branches[source_branch],
+        f"workflow_gate.source_branches.{source_branch}",
+    )
+
+
 def test_rule_review_no_longer_exports_python_scope_hash_helpers() -> None:
     """scope hash 只能来自 Rust/native 事实源。"""
     import app.rule_review as rule_review
@@ -3919,6 +3929,107 @@ async def test_plugin_source_excluded_only_rule_validates_current_selector_facts
     assert import_report.status == "ok"
     assert workflow_gate["source"] == "rust_text_index_gate_facts"
     assert plugin_source_gate["status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_import_cold_rebuild_quality_and_write_back_share_rust_facts(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """插件源码规则导入、冷重建、质量报告和写回共享 Rust gate facts。"""
+    plugins_path = minimal_game_dir / "js" / "plugins.js"
+    plugins_text = plugins_path.read_text(encoding="utf-8")
+    plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
+    plugins = ensure_json_array(coerce_json_value(cast(object, json.loads(plugins_json_text))), "plugins")
+    plugins.append({"name": "LifecycleSource", "status": True, "description": "", "parameters": {}})
+    _ = plugins_path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+    plugin_source_dir = minimal_game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "LifecycleSource.js").write_text(
+        "Window_Base.prototype.drawText('ライフサイクル本文', 0, 0, 320);\n",
+        encoding="utf-8",
+    )
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_plugin_source_files=True,
+        include_writable_copies=False,
+        run_dialogue_probe_check=False,
+    )
+    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=get_default_text_rules())
+    selector = next(
+        candidate.selector
+        for candidate in scan.candidates
+        if candidate.file_name == "LifecycleSource.js"
+    )
+    import_report = await service.import_plugin_source_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "LifecycleSource.js",
+                    "selectors": [selector],
+                    "excluded_selectors": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    _ = await _rebuild_text_index_for_test(service)
+    async with await registry.open_game("テストゲーム") as session:
+        setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
+        text_rules = TextRules.from_setting(setting.text_rules)
+        translated_items = await make_writable_current_translation_items_for_test(
+            session,
+            text_rules=text_rules,
+        )
+        for translated_item in translated_items:
+            translated_item.translation_lines = [
+                _translated_test_line_preserving_protocol_candidates(line, text_rules)
+                for line in translated_item.original_lines
+            ]
+        await write_current_translation_items_for_test(session, translated_items)
+        metadata = await session.read_text_index_metadata()
+        assert metadata is not None
+        stored_plugin_source_gate = ensure_json_object(
+            metadata.workflow_gate_facts["plugin_source_text"],
+            "metadata.workflow_gate_facts.plugin_source_text",
+        )
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        write_summary = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+    async with await registry.open_game("テストゲーム") as session:
+        metadata_after_write = await session.read_text_index_metadata()
+        assert metadata_after_write is not None
+        stored_plugin_source_gate_after_write = ensure_json_object(
+            metadata_after_write.workflow_gate_facts["plugin_source_text"],
+            "metadata_after_write.workflow_gate_facts.plugin_source_text",
+        )
+    workflow_gate = ensure_json_object(quality_report.details["workflow_gate"], "workflow_gate")
+    quality_plugin_source_gate = _workflow_gate_source_branch(quality_report, "plugin_source_text")
+
+    assert import_report.status == "ok"
+    assert workflow_gate["source"] == "rust_text_index_gate_facts"
+    assert quality_plugin_source_gate["status"] == "pass"
+    assert quality_plugin_source_gate["scope_hash"] == stored_plugin_source_gate["scope_hash"]
+    assert stored_plugin_source_gate_after_write["scope_hash"] == stored_plugin_source_gate["scope_hash"]
+    assert write_summary.data_item_count > 0
 
 
 @pytest.mark.asyncio

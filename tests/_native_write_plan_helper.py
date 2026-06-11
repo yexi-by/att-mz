@@ -3,54 +3,43 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import sqlite3
 import tempfile
 from pathlib import Path
-from string import Formatter
 from typing import cast
 
 from app.application.file_writer import write_planned_text_files
+from app.language import DEFAULT_SOURCE_LANGUAGE, DEFAULT_TARGET_LANGUAGE
 from app.native_quality import build_native_text_rules_payload
+from app.native_scope_index import (
+    build_native_rule_candidate_text_rules_payload,
+    rebuild_native_scope_index_storage,
+)
 from app.native_write_plan import NativePlannedFile, NativeWriteBackPlan, build_native_write_back_plan
-from app.plugin_source_text.scanner import scan_plugin_source_runtime_files_text_strict
-from app.rmmz.commands import iter_all_commands
-from app.rmmz.mv_namebox import (
-    MvVirtualSpeaker,
-    parse_mv_virtual_speaker_line,
-    runtime_mv_virtual_namebox_rules,
-)
+from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
+from app.persistence.session_utils import current_timestamp_text
 from app.persistence.sql import (
-    CREATE_FIELD_TRANSLATION_TERMS_TABLE,
-    CREATE_LLM_FAILURES_TABLE,
-    CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
-    CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
-    CREATE_SOURCE_RESIDUAL_RULES_TABLE,
-    CREATE_TEXT_FACT_RENDER_PARTS_TABLE,
-    CREATE_TEXT_FACT_SCOPE_TABLE,
-    CREATE_TEXT_FACTS_TABLE,
-    CREATE_TEXT_INDEX_ITEMS_TABLE,
-    CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
-    CREATE_TRANSLATION_RUNS_TABLE,
-    CREATE_TRANSLATION_TABLE,
-    INSERT_TEXT_FACT_RENDER_PART,
-    INSERT_TEXT_FACT_SCOPE,
-    INSERT_TEXT_FACT,
-    INSERT_TEXT_INDEX_ITEM,
-    CURRENT_TEXT_FACT_CONTRACT_VERSION,
+    INSERT_SOURCE_SNAPSHOT_FILE,
+    current_schema_sql,
 )
+from app.plugin_text.common import build_plugin_hash
 from app.rmmz.schema import (
-    Code,
     PLUGINS_FILE_NAME,
     GameData,
     MvVirtualNameboxRuleRecord,
+    NonstandardDataTextRuleRecord,
     PluginSourceRuntimeWriteMapRecord,
     PluginSourceTextRuleRecord,
     TranslationItem,
 )
-from app.rmmz.source_snapshot import validate_source_snapshot_files
-from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, get_default_text_rules
+from app.rmmz.source_snapshot import collect_source_snapshot_records, validate_source_snapshot_files
+from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value, get_default_text_rules
+from app.text_index import (
+    TEXT_INDEX_PROMPT_CONTEXT_VERSION,
+    source_snapshot_records_fingerprint,
+    stable_json_fingerprint,
+)
 from app.terminology import TerminologyRegistry
 
 
@@ -67,6 +56,7 @@ def write_data_text(
     text_rules: TextRules | None = None,
     speaker_name_translations: dict[str, str] | None = None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None = None,
+    nonstandard_data_rule_records: list[NonstandardDataTextRuleRecord] | None = None,
 ) -> None:
     """通过 Rust 写回计划写入标准 data 文本。"""
     _ = _apply_native_write_plan(
@@ -76,6 +66,7 @@ def write_data_text(
         speaker_name_translations=speaker_name_translations,
         terminology_registry=None,
         mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+        nonstandard_data_rule_records=nonstandard_data_rule_records,
     )
 
 
@@ -170,6 +161,7 @@ def _apply_native_write_plan(
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
     plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None = None,
+    nonstandard_data_rule_records: list[NonstandardDataTextRuleRecord] | None = None,
 ) -> NativeWriteBackPlan:
     """创建测试数据库并调用 Rust 写回计划。"""
     _require_source_snapshot(game_data)
@@ -181,6 +173,8 @@ def _apply_native_write_plan(
         terminology_registry=terminology_registry,
         mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
         plugin_source_rule_records=plugin_source_rule_records,
+        text_rules=text_rules,
+        nonstandard_data_rule_records=nonstandard_data_rule_records,
     )
     try:
         plan = build_native_write_back_plan(
@@ -232,6 +226,8 @@ def _write_temp_db(
     terminology_registry: TerminologyRegistry | None,
     mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
     plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None,
+    text_rules: TextRules | None = None,
+    nonstandard_data_rule_records: list[NonstandardDataTextRuleRecord] | None = None,
 ) -> Path:
     """把测试条目写入临时 SQLite 数据库。"""
     with tempfile.NamedTemporaryFile(
@@ -242,33 +238,36 @@ def _write_temp_db(
     ) as temp_file:
         db_path = Path(temp_file.name)
     connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
     try:
-        _ = connection.executescript(
-            "\n".join(
-                [
-                    CREATE_TRANSLATION_TABLE,
-                    CREATE_TRANSLATION_RUNS_TABLE,
-                    CREATE_LLM_FAILURES_TABLE,
-                    CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
-                    CREATE_FIELD_TRANSLATION_TERMS_TABLE,
-                    CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
-                    CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
-                    CREATE_SOURCE_RESIDUAL_RULES_TABLE,
-                    CREATE_TEXT_INDEX_ITEMS_TABLE,
-                    CREATE_TEXT_FACTS_TABLE,
-                    CREATE_TEXT_FACT_RENDER_PARTS_TABLE,
-                    CREATE_TEXT_FACT_SCOPE_TABLE,
-                ]
-            )
+        _ = connection.executescript(current_schema_sql())
+        source_snapshot_fingerprint = _insert_source_snapshot_records(connection, game_data)
+        _insert_inferred_plugin_text_rules(connection, game_data, items)
+        _insert_inferred_note_tag_rules(connection, items)
+        _insert_nonstandard_data_rules(connection, nonstandard_data_rule_records)
+        if not nonstandard_data_rule_records:
+            _insert_inferred_nonstandard_data_rules(connection, game_data, items)
+        _insert_speaker_terms(connection, speaker_name_translations)
+        _insert_terminology_registry(connection, terminology_registry)
+        _insert_mv_virtual_namebox_rules(connection, mv_virtual_namebox_rule_records)
+        _insert_plugin_source_text_rules(connection, plugin_source_rule_records)
+        connection.commit()
+        connection.close()
+        _rebuild_current_text_facts_for_temp_db(
+            db_path=db_path,
+            game_data=game_data,
+            source_snapshot_fingerprint=source_snapshot_fingerprint,
+            text_rules=text_rules,
+            rules_fingerprint=_rules_fingerprint_for_temp_db(
+                text_rules=text_rules,
+                items=items,
+                plugin_source_rule_records=plugin_source_rule_records,
+                mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+            ),
         )
-        fact_identity_by_item_index = _insert_current_text_fact_contract(
-            connection,
-            items,
-            game_data,
-            speaker_name_translations,
-            terminology_registry,
-            mv_virtual_namebox_rule_records,
-        )
+        connection = sqlite3.connect(db_path)
+        connection.row_factory = sqlite3.Row
+        fact_identity_by_item_index = _current_fact_identity_by_item_index(connection, items)
         _ = connection.executemany(
             """
             INSERT INTO translation_items
@@ -290,142 +289,305 @@ def _write_temp_db(
                 for item_index, item in enumerate(items)
             ],
         )
-        _insert_speaker_terms(connection, speaker_name_translations)
-        _insert_terminology_registry(connection, terminology_registry)
-        _insert_mv_virtual_namebox_rules(connection, mv_virtual_namebox_rule_records)
-        _insert_plugin_source_text_rules(connection, plugin_source_rule_records)
         connection.commit()
     finally:
         connection.close()
     return db_path
 
 
-def _insert_current_text_fact_contract(
+def _insert_source_snapshot_records(connection: sqlite3.Connection, game_data: GameData) -> str:
+    """把当前测试游戏的可信源快照 manifest 写入临时库并返回指纹。"""
+    records = collect_source_snapshot_records(
+        layout=game_data.layout,
+        updated_at=current_timestamp_text(),
+    )
+    _ = connection.executemany(
+        INSERT_SOURCE_SNAPSHOT_FILE,
+        [
+            (record.relative_path, record.sha256, record.byte_size, record.updated_at)
+            for record in records
+        ],
+    )
+    return source_snapshot_records_fingerprint(records)
+
+
+def _rebuild_current_text_facts_for_temp_db(
+    *,
+    db_path: Path,
+    game_data: GameData,
+    source_snapshot_fingerprint: str,
+    text_rules: TextRules | None,
+    rules_fingerprint: str,
+) -> None:
+    """调用 Rust cold rebuild，为测试临时库生成真实 current text facts。"""
+    rules = text_rules or get_default_text_rules()
+    text_rules_setting = coerce_json_value(cast(object, rules.setting.model_dump(mode="json")))
+    if not isinstance(text_rules_setting, dict):
+        raise TypeError("text_rules.setting JSON 必须是对象")
+    text_rules_setting["prompt_context_version"] = TEXT_INDEX_PROMPT_CONTEXT_VERSION
+    rule_candidate_text_rules = build_native_rule_candidate_text_rules_payload(rules)
+    rule_candidate_text_rules["source_text_required_pattern"] = rules.setting.source_text_required_pattern
+    result = rebuild_native_scope_index_storage(
+        {
+            "db_path": str(db_path),
+            "game_path": str(game_data.layout.game_root),
+            "source_snapshot_fingerprint": source_snapshot_fingerprint,
+            "rules_fingerprint": rules_fingerprint,
+            "source_language": DEFAULT_SOURCE_LANGUAGE,
+            "target_language": DEFAULT_TARGET_LANGUAGE,
+            "engine_kind": game_data.layout.engine_kind,
+            "text_rules_setting": text_rules_setting,
+            "rule_candidate_text_rules": rule_candidate_text_rules,
+            "event_command_scope_codes": [356] if game_data.layout.engine_kind == "mv" else [357],
+            "source_text_required_pattern": rules.setting.source_text_required_pattern,
+            "created_at": current_timestamp_text(),
+        }
+    )
+    if result.get("status") != "ok":
+        raise RuntimeError("测试临时库 Rust current text fact 重建没有返回成功状态")
+
+
+def _rules_fingerprint_for_temp_db(
+    *,
+    text_rules: TextRules | None,
+    items: list[TranslationItem],
+    plugin_source_rule_records: list[PluginSourceTextRuleRecord] | None,
+    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
+) -> str:
+    """生成测试临时库的规则指纹输入，避免用固定字符串伪装当前规则。"""
+    rules = text_rules or get_default_text_rules()
+    payload: JsonObject = {
+        "prompt_context_version": TEXT_INDEX_PROMPT_CONTEXT_VERSION,
+        "text_rules": coerce_json_value(cast(object, rules.setting.model_dump(mode="json"))),
+        "item_locations": [item.location_path for item in items],
+        "plugin_source_rule_records": [
+            {
+                "file_name": record.file_name,
+                "file_hash": record.file_hash,
+                "selectors": [selector for selector in record.selectors],
+                "excluded_selectors": [selector for selector in record.excluded_selectors],
+            }
+            for record in plugin_source_rule_records or []
+        ],
+        "mv_virtual_namebox_rule_records": [
+            coerce_json_value(cast(object, record.model_dump(mode="json")))
+            for record in mv_virtual_namebox_rule_records or []
+        ],
+    }
+    return stable_json_fingerprint(payload)
+
+
+def _current_fact_identity_by_item_index(
     connection: sqlite3.Connection,
     items: list[TranslationItem],
-    game_data: GameData,
-    speaker_name_translations: dict[str, str] | None,
-    terminology_registry: TerminologyRegistry | None,
-    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
 ) -> dict[int, tuple[str, str, str]]:
-    """让测试临时库满足 Rust 写回的 current text fact scope 契约。"""
-    scope_key = "test-helper-current"
-    _ = connection.execute(
-        INSERT_TEXT_FACT_SCOPE,
-        (
-            scope_key,
-            CURRENT_TEXT_FACT_CONTRACT_VERSION,
-            "test-helper-scope-hash",
-            "test-helper-source-snapshot-hash",
-            "test-helper-rule-hash",
-            "test-helper-text-rules-hash",
-            "2026-01-01T00:00:00+00:00",
-        ),
-    )
-    index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]] = []
-    fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]] = []
-    render_rows: list[tuple[str, int, str, str, str, str]] = []
-    fact_identity_by_item_index: dict[int, tuple[str, str, str]] = {}
-    plugin_source_literals = _plugin_source_literals_by_location_path(game_data)
-    source_line_paths_by_location = {
-        item.location_path: list(item.source_line_paths)
-        for item in items
-    }
-    mv_virtual_namebox_candidates = _mv_virtual_namebox_fact_candidates(
-        game_data=game_data,
-        speaker_name_translations=speaker_name_translations,
-        terminology_registry=terminology_registry,
-        mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
-    )
-    mv_virtual_namebox_location_paths = {
-        candidate_location_path
-        for (
-            _source_file,
-            candidate_location_path,
-            _source_line_path,
-            _raw_text,
-            _virtual_speaker,
-        ) in mv_virtual_namebox_candidates
-    }
-    mv_virtual_namebox_items_by_location_path: dict[str, list[tuple[int, TranslationItem]]] = {}
+    """按 Rust 冷重建生成的 current facts 匹配测试译文身份。"""
+    rows = cast(list[sqlite3.Row], connection.execute(
+        """
+        SELECT fact_id, location_path, item_type, role, translatable_text, raw_hash, translatable_hash
+        FROM text_facts
+        WHERE scope_key = (
+            SELECT scope_key
+            FROM text_fact_scope
+            ORDER BY created_at DESC, scope_key
+            LIMIT 1
+        )
+        ORDER BY fact_id
+        """
+    ).fetchall())
+    facts_by_path: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        facts_by_path.setdefault(cast(str, row["location_path"]), []).append(row)
+    used_fact_ids: set[str] = set()
+    identities: dict[int, tuple[str, str, str]] = {}
     for item_index, item in enumerate(items):
-        if item.location_path in mv_virtual_namebox_location_paths:
-            mv_virtual_namebox_items_by_location_path.setdefault(item.location_path, []).append(
-                (item_index, item)
+        candidates = [
+            row
+            for row in facts_by_path.get(item.location_path, [])
+            if cast(str, row["fact_id"]) not in used_fact_ids
+            and row["translatable_text"] == _text_fact_translatable_text(item)
+            and row["item_type"] == item.item_type
+            and (row["role"] or None) == item.role
+        ]
+        if not candidates:
+            candidates = [
+                row
+                for row in facts_by_path.get(item.location_path, [])
+                if cast(str, row["fact_id"]) not in used_fact_ids
+                and row["translatable_text"] == _text_fact_translatable_text(item)
+            ]
+        if not candidates:
+            raise AssertionError(
+                "测试临时库缺少 Rust 冷重建 current text fact: "
+                + f"index={item_index}, path={item.location_path}, text={_text_fact_translatable_text(item)!r}"
             )
+        fact = candidates[0]
+        fact_id = cast(str, fact["fact_id"])
+        used_fact_ids.add(fact_id)
+        identities[item_index] = (
+            fact_id,
+            cast(str, fact["raw_hash"]),
+            cast(str, fact["translatable_hash"]),
+        )
+    return identities
+
+
+def _insert_inferred_plugin_text_rules(
+    connection: sqlite3.Connection,
+    game_data: GameData,
+    items: list[TranslationItem],
+) -> None:
+    """按测试写回 item 精确补插件参数规则，让 Rust cold rebuild 生成对应 facts。"""
+    rows: list[tuple[int, str, str, str]] = []
+    for item in items:
+        parsed = _parse_plugin_parameter_location_path(item.location_path)
+        if parsed is None:
             continue
-        fact_id = item.fact_id or f"test-helper-fact-{item_index:04d}"
-        domain = _text_fact_domain_for_helper(item.location_path)
-        source_file = _source_file_for_helper(item.location_path)
-        source_type = domain
-        translatable_text = _text_fact_translatable_text(item)
-        raw_text = translatable_text
-        visible_text = translatable_text
-        raw_hash = _sha256_text(raw_text)
-        visible_hash = _sha256_text(visible_text)
-        if domain == "plugin_source":
-            literal_identity = plugin_source_literals.get(item.location_path)
-            if literal_identity is not None:
-                raw_text, visible_text = literal_identity
-                raw_hash = _sha256_text(raw_text)
-                visible_hash = _sha256_text(visible_text)
-        if _helper_domain_requires_render_parts(domain):
-            render_rows.append((fact_id, 0, "translated_body", raw_text, translatable_text, "body"))
-        translatable_hash = _sha256_text(translatable_text)
-        fact_identity_by_item_index[item_index] = (fact_id, raw_hash, translatable_hash)
-        index_rows.append(
+        plugin_index, path_segments = parsed
+        if plugin_index >= len(game_data.plugins_js):
+            raise AssertionError(f"测试插件参数路径索引超出范围: {item.location_path}")
+        plugin = game_data.plugins_js[plugin_index]
+        raw_name = plugin.get("name")
+        plugin_name = raw_name if isinstance(raw_name, str) and raw_name else f"plugin_{plugin_index}"
+        rows.append(
             (
-                item.location_path,
-                item.item_type,
-                item.role,
-                json.dumps(item.original_lines, ensure_ascii=False),
-                json.dumps(item.source_line_paths, ensure_ascii=False),
-                source_type,
-                source_file,
-                1,
-                "test-helper-source-snapshot-hash",
-                "test-helper-rules-fingerprint",
-                "{}",
+                plugin_index,
+                plugin_name,
+                build_plugin_hash(plugin),
+                _plugin_parameter_path_template(path_segments),
             )
         )
-        fact_rows.append(
-            (
-                fact_id,
-                CURRENT_TEXT_FACT_CONTRACT_VERSION,
-                domain,
-                item.location_path,
-                source_file,
-                source_type,
-                item.item_type,
-                item.role or "",
-                _selector_for_helper(item.location_path),
-                raw_text,
-                visible_text,
-                translatable_text,
-                raw_hash,
-                visible_hash,
-                translatable_hash,
-                scope_key,
-            )
+    if rows:
+        _ = connection.executemany(
+            """
+            INSERT OR REPLACE INTO plugin_text_rules
+            (plugin_index, plugin_name, plugin_hash, path_template)
+            VALUES (?, ?, ?, ?)
+            """,
+            sorted(set(rows)),
         )
-    _append_mv_virtual_namebox_fact_rows(
-        scope_key=scope_key,
-        first_fact_index=len(items),
-        candidates=mv_virtual_namebox_candidates,
-        source_line_paths_by_location=source_line_paths_by_location,
-        index_rows=index_rows,
-        fact_rows=fact_rows,
-        render_rows=render_rows,
-        mv_virtual_namebox_items_by_location_path=mv_virtual_namebox_items_by_location_path,
-        fact_identity_by_item_index=fact_identity_by_item_index,
-    )
-    if index_rows:
-        _ = connection.executemany(INSERT_TEXT_INDEX_ITEM, index_rows)
-    if fact_rows:
-        _ = connection.executemany(INSERT_TEXT_FACT, fact_rows)
-    if render_rows:
-        _ = connection.executemany(INSERT_TEXT_FACT_RENDER_PART, render_rows)
-    return fact_identity_by_item_index
+
+
+def _insert_inferred_note_tag_rules(
+    connection: sqlite3.Connection,
+    items: list[TranslationItem],
+) -> None:
+    """按测试写回 item 精确补 Note 标签规则，让 Rust cold rebuild 生成对应 facts。"""
+    rows: list[tuple[str, str]] = []
+    for item in items:
+        parsed = _parse_note_tag_location_path(item.location_path)
+        if parsed is not None:
+            rows.append(parsed)
+    if rows:
+        _ = connection.executemany(
+            """
+            INSERT OR REPLACE INTO note_tag_text_rules (file_name, tag_name)
+            VALUES (?, ?)
+            """,
+            sorted(set(rows)),
+        )
+
+
+def _insert_inferred_nonstandard_data_rules(
+    connection: sqlite3.Connection,
+    game_data: GameData,
+    items: list[TranslationItem],
+) -> None:
+    """按测试写回 item 精确补非标准 data 规则，让 Rust cold rebuild 生成对应 facts。"""
+    rows: list[tuple[str, str, str, str]] = []
+    for item in items:
+        parsed = _parse_nonstandard_data_location_path(item.location_path)
+        if parsed is None:
+            continue
+        file_name, path_template = parsed
+        source_path = game_data.layout.data_origin_dir / file_name
+        if not source_path.is_file():
+            source_path = game_data.layout.data_dir / file_name
+        source_text = source_path.read_text(encoding="utf-8")
+        rows.append((file_name, build_nonstandard_data_file_hash(source_text), path_template, "translate"))
+    if rows:
+        _ = connection.executemany(
+            """
+            INSERT OR REPLACE INTO nonstandard_data_text_rules
+            (file_name, file_hash, path_template, path_kind)
+            VALUES (?, ?, ?, ?)
+            """,
+            sorted(set(rows)),
+        )
+
+
+def _insert_nonstandard_data_rules(
+    connection: sqlite3.Connection,
+    records: list[NonstandardDataTextRuleRecord] | None,
+) -> None:
+    """把测试已导入的非标准 data 规则写入临时库。"""
+    if not records:
+        return
+    rows: list[tuple[str, str, str, str]] = []
+    for record in records:
+        rows.extend(
+            (record.file_name, record.file_hash, path_template, "translate")
+            for path_template in record.path_templates
+        )
+        rows.extend(
+            (record.file_name, record.file_hash, path_template, "excluded")
+            for path_template in record.excluded_path_templates
+        )
+        if record.skipped:
+            rows.append((record.file_name, record.file_hash, "", "skipped"))
+    if rows:
+        _ = connection.executemany(
+            """
+            INSERT OR REPLACE INTO nonstandard_data_text_rules
+            (file_name, file_hash, path_template, path_kind)
+            VALUES (?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
+def _parse_plugin_parameter_location_path(location_path: str) -> tuple[int, list[str]] | None:
+    """解析 `plugins.js/<index>/...` 测试写回路径。"""
+    if not location_path.startswith("plugins.js/"):
+        return None
+    parts = location_path.split("/")
+    if len(parts) < 3 or not parts[1].isdigit():
+        raise AssertionError(f"测试插件参数路径格式非法: {location_path}")
+    return int(parts[1]), parts[2:]
+
+
+def _plugin_parameter_path_template(path_segments: list[str]) -> str:
+    """把插件参数 location path 片段转换为精确 JSONPath 模板。"""
+    template = "$['parameters']"
+    for segment in path_segments:
+        if segment.isdigit():
+            template += f"[{segment}]"
+        else:
+            template += f"[{json.dumps(segment, ensure_ascii=False)}]"
+    return template
+
+
+def _parse_note_tag_location_path(location_path: str) -> tuple[str, str] | None:
+    """解析 `*.json/.../note/<tag>` 测试写回路径。"""
+    marker = "/note/"
+    if marker not in location_path:
+        return None
+    file_name = location_path.split("/", maxsplit=1)[0]
+    tag_name = location_path.rsplit(marker, maxsplit=1)[1]
+    if not file_name or not tag_name:
+        raise AssertionError(f"测试 Note 标签路径格式非法: {location_path}")
+    return file_name, tag_name
+
+
+def _parse_nonstandard_data_location_path(location_path: str) -> tuple[str, str] | None:
+    """解析 `nonstandard-data/<file>/<json_path>` 测试写回路径。"""
+    prefix = "nonstandard-data/"
+    if not location_path.startswith(prefix):
+        return None
+    parts = location_path.removeprefix(prefix).split("/", maxsplit=1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise AssertionError(f"测试非标准 data 路径格式非法: {location_path}")
+    return parts[0], parts[1]
 
 
 def _translation_item_row_for_temp_db(
@@ -451,352 +613,11 @@ def _translation_item_row_for_temp_db(
     )
 
 
-def _text_fact_domain_for_helper(location_path: str) -> str:
-    """推断测试 helper 需要进入真实迁移写回域的最小集合。"""
-    if location_path.startswith("js/plugins/"):
-        return "plugin_source"
-    if location_path.startswith("plugins.js/"):
-        return "plugin_config"
-    if location_path.startswith("nonstandard-data/"):
-        return "nonstandard_data"
-    if _is_note_tag_location_path(location_path):
-        return "note_tag"
-    if _is_event_command_location_path(location_path):
-        return "event_command"
-    if _is_json_data_location_path(location_path):
-        return "standard_data"
-    raise AssertionError(f"测试 helper 不支持的当前文本事实路径: {location_path}")
-
-
-def _helper_domain_requires_render_parts(domain: str) -> bool:
-    """测试 helper 中需要当前写回所需源文结构的写回域。"""
-    return domain in {
-        "standard_data",
-        "plugin_config",
-        "event_command",
-        "note_tag",
-        "nonstandard_data",
-        "plugin_source",
-    }
-
-
-def _is_note_tag_location_path(location_path: str) -> bool:
-    """按 Rust note writer 的路径形状识别 Note 标签写回域。"""
-    parts = location_path.split("/")
-    return len(parts) >= 3 and parts[-2] == "note"
-
-
-def _is_event_command_location_path(location_path: str) -> bool:
-    """按 Rust event command writer 的文件路由识别事件指令写回域。"""
-    file_name = location_path.split("/", 1)[0]
-    return (
-        file_name == "CommonEvents.json"
-        or file_name == "Troops.json"
-        or _is_map_file_name_for_helper(file_name)
-    )
-
-
-def _is_map_file_name_for_helper(file_name: str) -> bool:
-    """识别 RPG Maker 地图 data 文件名。"""
-    if not file_name.startswith("Map") or not file_name.endswith(".json"):
-        return False
-    number_text = file_name.removeprefix("Map").removesuffix(".json")
-    return bool(number_text) and number_text.isdigit()
-
-
-def _is_json_data_location_path(location_path: str) -> bool:
-    """识别标准 data JSON 文本路径。"""
-    file_name = location_path.split("/", 1)[0]
-    return file_name.endswith(".json")
-
-
-def _plugin_source_literals_by_location_path(game_data: GameData) -> dict[str, tuple[str, str]]:
-    """从测试插件源码 AST 字符串节点构造 current text fact 的 raw/visible 身份。"""
-    if not game_data.plugin_source_files:
-        return {}
-    scan = scan_plugin_source_runtime_files_text_strict(
-        files=game_data.plugin_source_files,
-        active_file_names=frozenset(game_data.plugin_source_files),
-    )
-    literals: dict[str, tuple[str, str]] = {}
-    for file_name, file_scan in scan.file_scans.items():
-        for literal in file_scan.literals:
-            location_path = f"js/plugins/{file_name}/{literal.selector}"
-            literals[location_path] = (literal.raw_text, literal.text)
-    return literals
-
-
-def _append_mv_virtual_namebox_fact_rows(
-    *,
-    scope_key: str,
-    first_fact_index: int,
-    candidates: list[tuple[str, str, str, str, MvVirtualSpeaker]],
-    source_line_paths_by_location: dict[str, list[str]],
-    index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
-    fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
-    render_rows: list[tuple[str, int, str, str, str, str]],
-    mv_virtual_namebox_items_by_location_path: dict[str, list[tuple[int, TranslationItem]]],
-    fact_identity_by_item_index: dict[int, tuple[str, str, str]],
-) -> None:
-    """为 MV 虚拟名字框术语写回补当前文本事实/render parts 测试契约。"""
-    next_fact_index = first_fact_index
-    for source_file, location_path, source_line_path, raw_text, virtual_speaker in candidates:
-        pending_items = mv_virtual_namebox_items_by_location_path.get(location_path) or []
-        if pending_items:
-            item_index, item = pending_items.pop(0)
-            source_line_paths = [path for path in item.source_line_paths] or [source_line_path]
-            fact_id = item.fact_id or f"test-helper-mv-namebox-{next_fact_index:04d}"
-        else:
-            item_index = None
-            source_line_paths = source_line_paths_by_location.get(location_path) or [source_line_path]
-            fact_id = f"test-helper-mv-namebox-{next_fact_index:04d}"
-        next_fact_index += 1
-        _append_single_mv_virtual_namebox_fact_row(
-            fact_id=fact_id,
-            item_index=item_index,
-            scope_key=scope_key,
-            source_file=source_file,
-            location_path=location_path,
-            source_line_paths=source_line_paths,
-            raw_text=raw_text,
-            virtual_speaker=virtual_speaker,
-            index_rows=index_rows,
-            fact_rows=fact_rows,
-            render_rows=render_rows,
-            fact_identity_by_item_index=fact_identity_by_item_index,
-        )
-
-
-def _mv_virtual_namebox_fact_candidates(
-    *,
-    game_data: GameData,
-    speaker_name_translations: dict[str, str] | None,
-    terminology_registry: TerminologyRegistry | None,
-    mv_virtual_namebox_rule_records: list[MvVirtualNameboxRuleRecord] | None,
-) -> list[tuple[str, str, str, str, MvVirtualSpeaker]]:
-    """找出应由 MV virtual namebox 专用 render parts 表示的测试 fact。"""
-    speaker_terms = _speaker_terms_for_mv_virtual_namebox_facts(
-        speaker_name_translations=speaker_name_translations,
-        terminology_registry=terminology_registry,
-    )
-    if game_data.layout.engine_kind != "mv" or not speaker_terms or not mv_virtual_namebox_rule_records:
-        return []
-    rules = runtime_mv_virtual_namebox_rules(mv_virtual_namebox_rule_records)
-    pending_name_path: str | None = None
-    pending_list_path: tuple[str | int, ...] | None = None
-    candidates: list[tuple[str, str, str, str, MvVirtualSpeaker]] = []
-    for path, _display_name, command in iter_all_commands(game_data):
-        location_path = "/".join(map(str, path))
-        if command.code == Code.NAME:
-            pending_name_path = location_path
-            pending_list_path = tuple(path[:-1])
-            continue
-        if command.code != Code.TEXT:
-            pending_name_path = None
-            pending_list_path = None
-            continue
-        if pending_name_path is None or pending_list_path != tuple(path[:-1]):
-            continue
-        fact_location_path = pending_name_path
-        pending_name_path = None
-        pending_list_path = None
-        if not command.parameters or not isinstance(command.parameters[0], str):
-            continue
-        raw_text = command.parameters[0]
-        try:
-            virtual_speaker = parse_mv_virtual_speaker_line(
-                text=raw_text,
-                game_data=game_data,
-                rules=rules,
-                location_path=location_path,
-            )
-        except ValueError:
-            continue
-        if virtual_speaker is None or virtual_speaker.speaker not in speaker_terms:
-            continue
-        candidates.append((str(path[0]), fact_location_path, location_path, raw_text, virtual_speaker))
-    return candidates
-
-
-def _speaker_terms_for_mv_virtual_namebox_facts(
-    *,
-    speaker_name_translations: dict[str, str] | None,
-    terminology_registry: TerminologyRegistry | None,
-) -> dict[str, str]:
-    """收集本次术语写回会尝试更新的 speaker_names。"""
-    speaker_terms: dict[str, str] = {}
-    if speaker_name_translations:
-        speaker_terms.update(speaker_name_translations)
-    if terminology_registry is not None:
-        speaker_terms.update(terminology_registry.speaker_names)
-    return speaker_terms
-
-
-def _append_single_mv_virtual_namebox_fact_row(
-    *,
-    fact_id: str,
-    item_index: int | None,
-    scope_key: str,
-    source_file: str,
-    location_path: str,
-    source_line_paths: list[str],
-    raw_text: str,
-    virtual_speaker: MvVirtualSpeaker,
-    index_rows: list[tuple[str, str, str | None, str, str, str, str, int, str, str, str]],
-    fact_rows: list[tuple[str, int, str, str, str, str, str, str, str, str, str, str, str, str, str, str]],
-    render_rows: list[tuple[str, int, str, str, str, str]],
-    fact_identity_by_item_index: dict[int, tuple[str, str, str]],
-) -> None:
-    """追加单条 MV virtual namebox current text fact 测试行。"""
-    render_parts = _mv_virtual_namebox_render_parts(raw_text, virtual_speaker)
-    translatable_text = virtual_speaker.body_text
-    raw_hash = _sha256_text(raw_text)
-    translatable_hash = _sha256_text(translatable_text)
-    if item_index is not None:
-        fact_identity_by_item_index[item_index] = (fact_id, raw_hash, translatable_hash)
-    index_rows.append(
-        (
-            location_path,
-            "long_text",
-            virtual_speaker.speaker,
-            json.dumps([translatable_text], ensure_ascii=False),
-            json.dumps(source_line_paths, ensure_ascii=False),
-            "event_command",
-            source_file,
-            1,
-            "test-helper-source-snapshot-hash",
-            "test-helper-rules-fingerprint",
-            "{}",
-        )
-    )
-    fact_rows.append(
-        (
-            fact_id,
-            CURRENT_TEXT_FACT_CONTRACT_VERSION,
-            "mv_virtual_namebox",
-            location_path,
-            source_file,
-            "event_command",
-            "long_text",
-            virtual_speaker.speaker,
-            location_path,
-            raw_text,
-            raw_text,
-            translatable_text,
-            raw_hash,
-            raw_hash,
-            translatable_hash,
-            scope_key,
-        )
-    )
-    render_rows.extend(
-        (
-            fact_id,
-            part_order,
-            part_kind,
-            part_raw_text,
-            semantic_text,
-            template_key,
-        )
-        for part_order, (part_kind, part_raw_text, semantic_text, template_key) in enumerate(render_parts)
-    )
-
-
-def _mv_virtual_namebox_render_parts(
-    raw_text: str,
-    virtual_speaker: MvVirtualSpeaker,
-) -> list[tuple[str, str, str, str]]:
-    """按 current text fact render parts 形状拆分 MV 虚拟名字框源文本。"""
-    parts: list[tuple[str, str, str, str]] = []
-    formatter = Formatter()
-    for literal_text, field_name, _format_spec, _conversion in formatter.parse(virtual_speaker.render_template):
-        if literal_text:
-            parts.append(("literal", literal_text, literal_text, "literal"))
-        if field_name is None:
-            continue
-        normalized_field = field_name.split(".", maxsplit=1)[0].split("[", maxsplit=1)[0]
-        if normalized_field == "speaker" or normalized_field == virtual_speaker.speaker_group:
-            parts.append(
-                (
-                    "speaker",
-                    virtual_speaker.source_speaker_text,
-                    virtual_speaker.speaker,
-                    "speaker",
-                )
-            )
-            continue
-        if normalized_field == "body" or (
-            virtual_speaker.body_group and normalized_field == virtual_speaker.body_group
-        ):
-            parts.append(
-                (
-                    "translated_body",
-                    virtual_speaker.body_text,
-                    virtual_speaker.body_text,
-                    "body",
-                )
-            )
-            continue
-        value = virtual_speaker.group_values.get(normalized_field, "")
-        parts.append(("literal", value, value, normalized_field))
-    if not any(part_kind == "translated_body" for part_kind, _raw, _semantic, _key in parts):
-        parts.append(("translated_body", "", "", "body"))
-    return _reconcile_mv_virtual_namebox_render_parts(raw_text, parts)
-
-
-def _reconcile_mv_virtual_namebox_render_parts(
-    raw_text: str,
-    parts: list[tuple[str, str, str, str]],
-) -> list[tuple[str, str, str, str]]:
-    """保留规则模板外的原始空白外壳。"""
-    rebuilt = "".join(part_raw_text for _part_kind, part_raw_text, _semantic_text, _template_key in parts)
-    if rebuilt == raw_text:
-        return parts
-    start_index = raw_text.find(rebuilt)
-    if start_index < 0:
-        return parts
-    end_index = start_index + len(rebuilt)
-    prefix = raw_text[:start_index]
-    suffix = raw_text[end_index:]
-    reconciled = list(parts)
-    if prefix:
-        reconciled.insert(0, ("literal", prefix, prefix, "literal"))
-    if suffix:
-        reconciled.append(("literal", suffix, suffix, "literal"))
-    return reconciled
-
-
 def _text_fact_translatable_text(item: TranslationItem) -> str:
     """按 current text fact 的 item_type 语义序列化可译正文。"""
     if item.item_type == "short_text":
         return item.original_lines[0] if item.original_lines else ""
     return "\n".join(item.original_lines)
-
-
-def _source_file_for_helper(location_path: str) -> str:
-    """从测试 location_path 提取最小 source_file 字段。"""
-    if location_path.startswith("js/plugins/"):
-        parts = location_path.split("/")
-        return "/".join(parts[:3]) if len(parts) >= 3 else location_path
-    if location_path.startswith("nonstandard-data/"):
-        parts = location_path.split("/", 2)
-        return parts[1] if len(parts) >= 2 else location_path
-    return location_path.split("/", 1)[0]
-
-
-def _selector_for_helper(location_path: str) -> str:
-    """从插件源码 location_path 提取 selector，其余测试路径保持为空。"""
-    if not location_path.startswith("js/plugins/"):
-        return ""
-    parts = location_path.split("/", 3)
-    if len(parts) < 4:
-        return ""
-    return parts[3]
-
-
-def _sha256_text(text: str) -> str:
-    """计算与 Rust current text fact 一致的 UTF-8 SHA-256。"""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _insert_speaker_terms(

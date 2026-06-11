@@ -154,6 +154,7 @@ from app.text_index import (
     collect_text_index_scope_gate_errors,
     detect_text_index_invalidations,
     rebuild_text_index_native_storage,
+    text_index_source_branch_gates_prechecked,
 )
 from app.text_facts import (
     count_current_text_facts,
@@ -1389,6 +1390,8 @@ class TranslationHandler:
         )
         metadata = await session.read_text_index_metadata()
         needs_rebuild = bool(invalidations) or metadata is None
+        if metadata is not None and not text_index_source_branch_gates_prechecked(metadata):
+            needs_rebuild = True
         if needs_rebuild:
             set_status("重建持久文本范围索引")
             await self._rebuild_text_index_for_write_operation(
