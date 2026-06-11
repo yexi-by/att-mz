@@ -84,6 +84,15 @@ fn commit_rule_import(py: Python<'_>, payload_json: String) -> PyResult<String> 
 }
 
 #[pyfunction]
+fn evaluate_runtime_config_patterns(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::evaluate_runtime_config_patterns_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
 fn build_scope_index(py: Python<'_>, payload_json: String) -> PyResult<String> {
     let result = py.detach(move || {
         native_core::build_scope_index_impl(&payload_json).map_err(|error| error.to_string())
@@ -216,6 +225,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_regex_contract, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_rule_import, m)?)?;
     m.add_function(wrap_pyfunction!(commit_rule_import, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_runtime_config_patterns, m)?)?;
     m.add_function(wrap_pyfunction!(build_scope_index, m)?)?;
     m.add_function(wrap_pyfunction!(scan_rule_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_scope_gate, m)?)?;

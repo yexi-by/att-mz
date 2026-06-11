@@ -7,6 +7,7 @@ from tests.current_text_fact_scope import read_current_text_fact_scope_for_test
 
 from app.agent_toolkit import AgentToolkitService
 from app.persistence.records import TextFactReadFilter
+from app.rmmz.mv_namebox import parse_mv_virtual_namebox_rule_import_text
 
 
 async def _load_current_runtime_game_data(game_dir: Path) -> GameData:
@@ -17,6 +18,28 @@ async def _load_current_runtime_game_data(game_dir: Path) -> GameData:
         include_writable_copies=True,
         run_dialogue_probe_check=True,
     )
+
+
+def test_mv_virtual_namebox_rule_import_accepts_current_pcre2_capture() -> None:
+    """MV 虚拟名字框规则导入接受 PCRE2 当前命名捕获写法。"""
+    records = parse_mv_virtual_namebox_rule_import_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "name": "colon-name",
+                        "pattern": "^(?<speaker>[^：]+)：$",
+                        "speaker_group": "speaker",
+                        "speaker_policy": "translate",
+                        "render_template": "{speaker}：",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert records[0].speaker_group == "speaker"
 
 
 @pytest.mark.asyncio

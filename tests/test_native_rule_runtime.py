@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from app.native_rule_runtime import commit_rule_import, prepare_rule_import
+from app.native_rule_runtime import (
+    commit_rule_import,
+    evaluate_runtime_config_patterns,
+    prepare_rule_import,
+)
 from app.rmmz.json_types import JsonObject
 
 
@@ -42,6 +46,20 @@ def test_prepare_rejects_invalid_config_pcre2_pattern() -> None:
     assert result.status == "error"
     assert result.errors[0].code == "pcre2_compile_error"
     assert result.errors[0].field == "source_text_required_pattern"
+
+
+def test_evaluate_runtime_config_patterns_uses_current_pcre2_pattern() -> None:
+    payload: JsonObject = {
+        "settings_runtime_patterns": _valid_runtime_patterns(),
+        "texts": [
+            {"id": "ja", "text": "こんにちは"},
+            {"id": "en", "text": "Inventory"},
+        ],
+    }
+    result = evaluate_runtime_config_patterns(payload)
+
+    assert result.status == "ok"
+    assert [entry.source_text_required for entry in result.entries] == [True, False]
 
 
 def test_validate_prepare_returns_plan_without_db_write(tmp_path: Path) -> None:

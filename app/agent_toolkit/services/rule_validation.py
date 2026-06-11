@@ -74,6 +74,7 @@ from app.plugin_source_text import (
 from app.plugin_source_text.importer import build_plugin_source_rule_scan_records_from_import
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_rule_records_to_import_json,
+    parse_mv_virtual_namebox_rule_import_payload,
     parse_mv_virtual_namebox_rule_import_text,
 )
 from app.rmmz.mv_namebox_native import native_mv_virtual_namebox_candidates_payload, scan_native_mv_virtual_namebox
@@ -394,6 +395,7 @@ class RuleValidationAgentMixin:
         """校验 MV 虚拟名字框规则 JSON 文本并报告候选命中情况。"""
         try:
             async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
                 game_data = await self._load_translation_source_game_data(session)
                 existing_records = []
                 if game_data.layout.engine_kind == "mv":
@@ -414,6 +416,7 @@ class RuleValidationAgentMixin:
             rules_text=rules_text,
             game_data=game_data,
             existing_records=existing_records,
+            setting=setting,
         )
 
     async def import_mv_virtual_namebox_rules(
@@ -425,13 +428,27 @@ class RuleValidationAgentMixin:
     ) -> AgentReport:
         """校验并导入当前 MV 游戏的虚拟名字框规则。"""
         try:
+            rules_payload = parse_mv_virtual_namebox_rule_import_payload(rules_text)
             records = parse_mv_virtual_namebox_rule_import_text(rules_text)
             if not records and not confirm_empty:
                 raise RuntimeError("MV 虚拟名字框规则为空，必须确认当前游戏不需要虚拟名字框后传 --confirm-empty")
             async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
                 game_data = await self._load_translation_source_game_data(session)
                 if game_data.layout.engine_kind != "mv":
                     raise RuntimeError("MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用")
+                prepare_result = prepare_rule_import(
+                    {
+                        "mode": "import",
+                        "domain": "mv_virtual_namebox",
+                        "rules_payload": rules_payload,
+                        "game_context": {"engine_kind": game_data.layout.engine_kind},
+                        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+                    }
+                )
+                if prepare_result.errors:
+                    messages = "；".join(error.message for error in prepare_result.errors)
+                    raise RuntimeError(messages)
                 native_scan = scan_native_mv_virtual_namebox(
                     game_data=game_data,
                     records=records,
@@ -440,6 +457,19 @@ class RuleValidationAgentMixin:
                 match_details = native_scan.match_details
                 if rule_errors:
                     messages = "；".join(_format_mv_namebox_rule_error(error_detail) for error_detail in rule_errors)
+                    raise RuntimeError(messages)
+                if prepare_result.plan_token is None:
+                    raise RuntimeError("MV 虚拟名字框规则导入缺少 rule_runtime plan token")
+                commit_result = commit_rule_import(
+                    {
+                        "db_path": str(session.db_path),
+                        "domain": "mv_virtual_namebox",
+                        "plan_token": prepare_result.plan_token,
+                        "backup_path": None,
+                    }
+                )
+                if commit_result.errors:
+                    messages = "；".join(error.message for error in commit_result.errors)
                     raise RuntimeError(messages)
                 async with RuleImportUnitOfWork(session):
                     await session.replace_mv_virtual_namebox_rules(records)

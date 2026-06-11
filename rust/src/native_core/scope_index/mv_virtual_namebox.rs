@@ -1,12 +1,15 @@
 //! MV 虚拟名字框候选和规则命中扫描。
 
-use fancy_regex::{Captures, Regex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::super::rule_runtime::adapters::mv_virtual_namebox::normalize_template_field_name;
+use super::super::rule_runtime::engine::{
+    Pcre2CaptureMatch, Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern,
+};
 use super::RuleCandidateOutput;
 
 const COMMAND_NAME: i64 = 101;
@@ -120,7 +123,7 @@ struct EventCommandSnapshot {
 struct CompiledMvVirtualNameboxRule {
     rule_index: usize,
     rule_name: String,
-    pattern: Regex,
+    pattern: Pcre2Pattern,
     speaker_group: String,
     body_group: String,
     speaker_policy: String,
@@ -574,12 +577,29 @@ fn compile_rules(
     sorted_rules
         .into_iter()
         .map(|(rule_index, rule)| {
-            let pattern = Regex::new(&rule.pattern_text).map_err(|error| {
-                format!(
-                    "MV 虚拟名字框规则 {} 无法编译 Rust 正则: {error}",
-                    rule.rule_name
-                )
-            })?;
+            let pattern =
+                Pcre2Engine::compile(&rule.pattern_text, &Pcre2EngineConfig::default_runtime())
+                    .map_err(|error| {
+                        format!(
+                            "MV 虚拟名字框规则 {} 无法编译 PCRE2 pattern: {}",
+                            rule.rule_name, error.message
+                        )
+                    })?;
+            let capture_names = pattern.capture_names();
+            if !capture_names.iter().any(|name| name == &rule.speaker_group) {
+                return Err(format!(
+                    "MV 虚拟名字框规则 {} 缺少说话人命名分组: {}",
+                    rule.rule_name, rule.speaker_group
+                ));
+            }
+            if !rule.body_group.is_empty()
+                && !capture_names.iter().any(|name| name == &rule.body_group)
+            {
+                return Err(format!(
+                    "MV 虚拟名字框规则 {} 缺少正文命名分组: {}",
+                    rule.rule_name, rule.body_group
+                ));
+            }
             Ok(CompiledMvVirtualNameboxRule {
                 rule_index,
                 rule_name: rule.rule_name.clone(),
@@ -799,20 +819,18 @@ fn match_candidate_rule(
     errors: &mut Vec<MvVirtualNameboxErrorOutput>,
 ) -> Result<Option<VirtualSpeaker>, String> {
     let text = candidate.text.trim();
-    let Some(captures) = rule
-        .pattern
-        .captures(text)
-        .map_err(|error| format!("MV 虚拟名字框规则 {} 匹配失败: {error}", rule.rule_name))?
-    else {
+    let captures = rule.pattern.captures_iter(text).map_err(|error| {
+        format!(
+            "MV 虚拟名字框规则 {} 匹配失败: {}",
+            rule.rule_name, error.message
+        )
+    })?;
+    let Some(capture_match) = captures.into_iter().find(|capture_match| {
+        capture_match.full_span.start == 0 && capture_match.full_span.end == text.len()
+    }) else {
         return Ok(None);
     };
-    let Some(whole_match) = captures.get(0) else {
-        return Ok(None);
-    };
-    if whole_match.start() != 0 || whole_match.end() != text.len() {
-        return Ok(None);
-    }
-    match build_virtual_speaker(text, &captures, rule, actor_names_by_id) {
+    match build_virtual_speaker(text, &capture_match, rule, actor_names_by_id) {
         Ok(virtual_speaker) => Ok(Some(virtual_speaker)),
         Err(message) => {
             errors.push(MvVirtualNameboxErrorOutput {
@@ -831,17 +849,17 @@ fn match_candidate_rule(
 
 fn build_virtual_speaker(
     text: &str,
-    captures: &Captures<'_>,
+    captures: &Pcre2CaptureMatch,
     rule: &CompiledMvVirtualNameboxRule,
     actor_names_by_id: &BTreeMap<i64, String>,
 ) -> Result<VirtualSpeaker, String> {
-    let raw_source_speaker = capture_group(captures, &rule.speaker_group)
+    let raw_source_speaker = capture_group(text, captures, &rule.speaker_group)
         .unwrap_or_default()
         .to_string();
     let raw_body_text = if rule.body_group.is_empty() {
         String::new()
     } else {
-        capture_group(captures, &rule.body_group)
+        capture_group(text, captures, &rule.body_group)
             .unwrap_or_default()
             .to_string()
     };
@@ -858,6 +876,7 @@ fn build_virtual_speaker(
     };
     let rendered_source = render_source_template(
         &rule.render_template,
+        text,
         captures,
         rule,
         &raw_source_speaker,
@@ -987,13 +1006,18 @@ fn build_scope_hash(
         .collect())
 }
 
-fn capture_group<'a>(captures: &'a Captures<'_>, group_name: &str) -> Option<&'a str> {
-    captures.name(group_name).map(|matched| matched.as_str())
+fn capture_group<'a>(
+    text: &'a str,
+    captures: &Pcre2CaptureMatch,
+    group_name: &str,
+) -> Option<&'a str> {
+    captures.named_text(text, group_name)
 }
 
 fn render_source_template(
     template: &str,
-    captures: &Captures<'_>,
+    text: &str,
+    captures: &Pcre2CaptureMatch,
     rule: &CompiledMvVirtualNameboxRule,
     source_speaker: &str,
     body_text: &str,
@@ -1019,8 +1043,14 @@ fn render_source_template(
                 }
                 let field_expression = chars[start_index..end_index].iter().collect::<String>();
                 let field_name = normalize_template_field_name(&field_expression);
-                let value =
-                    template_field_value(field_name, captures, rule, source_speaker, body_text);
+                let value = template_field_value(
+                    field_name,
+                    text,
+                    captures,
+                    rule,
+                    source_speaker,
+                    body_text,
+                );
                 rendered.push_str(&value);
                 index = end_index + 1;
             }
@@ -1041,19 +1071,10 @@ fn render_source_template(
     Ok(rendered)
 }
 
-fn normalize_template_field_name(field_expression: &str) -> &str {
-    field_expression
-        .split(['!', ':'])
-        .next()
-        .unwrap_or_default()
-        .split(['.', '['])
-        .next()
-        .unwrap_or_default()
-}
-
 fn template_field_value(
     field_name: &str,
-    captures: &Captures<'_>,
+    text: &str,
+    captures: &Pcre2CaptureMatch,
     rule: &CompiledMvVirtualNameboxRule,
     source_speaker: &str,
     body_text: &str,
@@ -1064,7 +1085,7 @@ fn template_field_value(
     if field_name == "body" || (!rule.body_group.is_empty() && field_name == rule.body_group) {
         return body_text.to_string();
     }
-    capture_group(captures, field_name)
+    capture_group(text, captures, field_name)
         .unwrap_or_default()
         .to_string()
 }

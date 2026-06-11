@@ -11,8 +11,7 @@ from typing import cast
 from pydantic import Field, TypeAdapter, field_validator
 
 from app.external_input import ExternalInputModel, ExternalStr
-from app.regex_contract import validate_mv_virtual_namebox_regex_contract
-from app.rmmz.json_types import JsonObject, coerce_json_value
+from app.rmmz.json_types import JsonObject, coerce_json_value, ensure_json_object
 from app.rmmz.schema import (
     GameData,
     MvVirtualNameboxRuleRecord,
@@ -42,7 +41,6 @@ class MvVirtualNameboxRule:
     @classmethod
     def from_record(cls, record: MvVirtualNameboxRuleRecord) -> "MvVirtualNameboxRule":
         """从数据库记录创建运行时规则。"""
-        validate_mv_virtual_namebox_regex_contract((record,))
         compiled_pattern = re.compile(record.pattern_text)
         validate_compiled_rule(
             rule_name=record.rule_name,
@@ -145,13 +143,27 @@ _MV_NAMEBOX_IMPORT_ADAPTER: TypeAdapter[MvVirtualNameboxImportFile] = TypeAdapte
 
 def parse_mv_virtual_namebox_rule_import_text(raw_text: str) -> list[MvVirtualNameboxRuleRecord]:
     """解析 MV 虚拟名字框规则 JSON 文本。"""
+    import_file = parse_mv_virtual_namebox_rule_import(raw_text)
+    return build_mv_virtual_namebox_rule_records(import_file.rules)
+
+
+def parse_mv_virtual_namebox_rule_import_payload(raw_text: str) -> JsonObject:
+    """解析 MV 虚拟名字框规则 JSON 文本并返回 rule_runtime 原始载荷。"""
+    import_file = parse_mv_virtual_namebox_rule_import(raw_text)
+    return ensure_json_object(
+        coerce_json_value(import_file.model_dump(mode="json")),
+        "mv_virtual_namebox_rule_import",
+    )
+
+
+def parse_mv_virtual_namebox_rule_import(raw_text: str) -> MvVirtualNameboxImportFile:
+    """解析 MV 虚拟名字框规则 JSON 文本为外部导入模型。"""
     stripped_text = raw_text.strip()
     if not stripped_text:
         raise ValueError("MV 虚拟名字框规则 JSON 不能为空")
     decoded_raw = cast(object, json.loads(stripped_text))
     decoded = coerce_json_value(decoded_raw)
-    import_file = _MV_NAMEBOX_IMPORT_ADAPTER.validate_python(decoded)
-    return build_mv_virtual_namebox_rule_records(import_file.rules)
+    return _MV_NAMEBOX_IMPORT_ADAPTER.validate_python(decoded)
 
 
 def build_mv_virtual_namebox_rule_records(
@@ -175,17 +187,29 @@ def build_mv_virtual_namebox_rule_records(
                 render_template=spec.render_template,
             )
         )
-    validate_mv_virtual_namebox_regex_contract(tuple(records))
     for record in records:
-        pattern = re.compile(record.pattern_text)
-        validate_compiled_rule(
+        validate_rule_template_shape(
             rule_name=record.rule_name,
-            pattern=pattern,
             speaker_group=record.speaker_group,
             body_group=record.body_group,
             render_template=record.render_template,
         )
     return records
+
+
+def validate_rule_template_shape(
+    *,
+    rule_name: str,
+    speaker_group: str,
+    body_group: str,
+    render_template: str,
+) -> None:
+    """校验模板字段基础语法，不解释正则 capture。"""
+    template_fields = read_template_fields(render_template)
+    if speaker_group not in template_fields and "speaker" not in template_fields:
+        raise ValueError(f"MV 虚拟名字框规则 {rule_name} 的模板没有引用说话人分组")
+    if body_group and body_group not in template_fields and "body" not in template_fields:
+        raise ValueError(f"MV 虚拟名字框规则 {rule_name} 的模板没有引用正文分组")
 
 
 def validate_compiled_rule(
@@ -346,6 +370,8 @@ __all__: list[str] = [
     "MvVirtualNameboxRuleSpec",
     "MvVirtualSpeaker",
     "mv_virtual_namebox_rule_records_to_import_json",
+    "parse_mv_virtual_namebox_rule_import",
+    "parse_mv_virtual_namebox_rule_import_payload",
     "parse_mv_virtual_namebox_rule_import_text",
     "parse_mv_virtual_speaker_line",
     "runtime_mv_virtual_namebox_rules",

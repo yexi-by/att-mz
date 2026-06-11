@@ -96,6 +96,12 @@ class TextRules:
         """从文本中剥离 RPG Maker 控制符。"""
         return self.replace_rm_control_sequences(text, lambda _span: "")
 
+    def is_source_text_excluded(self, text: str) -> bool:
+        """判断文本是否被固定源文排除 profile 过滤。"""
+        if self.setting.source_text_exclusion_profile == "english_protocol_noise":
+            return self._is_english_protocol_noise_text(text)
+        return False
+
     def iter_control_sequence_spans(self, text: str) -> list[ControlSequenceSpan]:
         """顺序扫描一行文本，识别标准控制符和自定义保护片段。"""
         standard_spans = _filter_standard_prefix_conflicts(

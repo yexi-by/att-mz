@@ -133,6 +133,11 @@ impl Pcre2CaptureMatch {
     pub(crate) fn named_span(&self, name: &str) -> Option<&Pcre2Span> {
         self.named_spans.get(name)
     }
+
+    pub(crate) fn named_text<'a>(&self, text: &'a str, name: &str) -> Option<&'a str> {
+        let span = self.named_span(name)?;
+        text.get(span.start..span.end)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

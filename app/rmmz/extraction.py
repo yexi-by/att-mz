@@ -20,6 +20,11 @@ from app.rmmz.mv_namebox import (
     parse_mv_virtual_speaker_line,
     runtime_mv_virtual_namebox_rules,
 )
+from app.rmmz.source_text_detection import (
+    any_source_text_required,
+    is_source_text_required,
+    source_text_required_by_line_groups,
+)
 from app.rmmz.text_rules import TextRules
 from app.rmmz.commands import iter_all_commands
 
@@ -346,11 +351,11 @@ class DataTextExtraction:
         """判断单条原文是否需要进入正文翻译流程。"""
         if text is None:
             return False
-        return self.text_rules.should_translate_source_text(text)
+        return is_source_text_required(self.text_rules, text)
 
     def _should_extract_lines(self, lines: list[str]) -> bool:
         """判断多行原文是否至少包含一处需要翻译的源语言字符。"""
-        return self.text_rules.should_translate_source_lines(lines)
+        return any_source_text_required(self.text_rules, lines)
 
     def _should_extract_visible_command_lines(self, lines: list[str]) -> bool:
         """判断事件正文是否包含源语言字符。
@@ -358,17 +363,15 @@ class DataTextExtraction:
         `401` 对话正文和 `405` 滚动正文会直接显示给玩家，不能套用英文协议噪音
         过滤，否则 `But-` 这类短断句会被误判成代码片段而漏翻。
         """
-        return any(self._contains_required_source_text(line) for line in lines)
+        return any_source_text_required(
+            self.text_rules,
+            lines,
+            apply_exclusion_profile=False,
+        )
 
     def _contains_required_source_text(self, text: str) -> bool:
         """只按源语言字符规则判断文本是否需要翻译。"""
-        normalized_text = self.text_rules.normalize_extraction_text(text)
-        if not normalized_text:
-            return False
-        detection_text = self.text_rules.strip_rm_control_sequences(normalized_text)
-        if not detection_text:
-            return False
-        return self.text_rules.source_text_required_pattern.search(detection_text) is not None
+        return is_source_text_required(self.text_rules, text)
 
     def _should_keep_translation_item(self, item: TranslationItem) -> bool:
         """判断提取条目是否保留到正文翻译流程。"""
@@ -381,12 +384,37 @@ class DataTextExtraction:
         translation_data_map: dict[str, TranslationData],
     ) -> dict[str, TranslationData]:
         """移除不需要进入正文翻译流程的条目。"""
+        normal_items: list[TranslationItem] = []
+        visible_command_items: list[TranslationItem] = []
+        for translation_data in translation_data_map.values():
+            for item in translation_data.translation_items:
+                if item.item_type == "long_text" and item.source_line_paths:
+                    visible_command_items.append(item)
+                else:
+                    normal_items.append(item)
+
+        keep_by_identity: dict[int, bool] = {}
+        normal_flags = source_text_required_by_line_groups(
+            self.text_rules,
+            [item.original_lines for item in normal_items],
+        )
+        for item, keep_item in zip(normal_items, normal_flags, strict=True):
+            keep_by_identity[id(item)] = keep_item
+
+        visible_flags = source_text_required_by_line_groups(
+            self.text_rules,
+            [item.original_lines for item in visible_command_items],
+            apply_exclusion_profile=False,
+        )
+        for item, keep_item in zip(visible_command_items, visible_flags, strict=True):
+            keep_by_identity[id(item)] = keep_item
+
         filtered_map: dict[str, TranslationData] = {}
         for file_name, translation_data in translation_data_map.items():
             filtered_items = [
                 item
                 for item in translation_data.translation_items
-                if self._should_keep_translation_item(item)
+                if keep_by_identity.get(id(item), False)
             ]
             if not filtered_items:
                 continue

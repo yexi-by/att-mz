@@ -36,6 +36,7 @@ from app.rmmz.commands import iter_all_commands
 from app.rmmz.control_codes import StructuredPlaceholderRule
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.schema import GameData, TranslationData, TranslationItem
+from app.rmmz.source_text_detection import source_text_required_by_line_groups
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
 from app.native_scope_index import (
     collect_native_event_command_scope_hash,
@@ -841,13 +842,16 @@ def _text_scope_gate_errors(*, scope: TextScopeResult, text_rules: TextRules) ->
                 message=f"存在 {len(scope.unwritable_entries)} 条当前文本无法写进游戏文件，请先运行 audit-coverage 查看明细",
             )
         )
-    unwritable_rule_hit_count = sum(
-        1
+    unwritable_rule_hit_entries = [
+        entry
         for entry in scope.entries
-        if not entry.enters_translation
-        and entry.source_type != "standard_data"
-        and text_rules.should_translate_source_lines(entry.original_lines)
+        if not entry.enters_translation and entry.source_type != "standard_data"
+    ]
+    unwritable_rule_hit_flags = source_text_required_by_line_groups(
+        text_rules,
+        [entry.original_lines for entry in unwritable_rule_hit_entries],
     )
+    unwritable_rule_hit_count = sum(1 for flag in unwritable_rule_hit_flags if flag)
     if unwritable_rule_hit_count:
         errors.append(
             WorkflowGateIssue(

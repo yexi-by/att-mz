@@ -105,6 +105,7 @@ from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import load_active_runtime_game_data, load_game_data_for_view
 from app.rmmz.mv_namebox import (
     mv_virtual_namebox_rule_records_to_import_json,
+    parse_mv_virtual_namebox_rule_import_payload,
     parse_mv_virtual_namebox_rule_import_text,
 )
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
@@ -183,6 +184,14 @@ def build_rule_runtime_settings_patterns(setting: Setting) -> JsonObject:
         "line_width_count_pattern": text_rules.line_width_count_pattern,
         "residual_escape_sequence_pattern": text_rules.residual_escape_sequence_pattern,
     }
+
+
+def rule_runtime_summary(summary: JsonObject) -> JsonObject:
+    """读取 rule_runtime 报告摘要。"""
+    value = summary.get("rule_runtime", {})
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1992,6 +2001,7 @@ def _validate_mv_virtual_namebox_rules_with_context(
     rules_text: str,
     game_data: GameData,
     existing_records: list[MvVirtualNameboxRuleRecord],
+    setting: Setting,
 ) -> AgentReport:
     """使用已加载游戏上下文校验 MV 虚拟名字框规则。"""
     errors: list[AgentIssue] = []
@@ -2002,6 +2012,7 @@ def _validate_mv_virtual_namebox_rules_with_context(
     matched_candidate_count = 0
     newly_matched_candidate_count = 0
     try:
+        rules_payload = parse_mv_virtual_namebox_rule_import_payload(rules_text)
         records = parse_mv_virtual_namebox_rule_import_text(rules_text)
         if game_data.layout.engine_kind != "mv":
             errors.append(issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用"))
@@ -2013,6 +2024,33 @@ def _validate_mv_virtual_namebox_rules_with_context(
                     "candidate_count": 0,
                     "matched_candidate_count": 0,
                     "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        prepare_result = prepare_rule_import(
+            {
+                "mode": "validate",
+                "domain": "mv_virtual_namebox",
+                "rules_payload": rules_payload,
+                "game_context": {"engine_kind": game_data.layout.engine_kind},
+                "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+            }
+        )
+        if prepare_result.errors:
+            errors.extend(
+                issue(runtime_issue.code, runtime_issue.message)
+                for runtime_issue in prepare_result.errors
+            )
+            records = []
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                    "rule_runtime": rule_runtime_summary(prepare_result.summary),
                 },
                 details=details,
             )

@@ -97,6 +97,11 @@ pub fn commit_rule_import_impl(payload_json: &str) -> Result<String, String> {
     rule_runtime::api::commit_rule_import_impl(payload_json)
 }
 
+/// 执行配置中的用户可写运行时正则。
+pub fn evaluate_runtime_config_patterns_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::adapters::config_patterns::evaluate_runtime_config_patterns_impl(payload_json)
+}
+
 /// 构建 Scope/Index Engine 范围索引。
 pub fn build_scope_index_impl(payload_json: &str) -> Result<String, String> {
     scope_index::build_scope_index_impl(payload_json)
