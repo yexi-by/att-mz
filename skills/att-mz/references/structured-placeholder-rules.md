@@ -25,7 +25,7 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
   "paired_shell_rules": [
     {
       "name": "PROTOCOL_LABEL",
-      "pattern": "(?P<open><Protocol\\s+Label:\\s*)(?P<text>[^<>\\r\\n]*?)(?P<close>>)",
+      "pattern": "(?<open><Protocol\\s+Label:\\s*)(?<text>[^<>\\r\\n]*?)(?<close>>)",
       "translatable_group": "text",
       "protected_groups": {
         "open": "[CUSTOM_PROTOCOL_LABEL_OPEN_{index}]",
@@ -44,9 +44,9 @@ v1 只支持 `paired_shell_rules`。每条规则必须使用命名分组：
 
 ## 正则语法契约
 
-`pattern` 必须同时能被 Python `re` 和 Rust `fancy-regex` 编译；`validate-structured-placeholder-rules`、`import-structured-placeholder-rules`、工作区验收和当前游戏已保存规则检查都会提前预检。命名分组统一使用 Python 风格 `(?P<name>...)`，所有 `translatable_group` 和 `protected_groups` 必须来自这种命名分组，不要使用其它正则方言的命名分组写法。
+`pattern` 必须是 PCRE2 正则；`validate-structured-placeholder-rules`、`import-structured-placeholder-rules`、工作区验收和当前游戏已保存规则检查都会提前预检。命名分组统一使用 PCRE2 写法 `(?<name>...)`，所有 `translatable_group` 和 `protected_groups` 必须来自这种命名分组，不要使用其它正则方言的命名分组写法。
 
-请按两边都支持的交集语法编写，例如普通分组、字符类、量词、锚点和 `(?P<name>...)`；不要使用 Python-only 或 Rust-only 方言特性，例如 `(?a:...)`。
+请按 PCRE2 当前契约编写，例如普通分组、字符类、量词、锚点、内联 flag 和 `(?<name>...)`。
 
 ## 工作流程
 

@@ -46,9 +46,9 @@
 
 ## 规则匹配语法
 
-普通占位符、结构化占位符和 MV 虚拟名字框的 `pattern` 是正则，必须同时通过 Python `re` 和 Rust `fancy-regex` 预检；命名分组统一使用 Python 风格 `(?P<name>...)`。
+普通占位符、结构化占位符和 MV 虚拟名字框的 `pattern` 是 PCRE2 正则；命名分组统一使用 `(?<name>...)`。
 
-`source-residual-rules.json` 的 `structural_rules[].pattern` 是正则，必须同时通过 Python `re` 和 Rust `regex` 预检，`check_group` 必须在两边都能识别。`setting.toml` 中 `line_width_count_pattern`、`source_residual_segment_pattern` 和 `residual_escape_sequence_pattern` 也必须同时兼容 Python `re` 和 Rust `regex`；`source_text_required_pattern` 当前只承诺 Python `re`。
+`source-residual-rules.json` 的 `structural_rules[].pattern` 是 PCRE2 正则，`check_group` 必须来自命名分组。`setting.toml` 中 `line_width_count_pattern`、`source_text_required_pattern`、`source_residual_segment_pattern` 和 `residual_escape_sequence_pattern` 也统一使用 PCRE2 当前契约。
 
 Note 标签规则的文件键是 `fnmatch` 风格文件通配模式，例如 `Map*.json`；不是正则。Note 标签名是精确匹配，不支持正则。
 
@@ -64,7 +64,7 @@ Note 标签规则的文件键是 `fnmatch` 风格文件通配模式，例如 `Ma
 }
 ```
 
-每条规则必须声明 `name`、`pattern`、`speaker_group`、`speaker_policy` 和 `render_template`；有同一行正文时再声明 `body_group`。`pattern` 必须使用 Python 风格正则命名分组并完整匹配候选清理文本。`speaker_policy` 只能是 `translate`、`preserve` 或 `actor_name`。
+每条规则必须声明 `name`、`pattern`、`speaker_group`、`speaker_policy` 和 `render_template`；有同一行正文时再声明 `body_group`。`pattern` 必须使用 PCRE2 命名分组并完整匹配候选清理文本。`speaker_policy` 只能是 `translate`、`preserve` 或 `actor_name`。
 
 ### 普通占位符规则
 
@@ -82,7 +82,7 @@ Note 标签规则的文件键是 `fnmatch` 风格文件通配模式，例如 `Ma
 }
 ```
 
-每条规则必须声明 `name`、`pattern`、`translatable_group` 和 `protected_groups`。`pattern` 必须使用 Python 风格命名分组，`translatable_group` 指向继续交给模型翻译的分组，`protected_groups` 只保护固定协议外壳。
+每条规则必须声明 `name`、`pattern`、`translatable_group` 和 `protected_groups`。`pattern` 必须使用 PCRE2 命名分组，`translatable_group` 指向继续交给模型翻译的分组，`protected_groups` 只保护固定协议外壳。
 
 工作区验收会报告结构化占位符空规则和未覆盖候选 warning，但不要求当前游戏状态里已经存在确认状态。空规则确认和未覆盖候选风险确认由 `import-structured-placeholder-rules` 保存到当前游戏状态；已保存确认只在当前候选范围一致时有效，候选范围变化时重新审查并导入当前规则；不要为了消除工作区 warning 编造结构化规则。
 

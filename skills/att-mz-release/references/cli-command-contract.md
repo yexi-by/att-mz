@@ -13,7 +13,7 @@
 - stdout 只读取最终 JSON；stderr 的长任务进度行只表示阶段进展，不是结果 JSON。
 - 需要完整明细或业务文件时使用 `--output <文件>`。如果 stdout 的 `summary.report_detail_mode=sampled`，其中的数组只含样本，不能据此计算 hash、确认覆盖范围或补规则；需要全量候选时读取 `--output` 写出的完整报告。
 - 文件型规则一律使用 `--input <文件>`；不要把大 JSON 塞进命令行，也不要用 `--rules "$(cat ...)"` 传大文件。
-- 用户可写正则会在 validate/import、工作区验收和读取当前游戏已保存规则时预检。普通占位符、结构化占位符和 MV 虚拟名字框规则必须同时兼容 Python `re` 与 Rust `fancy-regex`；源文残留结构规则和会进入 Rust 的 `[text_rules]` 正则必须同时兼容 Python `re` 与 Rust `regex`。命名分组统一使用 `(?P<name>...)`。Note 标签文件键是 `fnmatch` 通配模式，不是正则。
+- 用户可写正则会在 validate/import、工作区验收和读取当前游戏已保存规则时预检。普通占位符、结构化占位符、MV 虚拟名字框、源文残留结构规则和 `[text_rules]` 配置正则统一使用 PCRE2 当前契约；命名分组统一使用 `(?<name>...)`。Note 标签文件键是 `fnmatch` 通配模式，不是正则。
 - 所有工作区 JSON、临时脚本、手动填写译文表、规则文件和报告都按 UTF-8 读写。Windows 终端乱码时先设置 UTF-8 后重跑命令，不要基于乱码修改规则或译文。
 
 ```powershell

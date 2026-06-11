@@ -31,9 +31,9 @@
 
 ## 正则语法契约
 
-`placeholder-rules.json` 的键是正则表达式。规则必须同时能被 Python `re` 和 Rust `fancy-regex` 编译；`validate-placeholder-rules`、`import-placeholder-rules`、工作区验收和当前游戏已保存规则检查都会提前预检，不再等到质量检查或写文件阶段才失败。
+`placeholder-rules.json` 的键是 PCRE2 正则表达式。`validate-placeholder-rules`、`import-placeholder-rules`、工作区验收和当前游戏已保存规则检查都会提前预检，不再等到质量检查或写文件阶段才失败。
 
-请按两边都支持的交集语法编写，例如普通分组、字符类、量词、锚点和 Python 风格命名分组 `(?P<name>...)`。不要使用只属于某一边方言的写法，例如 Python ASCII scoped flag `(?a:...)`。命名分组统一使用 Python 风格 `(?P<name>...)`。
+请按 PCRE2 当前契约编写，例如普通分组、字符类、量词、锚点、内联 flag 和 PCRE2 命名分组 `(?<name>...)`。需要命名分组时统一使用 `(?<name>...)`，不要写成其它正则方言的命名分组。
 
 ## 混合协议文本
 
