@@ -62,7 +62,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=0,
             rule_name="quote-inline",
-            pattern_text=r"^(?P<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?P<connector>[:：]?「)(?P<body>.*)$",
+            pattern_text=r"^(?<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?<connector>[:：]?「)(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="translate",
@@ -71,7 +71,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=1,
             rule_name="actor-inline",
-            pattern_text=r"^(?P<speaker>\\[Nn]\[(?P<actor_id>1)\])(?P<separator>[:：])(?P<body>.*)$",
+            pattern_text=r"^(?<speaker>\\[Nn]\[(?<actor_id>1)\])(?<separator>[:：])(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="actor_name",
@@ -80,7 +80,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=2,
             rule_name="angle-standalone",
-            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            pattern_text=r"^<(?<speaker>[^\\<>\r\n]{1,80})>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",
@@ -89,7 +89,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=3,
             rule_name="dynamic-angle",
-            pattern_text=r"^<(?P<speaker>\\[Nn]\[\d+\])>\s*$",
+            pattern_text=r"^<(?<speaker>\\[Nn]\[\d+\])>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="preserve",
@@ -739,7 +739,7 @@ async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
         MvVirtualNameboxRuleRecord(
             rule_order=999,
             rule_name="angle-standalone-copy",
-            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            pattern_text=r"^<(?<speaker>[^\\<>\r\n]{1,80})>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",

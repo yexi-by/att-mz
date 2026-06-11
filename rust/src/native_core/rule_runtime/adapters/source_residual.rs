@@ -105,14 +105,25 @@ fn normalize_position_rules(
             ));
             continue;
         };
+        let rule_id = rule_object
+            .get("rule_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("position:{normalized_path}"));
         normalized.push(NormalizedRuleInput {
             domain: RuleDomain::SourceResidual,
             rule_order: index as i64,
             matcher_kind: MatcherKind::Literal,
             matcher_value: normalized_path.to_string(),
             payload_json: serde_json::json!({
+                "rule_id": rule_id,
                 "rule_type": "position",
+                "location_path": normalized_path,
+                "pattern_text": "",
                 "allowed_terms": allowed_terms,
+                "check_group": "",
                 "reason": reason,
             }),
         });
@@ -184,6 +195,13 @@ fn normalize_structural_rules(
             ));
             continue;
         };
+        let rule_id = rule_object
+            .get("rule_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("structural:{index}"));
         let compiled = match Pcre2Engine::compile(pattern, config) {
             Ok(compiled) => compiled,
             Err(error) => {
@@ -212,7 +230,10 @@ fn normalize_structural_rules(
             matcher_kind: MatcherKind::Pcre2Pattern,
             matcher_value: pattern.to_string(),
             payload_json: serde_json::json!({
+                "rule_id": rule_id,
                 "rule_type": "structural",
+                "location_path": "",
+                "pattern_text": pattern,
                 "allowed_terms": allowed_terms,
                 "check_group": check_group,
                 "reason": reason,

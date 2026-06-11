@@ -9,6 +9,11 @@ from typing import NoReturn, cast
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_plugin_source_text_rules,
+)
+
 import app.plugin_source_text.runtime_audit as plugin_source_runtime_audit
 import app.plugin_source_text.scanner as plugin_source_text_scanner
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
@@ -205,45 +210,45 @@ async def _install_minimal_external_workflow_reviews(
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash=collect_native_plugin_config_scope_hash(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
             scope_hash=event_command_rule_scope_hash_for_setting(
                 game_data=game_data,
                 setting=setting,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=normal_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=text_rules.structured_placeholder_rules,
             ),
-            reviewed_empty=True,
         )
 
 
@@ -574,7 +579,7 @@ async def test_plugin_source_rules_support_excluded_selectors(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(records)
+        await seed_native_plugin_source_text_rules(session, records)
         persisted_records = await session.read_plugin_source_text_rules()
     exported_rules = plugin_source_rule_records_to_import_json(persisted_records)
     exported_rule = ensure_json_object(ensure_json_array(exported_rules, "rules")[0], "rules[0]")
@@ -1446,7 +1451,7 @@ async def test_plugin_source_mismatched_rule_hash_does_not_block_workflow(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(records)
+        await seed_native_plugin_source_text_rules(session, records)
 
     _ = source_path.write_text(
         "\n".join(
@@ -2020,7 +2025,7 @@ async def test_quality_report_consumes_text_index_plugin_source_review_incomplet
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(records)
+        await seed_native_plugin_source_text_rules(session, records)
     await _install_minimal_external_workflow_reviews(
         registry=registry,
         game_title="テストゲーム",
@@ -2134,7 +2139,7 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(records)
+        await seed_native_plugin_source_text_rules(session, records)
     _ = await service.rebuild_text_index(game_title="テストゲーム")
     async with await registry.open_game("テストゲーム") as session:
         facts = await read_current_text_fact_records(session, limit=None)
@@ -2360,7 +2365,7 @@ async def test_import_plugin_source_rules_replaces_invalid_existing_rule(
         translation_lines=["无效插件译文"],
     )
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="HardcodedText.js",
@@ -2542,7 +2547,7 @@ async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(records)
+        await seed_native_plugin_source_text_rules(session, records)
     await _install_minimal_external_workflow_reviews(
         registry=registry,
         game_title="テストゲーム",
@@ -2590,7 +2595,7 @@ async def test_current_text_fact_scope_uses_native_plugin_source_scan_for_import
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(records)
+        await seed_native_plugin_source_text_rules(session, records)
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
         scope = await rebuild_current_text_fact_scope_for_test(
             session=session,

@@ -198,7 +198,7 @@ async def test_structured_placeholder_residual_check_runs_before_shell_restore()
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="MINI_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -239,7 +239,7 @@ async def test_model_raw_structured_shells_keep_original_placeholder_order() -> 
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="BRACKET_TITLE",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+        pattern_text=r"(?<open>【)(?<text>[^【】\r\n]*?)(?<close>】)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",
@@ -273,7 +273,7 @@ async def test_model_raw_structured_shells_reject_extra_known_marker() -> None:
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="BRACKET_TITLE",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+        pattern_text=r"(?<open>【)(?<text>[^【】\r\n]*?)(?<close>】)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",

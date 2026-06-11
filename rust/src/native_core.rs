@@ -96,6 +96,11 @@ pub fn evaluate_runtime_config_patterns_impl(payload_json: &str) -> Result<Strin
     rule_runtime::adapters::config_patterns::evaluate_runtime_config_patterns_impl(payload_json)
 }
 
+/// 构建统一规则表和配置正则的当前指纹。
+pub fn build_rules_fingerprint_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::api::build_rules_fingerprint_impl(payload_json)
+}
+
 /// 执行用户/Agent 可写控制符规则并返回可保护跨度。
 pub fn collect_control_sequence_spans_impl(payload_json: &str) -> Result<String, String> {
     rule_runtime::runtime_match::collect_control_sequence_spans_impl(payload_json)

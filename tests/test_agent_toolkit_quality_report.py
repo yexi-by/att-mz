@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.native_rule_seed import (
+    insert_corrupt_native_rule_row,
+    seed_native_note_tag_text_rules,
+    seed_native_placeholder_rules,
+    seed_native_structured_placeholder_rules,
+)
+
 from app.observability import DebugRuntimeSettings, DiagnosticsContext, bind_diagnostics_context
 from app.text_facts import (
     count_pending_text_facts,
@@ -253,7 +260,7 @@ async def test_quality_report_write_probe_and_write_back_share_rust_gate_error(
             pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
         )
-        await session.replace_placeholder_rules([placeholder_record])
+        await seed_native_placeholder_rules(session, [placeholder_record])
         text_rules = TextRules.from_setting(
             setting.text_rules,
             custom_placeholder_rules=(
@@ -863,7 +870,7 @@ async def test_quality_report_structural_source_residual_rule_is_line_scoped(
             "position_rules": {},
             "structural_rules": [
                 {
-                    "pattern": r"^(?P<protocol>なまえ):(?P<visible>.*)$",
+                    "pattern": r"^(?<protocol>なまえ):(?<visible>.*)$",
                     "allowed_terms": ["なまえ"],
                     "check_group": "visible",
                     "reason": "protocol_label",
@@ -916,17 +923,20 @@ async def test_quality_report_errors_on_corrupt_source_residual_rule(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_source_residual_rules(
-            [
-                SourceResidualRuleRecord(
-                    rule_id="structural:broken",
-                    rule_type="structural",
-                    pattern_text="[",
-                    allowed_terms=["なまえ"],
-                    check_group="visible",
-                    reason="broken",
-                )
-            ]
+        await insert_corrupt_native_rule_row(
+            session,
+            domain="source_residual",
+            matcher_kind="pcre2_pattern",
+            matcher_value="[",
+            payload_json={
+                "rule_id": "structural:broken",
+                "rule_type": "structural",
+                "location_path": "",
+                "pattern_text": "[",
+                "allowed_terms": ["なまえ"],
+                "check_group": "visible",
+                "reason": "broken",
+            },
         )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
@@ -1397,7 +1407,7 @@ async def test_quality_report_accepts_structured_placeholder_shell_and_rejects_c
     structured_rule = StructuredPlaceholderRuleRecord(
         rule_name="MINI_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -1406,7 +1416,7 @@ async def test_quality_report_accepts_structured_placeholder_shell_and_rejects_c
     )
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("English Fixture Game") as session:
-        await session.replace_structured_placeholder_rules([structured_rule])
+        await seed_native_structured_placeholder_rules(session, [structured_rule])
     rebuild_report = await service.rebuild_text_index(game_title="English Fixture Game")
     assert rebuild_report.status == "ok"
     async with await registry.open_game("English Fixture Game") as session:
@@ -1461,7 +1471,7 @@ async def test_quality_report_flags_multiline_short_text_overwide_line(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [
                 NoteTagTextRuleRecord(
                     file_name="Items.json",
@@ -1508,7 +1518,7 @@ async def test_quality_report_flags_literal_line_break_short_text_overwide_line(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [
                 NoteTagTextRuleRecord(
                     file_name="Items.json",
@@ -1555,7 +1565,7 @@ async def test_quality_report_allows_original_overwide_short_text_line(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [
                 NoteTagTextRuleRecord(
                     file_name="Items.json",

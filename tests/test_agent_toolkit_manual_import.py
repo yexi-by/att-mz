@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.native_rule_seed import (
+    seed_native_plugin_text_rules,
+    seed_native_structured_placeholder_rules,
+)
+
 from app.persistence.records import TextFactReadFilter
 from app.rmmz.schema import ItemType
 from app.text_facts import read_current_text_fact_scope
@@ -168,7 +173,7 @@ async def test_english_profile_exports_visible_pending_text_without_protocol_noi
 
     async with await registry.open_game("English Fixture Game") as session:
         game_data = await load_active_runtime_game_data(session.game_path)
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -1785,12 +1790,12 @@ async def test_manual_translation_keeps_repeated_structured_shell_indices(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_structured_placeholder_rules(
+        await seed_native_structured_placeholder_rules(session,
             [
                 StructuredPlaceholderRuleRecord(
                     rule_name="BRACKET_TITLE",
                     rule_type="paired_shell",
-                    pattern_text=r"(?P<open>【)(?P<text>[^【】\r\n]*?)(?P<close>】)",
+                    pattern_text=r"(?<open>【)(?<text>[^【】\r\n]*?)(?<close>】)",
                     translatable_group="text",
                     protected_groups={
                         "open": "[CUSTOM_BRACKET_TITLE_OPEN_{index}]",

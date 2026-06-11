@@ -157,6 +157,7 @@ fn parse_quoted_key(
 #[cfg(test)]
 mod tests {
     use super::{nonstandard_data_file_name, write_nonstandard_data_item};
+    use crate::native_core::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig};
     use crate::native_core::write_back_plan::models::{TextPlanRules, TranslationItem};
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -164,7 +165,11 @@ mod tests {
     fn text_plan_rules() -> TextPlanRules {
         TextPlanRules {
             long_text_line_width_limit: 20,
-            line_width_count_pattern: regex::Regex::new(r"[\s\S]").expect("行宽正则应合法"),
+            line_width_count_pattern: Pcre2Engine::compile(
+                r"[\s\S]",
+                &Pcre2EngineConfig::default_runtime(),
+            )
+            .expect("行宽正则应合法"),
             line_split_punctuations: vec!["，".to_string(), "。".to_string()],
             preserve_wrapping_punctuation_pairs: Vec::new(),
             protected_macro_pattern: regex::Regex::new(r"_[A-Z][A-Z0-9]+_")

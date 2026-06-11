@@ -17,6 +17,11 @@ from typing import NoReturn, cast
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_placeholder_rules,
+)
+
 from app.application.handler import TranslationHandler
 
 from app.application.errors import WriteBackGateError
@@ -172,7 +177,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=0,
             rule_name="quote-inline",
-            pattern_text=r"^(?P<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?P<connector>[:：]?「)(?P<body>.*)$",
+            pattern_text=r"^(?<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?<connector>[:：]?「)(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="translate",
@@ -181,7 +186,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=1,
             rule_name="standalone-colon",
-            pattern_text=r"^(?P<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$",
+            pattern_text=r"^(?<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",
@@ -190,7 +195,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=2,
             rule_name="actor-inline",
-            pattern_text=r"^(?P<speaker>\\[Nn]\[(?P<actor_id>1)\])(?P<separator>[:：])(?P<body>.*)$",
+            pattern_text=r"^(?<speaker>\\[Nn]\[(?<actor_id>1)\])(?<separator>[:：])(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="actor_name",
@@ -199,7 +204,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=3,
             rule_name="yep-inline",
-            pattern_text=r"^(?P<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?P<speaker>[^>\r\n]{1,80})>(?P<body>.*)$",
+            pattern_text=r"^(?<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?<speaker>[^>\r\n]{1,80})>(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="translate",
@@ -208,7 +213,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=4,
             rule_name="angle-standalone",
-            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            pattern_text=r"^<(?<speaker>[^\\<>\r\n]{1,80})>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",
@@ -217,7 +222,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=5,
             rule_name="dynamic-angle",
-            pattern_text=r"^<(?P<speaker>\\[Nn]\[\d+\])>\s*$",
+            pattern_text=r"^<(?<speaker>\\[Nn]\[\d+\])>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="preserve",
@@ -248,7 +253,7 @@ async def _prepare_write_gate_session(
         registry=registry or TerminologyRegistry(),
         glossary=glossary or TerminologyGlossary(),
     )
-    await session.replace_placeholder_rules([placeholder_record])
+    await seed_native_placeholder_rules(session, [placeholder_record])
     text_rules = TextRules.from_setting(
         setting.text_rules,
         custom_placeholder_rules=(
@@ -264,30 +269,25 @@ async def _prepare_write_gate_session(
         setting=setting,
         text_rules=text_rules,
     )
-    await session.replace_rule_review_state(
+    await seed_native_empty_rule_review_state(
+        session,
         rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
         scope_hash=metadata.workflow_gate_scope_hashes[PLUGIN_TEXT_RULE_DOMAIN],
-        reviewed_empty=True,
     )
-    await session.replace_rule_review_state(
+    await seed_native_empty_rule_review_state(
+        session,
         rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
         scope_hash=metadata.workflow_gate_scope_hashes[EVENT_COMMAND_TEXT_RULE_DOMAIN],
-        reviewed_empty=True,
     )
-    await session.replace_rule_review_state(
+    await seed_native_empty_rule_review_state(
+        session,
         rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
         scope_hash=metadata.workflow_gate_scope_hashes[NOTE_TAG_TEXT_RULE_DOMAIN],
-        reviewed_empty=True,
     )
-    await session.replace_rule_review_state(
+    await seed_native_empty_rule_review_state(
+        session,
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
         scope_hash=metadata.workflow_gate_scope_hashes["workflow_gate:structured_placeholder_rules:scope_hash"],
-        reviewed_empty=True,
-    )
-    await session.replace_rule_review_state(
-        rule_domain=PLACEHOLDER_RULE_DOMAIN,
-        scope_hash="placeholder-rules-imported",
-        reviewed_empty=False,
     )
     return game_data, setting, text_rules
 

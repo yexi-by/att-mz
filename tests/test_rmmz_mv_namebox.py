@@ -5,6 +5,10 @@ from __future__ import annotations
 from tests.rmmz_writeback_contract_fixtures import *
 from tests.current_text_fact_scope import read_current_text_fact_scope_for_test
 
+from tests.native_rule_seed import (
+    seed_native_mv_virtual_namebox_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.persistence.records import TextFactReadFilter
 from app.rmmz.mv_namebox import parse_mv_virtual_namebox_rule_import_text
@@ -269,12 +273,12 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_split(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="en")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_mv_virtual_namebox_rules(
+        await seed_native_mv_virtual_namebox_rules(session,
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,
                     rule_name="yep-namebox-with-colon",
-                    pattern_text=r"^\\n<(?P<speaker>[^:>\r\n]+):> (?P<body>.*)$",
+                    pattern_text=r"^\\n<(?<speaker>[^:>\r\n]+):> (?<body>.*)$",
                     speaker_group="speaker",
                     body_group="body",
                     speaker_policy="translate",
@@ -337,12 +341,12 @@ async def test_native_rebuild_persists_mv_virtual_namebox_v2_fact_for_standalone
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_mv_virtual_namebox_rules(
+        await seed_native_mv_virtual_namebox_rules(session,
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,
                     rule_name="angle-standalone",
-                    pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+                    pattern_text=r"^<(?<speaker>[^\\<>\r\n]{1,80})>\s*$",
                     speaker_group="speaker",
                     body_group="",
                     speaker_policy="translate",
@@ -406,7 +410,7 @@ async def test_native_rebuild_weak_mv_namebox_rule_splits_colon_inside_angle_spe
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="en")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
+        await seed_native_mv_virtual_namebox_rules(session, _mv_virtual_namebox_rule_records())
 
     report = await AgentToolkitService(
         game_registry=registry,
@@ -458,7 +462,7 @@ async def test_validate_mv_namebox_rules_rejects_empty_speaker_after_weak_split(
                 "rules": [
                     {
                         "name": "weak-yep",
-                        "pattern": r"^(?P<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?P<speaker>[^>\r\n]{0,80})>(?P<body>.*)$",
+                        "pattern": r"^(?<command>\\(?:[Nn](?:[CcRr])?|[Rr]))<(?<speaker>[^>\r\n]{0,80})>(?<body>.*)$",
                         "speaker_group": "speaker",
                         "body_group": "body",
                         "speaker_policy": "translate",
@@ -670,7 +674,7 @@ async def test_native_write_back_rebuilds_mv_virtual_name_box_runtime_files(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
+        await seed_native_mv_virtual_namebox_rules(session, _mv_virtual_namebox_rule_records())
         _game_data, _setting, text_rules = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_mv_game_dir,
@@ -915,7 +919,7 @@ async def test_mv_virtual_name_box_rule_conflict_reports_text_location(minimal_m
         MvVirtualNameboxRuleRecord(
             rule_order=999,
             rule_name="standalone-colon-copy",
-            pattern_text=r"^(?P<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$",
+            pattern_text=r"^(?<speaker>[^\\「『【\[\]()（）:：\r\n]{1,40})\s*[:：]\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",

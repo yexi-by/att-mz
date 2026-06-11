@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_placeholder_rules,
+    seed_native_plugin_text_rules,
+)
 from tests.rmmz_writeback_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
@@ -220,7 +226,7 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -230,7 +236,7 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -239,7 +245,7 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
                 )
             ]
         )
-        await session.replace_placeholder_rules([placeholder_record])
+        await seed_native_placeholder_rules(session, [placeholder_record])
         setting = load_setting(source_language=session.source_language)
         text_rules = TextRules.from_setting(
             setting.text_rules,
@@ -251,26 +257,26 @@ async def test_direct_write_back_ignores_unrelated_active_runtime_read_error_bef
             ),
             structured_placeholder_rules=(),
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
         scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=(),
             ),
-            reviewed_empty=True,
         )
         await write_current_translation_items_for_test(
             session,

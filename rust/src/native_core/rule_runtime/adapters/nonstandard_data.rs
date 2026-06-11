@@ -101,8 +101,38 @@ fn normalize_nonstandard_data_rule_array(
             ));
             continue;
         };
-        for (field_name, rule_type) in [("paths", "translated"), ("excluded_paths", "excluded")] {
-            let Some(paths) = object.get(field_name).and_then(Value::as_array) else {
+        let file_hash = object
+            .get("file_hash")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if object
+            .get("skipped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            rules.push(NormalizedRuleInput {
+                domain: RuleDomain::NonstandardData,
+                rule_order: rules.len() as i64,
+                matcher_kind: MatcherKind::DomainPayload,
+                matcher_value: String::new(),
+                payload_json: serde_json::json!({
+                    "file_name": file_name,
+                    "file_hash": file_hash,
+                    "path": "",
+                    "path_kind": "skipped",
+                }),
+            });
+            continue;
+        }
+        for (field_names, path_kind) in [
+            (["paths", "path_templates"], "translate"),
+            (["excluded_paths", "excluded_path_templates"], "excluded"),
+        ] {
+            let Some(paths) = field_names
+                .iter()
+                .find_map(|field_name| object.get(*field_name).and_then(Value::as_array))
+            else {
                 continue;
             };
             for path in paths {
@@ -112,7 +142,7 @@ fn normalize_nonstandard_data_rule_array(
                     issues.push(nonstandard_data_issue(
                         "nonstandard_data_path_empty",
                         "非标准 data path template 不能为空".to_string(),
-                        field_name,
+                        path_kind,
                         serde_json::json!({"index": item_index, "file_name": file_name}),
                     ));
                     continue;
@@ -124,8 +154,9 @@ fn normalize_nonstandard_data_rule_array(
                     matcher_value: path_template.to_string(),
                     payload_json: serde_json::json!({
                         "file_name": file_name,
+                        "file_hash": file_hash,
                         "path": path_template,
-                        "rule_type": rule_type,
+                        "path_kind": path_kind,
                     }),
                 });
             }

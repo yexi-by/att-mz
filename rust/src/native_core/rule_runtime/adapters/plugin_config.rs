@@ -40,6 +40,11 @@ pub(crate) fn normalize_plugin_config_rules(
             .get("plugin_index")
             .and_then(Value::as_i64)
             .unwrap_or(-1);
+        let plugin_hash = object
+            .get("plugin_hash")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
         let Some(paths) = object
             .get("paths")
             .or_else(|| object.get("path_templates"))
@@ -72,6 +77,7 @@ pub(crate) fn normalize_plugin_config_rules(
                 payload_json: serde_json::json!({
                     "plugin_index": plugin_index,
                     "plugin_name": plugin_name,
+                    "plugin_hash": plugin_hash,
                     "path": path_template,
                 }),
             });

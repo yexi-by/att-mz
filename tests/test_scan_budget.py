@@ -44,6 +44,58 @@ def test_no_python_external_regex_runtime_remains() -> None:
         assert needle not in combined
 
 
+def test_no_python_rule_store_write_api_remains() -> None:
+    """规则导入写库主路径不得保留 Python 第二事实源。"""
+    files = [path for path in Path("app").rglob("*.py") if "__pycache__" not in path.parts]
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in files)
+
+    forbidden = [
+        "def replace_plugin_text_rules",
+        "def replace_plugin_source_text_rules",
+        "def replace_nonstandard_data_text_rules",
+        "def replace_note_tag_text_rules",
+        "def replace_event_command_text_rules",
+        "def replace_placeholder_rules",
+        "def replace_structured_placeholder_rules",
+        "def replace_source_residual_rules",
+        "def replace_mv_virtual_namebox_rules",
+        "def replace_rule_review_state",
+        "def delete_rule_review_state",
+        "RuleImport" + "UnitOfWork",
+        "UPSERT_RULE" + "_SET",
+        "UPSERT_RULE" + "_REVIEW_STATE",
+        "DELETE_RULES" + "_BY_DOMAIN",
+    ]
+    for needle in forbidden:
+        assert needle not in combined
+
+
+def test_user_rule_fixtures_use_current_pcre2_named_capture_syntax() -> None:
+    """当前测试、规格和 Skill 示例不得继续把 Python/Rust 交集写法当推荐契约。"""
+    roots = [
+        Path("tests"),
+        Path("docs/superpowers/specs"),
+        Path("skills"),
+        Path("setting.example.toml"),
+    ]
+    old_named_capture = "(?P" + "<"
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            files.append(root)
+            continue
+        if root.is_dir():
+            files.extend(
+                path
+                for path in root.rglob("*")
+                if path.suffix in {".py", ".md", ".toml"}
+                and "__pycache__" not in path.parts
+            )
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in files)
+
+    assert old_named_capture not in combined
+
+
 def test_source_text_required_pattern_stays_on_pcre2_runtime() -> None:
     """Rust 热路径不得用 regex crate 执行配置中的源文识别正则。"""
     files = [path for path in Path("rust/src/native_core").rglob("*.rs")]

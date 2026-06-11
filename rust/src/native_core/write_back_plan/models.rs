@@ -1,6 +1,6 @@
 use crate::native_core::javascript_ast::JavaScriptStringSpan;
 use crate::native_core::models::NativeTextRules;
-use crate::native_core::rule_runtime::engine::Pcre2Pattern;
+use crate::native_core::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -228,7 +228,7 @@ impl WritePlanMode {
 
 pub(super) struct TextPlanRules {
     pub(super) long_text_line_width_limit: usize,
-    pub(super) line_width_count_pattern: regex::Regex,
+    pub(super) line_width_count_pattern: Pcre2Pattern,
     pub(super) line_split_punctuations: Vec<String>,
     pub(super) preserve_wrapping_punctuation_pairs: Vec<(String, String)>,
     pub(super) protected_macro_pattern: regex::Regex,
@@ -253,8 +253,11 @@ impl TextPlanRules {
             .ok_or_else(|| "写回计划缺少 preserve_wrapping_punctuation_pairs".to_string())?;
         Ok(Self {
             long_text_line_width_limit,
-            line_width_count_pattern: regex::Regex::new(line_width_count_pattern)
-                .map_err(|error| format!("文本行宽计数字符正则无效: {error}"))?,
+            line_width_count_pattern: Pcre2Engine::compile(
+                line_width_count_pattern,
+                &Pcre2EngineConfig::default_runtime(),
+            )
+            .map_err(|error| format!("文本行宽计数字符 PCRE2 正则无效: {}", error.message))?,
             line_split_punctuations,
             preserve_wrapping_punctuation_pairs,
             protected_macro_pattern: regex::Regex::new(r"_[A-Z][A-Z0-9]+_")
@@ -265,6 +268,7 @@ impl TextPlanRules {
     pub(super) fn is_line_width_counted_char(&self, character: char) -> bool {
         self.line_width_count_pattern
             .is_match(&character.to_string())
+            .unwrap_or(false)
     }
 }
 
@@ -285,5 +289,29 @@ impl FontPlanSummary {
             copied: false,
             records: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_width_count_pattern_uses_pcre2_runtime() {
+        let rules = TextPlanRules::from_payload(&SettingPayload {
+            quality_text_rules: None,
+            replacement_font_path: None,
+            source_font_names: None,
+            allowed_translation_paths: None,
+            long_text_line_width_limit: Some(26),
+            line_width_count_pattern: Some(r"(?=.)\S".to_string()),
+            line_split_punctuations: Some(vec!["。".to_string()]),
+            preserve_wrapping_punctuation_pairs: Some(vec![("「".to_string(), "」".to_string())]),
+            plan_content_output_dir: None,
+        })
+        .expect("PCRE2-only line width pattern should compile");
+
+        assert!(rules.is_line_width_counted_char('A'));
+        assert!(!rules.is_line_width_counted_char(' '));
     }
 }

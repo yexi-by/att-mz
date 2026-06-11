@@ -15,6 +15,7 @@ from app.native_scope_index import (
     evaluate_native_scope_gate,
     rebuild_native_scope_index_storage,
 )
+from app.native_rule_runtime import build_rules_fingerprint, runtime_config_patterns_from_setting
 from app.persistence import TargetGameSession
 from app.persistence.records import (
     TextFactRecord,
@@ -24,18 +25,7 @@ from app.persistence.records import (
 )
 from app.persistence.repository import current_timestamp_text
 from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
-from app.rmmz.schema import (
-    EventCommandTextRuleRecord,
-    MvVirtualNameboxRuleRecord,
-    NonstandardDataTextRuleRecord,
-    NoteTagTextRuleRecord,
-    PlaceholderRuleRecord,
-    PluginSourceTextRuleRecord,
-    PluginTextRuleRecord,
-    StructuredPlaceholderRuleRecord,
-    TranslationData,
-    TranslationItem,
-)
+from app.rmmz.schema import TranslationData, TranslationItem
 from app.rmmz.source_snapshot import SourceSnapshotFileRecord
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, coerce_json_value
 from app.rmmz.loader import resolve_game_layout
@@ -739,29 +729,17 @@ async def collect_text_index_rules_fingerprint(
     text_rules: TextRules,
 ) -> str:
     """对影响翻译源文本范围的配置和数据库规则生成稳定指纹。"""
+    native_rules_fingerprint = build_rules_fingerprint(
+        {
+            "db_path": str(session.db_path),
+            "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+        }
+    )
     payload: JsonObject = {
         "source_language": session.source_language,
         "target_language": session.target_language,
         "prompt_context_version": TEXT_INDEX_PROMPT_CONTEXT_VERSION,
-        "text_rules": coerce_json_value(cast(object, text_rules.setting.model_dump(mode="json"))),
-        "plugin_text_rules": _plugin_text_rules_payload(await session.read_plugin_text_rules()),
-        "plugin_source_text_rules": _plugin_source_text_rules_payload(
-            await session.read_plugin_source_text_rules()
-        ),
-        "event_command_text_rules": _event_command_text_rules_payload(
-            await session.read_event_command_text_rules()
-        ),
-        "note_tag_text_rules": _note_tag_text_rules_payload(await session.read_note_tag_text_rules()),
-        "nonstandard_data_text_rules": _nonstandard_data_text_rules_payload(
-            await session.read_nonstandard_data_text_rules()
-        ),
-        "placeholder_rules": _placeholder_rules_payload(await session.read_placeholder_rules()),
-        "structured_placeholder_rules": _structured_placeholder_rules_payload(
-            await session.read_structured_placeholder_rules()
-        ),
-        "mv_virtual_namebox_rules": _mv_virtual_namebox_rules_payload(
-            await session.read_mv_virtual_namebox_rules()
-        ),
+        "native_rules_fingerprint": native_rules_fingerprint,
     }
     return stable_json_fingerprint(payload)
 
@@ -929,132 +907,6 @@ def _string_array(values: Iterable[str]) -> JsonArray:
     for value in values:
         result.append(value)
     return result
-
-
-def _plugin_text_rules_payload(records: list[PluginTextRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: item.plugin_index):
-        payload.append(
-            {
-                "plugin_index": record.plugin_index,
-                "plugin_name": record.plugin_name,
-                "plugin_hash": record.plugin_hash,
-                "path_templates": _string_array(record.path_templates),
-            }
-        )
-    return payload
-
-
-def _plugin_source_text_rules_payload(records: list[PluginSourceTextRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: item.file_name):
-        payload.append(
-            {
-                "file_name": record.file_name,
-                "selectors": _string_array(sorted(record.selectors)),
-                "excluded_selectors": _string_array(sorted(record.excluded_selectors)),
-            }
-        )
-    return payload
-
-
-def _event_command_text_rules_payload(records: list[EventCommandTextRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(
-        records,
-        key=lambda item: (
-            item.command_code,
-            [(filter_item.index, filter_item.value) for filter_item in item.parameter_filters],
-            item.path_templates,
-        ),
-    ):
-        parameter_filters: JsonArray = [
-            {"index": item.index, "value": item.value}
-            for item in sorted(record.parameter_filters, key=lambda item: (item.index, item.value))
-        ]
-        payload.append(
-            {
-                "command_code": record.command_code,
-                "parameter_filters": parameter_filters,
-                "path_templates": _string_array(sorted(record.path_templates)),
-            }
-        )
-    return payload
-
-
-def _note_tag_text_rules_payload(records: list[NoteTagTextRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: item.file_name):
-        payload.append(
-            {
-                "file_name": record.file_name,
-                "tag_names": _string_array(sorted(record.tag_names)),
-            }
-        )
-    return payload
-
-
-def _nonstandard_data_text_rules_payload(records: list[NonstandardDataTextRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: item.file_name):
-        payload.append(
-            {
-                "file_name": record.file_name,
-                "file_hash": record.file_hash,
-                "path_templates": _string_array(sorted(record.path_templates)),
-                "excluded_path_templates": _string_array(sorted(record.excluded_path_templates)),
-                "skipped": record.skipped,
-            }
-        )
-    return payload
-
-
-def _placeholder_rules_payload(records: list[PlaceholderRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: (item.pattern_text, item.placeholder_template)):
-        payload.append(
-            {
-                "pattern_text": record.pattern_text,
-                "placeholder_template": record.placeholder_template,
-            }
-        )
-    return payload
-
-
-def _structured_placeholder_rules_payload(records: list[StructuredPlaceholderRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: item.rule_name):
-        protected_groups: JsonObject = {
-            key: record.protected_groups[key]
-            for key in sorted(record.protected_groups)
-        }
-        payload.append(
-            {
-                "rule_name": record.rule_name,
-                "rule_type": record.rule_type,
-                "pattern_text": record.pattern_text,
-                "translatable_group": record.translatable_group,
-                "protected_groups": protected_groups,
-            }
-        )
-    return payload
-
-
-def _mv_virtual_namebox_rules_payload(records: list[MvVirtualNameboxRuleRecord]) -> JsonArray:
-    payload: JsonArray = []
-    for record in sorted(records, key=lambda item: item.rule_order):
-        payload.append(
-            {
-                "rule_order": record.rule_order,
-                "rule_name": record.rule_name,
-                "pattern_text": record.pattern_text,
-                "speaker_group": record.speaker_group,
-                "body_group": record.body_group,
-                "speaker_policy": record.speaker_policy,
-                "render_template": record.render_template,
-            }
-        )
-    return payload
 
 
 __all__ = [

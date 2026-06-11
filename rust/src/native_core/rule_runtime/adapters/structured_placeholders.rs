@@ -47,6 +47,27 @@ pub(crate) fn normalize_structured_placeholder_rules(
             ));
             continue;
         };
+        let Some(rule_name) = rule_object
+            .get("name")
+            .or_else(|| rule_object.get("rule_name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            issues.push(structured_issue(
+                "structured_placeholder_name_invalid",
+                "结构化占位符规则 name 不能为空".to_string(),
+                "name",
+                serde_json::json!({"index": index, "pattern": pattern}),
+            ));
+            continue;
+        };
+        let rule_type = rule_object
+            .get("rule_type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .unwrap_or("paired_shell");
         let Some(protected_groups) = rule_object
             .get("protected_groups")
             .and_then(Value::as_object)
@@ -123,7 +144,13 @@ pub(crate) fn normalize_structured_placeholder_rules(
             rule_order: index as i64,
             matcher_kind: MatcherKind::Pcre2Pattern,
             matcher_value: pattern.to_string(),
-            payload_json: rule.clone(),
+            payload_json: serde_json::json!({
+                "rule_name": rule_name,
+                "rule_type": rule_type,
+                "pattern": pattern,
+                "translatable_group": translatable_group,
+                "protected_groups": protected_groups,
+            }),
         });
     }
 

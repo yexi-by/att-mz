@@ -38,14 +38,18 @@ from .rule_identity import (
     RuleFactProbe,
     resolve_current_rule_fact_hits,
     resolve_current_rule_translation_items,
-    stale_translation_fact_ids,
+)
+from .rule_import_runtime import (
+    cleanup_input_from_rule_hits,
+    commit_deleted_translation_count,
+    commit_prepared_rule_import,
+    write_prepared_cleanup_backup,
 )
 from app.text_fact_identity import require_translation_fact_identities
 from app.event_command_text.native_validation import (
     NativeEventCommandRuleValidationContext,
     build_native_event_command_rule_validation_context,
 )
-from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.flow_gate import (
     ensure_empty_rule_confirmed,
     note_tag_rule_scope_hash_for_text_rules,
@@ -59,11 +63,10 @@ from app.native_rule_runtime import (
     RuleImportCommitResult,
     RuleImportPrepareResult,
     RuleRuntimeIssue,
-    commit_rule_import,
     prepare_rule_import,
 )
 from app.note_tag_text.sources import matched_note_file_names
-from app.persistence import RuleImportUnitOfWork, TargetGameSession
+from app.persistence import TargetGameSession
 from app.plugin_text import NativePluginRuleValidationContext
 from app.plugin_source_text import (
     build_plugin_source_rule_records_from_import,
@@ -79,10 +82,6 @@ from app.rmmz.mv_namebox import (
 )
 from app.rmmz.mv_namebox_native import native_mv_virtual_namebox_candidates_payload, scan_native_mv_virtual_namebox
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
-from app.rule_review import (
-    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-    NOTE_TAG_TEXT_RULE_DOMAIN,
-)
 from app.plugin_source_text import build_native_plugin_source_scan
 from app.source_residual import parse_source_residual_rule_import_payload
 
@@ -437,18 +436,6 @@ class RuleValidationAgentMixin:
                 game_data = await self._load_translation_source_game_data(session)
                 if game_data.layout.engine_kind != "mv":
                     raise RuntimeError("MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用")
-                prepare_result = prepare_rule_import(
-                    {
-                        "mode": "import",
-                        "domain": "mv_virtual_namebox",
-                        "rules_payload": rules_payload,
-                        "game_context": {"engine_kind": game_data.layout.engine_kind},
-                        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
-                    }
-                )
-                if prepare_result.errors:
-                    messages = "；".join(error.message for error in prepare_result.errors)
-                    raise RuntimeError(messages)
                 native_scan = scan_native_mv_virtual_namebox(
                     game_data=game_data,
                     records=records,
@@ -458,29 +445,32 @@ class RuleValidationAgentMixin:
                 if rule_errors:
                     messages = "；".join(_format_mv_namebox_rule_error(error_detail) for error_detail in rule_errors)
                     raise RuntimeError(messages)
-                if prepare_result.plan_token is None:
-                    raise RuntimeError("MV 虚拟名字框规则导入缺少 rule_runtime plan token")
-                commit_result = commit_rule_import(
+                prepare_result = prepare_rule_import(
                     {
+                        "mode": "import",
                         "db_path": str(session.db_path),
                         "domain": "mv_virtual_namebox",
-                        "plan_token": prepare_result.plan_token,
-                        "backup_path": None,
+                        "rules_payload": rules_payload,
+                        "game_context": {
+                            "engine_kind": game_data.layout.engine_kind,
+                            "scope_hash": native_scan.scope_hash,
+                        },
+                        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+                        "confirm_empty": confirm_empty,
                     }
+                )
+                if prepare_result.errors:
+                    messages = "；".join(error.message for error in prepare_result.errors)
+                    raise RuntimeError(messages)
+                commit_result = commit_prepared_rule_import(
+                    db_path=session.db_path,
+                    domain="mv_virtual_namebox",
+                    prepare_result=prepare_result,
+                    backup_path=None,
                 )
                 if commit_result.errors:
                     messages = "；".join(error.message for error in commit_result.errors)
                     raise RuntimeError(messages)
-                async with RuleImportUnitOfWork(session):
-                    await session.replace_mv_virtual_namebox_rules(records)
-                    if records:
-                        await session.delete_rule_review_state(rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
-                    else:
-                        await session.replace_rule_review_state(
-                            rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-                            scope_hash=native_scan.scope_hash,
-                            reviewed_empty=True,
-                        )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则导入失败: {type(error).__name__}: {error}")],
@@ -655,35 +645,55 @@ class RuleValidationAgentMixin:
                     for hit in record_hits
                 ]
                 new_note_hits = await resolve_current_rule_fact_hits(session, new_note_probes)
-                stale_fact_ids = stale_translation_fact_ids(
+                cleanup_input = cleanup_input_from_rule_hits(
                     old_items=prior_note_rule_items,
                     current_rule_hits=new_note_hits,
                 )
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
-                async with RuleImportUnitOfWork(session):
-                    if stale_fact_ids:
-                        stale_items = await session.read_translated_items_by_fact_ids(stale_fact_ids)
-                        backup = await write_rule_import_translation_backup(
-                            game_title=game_title,
-                            domain="note-tag-rules",
-                            items=stale_items,
-                        )
-                        if backup is not None:
-                            deleted_translation_backup_path = backup.backup_path
-                        deleted_translation_items = await session.delete_translation_items_by_fact_ids(stale_fact_ids)
-                    await session.replace_note_tag_text_rules(records)
-                    if records:
-                        await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
-                    else:
-                        await session.replace_rule_review_state(
-                            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                prepare_result = prepare_rule_import(
+                    {
+                        "mode": "import",
+                        "db_path": str(session.db_path),
+                        "domain": "note_tags",
+                        "rules_payload": {
+                            record.file_name: list(record.tag_names)
+                            for record in records
+                        },
+                        "game_context": {
+                            "scope_hash": note_tag_rule_scope_hash_for_text_rules(
                                 game_data=game_data,
                                 text_rules=text_rules,
-                            ),
-                            reviewed_empty=True,
-                        )
+                            )
+                        },
+                        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+                        "confirm_empty": confirm_empty,
+                        "cleanup_input": cleanup_input,
+                    }
+                )
+                if prepare_result.errors:
+                    messages = "；".join(error.message for error in prepare_result.errors)
+                    raise RuntimeError(messages)
+                (
+                    deleted_translation_items,
+                    deleted_translation_backup_path,
+                    _cleanup_plan,
+                ) = await write_prepared_cleanup_backup(
+                    session=session,
+                    game_title=game_title,
+                    backup_domain="note-tag-rules",
+                    prepare_result=prepare_result,
+                )
+                commit_result = commit_prepared_rule_import(
+                    db_path=session.db_path,
+                    domain="note_tags",
+                    prepare_result=prepare_result,
+                    backup_path=deleted_translation_backup_path,
+                )
+                if commit_result.errors:
+                    messages = "；".join(error.message for error in commit_result.errors)
+                    raise RuntimeError(messages)
+                deleted_translation_items = commit_deleted_translation_count(commit_result)
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
@@ -793,16 +803,11 @@ class RuleValidationAgentMixin:
             )
         if prepare_result.errors:
             return _source_residual_prepare_report(result=prepare_result, records=records)
-        if prepare_result.plan_token is None:
-            raise RuntimeError("源文残留例外规则导入缺少 rule_runtime plan token")
-
-        commit_result = commit_rule_import(
-            {
-                "db_path": str(db_path),
-                "domain": "source_residual",
-                "plan_token": prepare_result.plan_token,
-                "backup_path": None,
-            }
+        commit_result = commit_prepared_rule_import(
+            db_path=db_path,
+            domain="source_residual",
+            prepare_result=prepare_result,
+            backup_path=None,
         )
         if commit_result.errors:
             return _source_residual_commit_report(
@@ -810,8 +815,6 @@ class RuleValidationAgentMixin:
                 prepare_result=prepare_result,
                 records=records,
             )
-        async with await self.game_registry.open_game(game_title) as session:
-            await session.replace_source_residual_rules(records)
         return _source_residual_commit_report(
             result=commit_result,
             prepare_result=prepare_result,
@@ -1035,25 +1038,49 @@ class RuleValidationAgentMixin:
                     for hit in record_hits
                 ]
                 new_plugin_source_hits = await resolve_current_rule_fact_hits(session, new_plugin_source_probes)
-                stale_fact_ids = stale_translation_fact_ids(
+                cleanup_input = cleanup_input_from_rule_hits(
                     old_items=prior_translated_items,
                     current_rule_hits=new_plugin_source_hits,
                 )
                 deleted_translation_items = 0
                 deleted_translation_backup_path: str | None = None
-                async with RuleImportUnitOfWork(session):
-                    if stale_fact_ids:
-                        stale_items = await session.read_translated_items_by_fact_ids(stale_fact_ids)
-                        backup = await write_rule_import_translation_backup(
-                            game_title=game_title,
-                            domain="plugin-source-rules",
-                            items=stale_items,
-                        )
-                        if backup is not None:
-                            deleted_translation_backup_path = backup.backup_path
-                        deleted_translation_items = await session.delete_translation_items_by_fact_ids(stale_fact_ids)
-                    await session.replace_plugin_source_text_rules(records)
-                    await session.clear_plugin_source_runtime_write_maps()
+                prepare_result = prepare_rule_import(
+                    {
+                        "mode": "import",
+                        "db_path": str(session.db_path),
+                        "domain": "plugin_source",
+                        "rules_payload": {
+                            "rules": plugin_source_rule_records_to_import_json(records),
+                        },
+                        "game_context": {"scope_hash": scan.scope_hash},
+                        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+                        "confirm_empty": confirm_empty,
+                        "cleanup_input": cleanup_input,
+                    }
+                )
+                if prepare_result.errors:
+                    messages = "；".join(error.message for error in prepare_result.errors)
+                    raise RuntimeError(messages)
+                (
+                    deleted_translation_items,
+                    deleted_translation_backup_path,
+                    _cleanup_plan,
+                ) = await write_prepared_cleanup_backup(
+                    session=session,
+                    game_title=game_title,
+                    backup_domain="plugin-source-rules",
+                    prepare_result=prepare_result,
+                )
+                commit_result = commit_prepared_rule_import(
+                    db_path=session.db_path,
+                    domain="plugin_source",
+                    prepare_result=prepare_result,
+                    backup_path=deleted_translation_backup_path,
+                )
+                if commit_result.errors:
+                    messages = "；".join(error.message for error in commit_result.errors)
+                    raise RuntimeError(messages)
+                deleted_translation_items = commit_deleted_translation_count(commit_result)
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],

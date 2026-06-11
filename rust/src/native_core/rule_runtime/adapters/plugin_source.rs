@@ -50,6 +50,11 @@ pub(crate) fn normalize_plugin_source_rules(
             ));
             continue;
         };
+        let file_hash = rule
+            .get("file_hash")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
         let Some(selectors) = rule.get("selectors").and_then(Value::as_array) else {
             issues.push(plugin_source_issue(
                 "plugin_source_selectors_invalid",
@@ -80,9 +85,24 @@ pub(crate) fn normalize_plugin_source_rules(
                 matcher_kind: MatcherKind::AstSelector,
                 matcher_value: selector_text.to_string(),
                 payload_json: serde_json::json!({
-                    "file": file_name,
+                    "file_name": file_name,
+                    "file_hash": file_hash,
                     "selector": selector_text,
-                    "excluded_selectors": excluded_selectors,
+                    "selector_kind": "translate",
+                }),
+            });
+        }
+        for selector_text in excluded_selectors {
+            rules.push(NormalizedRuleInput {
+                domain: RuleDomain::PluginSource,
+                rule_order: rules.len() as i64,
+                matcher_kind: MatcherKind::AstSelector,
+                matcher_value: selector_text.clone(),
+                payload_json: serde_json::json!({
+                    "file_name": file_name,
+                    "file_hash": file_hash,
+                    "selector": selector_text,
+                    "selector_kind": "excluded",
                 }),
             });
         }

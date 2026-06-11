@@ -419,7 +419,7 @@ def test_structural_source_residual_rule_only_masks_protocol_terms() -> None:
             SourceResidualRuleRecord(
                 rule_id="structural:0",
                 rule_type="structural",
-                pattern_text=r"^(?P<protocol>なまえ):(?P<visible>.*)$",
+                pattern_text=r"^(?<protocol>なまえ):(?<visible>.*)$",
                 allowed_terms=["なまえ"],
                 check_group="visible",
                 reason="protocol_label",
@@ -482,7 +482,7 @@ def test_structural_source_residual_rule_respects_ignore_case() -> None:
             SourceResidualRuleRecord(
                 rule_id="structural:0",
                 rule_type="structural",
-                pattern_text=r"^(?P<protocol>label):(?P<visible>.*)$",
+                pattern_text=r"^(?<protocol>label):(?<visible>.*)$",
                 allowed_terms=["LABEL"],
                 check_group="visible",
                 reason="protocol_label",
@@ -678,7 +678,7 @@ def test_structured_placeholder_rule_keeps_shell_and_translates_inner_text() -> 
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="MINI_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -713,7 +713,7 @@ def test_structured_placeholder_rule_uses_distinct_indices_for_same_offsets() ->
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="TAGGED_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Label\s+id=\d+:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Label\s+id=\d+:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_TAGGED_LABEL_OPEN_{index}]",
@@ -750,7 +750,7 @@ def test_structured_placeholder_rule_rejects_missing_shell_marker() -> None:
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="MINI_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -779,7 +779,7 @@ def test_structured_placeholder_rule_rejects_normal_rule_overlap() -> None:
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="MINI_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -808,7 +808,7 @@ def test_structured_placeholder_rule_rejects_translatable_group_overlap() -> Non
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="MINI_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+        pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -837,7 +837,7 @@ def test_structured_placeholder_rule_allows_standard_control_in_translatable_gro
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="D_TEXT_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open>^D_TEXT\s+)(?P<text>.*?)(?P<close>\s+48$)",
+        pattern_text=r"(?<open>^D_TEXT\s+)(?<text>.*?)(?<close>\s+48$)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_D_TEXT_OPEN_{index}]",
@@ -1058,7 +1058,7 @@ def test_structured_placeholder_rules_cli_keeps_string_values_strict() -> None:
             "paired_shell_rules": [
                 {
                     "name": 123,
-                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "pattern": r"(?<open><tag>)(?<text>[^<]+)(?<close></tag>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_TAG_OPEN_{index}]",
@@ -1081,7 +1081,7 @@ def test_structured_placeholder_rules_import_normalizes_integer_name() -> None:
             "paired_shell_rules": [
                 {
                     "name": 123,
-                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "pattern": r"(?<open><tag>)(?<text>[^<]+)(?<close></tag>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_TAG_OPEN_{index}]",
@@ -1104,7 +1104,7 @@ def test_structured_placeholder_rules_import_rejects_boolean_template() -> None:
             "paired_shell_rules": [
                 {
                     "name": "TAG",
-                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "pattern": r"(?<open><tag>)(?<text>[^<]+)(?<close></tag>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": True,

@@ -9,6 +9,10 @@ import pytest
 from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.application.flow_gate import (
     event_command_rule_scope_hash_for_setting,
@@ -118,45 +122,45 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash=collect_native_plugin_config_scope_hash(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
             scope_hash=event_command_rule_scope_hash_for_setting(
                 game_data=game_data,
                 setting=setting,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=normal_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=text_rules.structured_placeholder_rules,
             ),
-            reviewed_empty=True,
         )
         target_item = next(item for item in scope.active_items() if item.item_type != "array")
         target_path = target_item.location_path

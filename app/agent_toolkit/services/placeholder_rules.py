@@ -32,13 +32,17 @@ from app.application.flow_gate import (
     build_structured_placeholder_coverage_result,
     ensure_empty_rule_confirmed,
 )
-from app.application.rule_import_backup import RuleImportBackupDomain, write_rule_import_translation_backup
 from app.native_rule_runtime import (
     RuleImportCommitResult,
     RuleImportPrepareResult,
     RuleRuntimeIssue,
-    commit_rule_import,
     prepare_rule_import,
+)
+from app.agent_toolkit.services.rule_import_runtime import (
+    cleanup_input_from_stale_items,
+    commit_deleted_translation_count,
+    commit_prepared_rule_import,
+    write_prepared_cleanup_backup,
 )
 from app.agent_toolkit.reports import AgentIssue
 from app.native_placeholder_scan import (
@@ -46,7 +50,7 @@ from app.native_placeholder_scan import (
     count_uncovered_placeholder_candidate_details,
 )
 from app.config.schemas import Setting, TextRulesSetting
-from app.persistence import RuleImportUnitOfWork, TargetGameSession
+from app.persistence import TargetGameSession
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
 from app.rmmz.json_types import JsonArray, JsonObject, JsonValue
 from app.rmmz.schema import (
@@ -55,9 +59,7 @@ from app.rmmz.schema import (
     TranslationData,
     TranslationItem,
 )
-from app.rule_review import PLACEHOLDER_RULE_DOMAIN, STRUCTURED_PLACEHOLDER_RULE_DOMAIN
 from app.rule_review_decision import RuleCoverageResult
-from app.text_fact_counts import read_current_matching_translation_fact_ids
 from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
@@ -108,14 +110,17 @@ def _placeholder_rule_runtime_payload(
     rules_payload: JsonObject,
     setting: Setting,
     db_path: Path | None,
+    confirm_empty: bool = False,
+    game_context: JsonObject | None = None,
 ) -> JsonObject:
     """构造普通占位符规则运行时载荷。"""
     payload: JsonObject = {
         "mode": mode,
         "domain": domain,
         "rules_payload": rules_payload,
-        "game_context": {},
+        "game_context": game_context or {},
         "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+        "confirm_empty": confirm_empty,
     }
     if db_path is not None:
         payload["db_path"] = str(db_path)
@@ -202,40 +207,13 @@ def _coverage_report_details(coverage: RuleCoverageResult) -> JsonObject:
     }
 
 
-def _cleanup_plan_details(
-    *,
-    domain: str,
-    deleted_translation_count: int,
-    backup_path: str | None,
-    stale_items: list[TranslationItem],
-) -> JsonObject:
-    """渲染导入后清理计划和结果。"""
-    return {
-        "domain": domain,
-        "deleted_translation_count": deleted_translation_count,
-        "backup_required": bool(stale_items),
-        "backup_path": backup_path,
-        "items": [
-            {
-                "fact_id": item.fact_id,
-                "location_path": item.location_path,
-                "item_type": item.item_type,
-            }
-            for item in stale_items
-        ],
-    }
-
-
-async def _delete_stale_translations_with_backup(
+async def _placeholder_cleanup_input_for_text_rule_change(
     *,
     session: TargetGameSession,
-    game_title: str,
-    backup_domain: RuleImportBackupDomain,
-    backup_output_dir: Path | None,
     prior_text_rules: TextRules | None = None,
     proposed_text_rules: TextRules | None = None,
-) -> tuple[int, str | None, JsonObject]:
-    """导入规则后先备份、再清理不再匹配当前文本事实的已保存译文。"""
+) -> JsonObject:
+    """为 Rust prepare 生成占位符规则变化导致的译文清理输入。"""
     translated_items = await session.read_translated_items()
     if prior_text_rules is not None and proposed_text_rules is not None:
         stale_items = [
@@ -245,36 +223,8 @@ async def _delete_stale_translations_with_backup(
             != _translation_item_model_lines(item, proposed_text_rules)
         ]
     else:
-        current_fact_ids = await read_current_matching_translation_fact_ids(session)
-        stale_items = [
-            item
-            for item in translated_items
-            if item.fact_id is not None and item.fact_id not in current_fact_ids
-        ]
-    backup_path: str | None = None
-    deleted_count = 0
-    if stale_items:
-        backup = await write_rule_import_translation_backup(
-            game_title=game_title,
-            domain=backup_domain,
-            items=stale_items,
-            output_dir=backup_output_dir,
-        )
-        if backup is not None:
-            backup_path = backup.backup_path
-        deleted_count = await session.delete_translation_items_by_fact_ids(
-            [item.fact_id for item in stale_items if item.fact_id is not None]
-        )
-    return (
-        deleted_count,
-        backup_path,
-        _cleanup_plan_details(
-            domain=backup_domain,
-            deleted_translation_count=deleted_count,
-            backup_path=backup_path,
-            stale_items=stale_items,
-        ),
-    )
+        stale_items = []
+    return cleanup_input_from_stale_items(stale_items)
 
 
 def _translation_item_model_lines(item: TranslationItem, text_rules: TextRules) -> list[str]:
@@ -356,7 +306,18 @@ def _placeholder_import_report(
         *_runtime_issues_to_agent_issues(commit_result.warnings),
     ]
     if coverage.uncovered_count:
-        warnings.append(issue(reviewed_warning_code, reviewed_warning_message))
+        if imported_rule_count == 0:
+            warnings.append(issue(reviewed_warning_code, reviewed_warning_message))
+        else:
+            warnings.append(
+                issue(
+                    reviewed_warning_code.removesuffix("_reviewed"),
+                    reviewed_warning_message.replace(
+                        "，本次导入已记录当前审查状态",
+                        "，这些候选仍会在流程检查中提示",
+                    ),
+                )
+            )
     if deleted_translation_count > 0 and deleted_translation_backup_path is not None:
         warnings.append(
             issue(
@@ -659,6 +620,7 @@ class PlaceholderRuleAgentMixin:
                         rules_payload=rules_payload,
                         setting=setting,
                         db_path=db_path,
+                        confirm_empty=confirm_empty,
                     )
                 )
                 if prepare_result.errors:
@@ -724,34 +686,45 @@ class PlaceholderRuleAgentMixin:
                     text_rules=proposed_text_rules,
                     rule_count=len(custom_rules),
                 )
-                deleted_translation_items = 0
-                deleted_translation_backup_path: str | None = None
-                cleanup_plan: JsonObject = {}
-                rule_records = _placeholder_rule_records(custom_rules)
-                async with RuleImportUnitOfWork(session):
-                    (
-                        deleted_translation_items,
-                        deleted_translation_backup_path,
-                        cleanup_plan,
-                    ) = await _delete_stale_translations_with_backup(
-                        session=session,
+                cleanup_input = await _placeholder_cleanup_input_for_text_rule_change(
+                    session=session,
+                    prior_text_rules=current_text_rules,
+                    proposed_text_rules=proposed_text_rules,
+                )
+                prepare_payload = _placeholder_rule_runtime_payload(
+                    mode="import",
+                    domain="placeholders",
+                    rules_payload=rules_payload,
+                    setting=setting,
+                    db_path=db_path,
+                    confirm_empty=confirm_empty,
+                    game_context={"scope_hash": coverage.scope_hash},
+                )
+                prepare_payload["cleanup_input"] = cleanup_input
+                prepare_result = prepare_rule_import(prepare_payload)
+                if prepare_result.errors:
+                    return _placeholder_rule_runtime_prepare_report(
+                        result=prepare_result,
+                        source_label="--placeholder-rules",
                         game_title=game_title,
-                        backup_domain="placeholder-rules",
-                        backup_output_dir=backup_output_dir,
-                        prior_text_rules=current_text_rules,
-                        proposed_text_rules=proposed_text_rules,
+                        sample_count=0,
+                        details=_custom_placeholder_prepare_details(
+                            rules_payload=rules_payload,
+                            setting_text_rules=setting.text_rules,
+                        ),
                     )
-                    await session.replace_placeholder_rules(rule_records)
-                    if coverage.uncovered_count:
-                        await session.replace_rule_review_state(
-                            rule_domain=PLACEHOLDER_RULE_DOMAIN,
-                            scope_hash=coverage.scope_hash,
-                            reviewed_empty=not rule_records,
-                        )
-                    else:
-                        await session.delete_rule_review_state(
-                            rule_domain=PLACEHOLDER_RULE_DOMAIN,
-                        )
+                rule_records = _placeholder_rule_records(custom_rules)
+                (
+                    deleted_translation_items,
+                    deleted_translation_backup_path,
+                    cleanup_plan,
+                ) = await write_prepared_cleanup_backup(
+                    session=session,
+                    game_title=game_title,
+                    backup_domain="placeholder-rules",
+                    prepare_result=prepare_result,
+                    output_dir=backup_output_dir,
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[
@@ -769,17 +742,13 @@ class PlaceholderRuleAgentMixin:
                 },
                 details={},
             )
-        if prepare_result.plan_token is None:
-            raise RuntimeError("普通占位符规则导入缺少 rule_runtime plan token")
-
-        commit_result = commit_rule_import(
-            {
-                "db_path": str(db_path),
-                "domain": "placeholders",
-                "plan_token": prepare_result.plan_token,
-                "backup_path": deleted_translation_backup_path,
-            }
+        commit_result = commit_prepared_rule_import(
+            db_path=db_path,
+            domain="placeholders",
+            prepare_result=prepare_result,
+            backup_path=deleted_translation_backup_path,
         )
+        deleted_translation_items = commit_deleted_translation_count(commit_result)
         return _placeholder_import_report(
             game_title=game_title,
             prepare_result=prepare_result,
@@ -968,6 +937,7 @@ class PlaceholderRuleAgentMixin:
                         rules_payload=rules_payload,
                         setting=setting,
                         db_path=db_path,
+                        confirm_empty=confirm_empty,
                     )
                 )
                 if prepare_result.errors:
@@ -1031,34 +1001,45 @@ class PlaceholderRuleAgentMixin:
                     rule_count=len(structured_rules),
                     text_rules=proposed_text_rules,
                 )
-                deleted_translation_items = 0
-                deleted_translation_backup_path: str | None = None
-                cleanup_plan: JsonObject = {}
-                rule_records = _structured_placeholder_rule_records(structured_rules)
-                async with RuleImportUnitOfWork(session):
-                    (
-                        deleted_translation_items,
-                        deleted_translation_backup_path,
-                        cleanup_plan,
-                    ) = await _delete_stale_translations_with_backup(
-                        session=session,
+                cleanup_input = await _placeholder_cleanup_input_for_text_rule_change(
+                    session=session,
+                    prior_text_rules=current_text_rules,
+                    proposed_text_rules=proposed_text_rules,
+                )
+                prepare_payload = _placeholder_rule_runtime_payload(
+                    mode="import",
+                    domain="structured_placeholders",
+                    rules_payload=rules_payload,
+                    setting=setting,
+                    db_path=db_path,
+                    confirm_empty=confirm_empty,
+                    game_context={"scope_hash": coverage.scope_hash},
+                )
+                prepare_payload["cleanup_input"] = cleanup_input
+                prepare_result = prepare_rule_import(prepare_payload)
+                if prepare_result.errors:
+                    return _placeholder_rule_runtime_prepare_report(
+                        result=prepare_result,
+                        source_label="structured-placeholder-rules",
                         game_title=game_title,
-                        backup_domain="structured-placeholder-rules",
-                        backup_output_dir=backup_output_dir,
-                        prior_text_rules=current_text_rules,
-                        proposed_text_rules=proposed_text_rules,
+                        sample_count=0,
+                        details=_structured_placeholder_prepare_details(
+                            rules_payload=rules_payload,
+                            setting_text_rules=setting.text_rules,
+                        ),
                     )
-                    await session.replace_structured_placeholder_rules(rule_records)
-                    if coverage.uncovered_count:
-                        await session.replace_rule_review_state(
-                            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                            scope_hash=coverage.scope_hash,
-                            reviewed_empty=not rule_records,
-                        )
-                    else:
-                        await session.delete_rule_review_state(
-                            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                        )
+                rule_records = _structured_placeholder_rule_records(structured_rules)
+                (
+                    deleted_translation_items,
+                    deleted_translation_backup_path,
+                    cleanup_plan,
+                ) = await write_prepared_cleanup_backup(
+                    session=session,
+                    game_title=game_title,
+                    backup_domain="structured-placeholder-rules",
+                    prepare_result=prepare_result,
+                    output_dir=backup_output_dir,
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[
@@ -1076,17 +1057,13 @@ class PlaceholderRuleAgentMixin:
                 },
                 details={},
             )
-        if prepare_result.plan_token is None:
-            raise RuntimeError("结构化占位符规则导入缺少 rule_runtime plan token")
-
-        commit_result = commit_rule_import(
-            {
-                "db_path": str(db_path),
-                "domain": "structured_placeholders",
-                "plan_token": prepare_result.plan_token,
-                "backup_path": deleted_translation_backup_path,
-            }
+        commit_result = commit_prepared_rule_import(
+            db_path=db_path,
+            domain="structured_placeholders",
+            prepare_result=prepare_result,
+            backup_path=deleted_translation_backup_path,
         )
+        deleted_translation_items = commit_deleted_translation_count(commit_result)
         return _placeholder_import_report(
             game_title=game_title,
             prepare_result=prepare_result,

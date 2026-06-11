@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! PCRE2 engine wrapper for user-authored and Agent-authored rule patterns.
 //!
 //! The high-level `pcre2` crate exposes JIT controls but not PCRE2
@@ -51,27 +49,6 @@ impl Pcre2Pattern {
         self.regex
             .is_match(text.as_bytes())
             .map_err(Pcre2EngineError::matching)
-    }
-
-    pub(crate) fn captures(&self, text: &str) -> Result<Option<Pcre2Captures>, Pcre2EngineError> {
-        let Some(captures) = self
-            .regex
-            .captures(text.as_bytes())
-            .map_err(Pcre2EngineError::matching)?
-        else {
-            return Ok(None);
-        };
-
-        let mut named = BTreeMap::new();
-        for name in self.regex.capture_names().iter().flatten() {
-            if let Some(matched) = captures.name(name) {
-                let value =
-                    str::from_utf8(matched.as_bytes()).map_err(Pcre2EngineError::capture_utf8)?;
-                named.insert(name.clone(), value.to_owned());
-            }
-        }
-
-        Ok(Some(Pcre2Captures { named }))
     }
 
     pub(crate) fn captures_full_match(
@@ -229,7 +206,7 @@ mod tests {
             .expect("PCRE2 pattern should compile");
 
         let matched = pattern
-            .captures("Alice:hello")
+            .captures_full_match("Alice:hello")
             .expect("matching should not fail")
             .expect("pattern should match");
 

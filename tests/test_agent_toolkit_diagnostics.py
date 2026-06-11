@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from tests.native_rule_seed import (
+    insert_corrupt_native_rule_row,
+    seed_native_empty_rule_review_state,
+    seed_native_mv_virtual_namebox_rules,
+)
+
 from app.native_scope_index import collect_native_plugin_config_scope_hash
 
 @pytest.mark.asyncio
@@ -75,29 +81,29 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash=collect_native_plugin_config_scope_hash(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
             scope_hash=event_command_rule_scope_hash_for_setting(
                 game_data=game_data,
                 setting=setting,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
     fresh_report = await service.doctor(game_title="テストゲーム", check_llm=False)
 
@@ -181,13 +187,14 @@ async def test_current_game_reports_invalid_saved_placeholder_rules(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_placeholder_rules(
-            [
-                PlaceholderRuleRecord(
-                    pattern_text=r"(?u:@PLUGIN\[[^\]]+\])",
-                    placeholder_template="[CUSTOM_PLUGIN_MARKER_{index}]",
-                )
-            ]
+        await insert_corrupt_native_rule_row(
+            session,
+            domain="placeholders",
+            matcher_kind="pcre2_pattern",
+            matcher_value=r"(?u:@PLUGIN\[[^\]]+\])",
+            payload_json={
+                "placeholder_template": "[CUSTOM_PLUGIN_MARKER_{index}]",
+            },
         )
 
     doctor_report = await service.doctor(game_title="テストゲーム", check_llm=False)
@@ -211,18 +218,19 @@ async def test_current_game_reports_invalid_saved_mv_virtual_namebox_rules(
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_mv_virtual_namebox_rules(
-            [
-                MvVirtualNameboxRuleRecord(
-                    rule_order=0,
-                    rule_name="bad-unicode-flag",
-                    pattern_text=r"(?u:(?P<speaker>[^:：]+))[:：](?P<body>.*)",
-                    speaker_group="speaker",
-                    body_group="body",
-                    speaker_policy="translate",
-                    render_template="{speaker}：{body}",
-                )
-            ]
+        await insert_corrupt_native_rule_row(
+            session,
+            domain="mv_virtual_namebox",
+            matcher_kind="pcre2_pattern",
+            matcher_value=r"(?u:(?<speaker>[^:：]+))[:：](?<body>.*)",
+            payload_json={
+                "name": "bad-unicode-flag",
+                "pattern": r"(?u:(?<speaker>[^:：]+))[:：](?<body>.*)",
+                "speaker_group": "speaker",
+                "body_group": "body",
+                "speaker_policy": "translate",
+                "render_template": "{speaker}：{body}",
+            },
         )
 
     doctor_report = await service.doctor(game_title="MVテストゲーム", check_llm=False)
@@ -246,7 +254,7 @@ async def test_current_game_accepts_saved_mv_virtual_namebox_current_pcre2_named
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_mv_virtual_namebox_rules(
+        await seed_native_mv_virtual_namebox_rules(session,
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,

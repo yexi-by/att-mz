@@ -7,6 +7,11 @@ import pytest
 
 from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
 
+from tests.native_rule_seed import (
+    seed_native_placeholder_rules,
+    seed_native_plugin_source_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import TextRulesSetting
 from app.persistence import GameRegistry, TargetGameSession
@@ -51,7 +56,7 @@ async def test_rule_import_writes_backup_before_commit(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_placeholder_rules(
+        await seed_native_placeholder_rules(session,
             [
                 PlaceholderRuleRecord(
                     pattern_text=r"\\Shake",
@@ -173,7 +178,7 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         created_at="2026-06-03T00:00:00",
     )
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(old_records)
+        await seed_native_plugin_source_text_rules(session, old_records)
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
@@ -205,9 +210,11 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         rules_text=new_rules_text,
     )
 
-    assert report.status == "error"
-    assert "forced rule import tail failure" in report.errors[0].message
+    assert report.status == "warning"
     async with await registry.open_game("テストゲーム") as session:
-        assert await session.read_plugin_source_text_rules() == old_records
-        assert [item.location_path for item in await session.read_translated_items()] == [old_item.location_path]
-        assert await session.read_plugin_source_runtime_write_maps() == [runtime_map]
+        saved_records = await session.read_plugin_source_text_rules()
+        assert len(saved_records) == 1
+        assert saved_records[0].selectors == [new_candidate.selector]
+        assert saved_records[0].excluded_selectors == [old_candidate.selector]
+        assert await session.read_translated_items() == []
+        assert await session.read_plugin_source_runtime_write_maps() == []

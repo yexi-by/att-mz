@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import NoReturn
 
+from tests.native_rule_seed import (
+    seed_native_plugin_source_text_rules,
+)
+
 from app.rmmz.loader import load_translation_source_game_data
 from app.text_index import rebuild_text_index_native_storage
 from tests.agent_toolkit_contract_fixtures import *
@@ -662,7 +666,7 @@ async def test_diagnose_active_runtime_maps_plugin_source_issue_to_translation_c
             source_line_paths=[location_path],
             translation_lines=["努力忍耐着的\nn[0]君…真棒哦♥"],
         )
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="BadSource.js",
@@ -856,7 +860,7 @@ async def test_diagnose_active_runtime_batches_translation_source_scans(
                     created_at=f"2026-05-24T00:00:0{index}",
                 )
             )
-        await session.replace_plugin_source_text_rules(plugin_source_rule_records)
+        await seed_native_plugin_source_text_rules(session, plugin_source_rule_records)
         _ = await rebuild_text_index_native_storage(
             session=session,
             setting=setting,
@@ -966,7 +970,7 @@ async def test_diagnose_active_runtime_skips_translation_source_scan_when_source
             source_line_paths=[location_path],
             translation_lines=[runtime_literal.text],
         )
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="BadSource.js",
@@ -1073,7 +1077,7 @@ async def test_diagnose_active_runtime_default_mode_never_guesses_without_runtim
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
         location_path = f"js/plugins/BadSource.js/{source_candidate.selector}"
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="BadSource.js",
@@ -1179,7 +1183,7 @@ async def test_diagnose_active_runtime_does_not_ignore_excluded_runtime_residual
         source_scan = build_native_plugin_source_scan(game_data=source_game_data, text_rules=text_rules)
         source_file_scan = next(file_scan for file_scan in source_scan.files if file_scan.file_name == "BadSource.js")
         source_candidate = next(candidate for candidate in source_scan.candidates if candidate.file_name == "BadSource.js")
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="BadSource.js",
@@ -1250,7 +1254,7 @@ async def test_active_runtime_audit_ignores_excluded_residual_with_exact_runtime
             source=runtime_source,
             active=True,
         )[0]
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="BadSource.js",
@@ -1341,7 +1345,7 @@ async def test_active_runtime_audit_reports_unmapped_residual_when_other_runtime
             )
             if literal.text == "カテゴリ"
         )
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="BadSource.js",

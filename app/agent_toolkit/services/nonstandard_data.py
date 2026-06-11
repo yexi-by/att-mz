@@ -10,7 +10,10 @@ from .common import (
     TextRules,
     issue,
     load_setting,
+    build_rule_runtime_settings_patterns,
 )
+from .rule_import_runtime import commit_prepared_rule_import
+from app.native_rule_runtime import prepare_rule_import
 from app.nonstandard_data import (
     build_nonstandard_data_rule_records_from_validation,
     parse_nonstandard_data_rule_import_text,
@@ -247,7 +250,34 @@ class NonstandardDataAgentMixin:
                     scan=scan,
                     validation=validation,
                 )
-                await session.replace_nonstandard_data_text_rules(rule_records)
+                prepare_result = prepare_rule_import(
+                    {
+                        "mode": "import",
+                        "db_path": str(session.db_path),
+                        "domain": "nonstandard_data",
+                        "rules_payload": [
+                            record.model_dump(mode="json")
+                            for record in rule_records
+                        ],
+                        "game_context": {
+                            "summary": scan.summary_json(),
+                            "details": scan.details_json(),
+                        },
+                        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+                    }
+                )
+                if prepare_result.errors:
+                    messages = "；".join(error.message for error in prepare_result.errors)
+                    raise RuntimeError(messages)
+                commit_result = commit_prepared_rule_import(
+                    db_path=session.db_path,
+                    domain="nonstandard_data",
+                    prepare_result=prepare_result,
+                    backup_path=None,
+                )
+                if commit_result.errors:
+                    messages = "；".join(error.message for error in commit_result.errors)
+                    raise RuntimeError(messages)
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("nonstandard_data_rules_invalid", f"非标准 data 文件文本规则导入失败: {type(error).__name__}: {error}")],

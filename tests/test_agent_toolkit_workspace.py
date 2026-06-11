@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_note_tag_text_rules,
+    seed_native_placeholder_rules,
+    seed_native_plugin_source_text_rules,
+    seed_native_plugin_text_rules,
+    seed_native_structured_placeholder_rules,
+)
+
 from app.native_placeholder_scan import NativePlaceholderCandidateScan
 from app.native_scope_index import collect_native_plugin_config_scope_hash
 
@@ -312,7 +322,7 @@ async def test_prepare_agent_workspace_reuses_plugin_source_scan_for_scope(
         scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "WorkspaceReuse.js")
         candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "WorkspaceReuse.js")
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="WorkspaceReuse.js",
@@ -455,7 +465,7 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
         scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
         file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "NativeValidateSource.js")
         candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "NativeValidateSource.js")
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="NativeValidateSource.js",
@@ -609,7 +619,7 @@ async def test_validate_agent_workspace_note_tag_rules_counts_translations_for_m
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"])]
         )
     _ = await _rebuild_text_index_for_test(service)
@@ -955,7 +965,7 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
     game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_terminology_bundle(registry=filled_registry, glossary=filled_glossary)
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -965,7 +975,7 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -974,10 +984,10 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
                 )
             ]
         )
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
         )
-        await session.replace_placeholder_rules(
+        await seed_native_placeholder_rules(session,
             [
                 PlaceholderRuleRecord(
                     pattern_text=r"(?i)\\F\d*\[[^\]\r\n]+\]",
@@ -985,12 +995,12 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
                 )
             ]
         )
-        await session.replace_structured_placeholder_rules(
+        await seed_native_structured_placeholder_rules(session,
             [
                 StructuredPlaceholderRuleRecord(
                     rule_name="MINI_LABEL",
                     rule_type="paired_shell",
-                    pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                    pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
                     translatable_group="text",
                     protected_groups={
                         "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -1113,7 +1123,7 @@ async def test_prepare_agent_workspace_prefills_imported_database_rules(
         "paired_shell_rules": [
             {
                 "name": "MINI_LABEL",
-                "pattern": r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                "pattern": r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
                 "translatable_group": "text",
                 "protected_groups": {
                     "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
@@ -1324,37 +1334,37 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash=collect_native_plugin_config_scope_hash(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
             scope_hash=event_command_rule_scope_hash_for_setting(
                 game_data=game_data,
                 setting=setting,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=normal_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=text_rules.structured_placeholder_rules,
             ),
-            reviewed_empty=True,
         )
 
     after_report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
@@ -1456,13 +1466,13 @@ async def test_validate_agent_workspace_uses_manifest_event_command_codes_for_em
     )
     game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
             scope_hash=event_command_rule_scope_hash_for_command_codes(
                 game_data=game_data,
                 command_codes=frozenset({999}),
             ),
-            reviewed_empty=True,
         )
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
@@ -1648,7 +1658,7 @@ async def test_validate_agent_workspace_reuses_structured_placeholder_context(
             "paired_shell_rules": [
                 {
                     "name": "MINI_LABEL",
-                    "pattern": r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                    "pattern": r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",

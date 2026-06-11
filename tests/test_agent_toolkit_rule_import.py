@@ -5,6 +5,14 @@ from __future__ import annotations
 from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_note_tag_text_rules,
+    seed_native_plugin_source_text_rules,
+    seed_native_plugin_text_rules,
+)
+
 from app.application.flow_gate import count_note_tag_rule_candidates
 from app.event_command_text import (
     build_event_command_rule_records_from_import_shape,
@@ -186,7 +194,7 @@ def test_source_residual_rule_import_normalizes_integer_fields() -> None:
                 },
                 "structural_rules": [
                     {
-                        "pattern": "(?P<word>abc)",
+                        "pattern": "(?<word>abc)",
                         "allowed_terms": [123],
                         "check_group": 456,
                         "reason": 789,
@@ -233,7 +241,7 @@ def test_mv_namebox_rule_import_normalizes_integer_fields() -> None:
                 "rules": [
                     {
                         "name": 123,
-                        "pattern": r"^(?P<speaker>[^：]+)：(?P<body>.*)$",
+                        "pattern": r"^(?<speaker>[^：]+)：(?<body>.*)$",
                         "speaker_group": "speaker",
                         "speaker_policy": "translate",
                         "render_template": "{speaker}：{body}",
@@ -257,7 +265,7 @@ def test_mv_namebox_rule_import_rejects_boolean_name() -> None:
                     "rules": [
                         {
                             "name": True,
-                            "pattern": r"^(?P<speaker>[^：]+)：(?P<body>.*)$",
+                            "pattern": r"^(?<speaker>[^：]+)：(?<body>.*)$",
                             "speaker_group": "speaker",
                             "speaker_policy": "translate",
                             "render_template": "{speaker}：{body}",
@@ -498,7 +506,7 @@ async def test_import_plugin_rules_uses_native_plugin_config_context(
         path_templates=["$['parameters']['Message']"],
     )
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_text_rules([old_rule])
+        await seed_native_plugin_text_rules(session, [old_rule])
         await write_current_translation_items_for_test(session,
             [
                 TranslationItem(
@@ -554,7 +562,7 @@ async def test_import_plugin_rules_deletes_only_stale_fact_id_for_same_path(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -768,7 +776,7 @@ async def test_import_event_command_rules_uses_native_hit_details_for_stale_clea
         translation_lines=["旧事件指令译文"],
     )
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -855,7 +863,7 @@ async def test_import_event_command_rules_deletes_only_stale_fact_id_for_same_pa
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -962,7 +970,7 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     _ = empty_rules_path.write_text("{}\n", encoding="utf-8")
     missing_tag_path = "Items.json/1/note/MissingTag"
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
         await insert_invalid_fact_translation_row_for_test(
@@ -1025,7 +1033,7 @@ async def test_import_note_tag_rules_keeps_same_file_non_note_translation_when_r
     ordinary_path = "Items.json/1/name"
     ordinary_fact_id = "invalid-current-standard-data:item-name"
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
         await insert_invalid_fact_translation_row_for_test(
@@ -1259,7 +1267,7 @@ async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_re
                 {
                     "name": "INLINE_LABEL",
                     "type": "paired_shell",
-                    "pattern": r"(?u:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
+                    "pattern": r"(?u:(?<prefix><label>))(?<text>[^<]+)(?<suffix></label>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",
@@ -1296,7 +1304,7 @@ async def test_validate_structured_placeholder_rules_normalizes_integer_name(
             "paired_shell_rules": [
                 {
                     "name": 123,
-                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "pattern": r"(?<open><tag>)(?<text>[^<]+)(?<close></tag>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_TAG_OPEN_{index}]",
@@ -1333,7 +1341,7 @@ async def test_validate_structured_placeholder_rules_rejects_boolean_template(
             "paired_shell_rules": [
                 {
                     "name": "TAG",
-                    "pattern": r"(?P<open><tag>)(?P<text>[^<]+)(?P<close></tag>)",
+                    "pattern": r"(?<open><tag>)(?<text>[^<]+)(?<close></tag>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": True,
@@ -1788,7 +1796,7 @@ async def test_import_structured_placeholder_rules_saves_separate_records(
             "paired_shell_rules": [
                 {
                     "name": "MINI_LABEL",
-                    "pattern": r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+                    "pattern": r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -1821,7 +1829,7 @@ async def test_import_structured_placeholder_rules_saves_separate_records(
         StructuredPlaceholderRuleRecord(
             rule_name="MINI_LABEL",
             rule_type="paired_shell",
-            pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+            pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
             translatable_group="text",
             protected_groups={
                 "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
@@ -2078,7 +2086,7 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """非空普通占位符规则仍有候选时，保存 reviewed_empty=false 的风险确认。"""
+    """非空普通占位符规则仍有候选时，不写空规则确认状态。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     await _install_minimal_workflow_gate_prerequisites(
@@ -2117,13 +2125,12 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
         )
 
     assert report.status == "warning"
-    assert "placeholder_uncovered_reviewed" in {warning.code for warning in report.warnings}
+    assert "placeholder_uncovered" in {warning.code for warning in report.warnings}
     assert report.summary["imported_rule_count"] == 1
     assert report.summary["uncovered_count"] != 0
-    assert state is not None
-    assert state.reviewed_empty is False
-    assert state.scope_hash == coverage.scope_hash
-    assert "placeholder_uncovered" not in {error.code for error in errors}
+    assert state is None
+    assert coverage.uncovered_count == report.summary["uncovered_count"]
+    assert "placeholder_uncovered" in {error.code for error in errors}
 @pytest.mark.asyncio
 async def test_import_empty_structured_placeholder_rules_confirms_uncovered_candidates(
     minimal_english_game_dir: Path,
@@ -2274,7 +2281,7 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
     minimal_english_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """非空结构化规则仍未覆盖候选时，保存 reviewed_empty=false 的风险确认。"""
+    """非空结构化规则仍未覆盖候选时，不写空规则确认状态。"""
     _replace_first_common_event_text(minimal_english_game_dir, "<名前: Alraune>")
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -2289,7 +2296,7 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
             "paired_shell_rules": [
                 {
                     "name": "NEVER",
-                    "pattern": r"(?P<open><Never>)(?P<text>[^<>\r\n]+)(?P<close></Never>)",
+                    "pattern": r"(?<open><Never>)(?<text>[^<>\r\n]+)(?<close></Never>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_NEVER_OPEN_{index}]",
@@ -2330,13 +2337,12 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
         )
 
     assert report.status == "warning"
-    assert "structured_placeholder_uncovered_reviewed" in {warning.code for warning in report.warnings}
+    assert "structured_placeholder_uncovered" in {warning.code for warning in report.warnings}
     assert report.summary["imported_rule_count"] == 1
     assert report.summary["uncovered_count"] == 1
-    assert state is not None
-    assert state.reviewed_empty is False
-    assert state.scope_hash == coverage.scope_hash
-    assert "structured_placeholder_uncovered" not in {error.code for error in errors}
+    assert state is None
+    assert coverage.uncovered_count == report.summary["uncovered_count"]
+    assert "structured_placeholder_uncovered" in {error.code for error in errors}
 @pytest.mark.asyncio
 async def test_placeholder_candidate_review_rejects_sampled_hash(
     minimal_english_game_dir: Path,
@@ -2369,10 +2375,10 @@ async def test_placeholder_candidate_review_rejects_sampled_hash(
             rule_count=0,
         )
         sampled_hash = "stale-sampled-placeholder-hash"
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=sampled_hash,
-            reviewed_empty=True,
         )
         decisions = await collect_placeholder_candidate_review_decisions(
             session=session,
@@ -2428,10 +2434,10 @@ async def test_structured_placeholder_candidate_review_rejects_sampled_hash(
             rule_count=0,
         )
         sampled_hash = "stale-sampled-structured-placeholder-hash"
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=sampled_hash,
-            reviewed_empty=True,
         )
         decisions = await collect_placeholder_candidate_review_decisions(
             session=session,
@@ -2478,7 +2484,7 @@ def test_structured_placeholder_coverage_result_uses_current_candidate_details()
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="INLINE_NAME",
         rule_type="paired_shell",
-        pattern_text=r"(?P<open><名前:\s*)(?P<text>[^>\r\n]+)(?P<close>>)",
+        pattern_text=r"(?<open><名前:\s*)(?<text>[^>\r\n]+)(?<close>>)",
         translatable_group="text",
         protected_groups={
             "open": "[CUSTOM_INLINE_NAME_OPEN_{index}]",
@@ -2523,10 +2529,10 @@ async def test_placeholder_candidate_review_state_mismatch_blocks_workflow(
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash="stale-placeholder-scope",
-            reviewed_empty=True,
         )
         errors = await collect_workflow_gate_errors(
             session=session,
@@ -2711,7 +2717,7 @@ async def test_placeholder_rule_draft_requires_external_rules_and_uses_active_so
 
     fresh_game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -2721,7 +2727,7 @@ async def test_placeholder_rule_draft_requires_external_rules_and_uses_active_so
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -2733,7 +2739,7 @@ async def test_placeholder_rule_draft_requires_external_rules_and_uses_active_so
                 )
             ]
         )
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
         )
 
@@ -2805,7 +2811,7 @@ async def test_validate_plugin_rules_uses_prefix_read_for_translated_count(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     fresh_game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -2862,7 +2868,7 @@ async def test_validate_plugin_rules_uses_native_plugin_config_hit_details(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     fresh_game_data = await load_active_runtime_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -3041,7 +3047,7 @@ async def test_validate_note_tag_rules_uses_prefix_read_for_translated_count(
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
         )
     _ = await _rebuild_text_index_for_test(service)
@@ -3087,7 +3093,7 @@ async def test_validate_note_tag_rules_does_not_count_same_path_stale_fact_as_tr
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
         )
     _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
@@ -3150,7 +3156,7 @@ async def test_import_note_tag_rules_deletes_only_stale_fact_id_for_same_path(
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
         )
     _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
@@ -3219,7 +3225,7 @@ async def test_import_note_tag_rules_expands_map_file_pattern_for_stale_fact_cle
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Map*.json", tag_names=["namePop"])]
         )
     _ = await _rebuild_text_index_for_test(service)
@@ -3303,7 +3309,7 @@ async def test_import_plugin_source_rules_deletes_only_stale_fact_id_for_same_pa
         ensure_ascii=False,
     )
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="MvPlugin.js",
@@ -3384,7 +3390,7 @@ async def test_rule_fact_resolver_does_not_match_same_path_when_text_differs(
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("MVテストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["拡張説明"])]
         )
     _ = await _rebuild_text_index_for_test(service, game_title="MVテストゲーム")
@@ -3680,7 +3686,7 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     missing_tag_path = "Items.json/1/note/MissingTag"
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["MissingTag"])]
         )
         await insert_invalid_fact_translation_row_for_test(
@@ -4059,7 +4065,7 @@ async def test_agent_reports_error_on_stale_plugin_rules(
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -4255,7 +4261,7 @@ async def test_scan_structured_placeholder_candidates_reads_current_text_fact_an
             "paired_shell_rules": [
                 {
                     "name": "D_TEXT_LABEL",
-                    "pattern": r"(?P<open>^D_TEXT\s+)(?P<text>.*?)(?P<close>\s+48$)",
+                    "pattern": r"(?<open>^D_TEXT\s+)(?<text>.*?)(?<close>\s+48$)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_D_TEXT_OPEN_{index}]",
@@ -4377,7 +4383,7 @@ async def test_validate_event_command_rules_uses_precise_hit_paths_for_translate
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -4463,7 +4469,7 @@ async def test_structured_placeholder_rule_with_standard_control_passes_validati
             "paired_shell_rules": [
                 {
                     "name": "D_TEXT_LABEL",
-                    "pattern": r"(?P<open>^D_TEXT\s+)(?P<text>.*?)(?P<close>\s+48$)",
+                    "pattern": r"(?<open>^D_TEXT\s+)(?<text>.*?)(?<close>\s+48$)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "open": "[CUSTOM_D_TEXT_OPEN_{index}]",

@@ -543,30 +543,6 @@ UPSERT_TERMINOLOGY_BUNDLE_STATE = f"""
 ;
 """
 
-UPSERT_RULE_REVIEW_STATE = f"""
---sql
-    INSERT OR REPLACE INTO [{RULE_DOMAIN_STATES_TABLE_NAME}]
-    (domain, state_json, scope_hash, confirmed_at, rule_runtime_contract_version, rule_store_schema_version)
-    VALUES (?, ?, ?, ?, ?, ?)
-;
-"""
-
-UPSERT_RULE_SET = f"""
---sql
-    INSERT OR REPLACE INTO [{RULE_SETS_TABLE_NAME}]
-    (domain, source_kind, rule_count, context_hash, rules_hash, rule_runtime_contract_version, rule_store_schema_version, imported_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-;
-"""
-
-INSERT_RULE = f"""
---sql
-    INSERT INTO [{RULES_TABLE_NAME}]
-    (rule_id, domain, rule_order, matcher_kind, matcher_value, payload_json, enabled, source_kind, rule_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-;
-"""
-
 INSERT_FONT_REPLACEMENT_RECORD = f"""
 --sql
     INSERT OR REPLACE INTO [{FONT_REPLACEMENT_RECORDS_TABLE_NAME}]
@@ -1456,20 +1432,6 @@ DELETE_ALL_TEXT_GLOSSARY_TERMS = f"""
 ;
 """
 
-DELETE_RULE_REVIEW_STATE = f"""
---sql
-    DELETE FROM [{RULE_DOMAIN_STATES_TABLE_NAME}]
-    WHERE domain = ?
-;
-"""
-
-DELETE_RULES_BY_DOMAIN = f"""
---sql
-    DELETE FROM [{RULES_TABLE_NAME}]
-    WHERE domain = ?
-;
-"""
-
 DELETE_ALL_FONT_REPLACEMENT_RECORDS = f"""
 --sql
     DELETE FROM [{FONT_REPLACEMENT_RECORDS_TABLE_NAME}]
@@ -1531,8 +1493,6 @@ __all__: list[str] = [
     "DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS",
     "DELETE_ALL_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE",
     "DELETE_ALL_SOURCE_SNAPSHOT_FILES",
-    "DELETE_RULE_REVIEW_STATE",
-    "DELETE_RULES_BY_DOMAIN",
     "DELETE_ALL_FIELD_TRANSLATION_TERMS",
     "DELETE_ALL_TEXT_GLOSSARY_TERMS",
     "DELETE_ALL_TEXT_INDEX_INVALIDATIONS",
@@ -1556,9 +1516,6 @@ __all__: list[str] = [
     "FONT_REPLACEMENT_RECORDS_TABLE_NAME",
     "FIELD_TRANSLATION_TERMS_TABLE_NAME",
     "INSERT_LLM_FAILURE",
-    "UPSERT_RULE_REVIEW_STATE",
-    "UPSERT_RULE_SET",
-    "INSERT_RULE",
     "INSERT_FONT_REPLACEMENT_RECORD",
     "INSERT_PLUGIN_SOURCE_RUNTIME_WRITE_MAP",
     "INSERT_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE",

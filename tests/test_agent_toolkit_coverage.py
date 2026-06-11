@@ -347,7 +347,7 @@ async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan
                 "paired_shell_rules": [
                     {
                         "name": "INLINE_NAME",
-                        "pattern": r"(?P<open><名前:\s*)(?P<text>[^>\r\n]+)(?P<close>>)",
+                        "pattern": r"(?<open><名前:\s*)(?<text>[^>\r\n]+)(?<close>>)",
                         "translatable_group": "text",
                         "protected_groups": {
                             "open": "[CUSTOM_INLINE_NAME_OPEN_{index}]",

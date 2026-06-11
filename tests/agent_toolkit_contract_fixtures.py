@@ -17,6 +17,12 @@ from typing import NoReturn, cast, override
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_plugin_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 
 from app.agent_toolkit.reports import AgentReport
@@ -422,7 +428,7 @@ def _mv_virtual_namebox_rules_text() -> str:
             "rules": [
                 {
                     "name": "standalone-colon",
-                    "pattern": r"^(?P<speaker>案内人)：$",
+                    "pattern": r"^(?<speaker>案内人)：$",
                     "speaker_group": "speaker",
                     "speaker_policy": "translate",
                     "render_template": "{speaker}：",
@@ -439,7 +445,7 @@ def _broad_mv_angle_namebox_rules_text() -> str:
             "rules": [
                 {
                     "name": "broad-angle",
-                    "pattern": r"^<(?P<speaker>[^>\r\n]{1,80})>$",
+                    "pattern": r"^<(?<speaker>[^>\r\n]{1,80})>$",
                     "speaker_group": "speaker",
                     "speaker_policy": "translate",
                     "render_template": "<{speaker}>",
@@ -459,7 +465,7 @@ async def _install_minimal_external_text_rules(
     game_data = await load_active_runtime_game_data(game_dir)
     plugin_name = str(game_data.plugins_js[0].get("name", ""))
     async with await registry.open_game(game_title) as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -469,7 +475,7 @@ async def _install_minimal_external_text_rules(
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -482,13 +488,13 @@ async def _install_minimal_external_text_rules(
             ]
         )
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=TextRules.from_setting(setting.text_rules),
             ),
-            reviewed_empty=True,
         )
 
 async def _install_minimal_workflow_gate_prerequisites(
@@ -522,26 +528,26 @@ async def _install_minimal_workflow_gate_prerequisites(
             text_rules=text_rules,
             rule_count=0,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=placeholder_coverage.scope_hash,
-            reviewed_empty=True,
         )
         structured_coverage = build_structured_placeholder_coverage_result(
             translation_data_map=translation_data_map,
             structured_rules=text_rules.structured_placeholder_rules,
             rule_count=0,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_coverage.scope_hash,
-            reviewed_empty=True,
         )
         if game_data.layout.engine_kind == "mv":
-            await session.replace_rule_review_state(
+            await seed_native_empty_rule_review_state(
+                session,
                 rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
                 scope_hash=mv_virtual_namebox_rule_scope_hash_for_game_data(game_data),
-                reviewed_empty=True,
             )
         await session.clear_text_index()
 

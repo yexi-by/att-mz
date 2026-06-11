@@ -1376,6 +1376,7 @@ def _source_residual_records_to_runtime_payload(records: Sequence[SourceResidual
     for record in records:
         if record.rule_type == "position":
             position_rules[record.location_path] = {
+                "rule_id": record.rule_id,
                 "allowed_terms": [term for term in record.allowed_terms],
                 "reason": record.reason,
             }
@@ -1383,6 +1384,7 @@ def _source_residual_records_to_runtime_payload(records: Sequence[SourceResidual
         if record.rule_type == "structural":
             structural_rules.append(
                 {
+                    "rule_id": record.rule_id,
                     "pattern": record.pattern_text,
                     "allowed_terms": [term for term in record.allowed_terms],
                     "check_group": record.check_group,

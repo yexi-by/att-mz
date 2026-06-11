@@ -34,6 +34,7 @@ class RuleImportPrepareResult:
     errors: list[RuleRuntimeIssue]
     warnings: list[RuleRuntimeIssue]
     plan_token: str | None
+    prepared_plan: JsonObject | None
     summary: JsonObject
     details: JsonObject
 
@@ -111,6 +112,10 @@ class _NativeRuleRuntimeModule(Protocol):
         """执行配置中的运行时正则并返回 JSON 文本。"""
         raise NotImplementedError
 
+    def build_rules_fingerprint(self, payload_json: str) -> str:
+        """读取统一规则表并返回规则指纹文本。"""
+        raise NotImplementedError
+
     def collect_control_sequence_spans(self, payload_json: str) -> str:
         """执行控制符规则并返回保护跨度 JSON 文本。"""
         raise NotImplementedError
@@ -141,6 +146,11 @@ def prepare_rule_import(payload: JsonObject) -> RuleImportPrepareResult:
         plan_token=_read_optional_string(
             result,
             "plan_token",
+            "rule_runtime.prepare_rule_import",
+        ),
+        prepared_plan=_read_optional_json_object(
+            result,
+            "prepared_plan",
             "rule_runtime.prepare_rule_import",
         ),
         summary=ensure_json_object(
@@ -221,6 +231,13 @@ def evaluate_runtime_config_patterns(payload: JsonObject) -> RuntimeConfigEvalua
             "rule_runtime.evaluate_runtime_config_patterns.entries",
         ),
     )
+
+
+def build_rules_fingerprint(payload: JsonObject) -> str:
+    """调用 Rust rule_runtime 生成统一规则指纹。"""
+    native = _load_native_module()
+    raw_text = native.build_rules_fingerprint(json.dumps(payload, ensure_ascii=False))
+    return raw_text
 
 
 def collect_control_sequence_spans(payload: JsonObject) -> list[RuleRuntimeControlSpan]:
@@ -400,6 +417,16 @@ def _read_optional_string(payload: JsonObject, field_name: str, context: str) ->
     return value
 
 
+def _read_optional_json_object(payload: JsonObject, field_name: str, context: str) -> JsonObject | None:
+    value = payload.get(field_name)
+    if value is None:
+        return None
+    return ensure_json_object(
+        coerce_json_value(value),
+        f"{context}.{field_name}",
+    )
+
+
 def _read_int(payload: JsonObject, field_name: str, context: str) -> int:
     value = payload.get(field_name)
     if not isinstance(value, int) or isinstance(value, bool):
@@ -415,6 +442,7 @@ __all__ = [
     "RuleImportPrepareResult",
     "RuleRuntimeMvVirtualNameboxMatch",
     "RuleRuntimeIssue",
+    "build_rules_fingerprint",
     "commit_rule_import",
     "collect_control_sequence_spans",
     "evaluate_runtime_config_patterns",

@@ -13,6 +13,15 @@ import pytest
 from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
 
 from app import native_scope_index
+from tests.native_rule_seed import (
+    seed_native_event_command_text_rules,
+    seed_native_mv_virtual_namebox_rules,
+    seed_native_nonstandard_data_text_rules,
+    seed_native_note_tag_text_rules,
+    seed_native_plugin_source_text_rules,
+    seed_native_plugin_text_rules,
+)
+
 from app.native_scope_index import (
     build_native_placeholder_candidates_payload,
     build_native_rule_candidate_text_rules_payload,
@@ -456,7 +465,7 @@ async def test_inspect_native_scope_index_storage_reads_db_and_game_files(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -624,7 +633,7 @@ async def test_rebuild_native_scope_index_storage_counts_stale_plugin_rules(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -713,12 +722,12 @@ async def test_rebuild_native_scope_index_storage_writes_current_text_facts_for_
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="en")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_mv_virtual_namebox_rules(
+        await seed_native_mv_virtual_namebox_rules(session,
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,
                     rule_name="yep-namebox-with-colon",
-                    pattern_text=r"^\\n<(?P<speaker>[^:>\r\n]+):> (?P<body>.*)$",
+                    pattern_text=r"^\\n<(?<speaker>[^:>\r\n]+):> (?<body>.*)$",
                     speaker_group="speaker",
                     body_group="body",
                     speaker_policy="translate",
@@ -825,7 +834,7 @@ async def test_rebuild_native_scope_index_storage_keeps_same_path_note_tag_facts
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["desc"])]
         )
 
@@ -910,7 +919,7 @@ async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_pa
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -928,7 +937,7 @@ async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_pa
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -937,10 +946,10 @@ async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_pa
                 )
             ]
         )
-        await session.replace_note_tag_text_rules(
+        await seed_native_note_tag_text_rules(session,
             [NoteTagTextRuleRecord(file_name="Items.json", tag_names=["Flavor"])]
         )
-        await session.replace_nonstandard_data_text_rules(
+        await seed_native_nonstandard_data_text_rules(session,
             [
                 NonstandardDataTextRuleRecord(
                     file_name="UnknownPluginData.json",
@@ -958,7 +967,7 @@ async def test_rebuild_native_scope_index_storage_writes_extended_domain_fact_pa
                 ),
             ]
         )
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
@@ -1412,7 +1421,7 @@ def test_scan_native_rule_candidates_scans_mv_virtual_namebox_rule_hits() -> Non
                     {
                         "rule_order": 0,
                         "rule_name": "standalone-colon",
-                        "pattern_text": r"^(?P<speaker>案内人)：$",
+                        "pattern_text": r"^(?<speaker>案内人)：$",
                         "speaker_group": "speaker",
                         "body_group": "",
                         "speaker_policy": "translate",
@@ -1421,7 +1430,7 @@ def test_scan_native_rule_candidates_scans_mv_virtual_namebox_rule_hits() -> Non
                     {
                         "rule_order": 1,
                         "rule_name": "actor-inline",
-                        "pattern_text": r"^(?P<speaker>\\N\[(?:1)\]):(?P<body>.+)$",
+                        "pattern_text": r"^(?<speaker>\\N\[(?:1)\]):(?<body>.+)$",
                         "speaker_group": "speaker",
                         "body_group": "body",
                         "speaker_policy": "actor_name",
@@ -1787,7 +1796,7 @@ def test_build_native_structured_placeholder_candidates_payload_includes_texts_a
     structured_rule = StructuredPlaceholderRule.create(
         rule_name="INLINE_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?P<prefix><name:)(?P<text>[^>]+)(?P<suffix>>)",
+        pattern_text=r"(?<prefix><name:)(?<text>[^>]+)(?<suffix>>)",
         translatable_group="text",
         protected_groups={
             "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",
@@ -1862,7 +1871,7 @@ def test_scan_native_rule_candidates_scans_structured_placeholder_candidates() -
                         {
                             "rule_name": "INLINE_LABEL",
                             "rule_type": "paired_shell",
-                            "pattern_text": r"(?P<prefix><name:)(?P<text>[^>]+)(?P<suffix>>)",
+                            "pattern_text": r"(?<prefix><name:)(?<text>[^>]+)(?<suffix>>)",
                             "translatable_group": "text",
                             "protected_groups": {
                                 "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",

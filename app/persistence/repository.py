@@ -768,38 +768,12 @@ class TargetGameSession(
         await self.connection.close()
 
 
-@dataclass(slots=True)
-class RuleImportUnitOfWork:
-    """规则导入跨表写入事务。"""
-
-    session: TargetGameSession
-
-    async def __aenter__(self) -> "RuleImportUnitOfWork":
-        """进入规则导入事务。"""
-        await self.session.begin_transaction()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """成功时统一提交，失败时回滚全部规则导入写入。"""
-        _ = (exc_value, traceback)
-        if exc_type is None:
-            await self.session.commit_transaction()
-            return
-        await self.session.rollback_transaction()
-
-
 __all__: list[str] = [
     "DB_DIRECTORY",
     "GameMetadata",
     "GameRecord",
     "GameRegistry",
     "RegistryDatabaseIssue",
-    "RuleImportUnitOfWork",
     "LanguageSettings",
     "RuleReviewStateRecord",
     "TargetGameSession",

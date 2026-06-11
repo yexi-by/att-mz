@@ -6,6 +6,12 @@ from typing import NoReturn, cast
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_plugin_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.application.errors import normalize_native_error_issue
 from app.application.handler import TranslationHandler, TranslationRunLimits
@@ -111,7 +117,7 @@ async def _install_non_plugin_source_gate_prerequisites(
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
     async with await registry.open_game(game_title) as session:
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -121,7 +127,7 @@ async def _install_non_plugin_source_gate_prerequisites(
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -133,13 +139,13 @@ async def _install_non_plugin_source_gate_prerequisites(
                 )
             ]
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
         await session.replace_terminology_bundle(
             registry=TerminologyRegistry(),
@@ -151,21 +157,21 @@ async def _install_non_plugin_source_gate_prerequisites(
             text_rules=text_rules,
         )
         translation_data_map = await read_current_text_fact_translation_data_map(session)
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=normal_placeholder_scope_hash(
                 translation_data_map=translation_data_map,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=translation_data_map,
                 structured_rules=text_rules.structured_placeholder_rules,
             ),
-            reviewed_empty=True,
         )
 
 

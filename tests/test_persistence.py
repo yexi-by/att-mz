@@ -7,6 +7,16 @@ from typing import cast
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_nonstandard_data_text_rules,
+    seed_native_placeholder_rules,
+    seed_native_plugin_text_rules,
+    seed_native_source_residual_rules,
+    seed_native_structured_placeholder_rules,
+)
+
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.persistence import GameRegistry
 from app.persistence.records import (
@@ -526,7 +536,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             plugin_hash="hash",
             path_templates=["$['parameters']['Message']"],
         )
-        await session.replace_plugin_text_rules([rule])
+        await seed_native_plugin_text_rules(session, [rule])
         assert await session.read_plugin_text_rules() == [rule]
 
         runtime_write_map = PluginSourceRuntimeWriteMapRecord(
@@ -581,7 +591,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             file_hash="disciplines-hash",
             skipped=True,
         )
-        await session.replace_nonstandard_data_text_rules([nonstandard_rule, skipped_nonstandard_rule])
+        await seed_native_nonstandard_data_text_rules(session, [nonstandard_rule, skipped_nonstandard_rule])
         assert await session.read_nonstandard_data_text_rules() == [
             skipped_nonstandard_rule,
             nonstandard_rule,
@@ -594,7 +604,7 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             ],
             path_templates=["$['parameters'][3]['message']"],
         )
-        await session.replace_event_command_text_rules([event_rule])
+        await seed_native_event_command_text_rules(session, [event_rule])
         assert await session.read_event_command_text_rules() == [event_rule]
 
         terminology_registry = TerminologyRegistry(
@@ -624,20 +634,20 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             pattern_text=r"\\F\[[^\]]+\]",
             placeholder_template="[CUSTOM_FACE_PORTRAIT_{index}]",
         )
-        await session.replace_placeholder_rules([placeholder_rule])
+        await seed_native_placeholder_rules(session, [placeholder_rule])
         assert await session.read_placeholder_rules() == [placeholder_rule]
 
         structured_placeholder_rule = StructuredPlaceholderRuleRecord(
             rule_name="MINI_LABEL",
             rule_type="paired_shell",
-            pattern_text=r"(?P<open><Mini\s+Label:\s*)(?P<text>[^<>\r\n]*?)(?P<close>>)",
+            pattern_text=r"(?<open><Mini\s+Label:\s*)(?<text>[^<>\r\n]*?)(?<close>>)",
             translatable_group="text",
             protected_groups={
                 "open": "[CUSTOM_MINI_LABEL_OPEN_{index}]",
                 "close": "[CUSTOM_MINI_LABEL_CLOSE_{index}]",
             },
         )
-        await session.replace_structured_placeholder_rules([structured_placeholder_rule])
+        await seed_native_structured_placeholder_rules(session, [structured_placeholder_rule])
         assert await session.read_structured_placeholder_rules() == [structured_placeholder_rule]
 
         source_residual_rule = SourceResidualRuleRecord(
@@ -647,19 +657,19 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
             allowed_terms=["Alice"],
             reason="专名保留",
         )
-        await session.replace_source_residual_rules([source_residual_rule])
+        await seed_native_source_residual_rules(session, [source_residual_rule])
         assert await session.read_source_residual_rules() == [source_residual_rule]
 
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash="hash-before",
-            reviewed_empty=True,
         )
         review_state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
         assert review_state is not None
         assert review_state.scope_hash == "hash-before"
         assert review_state.reviewed_empty is True
-        await session.delete_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
+        await seed_native_plugin_text_rules(session, [rule])
         assert await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN) is None
 
         run_record = await session.start_translation_run(

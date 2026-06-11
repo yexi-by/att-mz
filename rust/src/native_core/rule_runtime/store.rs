@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use rusqlite::{Connection, params};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -9,7 +7,39 @@ use super::model::{
     RULE_RUNTIME_CONTRACT_VERSION, RULE_STORE_SCHEMA_VERSION, RuleDomain, StoredRule,
 };
 
+/// 某个规则 domain 的确认状态草稿。
+#[derive(Debug, Clone)]
+pub(crate) struct DomainStateDraft {
+    /// 要写入 rule_domain_states.state_json 的当前状态。
+    pub(crate) state_json: Value,
+    /// 当前确认所覆盖的游戏文本/候选范围 hash。
+    pub(crate) scope_hash: String,
+}
+
+/// Rust rule_runtime 提交统一规则导入计划时使用的存储草稿。
+#[derive(Debug, Clone)]
+pub(crate) struct RuleImportStorePlan {
+    /// 本次导入所属 domain。
+    pub(crate) domain: RuleDomain,
+    /// 本次导入后的完整当前规则集合。
+    pub(crate) rules: Vec<StoredRule>,
+    /// 当前 domain 状态；None 表示清除旧的空规则确认状态。
+    pub(crate) domain_state: Option<DomainStateDraft>,
+    /// 本次导入对应的上下文 hash。
+    pub(crate) context_hash: String,
+    /// 已经备份并应在同一事务内删除的译文 fact_id。
+    pub(crate) cleanup_fact_ids: Vec<String>,
+}
+
+/// Rust rule_runtime 统一规则提交结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuleImportStoreOutcome {
+    /// 实际删除的已保存译文数量。
+    pub(crate) deleted_translation_count: usize,
+}
+
 /// 安装当前统一规则存储 schema。
+#[cfg(test)]
 pub(crate) fn install_rule_store_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(include_str!(
@@ -18,22 +48,27 @@ pub(crate) fn install_rule_store_schema(connection: &Connection) -> Result<(), S
         .map_err(|error| format!("统一规则表 schema 初始化失败: {error}"))
 }
 
-/// 用一组新规则替换指定 domain 的当前规则。
-pub(crate) fn replace_domain_rules(
+/// 在一个 SQLite 事务内提交完整规则导入计划。
+pub(crate) fn commit_rule_import_store(
     connection: &Connection,
-    domain: RuleDomain,
-    rules: &[StoredRule],
-) -> Result<(), String> {
+    plan: &RuleImportStorePlan,
+    imported_at: &str,
+) -> Result<RuleImportStoreOutcome, String> {
     let transaction = connection
         .unchecked_transaction()
-        .map_err(|error| format!("统一规则表事务创建失败: {error}"))?;
-    let domain_text = contract_text(domain, "domain")?;
+        .map_err(|error| format!("统一规则导入事务创建失败: {error}"))?;
+    let domain_text = contract_text(plan.domain, "domain")?;
     transaction
         .execute("DELETE FROM rules WHERE domain = ?1", params![&domain_text])
         .map_err(|error| format!("清理当前 domain 规则失败: {error}"))?;
 
-    for rule in rules {
+    for rule in &plan.rules {
         let rule_domain = contract_text(rule.domain, "domain")?;
+        if rule_domain != domain_text {
+            return Err(format!(
+                "统一规则导入计划包含其他 domain 规则: 当前 {domain_text}，实际 {rule_domain}"
+            ));
+        }
         let matcher_kind = contract_text(rule.matcher_kind, "matcher_kind")?;
         transaction
             .execute(
@@ -54,12 +89,75 @@ pub(crate) fn replace_domain_rules(
             .map_err(|error| format!("写入统一规则失败: {error}"))?;
     }
 
+    let rules_hash = rules_hash_for_domain(plan.domain, &plan.rules)?;
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO rule_sets(domain, source_kind, rule_count, context_hash, rules_hash, rule_runtime_contract_version, rule_store_schema_version, imported_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &domain_text,
+                "external_import",
+                plan.rules.len() as i64,
+                &plan.context_hash,
+                &rules_hash,
+                RULE_RUNTIME_CONTRACT_VERSION,
+                RULE_STORE_SCHEMA_VERSION,
+                imported_at,
+            ],
+        )
+        .map_err(|error| format!("写入规则集合状态失败: {error}"))?;
+
+    if let Some(state) = &plan.domain_state {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO rule_domain_states(domain, state_json, scope_hash, confirmed_at, rule_runtime_contract_version, rule_store_schema_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    &domain_text,
+                    state.state_json.to_string(),
+                    &state.scope_hash,
+                    imported_at,
+                    RULE_RUNTIME_CONTRACT_VERSION,
+                    RULE_STORE_SCHEMA_VERSION,
+                ],
+            )
+            .map_err(|error| format!("写入规则 domain 状态失败: {error}"))?;
+    } else {
+        transaction
+            .execute(
+                "DELETE FROM rule_domain_states WHERE domain = ?1",
+                params![&domain_text],
+            )
+            .map_err(|error| format!("清理规则 domain 状态失败: {error}"))?;
+    }
+
+    if plan.domain == RuleDomain::PluginSource {
+        transaction
+            .execute("DELETE FROM plugin_source_runtime_write_map", [])
+            .map_err(|error| format!("清理插件源码写回映射缓存失败: {error}"))?;
+    }
+
+    let mut deleted_translation_count = 0usize;
+    for fact_id in &plan.cleanup_fact_ids {
+        let changed = transaction
+            .execute(
+                "DELETE FROM translation_items WHERE fact_id = ?1",
+                params![fact_id],
+            )
+            .map_err(|error| format!("清理失效译文失败: {error}"))?;
+        deleted_translation_count += changed;
+    }
+
     transaction
         .commit()
-        .map_err(|error| format!("提交统一规则事务失败: {error}"))
+        .map_err(|error| format!("提交统一规则导入事务失败: {error}"))?;
+    Ok(RuleImportStoreOutcome {
+        deleted_translation_count,
+    })
 }
 
 /// 按 domain 读取当前统一规则。
+#[cfg(test)]
 pub(crate) fn read_rules_by_domain(
     connection: &Connection,
     domain: RuleDomain,
@@ -96,32 +194,6 @@ pub(crate) fn read_rules_by_domain(
         )?);
     }
     Ok(rules)
-}
-
-/// 替换指定 domain 的当前状态。
-pub(crate) fn replace_domain_state(
-    connection: &Connection,
-    domain: RuleDomain,
-    state_json: &Value,
-    scope_hash: &str,
-    confirmed_at: &str,
-) -> Result<(), String> {
-    let domain_text = contract_text(domain, "domain")?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO rule_domain_states(domain, state_json, scope_hash, confirmed_at, rule_runtime_contract_version, rule_store_schema_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                &domain_text,
-                state_json.to_string(),
-                scope_hash,
-                confirmed_at,
-                RULE_RUNTIME_CONTRACT_VERSION,
-                RULE_STORE_SCHEMA_VERSION,
-            ],
-        )
-        .map_err(|error| format!("写入规则 domain 状态失败: {error}"))?;
-    Ok(())
 }
 
 /// 构建当前统一规则和 domain 状态的稳定指纹。
@@ -209,6 +281,21 @@ fn read_all_domain_states_sorted(connection: &Connection) -> Result<Vec<Value>, 
     Ok(states)
 }
 
+fn rules_hash_for_domain(domain: RuleDomain, rules: &[StoredRule]) -> Result<String, String> {
+    let payload = serde_json::json!({
+        "domain": domain,
+        "rules": rules.iter().map(|rule| serde_json::json!({
+            "rule_order": rule.rule_order,
+            "matcher_kind": rule.matcher_kind,
+            "matcher_value": rule.matcher_value,
+            "payload_json": rule.payload_json,
+        })).collect::<Vec<_>>(),
+    });
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|error| format!("统一规则 rules_hash JSON 编码失败: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 #[derive(Debug)]
 struct DomainStateRow {
     domain: String,
@@ -279,26 +366,35 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn replace_domain_rules_replaces_only_current_domain() {
+    fn commit_rule_import_store_replaces_only_current_domain() {
         let connection = Connection::open_in_memory().expect("in-memory DB should open");
         install_rule_store_schema(&connection).expect("schema should install");
 
-        replace_domain_rules(
+        commit_rule_import_store(
             &connection,
-            RuleDomain::Placeholders,
-            &[fixture_rule(RuleDomain::Placeholders, 0)],
+            &fixture_plan(
+                RuleDomain::Placeholders,
+                vec![fixture_rule(RuleDomain::Placeholders, 0)],
+            ),
+            "2026-06-11T00:00:00",
         )
         .expect("placeholder rules should save");
-        replace_domain_rules(
+        commit_rule_import_store(
             &connection,
-            RuleDomain::MvVirtualNamebox,
-            &[fixture_rule(RuleDomain::MvVirtualNamebox, 0)],
+            &fixture_plan(
+                RuleDomain::MvVirtualNamebox,
+                vec![fixture_rule(RuleDomain::MvVirtualNamebox, 0)],
+            ),
+            "2026-06-11T00:00:01",
         )
         .expect("mv rules should save");
-        replace_domain_rules(
+        commit_rule_import_store(
             &connection,
-            RuleDomain::Placeholders,
-            &[fixture_rule(RuleDomain::Placeholders, 1)],
+            &fixture_plan(
+                RuleDomain::Placeholders,
+                vec![fixture_rule(RuleDomain::Placeholders, 1)],
+            ),
+            "2026-06-11T00:00:02",
         )
         .expect("placeholder replacement should save");
 
@@ -323,11 +419,18 @@ mod tests {
 
         let before = build_rules_fingerprint(&connection, "config-hash")
             .expect("initial fingerprint should build");
-        replace_domain_state(
+        commit_rule_import_store(
             &connection,
-            RuleDomain::MvVirtualNamebox,
-            &json!({"confirmed_empty": true}),
-            "scope-hash",
+            &RuleImportStorePlan {
+                domain: RuleDomain::MvVirtualNamebox,
+                rules: Vec::new(),
+                domain_state: Some(DomainStateDraft {
+                    state_json: json!({"confirmed_empty": true}),
+                    scope_hash: "scope-hash".to_string(),
+                }),
+                context_hash: "scope-hash".to_string(),
+                cleanup_fact_ids: Vec::new(),
+            },
             "2026-06-11T00:00:00Z",
         )
         .expect("domain state should save");
@@ -354,6 +457,16 @@ mod tests {
             enabled: true,
             source_kind: "external_import".to_string(),
             rule_hash: format!("hash-{order}"),
+        }
+    }
+
+    fn fixture_plan(domain: RuleDomain, rules: Vec<StoredRule>) -> RuleImportStorePlan {
+        RuleImportStorePlan {
+            domain,
+            rules,
+            domain_state: None,
+            context_hash: "context-hash".to_string(),
+            cleanup_fact_ids: Vec::new(),
         }
     }
 }

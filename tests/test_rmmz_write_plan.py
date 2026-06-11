@@ -9,6 +9,15 @@ import json
 from collections.abc import Callable
 from typing import cast
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_mv_virtual_namebox_rules,
+    seed_native_placeholder_rules,
+    seed_native_plugin_source_text_rules,
+    seed_native_plugin_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.native_write_plan import build_native_write_back_plan, build_native_write_back_setting_payload
 from app.persistence.records import TextFactReadFilter
@@ -1043,7 +1052,7 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -1053,7 +1062,7 @@ async def test_direct_write_back_rejects_latest_quality_errors(
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -1062,7 +1071,7 @@ async def test_direct_write_back_rejects_latest_quality_errors(
                 )
             ]
         )
-        await session.replace_placeholder_rules([placeholder_record])
+        await seed_native_placeholder_rules(session, [placeholder_record])
         setting = load_setting(source_language=session.source_language)
         text_rules = TextRules.from_setting(
             setting.text_rules,
@@ -1074,26 +1083,26 @@ async def test_direct_write_back_rejects_latest_quality_errors(
             ),
             structured_placeholder_rules=(),
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
         scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=(),
             ),
-            reviewed_empty=True,
         )
         _ = await rebuild_text_index_native_storage(
             session=session,
@@ -1217,7 +1226,7 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -1227,7 +1236,7 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -1236,7 +1245,7 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
                 )
             ]
         )
-        await session.replace_placeholder_rules([placeholder_record])
+        await seed_native_placeholder_rules(session, [placeholder_record])
         setting = load_setting(source_language=session.source_language)
         text_rules = TextRules.from_setting(
             setting.text_rules,
@@ -1248,26 +1257,26 @@ async def test_direct_rebuild_active_runtime_uses_real_native_success_path(
             ),
             structured_placeholder_rules=(),
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
         scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=(),
             ),
-            reviewed_empty=True,
         )
     await _write_translations_from_rebuilt_text_index(
         registry=registry,
@@ -1410,7 +1419,7 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             registry=TerminologyRegistry(),
             glossary=TerminologyGlossary(),
         )
-        await session.replace_plugin_text_rules(
+        await seed_native_plugin_text_rules(session,
             [
                 PluginTextRuleRecord(
                     plugin_index=0,
@@ -1420,7 +1429,7 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
                 )
             ]
         )
-        await session.replace_event_command_text_rules(
+        await seed_native_event_command_text_rules(session,
             [
                 EventCommandTextRuleRecord(
                     command_code=357,
@@ -1429,7 +1438,7 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
                 )
             ]
         )
-        await session.replace_placeholder_rules([placeholder_record])
+        await seed_native_placeholder_rules(session, [placeholder_record])
         setting = load_setting(source_language=session.source_language)
         text_rules = TextRules.from_setting(
             setting.text_rules,
@@ -1462,27 +1471,27 @@ async def test_direct_write_back_ignores_excluded_plugin_source_text_issues_duri
             ),
             text_rules=text_rules,
         )
-        await session.replace_plugin_source_text_rules(plugin_source_records)
-        await session.replace_rule_review_state(
+        await seed_native_plugin_source_text_rules(session, plugin_source_records)
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
             scope_hash=note_tag_rule_scope_hash_for_text_rules(
                 game_data=game_data,
                 text_rules=text_rules,
             ),
-            reviewed_empty=True,
         )
         scope = await rebuild_current_text_fact_scope_for_test(
             session=session,
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=structured_placeholder_scope_hash(
                 translation_data_map=scope.translation_data_map,
                 structured_rules=(),
             ),
-            reviewed_empty=True,
         )
     await _write_translations_from_rebuilt_text_index(
         registry=registry,
@@ -1539,7 +1548,7 @@ async def test_native_write_back_reads_mv_namebox_render_parts_not_saved_source_
     service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
     text_rules_for_translations: TextRules
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_mv_virtual_namebox_rules(_mv_virtual_namebox_rule_records())
+        await seed_native_mv_virtual_namebox_rules(session, _mv_virtual_namebox_rule_records())
         _game_data, _setting, text_rules_for_translations = await _prepare_write_gate_session(
             session=session,
             game_dir=minimal_mv_game_dir,
@@ -1682,7 +1691,7 @@ async def test_native_plugin_source_runtime_maps_use_v2_fact_hashes(
             ),
             text_rules=text_rules,
         )
-        await session.replace_plugin_source_text_rules(plugin_source_records)
+        await seed_native_plugin_source_text_rules(session, plugin_source_records)
 
     service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
     rebuild_report = await service.rebuild_text_index(game_title=record.game_title)
@@ -1799,7 +1808,7 @@ async def test_native_write_back_blocks_mismatched_plugin_source_raw_selector(
             ),
             text_rules=text_rules_for_plan,
         )
-        await session.replace_plugin_source_text_rules(plugin_source_records)
+        await seed_native_plugin_source_text_rules(session, plugin_source_records)
 
     service = AgentToolkitService(game_registry=registry, setting_path=setting_path)
     rebuild_report = await service.rebuild_text_index(game_title=record.game_title)

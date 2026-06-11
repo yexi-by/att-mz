@@ -6,6 +6,10 @@ from typing import cast
 
 import pytest
 
+from tests.native_rule_seed import (
+    seed_native_nonstandard_data_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.agent_toolkit.reports import AgentReport
 from app.application.handler import TranslationHandler, TranslationRunLimits
@@ -582,7 +586,7 @@ async def test_nonstandard_data_workflow_gate_rejects_stale_rules(
             setting=setting,
             text_rules=text_rules,
         )
-        await session.replace_nonstandard_data_text_rules(
+        await seed_native_nonstandard_data_text_rules(session,
             [
                 NonstandardDataTextRuleRecord(
                     file_name="UnknownPluginData.json",

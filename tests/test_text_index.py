@@ -9,6 +9,14 @@ import pytest
 
 from tests.agent_toolkit_contract_fixtures import _install_minimal_workflow_gate_prerequisites
 
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_mv_virtual_namebox_rules,
+    seed_native_nonstandard_data_text_rules,
+    seed_native_placeholder_rules,
+    seed_native_plugin_source_text_rules,
+)
+
 from app.agent_toolkit import AgentToolkitService
 from app.application.flow_gate import event_command_rule_scope_hash_for_command_codes
 from app.config import SettingOverrides
@@ -167,7 +175,7 @@ async def test_text_index_invalidation_detects_rule_and_source_snapshot_changes(
         assert metadata is not None
         assert (await session.read_text_index_metadata()) == metadata
 
-        await session.replace_placeholder_rules(
+        await seed_native_placeholder_rules(session,
             [
                 PlaceholderRuleRecord(
                     pattern_text=r"<name:[^>]+>",
@@ -181,7 +189,7 @@ async def test_text_index_invalidation_detects_rule_and_source_snapshot_changes(
         )
         assert [item.reason_key for item in rule_invalidations] == ["rules_changed"]
 
-        await session.replace_placeholder_rules([])
+        await seed_native_placeholder_rules(session, [])
         snapshot_records = await session.read_source_snapshot_records()
         assert snapshot_records
         await session.replace_source_snapshot_records(
@@ -466,12 +474,12 @@ async def test_agent_service_rebuild_text_index_strips_mv_virtual_namebox_speake
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_mv_virtual_namebox_rules(
+        await seed_native_mv_virtual_namebox_rules(session,
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,
                     rule_name="standalone-colon",
-                    pattern_text=r"^(?P<speaker>[^:：\r\n]+)[:：]$",
+                    pattern_text=r"^(?<speaker>[^:：\r\n]+)[:：]$",
                     speaker_group="speaker",
                     body_group="",
                     speaker_policy="translate",
@@ -480,7 +488,7 @@ async def test_agent_service_rebuild_text_index_strips_mv_virtual_namebox_speake
                 MvVirtualNameboxRuleRecord(
                     rule_order=1,
                     rule_name="inline-quote",
-                    pattern_text=r"^(?P<speaker>[^「\r\n]+)「(?P<body>.*)」$",
+                    pattern_text=r"^(?<speaker>[^「\r\n]+)「(?<body>.*)」$",
                     speaker_group="speaker",
                     body_group="body",
                     speaker_policy="translate",
@@ -530,7 +538,7 @@ async def test_agent_service_rebuild_text_index_includes_nonstandard_data_rule_t
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_english_game_dir, source_language="en")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_nonstandard_data_text_rules(
+        await seed_native_nonstandard_data_text_rules(session,
             [
                 NonstandardDataTextRuleRecord(
                     file_name="Recipes.json",
@@ -603,7 +611,7 @@ async def test_agent_service_rebuild_text_index_includes_plugin_source_rule_text
     assert isinstance(selector, str)
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
@@ -670,7 +678,7 @@ async def test_rebuild_text_index_allows_plugin_source_file_hash_drift_when_sele
     assert isinstance(selector, str)
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
@@ -742,7 +750,7 @@ async def test_rebuild_text_index_reads_only_plugin_source_rule_files(
     assert isinstance(selector, str)
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
@@ -806,7 +814,7 @@ async def test_rebuild_text_index_rejects_mismatched_plugin_source_rules_in_rust
     assert isinstance(selector, str)
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
@@ -869,7 +877,7 @@ async def test_rebuild_text_index_rejects_incomplete_plugin_source_review_for_re
     assert isinstance(selector, str)
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="TestPlugin.js",
@@ -903,7 +911,7 @@ async def test_rebuild_text_index_rejects_mismatched_nonstandard_data_rules_in_r
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_nonstandard_data_text_rules(
+        await seed_native_nonstandard_data_text_rules(session,
             [
                 NonstandardDataTextRuleRecord(
                     file_name="PluginCache.json",
@@ -939,7 +947,7 @@ async def test_rebuild_text_index_rejects_incomplete_nonstandard_data_review_for
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_nonstandard_data_text_rules(
+        await seed_native_nonstandard_data_text_rules(session,
             [
                 NonstandardDataTextRuleRecord(
                     file_name="PluginCache.json",
@@ -975,10 +983,10 @@ async def test_external_rule_gate_rejects_missing_current_scope_hash_even_with_u
     assert report.status == "ok"
 
     async with await registry.open_game(record.game_title) as session:
-        await session.replace_rule_review_state(
+        await seed_native_empty_rule_review_state(
+            session,
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
             scope_hash="unrelated-confirmed-scope",
-            reviewed_empty=True,
         )
         metadata = await session.read_text_index_metadata()
         assert metadata is not None
@@ -1131,17 +1139,17 @@ async def test_quality_report_rebuilds_text_index_with_command_setting_overrides
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_rule_file_hash_does_not_change_text_index_rules_fingerprint(
+async def test_plugin_source_rule_file_hash_changes_text_index_rules_fingerprint(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """插件源码规则 file_hash 是诊断信息，不应单独让文本索引规则指纹过期。"""
+    """插件源码规则 file_hash 属于统一规则表内容，会进入文本索引规则指纹。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     text_rules = TextRules.from_setting(load_setting(EXAMPLE_SETTING_PATH, source_language="ja").text_rules)
 
     async with await registry.open_game("テストゲーム") as session:
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="HashOnly.js",
@@ -1152,7 +1160,7 @@ async def test_plugin_source_rule_file_hash_does_not_change_text_index_rules_fin
             ]
         )
         first = await collect_text_index_rules_fingerprint(session=session, text_rules=text_rules)
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="HashOnly.js",
@@ -1163,7 +1171,7 @@ async def test_plugin_source_rule_file_hash_does_not_change_text_index_rules_fin
             ]
         )
         second = await collect_text_index_rules_fingerprint(session=session, text_rules=text_rules)
-        await session.replace_plugin_source_text_rules(
+        await seed_native_plugin_source_text_rules(session,
             [
                 PluginSourceTextRuleRecord(
                     file_name="HashOnly.js",
@@ -1175,8 +1183,8 @@ async def test_plugin_source_rule_file_hash_does_not_change_text_index_rules_fin
         )
         changed_selector = await collect_text_index_rules_fingerprint(session=session, text_rules=text_rules)
 
-    assert second == first
-    assert changed_selector != first
+    assert second != first
+    assert changed_selector != second
 
 
 def test_text_index_source_branch_precheck_rejects_invalid_gate_markers() -> None:
