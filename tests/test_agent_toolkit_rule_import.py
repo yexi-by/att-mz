@@ -949,7 +949,7 @@ async def test_import_empty_note_tag_rules_uses_prefix_read_for_stale_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Note 标签规则导入清理旧译文时，只读取旧规则文件前缀。"""
+    """Note 标签规则导入清理无效已保存译文时，只读取当前 domain 的规则文件前缀。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     setting_text = example_setting_text_with_absolute_prompt_files()

@@ -217,8 +217,8 @@ def test_custom_rule_can_fully_protect_long_candidate_prefix() -> None:
     ] == []
 
 
-def test_custom_placeholder_rules_do_not_run_old_fancy_regex_gate() -> None:
-    """普通占位符运行期不再执行旧 Rust fancy-regex 兼容校验。"""
+def test_custom_placeholder_rules_accept_current_pcre2_inline_option() -> None:
+    """普通占位符规则按当前 PCRE2 内联选项校验。"""
     rule = CustomPlaceholderRule.create(
         r"(?a:@PLUGIN\[[^\]]+\])",
         "[CUSTOM_PLUGIN_MARKER_{index}]",
@@ -247,12 +247,12 @@ def test_custom_rule_covering_nested_candidate_counts_as_covered() -> None:
     assert rules.iter_unprotected_control_sequence_candidates(r"\nn[\v[527]]こんにちは") == []
 
 
-def test_structured_placeholder_rules_do_not_run_old_fancy_regex_gate() -> None:
-    """结构化占位符运行期不再执行旧 Rust fancy-regex 兼容校验。"""
+def test_structured_placeholder_rules_accept_current_pcre2_inline_option() -> None:
+    """结构化占位符规则按当前 PCRE2 内联选项校验。"""
     rule = StructuredPlaceholderRule.create(
         rule_name="INLINE_LABEL",
         rule_type="paired_shell",
-        pattern_text=r"(?a:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
+        pattern_text=r"(?a:(?<prefix><label>))(?<text>[^<]+)(?<suffix></label>)",
         translatable_group="text",
         protected_groups={
             "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",
