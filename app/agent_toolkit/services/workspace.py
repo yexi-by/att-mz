@@ -175,8 +175,9 @@ def _plugin_source_native_scan_warnings(risk_report: JsonObject) -> list[AgentIs
         issue(
             "plugin_source_syntax_warning",
             (
-                f"发现 {len(syntax_errors)} 个插件源码文件不是合法 JS，已跳过插件源码文本扫描；"
-                f"其中启用插件 {active_count} 个，详情见 plugin-source-risk-report.json"
+                f"发现 {len(syntax_errors)} 个插件源码文件不是合法 JS，已跳过这些文件的插件源码文本扫描；"
+                f"其余可解析插件源码仍应继续按 AST 地图归类，其中启用插件 {active_count} 个，"
+                "这只是告警，不代表插件源码支线失败，详情见 plugin-source-risk-report.json"
             ),
         )
     ]

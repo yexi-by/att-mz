@@ -1594,6 +1594,9 @@ async def test_prepare_workspace_warns_and_skips_invalid_plugin_source(
 
     assert report.status == "warning"
     assert {warning.code for warning in report.warnings} >= {"plugin_source_syntax_warning"}
+    syntax_warning = next(warning for warning in report.warnings if warning.code == "plugin_source_syntax_warning")
+    assert "其余可解析插件源码仍应继续按 AST 地图归类" in syntax_warning.message
+    assert "不代表插件源码支线失败" in syntax_warning.message
     assert report.summary["plugin_source_syntax_error_file_count"] == 1
     assert ensure_json_array(payload["syntax_errors"], "plugin-source-risk-report.syntax_errors") == [
         {

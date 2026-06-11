@@ -179,7 +179,7 @@ pub(crate) struct WriteStorageOutput {
 }
 
 pub(crate) fn current_schema_fingerprint() -> String {
-    sha256_text(CURRENT_SCHEMA_SQL)
+    sha256_text(&canonical_schema_sql_text(CURRENT_SCHEMA_SQL))
 }
 
 pub(crate) fn inspect_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
@@ -1273,11 +1273,15 @@ fn sha256_text(text: &str) -> String {
         .collect()
 }
 
+fn canonical_schema_sql_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, WriteStoragePayload,
-        current_schema_fingerprint, write_scope_index_storage_direct,
+        CURRENT_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, WriteStoragePayload, canonical_schema_sql_text,
+        current_schema_fingerprint, sha256_text, write_scope_index_storage_direct,
         write_scope_index_storage_impl,
     };
     use crate::native_core::text_facts::{
@@ -1304,6 +1308,20 @@ mod tests {
             .expect("schema_version 应可读取");
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
         assert_eq!(current_schema_fingerprint().len(), 64);
+    }
+
+    #[test]
+    fn schema_fingerprint_uses_canonical_line_endings() {
+        let lf_sql = "CREATE TABLE test_table (id INTEGER);\nINSERT INTO test_table VALUES (1);\n";
+        let crlf_sql = lf_sql.replace('\n', "\r\n");
+        let cr_sql = lf_sql.replace('\n', "\r");
+
+        assert_eq!(canonical_schema_sql_text(&crlf_sql), lf_sql);
+        assert_eq!(canonical_schema_sql_text(&cr_sql), lf_sql);
+        assert_eq!(
+            sha256_text(&canonical_schema_sql_text(&crlf_sql)),
+            sha256_text(lf_sql)
+        );
     }
 
     #[test]

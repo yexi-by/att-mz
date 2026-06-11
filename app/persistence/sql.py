@@ -1459,9 +1459,14 @@ def current_schema_sql() -> str:
     )
 
 
+def canonical_schema_sql_text(schema_sql: str) -> str:
+    """返回跨平台 schema 指纹使用的规范 SQL 文本。"""
+    return schema_sql.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def current_schema_fingerprint() -> str:
     """返回共享 schema SQL 的稳定 SHA-256 指纹。"""
-    return hashlib.sha256(current_schema_sql().encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_schema_sql_text(current_schema_sql()).encode("utf-8")).hexdigest()
 
 __all__: list[str] = [
     "CHECK_CONNECTION_READABLE",
@@ -1615,6 +1620,7 @@ __all__: list[str] = [
     "CURRENT_TEXT_FACT_CONTRACT_VERSION",
     "CURRENT_SCHEMA_RESOURCE_NAME",
     "CURRENT_SCHEMA_RESOURCE_PACKAGE",
+    "canonical_schema_sql_text",
     "current_schema_fingerprint",
     "current_schema_sql",
 ]

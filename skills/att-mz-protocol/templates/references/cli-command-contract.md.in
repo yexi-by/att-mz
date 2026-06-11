@@ -112,7 +112,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 字体覆盖重建 | `rebuild-active-runtime --game <游戏标题> --confirm-font-overwrite` | 只有用户单独确认字体覆盖时使用。 |
 | 术语专用写入 | `write-terminology --game <游戏标题>` | 允许正文仍有 pending，但术语表、规则前置、可信源快照、写入目标和已保存译文质量仍必须通过检查。 |
 | 字体还原 | `restore-font --game <游戏标题>` | 缺原始备份或替换字体信息时停止说明。 |
-| 当前运行文件审计 | `audit-active-runtime --game <游戏标题>` | 默认只阻断插件源码读取失败和 JS 语法错误；插件源码支线已启动或已有写回映射时才审计已管理 selector 的残留和坏控制符。 |
+| 当前运行文件审计 | `audit-active-runtime --game <游戏标题>` | 只把报告中的 error 当作阻断级问题；原游戏自带且未被 ATT-MZ 管理的非法 JS 只作为 warning 记录。插件源码支线已启动或已有写回映射时，才把已管理 selector 的残留、坏控制符或写回后的 JS 语法错误作为阻断问题。 |
 | 阻塞诊断 | `diagnose-active-runtime --game <游戏标题> --output <诊断文件>` | 有 active runtime error 时运行；`mapped_excluded` 不进入重置清单，映射缺失时只报告无法反推。 |
 | 试玩反馈反查 | `verify-feedback-text --game <游戏标题> --input <反馈原文清单>` | 按规则缺口、译文缺口、写入缺口或插件源码硬编码分类处理；禁止凭空猜测或直接全量重译。 |
 
@@ -122,5 +122,5 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 - 规则未导入、工作区验收有 error、占位符覆盖风险未处理也未确认。
 - 非标准 data 或插件源码高风险已触发，但缺少开局支线策略、处理会显著增加成本或风险，或候选未归类。
 - 翻译质量报告有 error，或写文件前检查失败。
-- 当前运行文件审计有阻断问题且无法通过规则、译文、重置或重建解释。
+- 当前运行文件审计有 error 且无法通过规则、译文、重置或重建解释。
 - 用户未允许写回、未单独确认字体覆盖，或要求执行危险回溯但没有完整确认标题。

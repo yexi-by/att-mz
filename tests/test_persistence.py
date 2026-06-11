@@ -1,5 +1,6 @@
 """SQLite 持久化层测试。"""
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -36,6 +37,7 @@ from app.persistence.sql import (
     CURRENT_SCHEMA_VERSION,
     EXPECTED_STATIC_TABLE_NAMES,
     CURRENT_TEXT_FACT_CONTRACT_VERSION,
+    canonical_schema_sql_text,
     current_schema_fingerprint,
     current_schema_sql,
 )
@@ -451,6 +453,19 @@ def create_incomplete_registry_database(
                 "1.0.0",
             ),
         )
+
+
+def test_current_schema_fingerprint_uses_canonical_line_endings() -> None:
+    """schema 指纹必须忽略 Git 工作区换行差异。"""
+    lf_sql = "CREATE TABLE test_table (id INTEGER);\nINSERT INTO test_table VALUES (1);\n"
+    crlf_sql = lf_sql.replace("\n", "\r\n")
+    cr_sql = lf_sql.replace("\n", "\r")
+
+    assert canonical_schema_sql_text(crlf_sql) == lf_sql
+    assert canonical_schema_sql_text(cr_sql) == lf_sql
+    assert current_schema_fingerprint() == hashlib.sha256(
+        canonical_schema_sql_text(current_schema_sql()).encode("utf-8")
+    ).hexdigest()
 
 
 @pytest.mark.asyncio

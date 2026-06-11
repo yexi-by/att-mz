@@ -22,6 +22,8 @@ AST 地图顶层包含 `source_view`、`risk`、`enabled_plugin_files`、`candid
 
 AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector。`confidence` 只表示人工审查排序优先级，不表示工具已经判断该文本玩家可见，也不能作为删除候选的理由。每个候选的 `ast_context` 是 AST 事实上下文，常见字段包括 `node_kind`、`property_key`、`property_path`、`call_name`、`call_argument_index`、`return_function_name` 和 `assignment_name`。
 
+`plugin-source-risk-report.json.syntax_errors` 和 AST 地图顶层 `syntax_errors` 只表示这些插件源码文件不是合法 JS，工具已经跳过这些文件的 selector 生成；它不是插件源码支线失败，也不是要求停止正文翻译的 blocker。支线启动后，主代理仍必须继续处理 AST 地图中可解析文件的活跃候选，并把被跳过文件作为 warning 写入裁决和最终报告。只有 ATT-MZ 已管理或写回映射覆盖后的当前运行插件源码问题，才按写回/验收 error 处理。
+
 读取边界：
 
 - 允许读取 AST 地图中的候选、文件名、selector、上下文和风险摘要。
@@ -66,7 +68,8 @@ AST 地图默认导出所有包含当前源语言字符的 JS 字符串 selector
 ## 停止条件
 
 - 高风险支线策略缺失，且当前插件源码候选不能由主代理在本轮自动处理或跳过。
-- AST 地图无法生成或 selector 反复失效。
+- AST 地图无法生成；如果只是部分文件出现在 `syntax_errors` 中，则跳过这些文件并继续处理其余可解析文件。
+- selector 反复失效。
 - 规则校验返回 error。
 - 审查报告存在未关闭 `blocker`。
 - 高风险或已启动支线时存在未归类 selector。
