@@ -91,6 +91,7 @@ description: 仅在用户明确要求执行或继续 A.T.T MZ 的 RPG Maker MV/M
 - 工作子代理必须返回 `selected`、`excluded`、`uncertain`、`active_discoveries`、`evidence`、`risk`、`needs_main_review`、`recommended_next_action`，并列出读取文件、脚本、统计产物和 CLI 命令。
 - 审查子代理必须返回 `findings`，每条 finding 都有 `severity`、`target`、`evidence`、`impact` 和 `recommended_resolution`；未关闭 `blocker` 时主代理禁止导入。
 - 主代理必须等待工作和审查全部完成，逐项读取结果并写阶段裁决；用户或外部代理返回内容一律只是候选答案。
+- 主代理等待子代理时必须使用平台等待、轮询或 `sleep` 控制节奏；不得因短时间无输出就催促、打断、改用半成品裁决或反复读取未变化产物消耗上下文。
 - 详细角色、权限、报告结构和交叉审查关系见 `references/agent-review-workflow.md` 与 `references/subagent-collaboration.md`。
 
 ## 写进游戏文件前硬门槛
@@ -171,6 +172,7 @@ description: 仅在用户明确要求执行或继续 A.T.T MZ 的 RPG Maker MV/M
 - 用临时脚本直接 `import app...` 操作数据库或游戏数据。
 - 把看不懂的结构当成没有内容，或为了让规则非空而编造规则。
 - 子代理未完成、规则未导入、占位符未覆盖就启动正文翻译。
+- 主代理用未完成报告、半成品文件或短时间无输出作为失败结论，提前进入 validate/import、翻译或写回。
 - 分析与规则产出阶段缺少工作报告、审查报告或主代理裁决就 validate/import。
 - 审查报告仍有未关闭 `blocker` 时 validate/import。
 - 子代理执行 `import-*`、`write-back`、`rebuild-active-runtime`、`reset-game`、`reset-translations`、`run-all` 或直接写数据库/游戏文件。
