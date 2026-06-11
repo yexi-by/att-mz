@@ -11,6 +11,7 @@ from .common import (
     TextRules,
     _append_check,
     _current_python_major_minor,
+    collect_saved_rule_runtime_errors,
     ensure_db_directory,
     issue,
     load_environment_overrides,
@@ -19,10 +20,8 @@ from .common import (
     resolve_app_path,
     resolve_replacement_font_path,
     resolve_setting_path,
-    rule_contract_issues_to_agent_issues,
     sys,
 )
-from app.regex_contract import RegexContractValidationError, validate_mv_virtual_namebox_regex_contract
 from app.persistence import TargetGameSession
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
@@ -131,20 +130,20 @@ class DoctorAgentMixin:
         try:
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
+                saved_rule_errors = await collect_saved_rule_runtime_errors(session, setting)
+                if saved_rule_errors:
+                    errors.extend(saved_rule_errors)
+                    return
                 custom_rules = await self._resolve_custom_rules(
                     session=session,
                     custom_placeholder_rules_text=None,
                 )
                 structured_rules = await self._resolve_structured_rules(session=session)
-                try:
-                    text_rules = TextRules.from_setting(
-                        setting.text_rules,
-                        custom_placeholder_rules=custom_rules,
-                        structured_placeholder_rules=structured_rules,
-                    )
-                except RegexContractValidationError as error:
-                    errors.extend(rule_contract_issues_to_agent_issues(error))
-                    return
+                text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=custom_rules,
+                    structured_placeholder_rules=structured_rules,
+                )
                 validate_data_directory_integrity(
                     data_dir=session.content_root / "data",
                     role="当前运行 data 目录",
@@ -182,10 +181,6 @@ class DoctorAgentMixin:
                 event_rules = await session.read_event_command_text_rules()
                 note_tag_rules = await session.read_note_tag_text_rules()
                 mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
-                try:
-                    validate_mv_virtual_namebox_regex_contract(tuple(mv_virtual_namebox_rules))
-                except RegexContractValidationError as error:
-                    errors.extend(rule_contract_issues_to_agent_issues(error))
                 terminology_registry = await session.read_terminology_registry()
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()

@@ -933,7 +933,9 @@ async def test_quality_report_errors_on_corrupt_source_residual_rule(
     report = await service.quality_report(game_title="テストゲーム")
 
     assert report.status == "error"
-    assert "source_residual_rules_invalid" in {error.code for error in report.errors}
+    assert "pcre2_compile_error" in {error.code for error in report.errors}
+
+
 @pytest.mark.asyncio
 async def test_quality_report_ignores_stale_saved_translation_quality_errors(
     minimal_game_dir: Path,

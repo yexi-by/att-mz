@@ -15,14 +15,13 @@ from .common import (
     _nonstandard_data_skipped_file_names,
     _nonstandard_data_skipped_warnings,
     _string_lines_to_json_array,
+    collect_saved_rule_runtime_errors,
     issue,
     load_setting,
-    rule_contract_issues_to_agent_issues,
     write_back_probe_report_fields,
 )
 from app.persistence import TargetGameSession
 from app.persistence.records import TextFactRecord, TextIndexItemRecord, TextIndexMetadata
-from app.regex_contract import RegexContractValidationError, validate_mv_virtual_namebox_regex_contract
 from app.rmmz.schema import NonstandardDataTextRuleRecord
 from app.text_facts import (
     TextFactContractError,
@@ -230,30 +229,22 @@ async def _load_text_rules_or_text_scope_report(
 ) -> TextRules | AgentReport:
     """加载文本规则；规则错误时返回 text-scope 空报告。"""
     setting = load_setting(service.setting_path, source_language=session.source_language)
+    saved_rule_errors = await collect_saved_rule_runtime_errors(session, setting)
+    if saved_rule_errors:
+        return _empty_text_scope_report(
+            errors=saved_rule_errors,
+            include_write_probe=include_write_probe,
+        )
     custom_rules = await service._resolve_custom_rules(
         session=session,
         custom_placeholder_rules_text=None,
     )
     structured_rules = await service._resolve_structured_rules(session=session)
-    try:
-        text_rules = TextRules.from_setting(
-            setting.text_rules,
-            custom_placeholder_rules=custom_rules,
-            structured_placeholder_rules=structured_rules,
-        )
-    except RegexContractValidationError as error:
-        return _empty_text_scope_report(
-            errors=rule_contract_issues_to_agent_issues(error),
-            include_write_probe=include_write_probe,
-        )
-    mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
-    try:
-        validate_mv_virtual_namebox_regex_contract(tuple(mv_virtual_namebox_rules))
-    except RegexContractValidationError as error:
-        return _empty_text_scope_report(
-            errors=rule_contract_issues_to_agent_issues(error),
-            include_write_probe=include_write_probe,
-        )
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        custom_placeholder_rules=custom_rules,
+        structured_placeholder_rules=structured_rules,
+    )
     return text_rules
 
 
@@ -264,28 +255,21 @@ async def _load_text_rules_or_audit_report(
 ) -> TextRules | AgentReport:
     """加载文本规则；规则错误时返回 audit-coverage 空报告。"""
     setting = load_setting(service.setting_path, source_language=session.source_language)
+    saved_rule_errors = await collect_saved_rule_runtime_errors(session, setting)
+    if saved_rule_errors:
+        return _empty_audit_coverage_report(
+            errors=saved_rule_errors,
+        )
     custom_rules = await service._resolve_custom_rules(
         session=session,
         custom_placeholder_rules_text=None,
     )
     structured_rules = await service._resolve_structured_rules(session=session)
-    try:
-        text_rules = TextRules.from_setting(
-            setting.text_rules,
-            custom_placeholder_rules=custom_rules,
-            structured_placeholder_rules=structured_rules,
-        )
-    except RegexContractValidationError as error:
-        return _empty_audit_coverage_report(
-            errors=rule_contract_issues_to_agent_issues(error),
-        )
-    mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
-    try:
-        validate_mv_virtual_namebox_regex_contract(tuple(mv_virtual_namebox_rules))
-    except RegexContractValidationError as error:
-        return _empty_audit_coverage_report(
-            errors=rule_contract_issues_to_agent_issues(error),
-        )
+    text_rules = TextRules.from_setting(
+        setting.text_rules,
+        custom_placeholder_rules=custom_rules,
+        structured_placeholder_rules=structured_rules,
+    )
     return text_rules
 
 

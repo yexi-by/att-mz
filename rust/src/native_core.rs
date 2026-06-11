@@ -12,7 +12,6 @@ mod note_sources;
 mod placeholders;
 mod pool;
 mod quality;
-mod regex_contract;
 mod rule_runtime;
 mod rules;
 mod scope_index;
@@ -80,11 +79,6 @@ pub fn build_write_back_plan_impl(
         mode,
         confirm_font_overwrite,
     )
-}
-
-/// 预检用户可写正则是否满足跨核心契约。
-pub fn validate_regex_contract_impl(payload_json: &str) -> Result<String, String> {
-    regex_contract::validate_regex_contract_impl(payload_json)
 }
 
 /// 预检统一规则导入请求。

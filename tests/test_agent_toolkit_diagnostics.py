@@ -184,7 +184,7 @@ async def test_current_game_reports_invalid_saved_placeholder_rules(
         await session.replace_placeholder_rules(
             [
                 PlaceholderRuleRecord(
-                    pattern_text=r"(?a:@PLUGIN\[[^\]]+\])",
+                    pattern_text=r"(?u:@PLUGIN\[[^\]]+\])",
                     placeholder_template="[CUSTOM_PLUGIN_MARKER_{index}]",
                 )
             ]
@@ -197,8 +197,10 @@ async def test_current_game_reports_invalid_saved_placeholder_rules(
 
     for report in (doctor_report, scope_report, audit_report, quality_report):
         assert report.status == "error"
-        assert "placeholder_rules_invalid" in {error.code for error in report.errors}
-        assert "Rust fancy-regex" in report.errors[0].message
+        assert "pcre2_compile_error" in {error.code for error in report.errors}
+        assert "PCRE2" in report.errors[0].message
+
+
 @pytest.mark.asyncio
 async def test_current_game_reports_invalid_saved_mv_virtual_namebox_rules(
     minimal_mv_game_dir: Path,
@@ -213,8 +215,8 @@ async def test_current_game_reports_invalid_saved_mv_virtual_namebox_rules(
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,
-                    rule_name="bad-ascii-flag",
-                    pattern_text=r"(?a:(?P<speaker>[^:：]+))[:：](?P<body>.*)",
+                    rule_name="bad-unicode-flag",
+                    pattern_text=r"(?u:(?P<speaker>[^:：]+))[:：](?P<body>.*)",
                     speaker_group="speaker",
                     body_group="body",
                     speaker_policy="translate",
@@ -230,14 +232,16 @@ async def test_current_game_reports_invalid_saved_mv_virtual_namebox_rules(
 
     for report in (doctor_report, scope_report, audit_report, quality_report):
         assert report.status == "error"
-        assert "mv_virtual_namebox_rules_invalid" in {error.code for error in report.errors}
-        assert "Rust fancy-regex" in report.errors[0].message
+        assert "pcre2_compile_error" in {error.code for error in report.errors}
+        assert "PCRE2" in report.errors[0].message
+
+
 @pytest.mark.asyncio
-async def test_current_game_reports_saved_mv_virtual_namebox_non_python_named_groups(
+async def test_current_game_accepts_saved_mv_virtual_namebox_current_pcre2_named_groups(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """MV 虚拟名字框规则使用非 Python 命名分组时也必须返回稳定错误码。"""
+    """已保存 MV 虚拟名字框规则接受 PCRE2 当前命名捕获写法。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_mv_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -246,7 +250,7 @@ async def test_current_game_reports_saved_mv_virtual_namebox_non_python_named_gr
             [
                 MvVirtualNameboxRuleRecord(
                     rule_order=0,
-                    rule_name="bad-named-group",
+                    rule_name="current-named-group",
                     pattern_text=r"(?<speaker>[^:：]+)[:：](?<body>.*)",
                     speaker_group="speaker",
                     body_group="body",
@@ -258,6 +262,5 @@ async def test_current_game_reports_saved_mv_virtual_namebox_non_python_named_gr
 
     report = await service.text_scope(game_title="MVテストゲーム")
 
-    assert report.status == "error"
-    assert "mv_virtual_namebox_rules_invalid" in {error.code for error in report.errors}
-    assert "Python re" in report.errors[0].message
+    assert "mv_virtual_namebox_rules_invalid" not in {error.code for error in report.errors}
+    assert "pcre2_compile_error" not in {error.code for error in report.errors}

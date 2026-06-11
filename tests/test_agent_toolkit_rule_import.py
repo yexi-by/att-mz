@@ -1201,15 +1201,15 @@ async def test_validate_placeholder_rules_rejects_rust_unsupported_regex() -> No
     report = await service.validate_placeholder_rules(
         game_title=None,
         custom_placeholder_rules_text=json.dumps(
-            {r"(?a:@PLUGIN\[[^\]]+\])": "[CUSTOM_PLUGIN_MARKER_{index}]"},
+            {r"(?u:@PLUGIN\[[^\]]+\])": "[CUSTOM_PLUGIN_MARKER_{index}]"},
             ensure_ascii=False,
         ),
         sample_texts=["@PLUGIN[name]"],
     )
 
     assert report.status == "error"
-    assert "placeholder_rules_invalid" in {error.code for error in report.errors}
-    assert "Rust fancy-regex" in report.errors[0].message
+    assert "pcre2_compile_error" in {error.code for error in report.errors}
+    assert "PCRE2" in report.errors[0].message
 
 
 @pytest.mark.asyncio
@@ -1249,7 +1249,7 @@ async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_re
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """结构化占位符规则导入前必须通过 Rust fancy-regex 预检。"""
+    """结构化占位符规则导入前必须通过 PCRE2 预检。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -1259,7 +1259,7 @@ async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_re
                 {
                     "name": "INLINE_LABEL",
                     "type": "paired_shell",
-                    "pattern": r"(?a:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
+                    "pattern": r"(?u:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
                     "translatable_group": "text",
                     "protected_groups": {
                         "prefix": "[CUSTOM_INLINE_LABEL_PREFIX_{index}]",
@@ -1278,8 +1278,8 @@ async def test_validate_structured_placeholder_rules_rejects_rust_unsupported_re
     )
 
     assert report.status == "error"
-    assert "structured_placeholder_rules_invalid" in {error.code for error in report.errors}
-    assert "Rust fancy-regex" in report.errors[0].message
+    assert "pcre2_compile_error" in {error.code for error in report.errors}
+    assert "PCRE2" in report.errors[0].message
 
 
 @pytest.mark.asyncio

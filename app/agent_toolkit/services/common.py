@@ -42,7 +42,7 @@ from app.native_quality import (
     collect_native_write_protocol_details,
     native_thread_count,
 )
-from app.native_rule_runtime import prepare_rule_import
+from app.native_rule_runtime import RuleRuntimeIssue, prepare_rule_import
 from app.native_placeholder_scan import (
     collect_native_placeholder_candidate_scan,
     count_uncovered_placeholder_candidate_details,
@@ -51,7 +51,6 @@ from app.native_structured_placeholder_scan import (
     collect_native_structured_placeholder_candidate_scan,
     count_uncovered_structured_placeholder_candidate_details,
 )
-from app.regex_contract import RegexContractValidationError
 from app.persistence import GameRegistry, TargetGameSession, ensure_db_directory
 from app.plugin_text import (
     NativePluginRuleValidationContext,
@@ -1350,8 +1349,6 @@ def _validate_source_residual_rule_records(
     """校验数据库中的源文残留例外规则仍可执行。"""
     try:
         _ = SourceResidualRuleSet.from_records(records)
-    except RegexContractValidationError as error:
-        return rule_contract_issues_to_agent_issues(error)
     except ValueError as error:
         return [issue("source_residual_rules_invalid", f"源文残留例外规则已损坏: {error}")]
     result = prepare_rule_import(
@@ -1364,8 +1361,7 @@ def _validate_source_residual_rule_records(
         }
     )
     if result.errors:
-        messages = "；".join(item.message for item in result.errors)
-        return [issue("source_residual_rules_invalid", f"源文残留例外规则已损坏: {messages}")]
+        return rule_contract_issues_to_agent_issues(result.errors)
     return []
 
 
@@ -1395,9 +1391,75 @@ def _source_residual_records_to_runtime_payload(records: Sequence[SourceResidual
     }
 
 
-def rule_contract_issues_to_agent_issues(error: RegexContractValidationError) -> list[AgentIssue]:
-    """把强类型规则契约问题转换为公开 AgentReport 错误。"""
-    return [issue(contract_issue.issue_code, contract_issue.to_message()) for contract_issue in error.issues]
+def validate_placeholder_rule_records(
+    records: Sequence[PlaceholderRuleRecord],
+    setting: Setting,
+) -> list[AgentIssue]:
+    """校验数据库中的普通占位符规则仍符合当前 PCRE2 运行时契约。"""
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "placeholders",
+            "rules_payload": _placeholder_rule_records_to_import_json(records),
+            "game_context": {},
+            "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+        }
+    )
+    return rule_contract_issues_to_agent_issues(result.errors)
+
+
+def validate_structured_placeholder_rule_records(
+    records: Sequence[StructuredPlaceholderRuleRecord],
+    setting: Setting,
+) -> list[AgentIssue]:
+    """校验数据库中的结构化占位符规则仍符合当前 PCRE2 运行时契约。"""
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "structured_placeholders",
+            "rules_payload": _structured_placeholder_rule_records_to_import_json(records),
+            "game_context": {},
+            "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+        }
+    )
+    return rule_contract_issues_to_agent_issues(result.errors)
+
+
+def validate_mv_virtual_namebox_rule_records(
+    records: Sequence[MvVirtualNameboxRuleRecord],
+    setting: Setting,
+) -> list[AgentIssue]:
+    """校验数据库中的 MV 虚拟名字框规则仍符合当前 PCRE2 运行时契约。"""
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "mv_virtual_namebox",
+            "rules_payload": mv_virtual_namebox_rule_records_to_import_json(tuple(records)),
+            "game_context": {"engine_kind": "mv"},
+            "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+        }
+    )
+    return rule_contract_issues_to_agent_issues(result.errors)
+
+
+async def collect_saved_rule_runtime_errors(
+    session: TargetGameSession,
+    setting: Setting,
+) -> list[AgentIssue]:
+    """读取当前游戏已保存正则规则，并按统一 PCRE2 运行时契约校验。"""
+    placeholder_rules = await session.read_placeholder_rules()
+    structured_placeholder_rules = await session.read_structured_placeholder_rules()
+    mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
+    return [
+        *validate_placeholder_rule_records(placeholder_rules, setting),
+        *validate_structured_placeholder_rule_records(structured_placeholder_rules, setting),
+        *validate_mv_virtual_namebox_rule_records(mv_virtual_namebox_rules, setting),
+    ]
+
+
+def rule_contract_issues_to_agent_issues(items: Sequence[RuleRuntimeIssue]) -> list[AgentIssue]:
+    """把当前规则运行时问题转换为公开 AgentReport 错误。"""
+    return [issue(item.code, item.message) for item in items]
 
 
 def _coverage_hard_stop_errors(report: AgentReport) -> list[AgentIssue]:
@@ -2446,17 +2508,6 @@ def _validate_structured_placeholder_rules_with_context(
                 translation_data_map=translation_data_map,
                 structured_rules=structured_rules,
             )
-    except RegexContractValidationError as error:
-        return AgentReport.from_parts(
-            errors=rule_contract_issues_to_agent_issues(error),
-            warnings=[],
-            summary={
-                "game": game_title,
-                "rule_count": 0,
-                "sample_count": len(sample_text_list),
-            },
-            details={},
-        )
     except Exception as error:
         return AgentReport.from_parts(
             errors=[
@@ -2627,18 +2678,6 @@ def _validate_placeholder_rules_with_context(
             setting_text_rules,
             custom_placeholder_rules=custom_rules,
             structured_placeholder_rules=structured_rules,
-        )
-    except RegexContractValidationError as error:
-        errors.extend(rule_contract_issues_to_agent_issues(error))
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "source": source_label,
-                "rule_count": len(custom_rules),
-                "sample_count": len(sample_text_list),
-            },
-            details={},
         )
     except Exception as error:
         errors.append(issue("setting", f"配置加载失败: {type(error).__name__}: {error}"))
@@ -3420,7 +3459,11 @@ __all__: list[str] = [
     'SourceResidualRuleSet',
     'build_rule_runtime_settings_patterns',
     'build_source_residual_rule_records_from_import',
+    'collect_saved_rule_runtime_errors',
     'parse_source_residual_rule_import_text',
+    'validate_placeholder_rule_records',
+    'validate_mv_virtual_namebox_rule_records',
+    'validate_structured_placeholder_rule_records',
     'TextScopeEntry',
     'TextScopeResult',
     'read_fresh_plugin_text_rules',
