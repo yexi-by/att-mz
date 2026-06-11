@@ -74,7 +74,8 @@ def test_user_rule_fixtures_use_current_pcre2_named_capture_syntax() -> None:
     """当前测试、规格和 Skill 示例不得继续把 Python/Rust 交集写法当推荐契约。"""
     roots = [
         Path("tests"),
-        Path("docs/superpowers/specs"),
+        Path("docs/superpowers/review-specs"),
+        Path("docs/history"),
         Path("skills"),
         Path("setting.example.toml"),
     ]
