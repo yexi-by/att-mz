@@ -13,6 +13,7 @@ mod placeholders;
 mod pool;
 mod quality;
 mod regex_contract;
+mod rule_runtime;
 mod rules;
 mod scope_index;
 pub(crate) mod text_facts;
