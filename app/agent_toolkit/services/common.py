@@ -15,12 +15,6 @@ from typing import Protocol, cast
 
 import aiofiles
 
-from app.agent_toolkit.placeholder_scan import (
-    PlaceholderCandidate,
-    count_uncovered_candidates,
-    placeholder_candidates_to_details,
-    scan_placeholder_candidates,
-)
 from app.agent_toolkit.reports import AgentIssue, AgentReport, issue
 from app.application.font_replacement import resolve_replacement_font_path
 from app.config import (
@@ -1572,21 +1566,6 @@ JOINED_TEXT_CONTROL_BOUNDARY_PATTERN: re.Pattern[str] = re.compile(
 )
 
 
-def _build_custom_placeholder_rule_draft(
-    candidates: Sequence[PlaceholderCandidate],
-) -> dict[str, str]:
-    """把未覆盖候选折叠成适合 Agent 编辑的规则草稿。"""
-    draft_rules: dict[str, str] = {}
-    for candidate in candidates:
-        if candidate.standard_covered or candidate.custom_covered:
-            continue
-        if _needs_manual_joined_text_boundary(candidate.marker):
-            continue
-        pattern_text, placeholder_template = _draft_custom_placeholder_rule(candidate.marker)
-        _ = draft_rules.setdefault(pattern_text, placeholder_template)
-    return draft_rules
-
-
 def _build_custom_placeholder_rule_draft_from_details(
     candidate_details: JsonArray,
 ) -> dict[str, str]:
@@ -1610,22 +1589,6 @@ def _build_custom_placeholder_rule_draft_from_details(
         pattern_text, placeholder_template = _draft_custom_placeholder_rule(marker)
         _ = draft_rules.setdefault(pattern_text, placeholder_template)
     return draft_rules
-
-
-def _joined_text_boundary_markers(
-    candidates: Sequence[PlaceholderCandidate],
-) -> list[str]:
-    """列出必须人工确认边界的裸字母控制符候选。"""
-    return sorted(
-        {
-            candidate.marker
-            for candidate in candidates
-            if not candidate.standard_covered
-            and not candidate.custom_covered
-            and _needs_manual_joined_text_boundary(candidate.marker)
-        },
-        key=str.lower,
-    )
 
 
 def _joined_text_boundary_markers_from_details(candidate_details: JsonArray) -> list[str]:
@@ -3262,10 +3225,6 @@ __all__: list[str] = [
     'Path',
     'cast',
     'aiofiles',
-    'PlaceholderCandidate',
-    'count_uncovered_candidates',
-    'placeholder_candidates_to_details',
-    'scan_placeholder_candidates',
     'AgentIssue',
     'AgentReport',
     'issue',
@@ -3427,8 +3386,6 @@ __all__: list[str] = [
     'CUSTOM_MARKER_WITH_PARAMS_PATTERN',
     'CUSTOM_MARKER_WITHOUT_PARAMS_PATTERN',
     'JOINED_TEXT_CONTROL_BOUNDARY_PATTERN',
-    '_build_custom_placeholder_rule_draft',
-    '_joined_text_boundary_markers',
     '_joined_text_boundary_markers_from_details',
     '_needs_manual_joined_text_boundary',
     '_build_joined_text_boundary_warnings',

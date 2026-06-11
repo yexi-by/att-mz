@@ -3,8 +3,6 @@
 from .models import (
     TextScopeEntry,
     TextScopeResult,
-    TextScopeRuleHit,
-    TextScopeSnapshot,
     TextSourceType,
     WriteBackProbeError,
 )
@@ -13,8 +11,6 @@ from .plugin_rules import read_fresh_plugin_text_rules
 __all__ = [
     "TextScopeEntry",
     "TextScopeResult",
-    "TextScopeRuleHit",
-    "TextScopeSnapshot",
     "TextSourceType",
     "WriteBackProbeError",
     "read_fresh_plugin_text_rules",

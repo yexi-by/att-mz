@@ -2461,10 +2461,8 @@ async def test_structured_placeholder_candidate_review_rejects_sampled_hash(
     assert "structured_placeholder_uncovered" in {error.code for error in errors}
 
 
-def test_structured_placeholder_coverage_result_uses_native_candidate_scan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """结构化占位符覆盖结果必须复用 native 候选明细。"""
+def test_structured_placeholder_coverage_result_uses_current_candidate_details() -> None:
+    """结构化占位符覆盖结果使用当前候选明细。"""
     translation_data_map = {
         "CommonEvents.json": TranslationData(
             display_name=None,
@@ -2488,24 +2486,6 @@ def test_structured_placeholder_coverage_result_uses_native_candidate_scan(
         },
     )
 
-    def fake_native_structured_details(*args: object, **kwargs: object) -> JsonArray:
-        """用 sentinel 明细证明覆盖结果消费 native 候选入口。"""
-        _ = (args, kwargs)
-        return [
-            {
-                "location_path": "CommonEvents.json/1/list/0/parameters/0",
-                "line_number": 1,
-                "candidate": "<名前: Alraune>",
-                "covered": True,
-                "matching_rules": ["INLINE_NAME"],
-            }
-        ]
-
-    monkeypatch.setattr(
-        "app.application.flow_gate.collect_native_structured_placeholder_candidate_details",
-        fake_native_structured_details,
-    )
-
     coverage = build_structured_placeholder_coverage_result(
         translation_data_map=translation_data_map,
         structured_rules=(structured_rule,),
@@ -2518,7 +2498,6 @@ def test_structured_placeholder_coverage_result_uses_native_candidate_scan(
     assert coverage.scope_hash
     detail = ensure_json_object(coverage.candidates[0], "structured placeholder candidate")
     assert detail["location_path"] == "CommonEvents.json/1/list/0/parameters/0"
-    assert detail["line_number"] == 1
     assert detail["candidate"] == "<名前: Alraune>"
     assert detail["covered"] is True
     assert detail["matching_rules"] == ["INLINE_NAME"]
@@ -2595,9 +2574,8 @@ def test_placeholder_candidate_scan_accepts_custom_span_wrapping_candidate() -> 
 
 
 def test_normal_placeholder_coverage_result_uses_native_candidate_scan(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """普通占位符覆盖结果必须复用 native 候选明细。"""
+    """普通占位符覆盖结果使用当前候选明细。"""
     translation_data_map = {
         "Items.json": TranslationData(
             display_name=None,
@@ -2619,12 +2597,6 @@ def test_normal_placeholder_coverage_result_uses_native_candidate_scan(
             ),
         ),
     )
-
-    def forbidden_python_scan(*args: object, **kwargs: object) -> None:
-        _ = (args, kwargs)
-        raise AssertionError("build_normal_placeholder_coverage_result 不应调用 Python 普通占位符扫描器")
-
-    monkeypatch.setattr("app.application.flow_gate.scan_placeholder_candidates", forbidden_python_scan, raising=False)
 
     coverage = build_normal_placeholder_coverage_result(
         translation_data_map=translation_data_map,

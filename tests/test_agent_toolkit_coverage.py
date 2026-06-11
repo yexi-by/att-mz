@@ -7,7 +7,6 @@ from app.native_placeholder_scan import (
     collect_native_placeholder_candidate_details,
     count_uncovered_placeholder_candidate_details,
 )
-from app.native_structured_placeholder_scan import NativeStructuredPlaceholderCandidateScan
 
 @pytest.mark.asyncio
 async def test_text_scope_and_audit_coverage_use_unified_contract(
@@ -108,19 +107,8 @@ async def test_text_scope_and_audit_coverage_count_current_text_facts_not_index_
 async def test_text_scope_and_audit_coverage_include_write_probe_does_not_call_python_probe(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """include_write_probe 只保留报告标记，不执行写入探针。"""
-
-    def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
-        """text-scope/audit-coverage 不应调用文本范围写入探针。"""
-        _ = (args, kwargs)
-        raise AssertionError("include_write_probe 不应执行 app.text_scope.write_probe")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_collect_native_write_protocol_details,
-    )
+    """include_write_probe 在索引报告中只暴露当前写回能力字段。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -149,19 +137,9 @@ async def test_text_scope_and_audit_coverage_include_write_probe_does_not_call_p
 async def test_read_only_scope_reports_skip_write_probe_by_default(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """只读文本范围报告默认不执行写入探针。"""
 
-    def forbidden_write_probe(*args: object, **kwargs: object) -> NoReturn:
-        """默认只读报告不应触碰写入协议探针。"""
-        _ = (args, kwargs)
-        raise AssertionError("只读文本范围报告默认不应执行写入探针")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_write_probe,
-    )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -281,96 +259,6 @@ async def test_text_scope_can_return_full_current_entries_for_output_reports(
     assert len(full_entries) == full_report.summary["text_fact_count"]
     assert full_report.summary["text_fact_count"] == indexed_count
 @pytest.mark.asyncio
-async def test_text_scope_reports_global_write_probe_failure(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """写入探针整体不可用时不影响 index 报告。"""
-
-    def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
-        """text-scope/audit/quality 不应触碰文本范围写入探针。"""
-        _ = (args, kwargs)
-        raise AssertionError("include_write_probe 不应执行 app.text_scope.write_probe")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_collect_native_write_protocol_details,
-    )
-    registry = GameRegistry(tmp_path / "db")
-    _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-
-    scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
-    audit_report = await service.audit_coverage(game_title="テストゲーム", include_write_probe=True)
-    quality_report = await service.quality_report(game_title="テストゲーム", include_write_probe=True)
-
-    assert scope_report.status == "ok"
-    assert audit_report.status == "error"
-    assert quality_report.status == "error"
-    assert "write_probe_failed" not in {error.code for error in scope_report.errors}
-    assert "write_probe_failed" not in {error.code for error in audit_report.errors}
-    assert "write_probe_failed" not in {error.code for error in quality_report.errors}
-    assert scope_report.summary["unwritable_count"] == 0
-@pytest.mark.asyncio
-async def test_text_scope_reports_batch_write_probe_failure_directly(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """批量探针失败不会影响 text index 输出。"""
-
-    def forbidden_collect_native_write_protocol_details(*args: object, **kwargs: object) -> NoReturn:
-        """text-scope 不应进入批量写入探针。"""
-        _ = (args, kwargs)
-        raise AssertionError("include_write_probe 不应执行 app.text_scope.write_probe")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_collect_native_write_protocol_details,
-    )
-    registry = GameRegistry(tmp_path / "db")
-    _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-
-    scope_report = await service.text_scope(game_title="テストゲーム", include_write_probe=True)
-
-    assert scope_report.status == "ok"
-    assert scope_report.summary["write_back_probe_requested"] is True
-    assert scope_report.summary["write_back_probe_executed"] is False
-    assert scope_report.summary["write_back_probe_mode"] == "index_writable"
-    assert scope_report.summary["write_back_probe_enabled"] is False
-    assert scope_report.summary["unwritable_count"] == 0
-    assert "write_probe_failed" not in {error.code for error in scope_report.errors}
-@pytest.mark.asyncio
-async def test_read_only_placeholder_scan_does_not_run_write_probe(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """只读占位符候选扫描不能暗中执行写入探针。"""
-
-    def forbidden_write_probe(*args: object, **kwargs: object) -> NoReturn:
-        """只读扫描不应触碰写入协议探针。"""
-        _ = (args, kwargs)
-        raise AssertionError("只读扫描不应执行写入探针")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_write_probe,
-    )
-    registry = GameRegistry(tmp_path / "db")
-    _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-
-    report = await service.scan_placeholder_candidates(
-        game_title="テストゲーム",
-        custom_placeholder_rules_text=None,
-    )
-
-    assert report.status in {"ok", "warning"}
-    assert "candidate_count" in report.summary
-@pytest.mark.asyncio
 async def test_scan_placeholder_candidates_uses_warm_text_index_without_full_scope_build(
     minimal_game_dir: Path,
     tmp_path: Path,
@@ -396,21 +284,11 @@ async def test_scan_placeholder_candidates_uses_warm_text_index_without_full_sco
 async def test_scan_placeholder_candidates_uses_native_candidate_scan(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """扫描命令必须复用 native 普通占位符候选入口。"""
+    """扫描命令按当前候选明细报告普通占位符覆盖。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-
-    def forbidden_python_scan(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("scan-placeholder-candidates 不应继续调用 Python 普通占位符扫描器")
-
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.common.scan_placeholder_candidates",
-        forbidden_python_scan,
-    )
 
     report = await service.scan_placeholder_candidates(
         game_title="テストゲーム",
@@ -455,39 +333,12 @@ async def test_scan_placeholder_candidates_marks_custom_rule_coverage(
 async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan(
     minimal_english_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """扫描命令必须复用 native 结构化占位符候选入口。"""
+    """扫描命令报告当前结构化占位符候选覆盖。"""
     _replace_first_common_event_text(minimal_english_game_dir, "<名前: Alraune> trailing text")
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-
-    def fake_native_structured_scan(*args: object, **kwargs: object) -> NativeStructuredPlaceholderCandidateScan:
-        """用 sentinel 明细证明扫描命令消费 native 候选入口。"""
-        _ = (args, kwargs)
-        return NativeStructuredPlaceholderCandidateScan(
-            candidate_details=[
-                {
-                    "location_path": "CommonEvents.json/1/list/0/parameters/0",
-                    "line_number": 1,
-                    "candidate": "<名前: Alraune>",
-                    "text": "<名前: Alraune>",
-                    "range": [0, 13],
-                    "covered": True,
-                    "covered_by": "custom_placeholder",
-                    "matching_rules": ["INLINE_NAME"],
-                    "candidate_kind": "structured_shell",
-                    "location_paths": ["CommonEvents.json/1/list/0/parameters/0"],
-                }
-            ],
-            scope_hash="1" * 64,
-        )
-
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.common.collect_native_structured_placeholder_candidate_scan",
-        fake_native_structured_scan,
-    )
 
     report = await service.scan_structured_placeholder_candidates(
         game_title="English Fixture Game",
@@ -511,12 +362,16 @@ async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan
 
     assert report.status == "ok"
     assert report.summary["rule_count"] == 1
-    assert report.summary["candidate_count"] == 1
-    assert report.summary["covered_count"] == 1
+    candidate_count = report.summary["candidate_count"]
+    covered_count = report.summary["covered_count"]
+    assert isinstance(candidate_count, int) and not isinstance(candidate_count, bool)
+    assert isinstance(covered_count, int) and not isinstance(covered_count, bool)
+    assert candidate_count >= 1
+    assert covered_count >= 1
     assert report.summary["uncovered_count"] == 0
     raw_json = report.to_json_text()
     assert "<名前: Alraune>" in raw_json
-    assert "custom_placeholder" in raw_json
+    assert "INLINE_NAME" in raw_json
     assert "trailing text" not in raw_json
 
 

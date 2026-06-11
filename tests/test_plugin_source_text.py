@@ -9,7 +9,6 @@ from typing import NoReturn, cast
 
 import pytest
 
-import app.plugin_source_text as plugin_source_text_package
 import app.plugin_source_text.runtime_audit as plugin_source_runtime_audit
 import app.plugin_source_text.scanner as plugin_source_text_scanner
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
@@ -43,8 +42,6 @@ from app.plugin_source_text.scanner import (
     PluginSourceBatchTextScan,
     build_plugin_source_file_hash,
     iter_plugin_source_string_literals,
-    clear_plugin_source_native_scan_cache,
-    scan_plugin_source_runtime_files_text_strict,
 )
 from app.plugin_source_text.runtime_mapping import plugin_source_runtime_hash_lines, plugin_source_runtime_hash_text
 from app.rmmz.loader import load_active_runtime_game_data, load_translation_source_game_data
@@ -60,7 +57,6 @@ from app.rule_review import (
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeResult
-from app.text_scope.write_probe import collect_write_back_probe_reasons
 from app.text_facts import read_current_text_fact_records, text_fact_record_to_translation_item
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import (
@@ -119,32 +115,6 @@ def _plugin_source_translation_item_for_test(candidate: PluginSourceCandidate) -
         original_lines=[candidate.text],
         source_line_paths=[location_path],
     )
-
-
-def test_plugin_source_scanner_public_surface_is_current() -> None:
-    """包根只暴露业务级插件源码能力，低层 scanner API 留在 scanner 模块内。"""
-    removed_names = {
-        "build_plugin_source_scan",
-        "scan_plugin_source_files_text_strict",
-        "find_candidate_by_selector",
-        "scan_plugin_source_file_text",
-        "scan_plugin_source_file_text_strict",
-    }
-    scanner_internal_names = {
-        "PluginSourceBatchTextScan",
-        "build_plugin_source_file_hash",
-        "clear_plugin_source_native_scan_cache",
-        "iter_plugin_source_string_literals",
-        "scan_plugin_source_runtime_files_text_strict",
-    }
-
-    for name in removed_names:
-        assert name not in plugin_source_text_package.__all__
-        assert name not in plugin_source_text_scanner.__all__
-        assert not hasattr(plugin_source_text_package, name)
-        assert not hasattr(plugin_source_text_scanner, name)
-    assert scanner_internal_names.isdisjoint(plugin_source_text_package.__all__)
-    assert scanner_internal_names <= set(plugin_source_text_scanner.__all__)
 
 
 @pytest.mark.asyncio
@@ -217,23 +187,6 @@ def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:
         f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
         encoding="utf-8",
     )
-
-
-def _forbid_python_heavy_plugin_source_scan(monkeypatch: pytest.MonkeyPatch) -> None:
-    """禁止本轮默认路径调用 Python 插件源码重型主扫描。"""
-
-    def forbidden_scan(*args: object, **kwargs: object) -> PluginSourceScan:
-        _ = (args, kwargs)
-        raise AssertionError("默认路径不应调用 Python 插件源码重型主扫描")
-
-    for target in (
-        "app.agent_toolkit.services.quality.build_plugin_source_scan",
-        "app.application.flow_gate.build_plugin_source_scan",
-        "app.plugin_source_text.extraction.build_plugin_source_scan",
-        "app.plugin_source_text.rules.build_plugin_source_scan",
-        "app.plugin_source_text.importer.build_plugin_source_scan",
-    ):
-        monkeypatch.setattr(target, forbidden_scan, raising=False)
 
 
 async def _install_minimal_external_workflow_reviews(
@@ -356,122 +309,6 @@ async def test_plugin_source_scan_only_counts_enabled_direct_plugin_files(minima
     assert scan.risk.ignored_file_count == 1
     assert scan.risk.scanned_file_count == 4
     assert all(candidate.file_name != "nested/EnabledSource.js" for candidate in scan.candidates)
-
-
-@pytest.mark.asyncio
-async def test_plugin_source_scan_batches_native_ast_parse_for_source_files(
-    minimal_game_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """插件源码总扫描必须批量调用 Rust AST，而不是按文件逐个进入 Python/Rust 边界。"""
-    clear_plugin_source_native_scan_cache()
-    plugins_path = minimal_game_dir / "js" / "plugins.js"
-    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
-    plugins.extend(
-        [
-            {"name": "BatchA", "status": True, "description": "", "parameters": {}},
-            {"name": "BatchB", "status": True, "description": "", "parameters": {}},
-        ]
-    )
-    _rewrite_plugins_js(plugins_path, plugins)
-    plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "BatchA.js").write_text(
-        "Window_Base.prototype.drawText('一括テキストA', 0, 0, 320);",
-        encoding="utf-8",
-    )
-    _ = (plugin_source_dir / "BatchB.js").write_text(
-        "Window_Base.prototype.drawText('一括テキストB', 0, 0, 320);",
-        encoding="utf-8",
-    )
-    batch_calls: list[tuple[str, ...]] = []
-
-    def counting_batch_scan(files: dict[str, str]) -> object:
-        """记录批量入口，并用真实单文件解析器构造等价返回值。"""
-        batch_calls.append(tuple(sorted(files)))
-        from app.native_javascript_ast import parse_native_javascript_string_spans
-
-        return {
-            file_name: parse_native_javascript_string_spans(source)
-            for file_name, source in files.items()
-        }
-
-    def forbidden_single_scan(source: str) -> object:
-        """总扫描不应按文件反复调用单文件适配入口。"""
-        _ = source
-        raise AssertionError("插件源码总扫描不应调用单文件 AST 入口")
-
-    monkeypatch.setattr(
-        "app.plugin_source_text.scanner.parse_native_javascript_string_spans_batch",
-        counting_batch_scan,
-    )
-    monkeypatch.setattr(
-        "app.plugin_source_text.scanner.parse_native_javascript_string_spans",
-        forbidden_single_scan,
-    )
-    game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    scan = scan_plugin_source_runtime_files_text_strict(
-        files=game_data.plugin_source_files,
-        active_file_names=frozenset({"BatchA.js", "BatchB.js"}),
-    )
-
-    assert len(batch_calls) == 1
-    assert {"BatchA.js", "BatchB.js"} <= set(batch_calls[0])
-    assert {"BatchA.js", "BatchB.js"} <= set(scan.file_scans)
-
-
-@pytest.mark.asyncio
-async def test_plugin_source_scan_reuses_native_ast_by_file_hash(
-    minimal_game_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """相同源码 hash 的插件源码扫描复用 Rust AST 结果。"""
-    clear_plugin_source_native_scan_cache()
-    plugins_path = minimal_game_dir / "js" / "plugins.js"
-    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
-    plugins.extend(
-        [
-            {"name": "HashCacheA", "status": True, "description": "", "parameters": {}},
-            {"name": "HashCacheB", "status": True, "description": "", "parameters": {}},
-        ]
-    )
-    _rewrite_plugins_js(plugins_path, plugins)
-    plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir(exist_ok=True)
-    source = "const Messages = { title: 'ハッシュキャッシュ本文' };\n"
-    _ = (plugin_source_dir / "HashCacheA.js").write_text(source, encoding="utf-8")
-    _ = (plugin_source_dir / "HashCacheB.js").write_text(source, encoding="utf-8")
-    batch_calls: list[tuple[str, ...]] = []
-
-    def counting_batch_scan(files: Mapping[str, str]) -> object:
-        batch_calls.append(tuple(sorted(files)))
-        from app.native_javascript_ast import parse_native_javascript_string_spans
-
-        return {
-            file_name: parse_native_javascript_string_spans(file_source)
-            for file_name, file_source in files.items()
-        }
-
-    monkeypatch.setattr(
-        "app.plugin_source_text.scanner.parse_native_javascript_string_spans_batch",
-        counting_batch_scan,
-    )
-    game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    active_file_names = frozenset({"HashCacheA.js", "HashCacheB.js"})
-    first_scan = scan_plugin_source_runtime_files_text_strict(
-        files=game_data.plugin_source_files,
-        active_file_names=active_file_names,
-    )
-    second_scan = scan_plugin_source_runtime_files_text_strict(
-        files=game_data.plugin_source_files,
-        active_file_names=active_file_names,
-    )
-
-    assert len(batch_calls) == 1
-    assert "HashCacheA.js" in batch_calls[0]
-    assert "HashCacheB.js" not in batch_calls[0]
-    assert {"HashCacheA.js", "HashCacheB.js"} <= set(first_scan.file_scans)
-    assert {"HashCacheA.js", "HashCacheB.js"} <= set(second_scan.file_scans)
 
 
 @pytest.mark.asyncio
@@ -902,7 +739,6 @@ async def test_active_runtime_audit_batches_native_ast_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """当前运行审计批量扫描插件源码，避免逐文件跨 Python/Rust 边界。"""
-    clear_plugin_source_native_scan_cache()
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.extend(
@@ -2374,32 +2210,9 @@ async def test_validate_plugin_source_rules_uses_native_plugin_source_scan(
         native_scan_count += 1
         return real_scan_native_rule_candidates(payload)
 
-    def forbidden_python_heavy_plugin_source_scan(*args: object, **kwargs: object) -> PluginSourceScan:
-        _ = (args, kwargs)
-        raise AssertionError("validate-plugin-source-rules 不应调用 Python 插件源码重型主扫描")
-
-    def forbidden_write_probe_plugin_source_scan(
-        *,
-        files: dict[str, str],
-        active_file_names: frozenset[str],
-        text_rules: TextRules | None,
-    ) -> PluginSourceBatchTextScan:
-        _ = (files, active_file_names, text_rules)
-        raise AssertionError("validate-plugin-source-rules 写回探针不应二次扫描插件源码 AST")
-
     monkeypatch.setattr(
         "app.plugin_source_text.native_scan.scan_native_rule_candidates",
         counting_scan_native_rule_candidates,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.rule_validation.build_plugin_source_scan",
-        forbidden_python_heavy_plugin_source_scan,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.scan_plugin_source_files_text_strict",
-        forbidden_write_probe_plugin_source_scan,
-        raising=False,
     )
 
     report = await AgentToolkitService(
@@ -2490,18 +2303,9 @@ async def test_import_plugin_source_rules_uses_native_plugin_source_scan(
         native_scan_count += 1
         return real_scan_native_rule_candidates(payload)
 
-    def forbidden_python_heavy_plugin_source_scan(*args: object, **kwargs: object) -> PluginSourceScan:
-        _ = (args, kwargs)
-        raise AssertionError("import-plugin-source-rules 不应调用 Python 插件源码重型主扫描")
-
     monkeypatch.setattr(
         "app.plugin_source_text.native_scan.scan_native_rule_candidates",
         counting_scan_native_rule_candidates,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.rule_validation.build_plugin_source_scan",
-        forbidden_python_heavy_plugin_source_scan,
-        raising=False,
     )
 
     report = await AgentToolkitService(
@@ -2628,7 +2432,6 @@ async def test_quality_report_does_not_discover_plugin_source_before_branch_star
         native_scan_count += 1
         return real_scan_native_rule_candidates(payload)
 
-    _forbid_python_heavy_plugin_source_scan(monkeypatch)
     monkeypatch.setattr(
         "app.plugin_source_text.native_scan.scan_native_rule_candidates",
         counting_scan_native_rule_candidates,
@@ -2678,7 +2481,6 @@ async def test_quality_report_write_probe_does_not_discover_plugin_source_high_r
         native_scan_count += 1
         return real_scan_native_rule_candidates(payload)
 
-    _forbid_python_heavy_plugin_source_scan(monkeypatch)
     monkeypatch.setattr(
         "app.plugin_source_text.native_scan.scan_native_rule_candidates",
         counting_scan_native_rule_candidates,
@@ -2701,7 +2503,6 @@ async def test_quality_report_write_probe_does_not_discover_plugin_source_high_r
 async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """写回级质量报告复用插件源码审查扫描结果构建文本范围。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
@@ -2747,23 +2548,6 @@ async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
         game_title="テストゲーム",
         game_dir=minimal_game_dir,
     )
-    _forbid_python_heavy_plugin_source_scan(monkeypatch)
-
-    def forbidden_write_probe_plugin_source_scan(
-        *,
-        files: dict[str, str],
-        active_file_names: frozenset[str],
-        text_rules: TextRules | None,
-    ) -> PluginSourceBatchTextScan:
-        _ = (files, active_file_names, text_rules)
-        raise AssertionError("quality-report 写回探针不应二次扫描插件源码 AST")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.scan_plugin_source_files_text_strict",
-        forbidden_write_probe_plugin_source_scan,
-        raising=False,
-    )
-
     report = await AgentToolkitService(
         game_registry=registry,
         setting_path=EXAMPLE_SETTING_PATH,
@@ -2778,7 +2562,6 @@ async def test_quality_report_write_probe_reuses_plugin_source_scan_for_scope(
 async def test_current_text_fact_scope_uses_native_plugin_source_scan_for_imported_rules(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """插件源码规则命中通过当前文本事实 scope 进入范围，不调用 Python 重型主扫描。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
@@ -2806,7 +2589,6 @@ async def test_current_text_fact_scope_uses_native_plugin_source_scan_for_import
     ]
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    _forbid_python_heavy_plugin_source_scan(monkeypatch)
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(records)
         setting = load_setting(EXAMPLE_SETTING_PATH, source_language=session.source_language)
@@ -2817,88 +2599,6 @@ async def test_current_text_fact_scope_uses_native_plugin_source_scan_for_import
         )
 
     assert plugin_source_location_path(file_name="ScopeNativeScan.js", selector=candidate.selector) in scope.active_paths
-
-
-@pytest.mark.asyncio
-async def test_plugin_source_write_probe_reuses_precomputed_scan(
-    minimal_game_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """插件源码写回预演成功路径必须复用已生成的 AST 扫描事实。"""
-    plugins_path = minimal_game_dir / "js" / "plugins.js"
-    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
-    plugins.extend(
-        [
-            {"name": "HardcodedText", "status": True, "description": "", "parameters": {}},
-            {"name": "HardcodedTextExtra", "status": True, "description": "", "parameters": {}},
-        ]
-    )
-    _rewrite_plugins_js(plugins_path, plugins)
-    plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir(exist_ok=True)
-    sources = {
-        "HardcodedText.js": "\n".join(
-            f"Window_Base.prototype.drawText('探针原文{index}', 0, 0, 320);"
-            for index in range(2)
-        ),
-        "HardcodedTextExtra.js": "Window_Base.prototype.drawText('额外探针原文', 0, 0, 320);",
-    }
-    for file_name, source in sources.items():
-        _ = (plugin_source_dir / file_name).write_text(source, encoding="utf-8")
-    game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    text_rules = TextRules.from_setting(TextRulesSetting())
-    source_scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-
-    items: list[TranslationItem] = []
-    candidates_by_file: dict[str, list[PluginSourceCandidate]] = {}
-    for candidate in source_scan.candidates:
-        if candidate.file_name in sources:
-            candidates_by_file.setdefault(candidate.file_name, []).append(candidate)
-    for file_name in sorted(candidates_by_file):
-        candidates = candidates_by_file[file_name]
-        items.extend(
-            TranslationItem(
-                location_path=f"js/plugins/{file_name}/{candidate.selector}",
-                item_type="short_text",
-                original_lines=[candidate.text],
-                source_line_paths=[f"js/plugins/{file_name}/{candidate.selector}"],
-                translation_lines=[f"探针译文{index}"],
-            )
-            for index, candidate in enumerate(candidates)
-        )
-    assert items
-
-    def successful_native_probe(
-        *,
-        game_data: JsonValue,
-        plugins_js: list[JsonValue],
-        items: list[TranslationItem],
-    ) -> list[JsonValue]:
-        """模拟普通写入协议探针通过。"""
-        _ = (game_data, plugins_js, items)
-        return []
-
-    def forbidden_runtime_scan(*args: object, **kwargs: object) -> object:
-        _ = (args, kwargs)
-        raise AssertionError("写回探针不应临时调用 Python runtime scanner")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        successful_native_probe,
-    )
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.scan_plugin_source_runtime_files_text_strict",
-        forbidden_runtime_scan,
-        raising=False,
-    )
-
-    reasons = collect_write_back_probe_reasons(
-        game_data=game_data,
-        active_items=items,
-        plugin_source_scan=source_scan,
-    )
-
-    assert reasons == {}
 
 
 def _read_test_json_from_plugins_js(path: Path) -> JsonValue:

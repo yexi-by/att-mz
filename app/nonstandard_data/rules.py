@@ -11,12 +11,10 @@ from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from app.external_input import ExternalInputModel, ExternalStr
 from app.json_path_protocol import ResolvedLeaf, jsonpath_to_path_parts
-from app.native_scope_index import build_native_nonstandard_data_candidates_payload, scan_native_rule_candidates
+from app.native_scope_index import scan_native_rule_candidates
 from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.schema import NonstandardDataTextRuleRecord
-from app.rmmz.text_rules import TextRules
 
-from .extraction import NonstandardDataTextExtractionContext
 from .scanner import NonstandardDataFile, NonstandardDataScan, build_nonstandard_data_file_hash
 
 
@@ -206,40 +204,6 @@ def nonstandard_data_rule_records_to_import_json(
     ]
 
 
-def collect_nonstandard_data_rule_hit_details(
-    *,
-    context: NonstandardDataTextExtractionContext,
-    rule_records: list[NonstandardDataTextRuleRecord],
-    text_rules: TextRules,
-) -> JsonArray:
-    """用 Rust 明细展开已导入非标准 data 规则命中的字符串叶子。"""
-    if not rule_records:
-        return []
-    native_result = scan_native_rule_candidates(
-        build_native_nonstandard_data_candidates_payload(
-            nonstandard_data_files={
-                file_name: nonstandard_file.value
-                for file_name, nonstandard_file in context.files_by_name.items()
-            },
-            text_rules=text_rules,
-        )
-    )
-    candidate_paths = tuple(_candidate_paths_from_native_result(native_result.candidates))
-    coverage = _evaluate_native_nonstandard_data_rule_coverage_from_parts(
-        files=tuple(context.files_by_name.values()),
-        leaves_by_file=context.leaves_by_file,
-        candidate_paths=candidate_paths,
-        import_file=nonstandard_data_rule_records_to_import_file(rule_records),
-        rule_file_hashes={record.file_name: record.file_hash for record in rule_records},
-    )
-    if coverage.stale_reasons:
-        message = _format_stale_reasons(coverage.stale_reasons)
-        if _contains_file_stale_reason(coverage.stale_reasons):
-            raise StaleNonstandardDataRulesError(message)
-        raise ValueError(message)
-    return coverage.hit_details
-
-
 def _evaluate_native_nonstandard_data_rule_coverage(
     *,
     scan: NonstandardDataScan,
@@ -387,24 +351,6 @@ def _native_rule_payload(
     return payload
 
 
-def _candidate_paths_from_native_result(candidates: JsonArray) -> list[tuple[str, str]]:
-    """读取 Rust 非标准 data 候选定位。"""
-    candidate_paths: list[tuple[str, str]] = []
-    for index, raw_candidate in enumerate(candidates):
-        label = f"native_rule_candidates_result.candidates[{index}]"
-        candidate = ensure_json_object(raw_candidate, label)
-        if candidate.get("domain") != "nonstandard_data":
-            continue
-        file_name = candidate.get("file")
-        json_path = candidate.get("json_path")
-        if not isinstance(file_name, str):
-            raise TypeError(f"{label}.file 必须是字符串")
-        if not isinstance(json_path, str):
-            raise TypeError(f"{label}.json_path 必须是字符串")
-        candidate_paths.append((file_name, json_path))
-    return candidate_paths
-
-
 def _path_pairs_from_json_array(items: JsonArray, label: str) -> set[tuple[str, str]]:
     """读取 native 输出的文件和 JSONPath 对。"""
     path_pairs: set[tuple[str, str]] = set()
@@ -485,7 +431,6 @@ __all__ = [
     "NonstandardDataRuleSpec",
     "NonstandardDataRuleValidationResult",
     "build_nonstandard_data_rule_records_from_validation",
-    "collect_nonstandard_data_rule_hit_details",
     "nonstandard_data_rule_records_to_import_json",
     "nonstandard_data_rule_records_to_import_file",
     "parse_nonstandard_data_rule_import_text",

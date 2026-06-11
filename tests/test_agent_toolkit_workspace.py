@@ -247,18 +247,9 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
             scope_hash="test-native-placeholder-scope",
         )
 
-    def forbidden_python_placeholder_scan(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("prepare-agent-workspace 普通占位符草稿不应调用 Python scanner")
-
     monkeypatch.setattr(
         "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_scan_from_entries",
         fake_native_placeholder_scan,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.workspace.scan_placeholder_candidates",
-        forbidden_python_placeholder_scan,
         raising=False,
     )
 

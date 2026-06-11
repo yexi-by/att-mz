@@ -38,19 +38,8 @@ def _quality_fix_template_entry_by_text_position(
 async def test_export_quality_fix_template_stops_on_text_scope_blocker(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """质量修复表 include_write_probe 不应调用 Python 文本范围探针。"""
-
-    def forbidden_scope_write_protocol(*args: object, **kwargs: object) -> NoReturn:
-        """质量修复表不应通过 TextScopeService 的写入探针构建阻断。"""
-        _ = (args, kwargs)
-        raise AssertionError("export-quality-fix-template 必须使用当前文本事实写回检查")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_scope_write_protocol,
-    )
+    """质量修复表暴露当前索引写回能力字段。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)

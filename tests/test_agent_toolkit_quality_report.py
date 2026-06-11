@@ -129,19 +129,8 @@ async def test_write_back_probe_uses_shallow_probe_items(
 async def test_quality_report_stops_on_coverage_error_before_native_checks(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """include_write_probe 不应调用 Python 文本范围写入探针。"""
-
-    def forbidden_scope_write_protocol(*args: object, **kwargs: object) -> NoReturn:
-        """质量报告不应再通过 TextScopeService 的写入探针制造覆盖错误。"""
-        _ = (args, kwargs)
-        raise AssertionError("quality-report 必须使用当前文本事实写回检查")
-
-    monkeypatch.setattr(
-        "app.text_scope.write_probe.collect_native_write_protocol_details",
-        forbidden_scope_write_protocol,
-    )
+    """include_write_probe 使用当前 Rust 写回级质量 gate 字段。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)

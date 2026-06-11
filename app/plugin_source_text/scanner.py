@@ -68,11 +68,6 @@ def build_plugin_source_file_hash(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def clear_plugin_source_native_scan_cache() -> None:
-    """清空进程内插件源码 AST 扫描缓存。"""
-    _NATIVE_SCAN_CACHE.clear()
-
-
 def candidate_selector_for_span(*, start_index: int, end_index: int, raw_text: str) -> str:
     """按字符串节点位置和原始内容生成稳定 AST selector。"""
     digest = hashlib.sha1(raw_text.encode("utf-8")).hexdigest()[:12]
@@ -642,7 +637,6 @@ __all__ = [
     "build_plugin_source_candidate_index",
     "build_plugin_source_file_hash",
     "candidate_selector_for_span",
-    "clear_plugin_source_native_scan_cache",
     "iter_plugin_source_string_literals",
     "scan_plugin_source_runtime_files_text_strict",
 ]

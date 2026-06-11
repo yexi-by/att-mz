@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import cast
 
 import pytest
 from pytest import CaptureFixture, MonkeyPatch
@@ -247,7 +247,6 @@ def test_stage0_cli_agent_canary_runs_full_public_flow(
 async def test_stage0_manifest_ignores_optional_files_not_declared(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
 ) -> None:
     """本轮 manifest 未声明的可选支线文件不能参与工作区校验。"""
     registry = GameRegistry(tmp_path / "db")
@@ -263,21 +262,6 @@ async def test_stage0_manifest_ignores_optional_files_not_declared(
     _write_json(workspace / "plugin-source-rules.json", {"invalid": ["not", "a", "rule"]})
     _write_json(workspace / "nonstandard-data-rules.json", {"invalid": ["not", "a", "rule"]})
     _write_json(workspace / "nonstandard-data" / "UnmanifestedPluginData.json", {"text": "未声明工作区数据"})
-
-    def forbidden_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("manifest 未声明的 plugin-source-rules.json 不应触发插件源码扫描")
-
-    async def forbidden_nonstandard_data_scan(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("manifest 未声明的 nonstandard-data-rules.json 不应触发非标准 data 扫描")
-
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.workspace.build_plugin_source_scan",
-        forbidden_plugin_source_scan,
-        raising=False,
-    )
-    monkeypatch.setattr("app.agent_toolkit.services.workspace.build_nonstandard_data_scan", forbidden_nonstandard_data_scan)
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 
