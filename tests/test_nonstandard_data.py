@@ -15,10 +15,10 @@ from app.native_scope_index import (
 from app.nonstandard_data import (
     NonstandardDataRuleImportFile,
     NonstandardDataRuleValidationResult,
-    NonstandardDataTextExtraction,
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
 )
+from app.nonstandard_data.extraction import NonstandardDataTextExtraction
 from app.nonstandard_data.scanner import (
     NonstandardDataScan,
     build_nonstandard_data_file_hash,

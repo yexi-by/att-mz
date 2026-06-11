@@ -234,7 +234,7 @@ def test_nonstandard_data_scanner_helpers_are_not_package_root_exports() -> None
     assert scanner_api <= scanner_exports
     assert package_exports.isdisjoint(scanner_api)
     assert "validate_nonstandard_data_rules" in package_exports
-    assert "NonstandardDataTextExtraction" in package_exports
+    assert "NonstandardDataTextExtraction" not in package_exports
 
 
 def test_current_runtime_and_p1c_commands_do_not_rebuild_text_scope_by_default() -> None:

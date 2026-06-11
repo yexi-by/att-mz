@@ -19,11 +19,6 @@ import pytest
 
 from app.agent_toolkit import AgentToolkitService
 
-from app.agent_toolkit.placeholder_scan import (
-    count_uncovered_candidates,
-    scan_placeholder_candidates as scan_placeholder_candidate_spans,
-)
-
 from app.agent_toolkit.reports import AgentReport
 
 from app.application.flow_gate import (
@@ -585,8 +580,6 @@ __all__ = (
     "override",
     "pytest",
     "AgentToolkitService",
-    "count_uncovered_candidates",
-    "scan_placeholder_candidate_spans",
     "AgentReport",
     "build_normal_placeholder_coverage_result",
     "build_structured_placeholder_coverage_result",

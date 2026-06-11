@@ -12,6 +12,10 @@ from app.event_command_text import (
 )
 from app.note_tag_text import parse_note_tag_rule_import_text
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
+from app.native_placeholder_scan import (
+    collect_native_placeholder_candidate_details,
+    count_uncovered_placeholder_candidate_details,
+)
 from app.native_scope_index import collect_native_plugin_config_scope_hash
 from app.persistence import TargetGameSession
 from app.persistence.records import TextFactRecord
@@ -2569,11 +2573,15 @@ def test_placeholder_candidate_scan_accepts_custom_span_wrapping_candidate() -> 
         ),
     )
 
-    candidates = scan_placeholder_candidate_spans(translation_data_map, text_rules)
+    candidates = collect_native_placeholder_candidate_details(
+        translation_data_map=translation_data_map,
+        text_rules=text_rules,
+    )
+    first_candidate = ensure_json_object(candidates[0], "placeholder_candidates[0]")
 
-    assert count_uncovered_candidates(candidates) == 0
-    assert candidates[0].marker == r"\\v[104]"
-    assert candidates[0].custom_covered is True
+    assert count_uncovered_placeholder_candidate_details(candidates) == 0
+    assert first_candidate["marker"] == r"\\v[104]"
+    assert first_candidate["custom_covered"] is True
 
 
 def test_normal_placeholder_coverage_result_uses_native_candidate_scan(

@@ -2,12 +2,6 @@
 
 from typing import TYPE_CHECKING
 
-from .placeholder_scan import (
-    PlaceholderCandidate,
-    count_uncovered_candidates,
-    placeholder_candidates_to_details,
-    scan_placeholder_candidates,
-)
 from .reports import AgentIssue, AgentReport, AgentReportEnvelope, AgentReportStatus
 
 if TYPE_CHECKING:
@@ -28,8 +22,4 @@ __all__: list[str] = [
     "AgentReportEnvelope",
     "AgentReportStatus",
     "AgentToolkitService",
-    "PlaceholderCandidate",
-    "count_uncovered_candidates",
-    "placeholder_candidates_to_details",
-    "scan_placeholder_candidates",
 ]

@@ -2,8 +2,6 @@
 
 from .extraction import (
     NONSTANDARD_DATA_LOCATION_PREFIX,
-    NonstandardDataTextExtraction,
-    NonstandardDataTextExtractionContext,
     build_nonstandard_data_text_extraction_context,
     nonstandard_data_file_key,
     nonstandard_data_location_path,
@@ -32,8 +30,6 @@ __all__ = [
     "NonstandardDataRuleImportFile",
     "NonstandardDataRuleSpec",
     "NonstandardDataRuleValidationResult",
-    "NonstandardDataTextExtraction",
-    "NonstandardDataTextExtractionContext",
     "StaleNonstandardDataRulesError",
     "ActiveRuntimeNonstandardDataAudit",
     "ActiveRuntimeNonstandardDataIssue",

@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from app.native_placeholder_scan import (
+    collect_native_placeholder_candidate_details,
+    count_uncovered_placeholder_candidate_details,
+)
+from app.native_structured_placeholder_scan import NativeStructuredPlaceholderCandidateScan
 
 @pytest.mark.asyncio
 async def test_text_scope_and_audit_coverage_use_unified_contract(
@@ -458,27 +463,30 @@ async def test_scan_structured_placeholder_candidates_uses_native_candidate_scan
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
 
-    def fake_native_structured_details(*args: object, **kwargs: object) -> JsonArray:
+    def fake_native_structured_scan(*args: object, **kwargs: object) -> NativeStructuredPlaceholderCandidateScan:
         """用 sentinel 明细证明扫描命令消费 native 候选入口。"""
         _ = (args, kwargs)
-        return [
-            {
-                "location_path": "CommonEvents.json/1/list/0/parameters/0",
-                "line_number": 1,
-                "candidate": "<名前: Alraune>",
-                "text": "<名前: Alraune>",
-                "range": [0, 13],
-                "covered": True,
-                "covered_by": "custom_placeholder",
-                "matching_rules": ["INLINE_NAME"],
-                "candidate_kind": "structured_shell",
-                "location_paths": ["CommonEvents.json/1/list/0/parameters/0"],
-            }
-        ]
+        return NativeStructuredPlaceholderCandidateScan(
+            candidate_details=[
+                {
+                    "location_path": "CommonEvents.json/1/list/0/parameters/0",
+                    "line_number": 1,
+                    "candidate": "<名前: Alraune>",
+                    "text": "<名前: Alraune>",
+                    "range": [0, 13],
+                    "covered": True,
+                    "covered_by": "custom_placeholder",
+                    "matching_rules": ["INLINE_NAME"],
+                    "candidate_kind": "structured_shell",
+                    "location_paths": ["CommonEvents.json/1/list/0/parameters/0"],
+                }
+            ],
+            scope_hash="1" * 64,
+        )
 
     monkeypatch.setattr(
-        "app.agent_toolkit.services.common.collect_native_structured_placeholder_candidate_details",
-        fake_native_structured_details,
+        "app.agent_toolkit.services.common.collect_native_structured_placeholder_candidate_scan",
+        fake_native_structured_scan,
     )
 
     report = await service.scan_structured_placeholder_candidates(
@@ -527,13 +535,13 @@ def test_placeholder_candidate_scan_requires_full_span_coverage() -> None:
         )
     }
 
-    uncovered_candidates = scan_placeholder_candidate_spans(
-        translation_data_map,
-        TextRules.from_setting(TextRulesSetting()),
+    uncovered_candidates = collect_native_placeholder_candidate_details(
+        translation_data_map=translation_data_map,
+        text_rules=TextRules.from_setting(TextRulesSetting()),
     )
-    covered_candidates = scan_placeholder_candidate_spans(
-        translation_data_map,
-        TextRules.from_setting(
+    covered_candidates = collect_native_placeholder_candidate_details(
+        translation_data_map=translation_data_map,
+        text_rules=TextRules.from_setting(
             TextRulesSetting(),
             custom_placeholder_rules=(
                 CustomPlaceholderRule.create(
@@ -544,9 +552,11 @@ def test_placeholder_candidate_scan_requires_full_span_coverage() -> None:
         ),
     )
 
-    assert count_uncovered_candidates(uncovered_candidates) == 1
-    assert uncovered_candidates[0].marker == r"\nn[Name]"
-    assert uncovered_candidates[0].standard_covered is False
-    assert count_uncovered_candidates(covered_candidates) == 0
-    assert covered_candidates[0].marker == r"\nn[Name]"
-    assert covered_candidates[0].custom_covered is True
+    uncovered_candidate = ensure_json_object(uncovered_candidates[0], "uncovered_candidates[0]")
+    covered_candidate = ensure_json_object(covered_candidates[0], "covered_candidates[0]")
+    assert count_uncovered_placeholder_candidate_details(uncovered_candidates) == 1
+    assert uncovered_candidate["marker"] == r"\nn[Name]"
+    assert uncovered_candidate["standard_covered"] is False
+    assert count_uncovered_placeholder_candidate_details(covered_candidates) == 0
+    assert covered_candidate["marker"] == r"\nn[Name]"
+    assert covered_candidate["custom_covered"] is True

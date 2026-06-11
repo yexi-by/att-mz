@@ -36,6 +36,8 @@ def collect_native_structured_placeholder_candidate_details(
     text_rules: TextRules,
 ) -> JsonArray:
     """调用 native 结构化占位符候选入口并返回当前候选明细。"""
+    if not translation_data_map:
+        return []
     return collect_native_structured_placeholder_candidate_scan(
         translation_data_map=translation_data_map,
         text_rules=text_rules,
@@ -79,8 +81,11 @@ def collect_native_structured_placeholder_candidate_details_from_entries(
     text_rules: TextRules,
 ) -> JsonArray:
     """用轻量索引正文条目调用 native 结构化占位符候选入口。"""
+    entry_list = list(entries)
+    if not entry_list:
+        return []
     return collect_native_structured_placeholder_candidate_scan_from_entries(
-        entries=entries,
+        entries=entry_list,
         text_rules=text_rules,
     ).candidate_details
 

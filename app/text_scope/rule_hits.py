@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from app.event_command_text.importer import command_matches_filters
 from app.note_tag_text.sources import note_file_pattern_matches
+from app.nonstandard_data.extraction import NonstandardDataTextExtractionContext
 from app.nonstandard_data import (
-    NonstandardDataTextExtractionContext,
     build_nonstandard_data_text_extraction_context,
     collect_nonstandard_data_rule_hit_details,
     nonstandard_data_location_path,

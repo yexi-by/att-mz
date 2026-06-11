@@ -118,5 +118,4 @@ __all__: list[str] = [
     "PlaceholderCandidate",
     "count_uncovered_candidates",
     "placeholder_candidates_to_details",
-    "scan_placeholder_candidates",
 ]

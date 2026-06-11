@@ -26,6 +26,17 @@ from app.text_scope.models import WriteBackProbeError
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 
 
+def test_old_python_scanners_are_not_public_agent_toolkit_api() -> None:
+    """旧 Python 扫描器不能继续作为包根公共 API 暴露。"""
+    import app.agent_toolkit as agent_toolkit
+    import app.nonstandard_data as nonstandard_data
+    import app.plugin_source_text as plugin_source_text
+
+    assert not hasattr(agent_toolkit, "scan_placeholder_candidates")
+    assert not hasattr(plugin_source_text, "PluginSourceTextExtraction")
+    assert not hasattr(nonstandard_data, "NonstandardDataTextExtraction")
+
+
 class _FakeWritePlanModule:
     """返回固定写回计划 JSON 的测试模块。"""
 
@@ -1049,7 +1060,8 @@ def test_native_structured_placeholder_adapter_preserves_contract_fields(
                             "matching_rules": [],
                             "candidate_kind": "structured_shell",
                         }
-                    ]
+                    ],
+                    "scope_hash": "1" * 64,
                 }
             },
         }
