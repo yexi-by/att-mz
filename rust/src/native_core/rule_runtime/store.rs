@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use rusqlite::{Connection, params};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use super::model::{MatcherKind, RuleDomain, StoredRule};
+use super::model::{RuleDomain, StoredRule};
 
 /// 安装当前统一规则存储 schema。
 pub(crate) fn install_rule_store_schema(connection: &Connection) -> Result<(), String> {
@@ -147,6 +149,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::MatcherKind;
     use super::*;
     use rusqlite::Connection;
     use serde_json::json;

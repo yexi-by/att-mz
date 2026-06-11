@@ -7,7 +7,7 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-const NATIVE_CONTRACT_VERSION: usize = 12;
+const NATIVE_CONTRACT_VERSION: usize = 13;
 
 #[pyfunction]
 fn native_contract_version() -> usize {
@@ -63,6 +63,14 @@ fn scan_write_protocol_count(py: Python<'_>, payload_json: String) -> PyResult<S
 fn validate_regex_contract(py: Python<'_>, payload_json: String) -> PyResult<String> {
     let result = py.detach(move || {
         native_core::validate_regex_contract_impl(&payload_json).map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn prepare_rule_import(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::prepare_rule_import_impl(&payload_json).map_err(|error| error.to_string())
     });
     result.map_err(PyValueError::new_err)
 }
@@ -198,6 +206,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scan_write_protocol, m)?)?;
     m.add_function(wrap_pyfunction!(scan_write_protocol_count, m)?)?;
     m.add_function(wrap_pyfunction!(validate_regex_contract, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_rule_import, m)?)?;
     m.add_function(wrap_pyfunction!(build_scope_index, m)?)?;
     m.add_function(wrap_pyfunction!(scan_rule_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_scope_gate, m)?)?;

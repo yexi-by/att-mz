@@ -87,6 +87,11 @@ pub fn validate_regex_contract_impl(payload_json: &str) -> Result<String, String
     regex_contract::validate_regex_contract_impl(payload_json)
 }
 
+/// 预检统一规则导入请求。
+pub fn prepare_rule_import_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::api::prepare_rule_import_impl(payload_json)
+}
+
 /// 构建 Scope/Index Engine 范围索引。
 pub fn build_scope_index_impl(payload_json: &str) -> Result<String, String> {
     scope_index::build_scope_index_impl(payload_json)

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! PCRE2 engine wrapper for user-authored and Agent-authored rule patterns.
 //!
 //! The high-level `pcre2` crate exposes JIT controls but not PCRE2
