@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.config import LLM_API_KEY_ENV_NAME, LLM_BASE_URL_ENV_NAME
+from app.config import LLM_API_KEY_ENV_NAME, LLM_BASE_URL_ENV_NAME, RUNTIME_RUST_THREADS_ENV_NAME
 from app.config import SettingOverrides
 from app.utils import config_loader_utils
 from app.utils.config_loader_utils import load_setting
@@ -17,6 +17,12 @@ MINIMAL_PROMPT_TEMPLATE = """系统提示词
 示例：
 {{原文对照示例行}}
 """
+
+
+@pytest.fixture(autouse=True)
+def clear_runtime_rust_threads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """配置覆盖测试默认不继承开发机 Rust 线程环境变量。"""
+    monkeypatch.delenv(RUNTIME_RUST_THREADS_ENV_NAME, raising=False)
 
 
 def test_load_setting_applies_cli_overrides_without_reading_prompt_file(
@@ -318,6 +324,56 @@ def test_load_setting_configures_native_runtime_threads(
     _ = load_setting(setting_path=setting_path)
 
     assert configured_values == ["auto"]
+
+
+def test_load_setting_applies_runtime_rust_threads_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ATT_MZ_RUST_THREADS 必须覆盖配置文件并传给原生核心。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    monkeypatch.setenv(RUNTIME_RUST_THREADS_ENV_NAME, "2")
+    configured_values: list[int | str] = []
+
+    def fake_configure_native_runtime_threads(rust_threads: int | str) -> None:
+        configured_values.append(rust_threads)
+
+    monkeypatch.setattr(
+        config_loader_utils,
+        "configure_native_runtime_threads",
+        fake_configure_native_runtime_threads,
+    )
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        runtime_text="[runtime]\nrust_threads = 8",
+    )
+
+    setting = load_setting(setting_path=setting_path)
+
+    assert setting.runtime.rust_threads == 2
+    assert configured_values == [2]
+
+
+@pytest.mark.parametrize("raw_value", ["0", "-1", "many"])
+def test_load_setting_rejects_invalid_runtime_rust_threads_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+) -> None:
+    """ATT_MZ_RUST_THREADS 非 auto/正整数时必须显式失败。"""
+    monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
+    monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
+    monkeypatch.setenv(RUNTIME_RUST_THREADS_ENV_NAME, raw_value)
+    setting_path = _write_minimal_setting(
+        tmp_path,
+        request_body_extra_text="",
+        runtime_text='[runtime]\nrust_threads = "auto"',
+    )
+
+    with pytest.raises(ValueError, match=RUNTIME_RUST_THREADS_ENV_NAME):
+        _ = load_setting(setting_path=setting_path)
 
 
 def test_load_setting_rejects_rust_unsupported_text_rule_regex(

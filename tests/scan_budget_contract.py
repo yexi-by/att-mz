@@ -28,6 +28,10 @@ class ScanBudget:
     authoritative_source: str
     current_path_requirement: str
     evidence: str
+    rust_facts_source: str = "SQLite current text facts / text_index_meta.workflow_gate_facts"
+    expected_scan_count: str = "由 game_data/text_scope/candidate/plugin_source_ast/quality/write_plan 计数字段定义命令级上限"
+    cache_invalidation_path: str = "detect_text_index_invalidations 比对 source snapshot、规则指纹和 item count；必要时触发 Rust cold rebuild"
+    source_branch_coverage: str = "plugin_source_text 与 nonstandard_data 由 Rust workflow_gate_facts 记录 status、error_codes 和 scope_hash"
 
 
 P0_COMMANDS = frozenset({
@@ -119,6 +123,19 @@ def _scope_budget(
         authoritative_source=authoritative_source,
         current_path_requirement=current_path_requirement,
         evidence=evidence,
+        rust_facts_source="Rust rebuild_scope_index_storage 写入 SQLite current text facts 和 text_index_meta.workflow_gate_facts",
+        expected_scan_count=(
+            "game_data<=1, text_scope<=1, candidate<=1, plugin_source_ast<=1, "
+            f"quality_gate<={quality_gate_count}, write_plan<={write_plan_count}"
+        ),
+        cache_invalidation_path=(
+            "detect_text_index_invalidations 比对可信源快照、规则指纹和索引项数量；"
+            "写回相关入口额外要求 workflow_gate_facts 已保存 source branch pass 事实"
+        ),
+        source_branch_coverage=(
+            "plugin_source_text 与 nonstandard_data 在 Rust cold rebuild 后写入 workflow_gate_facts，"
+            "warm gate 消费 status/error_codes/scope_hash"
+        ),
     )
 
 
@@ -142,6 +159,13 @@ def _candidate_budget(
         authoritative_source=authoritative_source,
         current_path_requirement="使用当前候选扫描主路径或薄适配层",
         evidence=evidence,
+        rust_facts_source="Rust scan_rule_candidates 输出当前候选事实；导入后由 rebuild-text-index 固化到 SQLite current text facts",
+        expected_scan_count=(
+            "game_data<=1, text_scope=0, candidate=1, "
+            f"plugin_source_ast<={plugin_source_ast_scan_count}, quality_gate=0, write_plan=0"
+        ),
+        cache_invalidation_path="规则导入后必须依赖 rebuild-text-index 刷新 rules_fingerprint 与 workflow_gate_facts",
+        source_branch_coverage=_candidate_source_branch_coverage(authoritative_source),
     )
 
 
@@ -166,7 +190,20 @@ def _source_residual_rule_budget(
         ),
         current_path_requirement="命令内使用精确路径查询，避免全量文本范围构建和全量译文读取",
         evidence=evidence,
+        rust_facts_source="SQLite current text facts 按路径读取，Rust quality/regex 只校验规则和译文质量",
+        expected_scan_count="game_data<=1, text_scope=0, candidate=0, plugin_source_ast=0, quality_gate=0, write_plan=0",
+        cache_invalidation_path="先检查 text index freshness，再按 position_rules 精确路径读取 current facts",
+        source_branch_coverage="不直接覆盖 source branch；依赖当前 text index freshness 与 path membership",
     )
+
+
+def _candidate_source_branch_coverage(authoritative_source: str) -> str:
+    """按候选域说明是否覆盖 source branch gate facts。"""
+    if "plugin_source" in authoritative_source:
+        return "覆盖 plugin_source_text 候选审查；导入后由 Rust cold rebuild 写入 plugin_source_text workflow_gate_fact"
+    if "nonstandard_data" in authoritative_source:
+        return "覆盖 nonstandard_data 候选审查；导入后由 Rust cold rebuild 写入 nonstandard_data workflow_gate_fact"
+    return "不直接覆盖 plugin_source_text/nonstandard_data；导入后由 Rust cold rebuild 统一刷新 workflow_gate_facts"
 
 
 _SCAN_BUDGETS: dict[str, ScanBudget] = {

@@ -21,6 +21,7 @@ from .structured_placeholder_rules import (
 from .environment import (
     LLM_API_KEY_ENV_NAME,
     LLM_BASE_URL_ENV_NAME,
+    RUNTIME_RUST_THREADS_ENV_NAME,
     EnvironmentOverrides,
     apply_environment_overrides,
     load_environment_overrides,
@@ -57,6 +58,7 @@ __all__: list[str] = [
     "LLM_API_KEY_ENV_NAME",
     "LLM_BASE_URL_ENV_NAME",
     "LLMSetting",
+    "RUNTIME_RUST_THREADS_ENV_NAME",
     "RuntimeRustThreads",
     "RuntimeSetting",
     "SettingOverrides",

@@ -112,6 +112,12 @@ def test_rust_scope_index_scan_budget_table_covers_current_p0_p1_commands() -> N
         assert budget.authoritative_source.strip(), command_name
         assert budget.current_path_requirement.strip(), command_name
         assert budget.evidence.strip(), command_name
+        assert budget.rust_facts_source.strip(), command_name
+        assert budget.expected_scan_count.strip(), command_name
+        assert budget.cache_invalidation_path.strip(), command_name
+        assert budget.source_branch_coverage.strip(), command_name
+        assert "Measure-Command" not in budget.evidence, command_name
+        assert "总耗时" not in budget.evidence, command_name
 
     for category, commands in required_by_category.items():
         assert commands == {
@@ -150,6 +156,19 @@ def test_budget_facts_keep_single_authoritative_native_or_sqlite_source() -> Non
         for text in (budget.authoritative_source, budget.current_path_requirement, budget.evidence):
             assert "待复核:" not in text
             assert "目标 Rust scan_rule_candidates" not in text
+
+    quality_budget = scan_budget_for_command("quality-report")
+    assert "workflow_gate_facts" in quality_budget.source_branch_coverage
+    assert "detect_text_index_invalidations" in quality_budget.cache_invalidation_path
+    assert "quality_gate<=1" in quality_budget.expected_scan_count
+
+    plugin_source_budget = scan_budget_for_command("import-plugin-source-rules")
+    assert "plugin_source_text" in plugin_source_budget.source_branch_coverage
+    assert "rebuild-text-index" in plugin_source_budget.cache_invalidation_path
+
+    nonstandard_budget = scan_budget_for_command("import-nonstandard-data-rules")
+    assert "nonstandard_data" in nonstandard_budget.source_branch_coverage
+    assert "rebuild-text-index" in nonstandard_budget.cache_invalidation_path
 
 
 def test_p1b_candidate_commands_are_closed_over_native_or_sqlite_boundaries() -> None:
