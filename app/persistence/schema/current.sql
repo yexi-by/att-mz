@@ -57,36 +57,6 @@
 ;
 
 --sql
-    CREATE TABLE IF NOT EXISTS [plugin_text_rules] (
-        plugin_index  INTEGER NOT NULL,
-        plugin_name   TEXT NOT NULL,
-        plugin_hash   TEXT NOT NULL,
-        path_template TEXT NOT NULL,
-        PRIMARY KEY (plugin_index, path_template)
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [plugin_source_text_rules] (
-        file_name TEXT NOT NULL,
-        file_hash TEXT NOT NULL,
-        selector  TEXT NOT NULL,
-        selector_kind TEXT NOT NULL CHECK (selector_kind IN ('translate', 'excluded')),
-        PRIMARY KEY (file_name, selector)
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [nonstandard_data_text_rules] (
-        file_name     TEXT NOT NULL,
-        file_hash     TEXT NOT NULL,
-        path_template TEXT NOT NULL,
-        path_kind     TEXT NOT NULL CHECK (path_kind IN ('translate', 'excluded', 'skipped')),
-        PRIMARY KEY (file_name, path_kind, path_template)
-    )
-;
-
---sql
     CREATE TABLE IF NOT EXISTS [plugin_source_runtime_write_map] (
         location_path          TEXT PRIMARY KEY,
         mapping_kind           TEXT NOT NULL CHECK (mapping_kind IN ('translated', 'excluded')),
@@ -128,40 +98,6 @@
 ;
 
 --sql
-    CREATE TABLE IF NOT EXISTS [note_tag_text_rules] (
-        file_name TEXT NOT NULL,
-        tag_name  TEXT NOT NULL,
-        PRIMARY KEY (file_name, tag_name)
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [event_command_text_rule_groups] (
-        group_key    TEXT PRIMARY KEY,
-        command_code INTEGER NOT NULL
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [event_command_text_rule_filters] (
-        group_key       TEXT NOT NULL,
-        parameter_index INTEGER NOT NULL,
-        parameter_value TEXT NOT NULL,
-        PRIMARY KEY (group_key, parameter_index),
-        FOREIGN KEY (group_key) REFERENCES [event_command_text_rule_groups](group_key) ON DELETE CASCADE
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [event_command_text_rule_paths] (
-        group_key     TEXT NOT NULL,
-        path_template TEXT NOT NULL,
-        PRIMARY KEY (group_key, path_template),
-        FOREIGN KEY (group_key) REFERENCES [event_command_text_rule_groups](group_key) ON DELETE CASCADE
-    )
-;
-
---sql
     CREATE TABLE IF NOT EXISTS [terminology_field_terms] (
         category        TEXT NOT NULL,
         source_text     TEXT NOT NULL,
@@ -181,67 +117,6 @@
     CREATE TABLE IF NOT EXISTS [terminology_bundle_state] (
         state_key TEXT PRIMARY KEY,
         imported  INTEGER NOT NULL
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [placeholder_rules] (
-        pattern_text         TEXT PRIMARY KEY,
-        placeholder_template TEXT NOT NULL
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [structured_placeholder_rules] (
-        rule_name          TEXT PRIMARY KEY,
-        rule_type          TEXT NOT NULL,
-        pattern_text       TEXT NOT NULL,
-        translatable_group TEXT NOT NULL
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [structured_placeholder_rule_groups] (
-        rule_name            TEXT NOT NULL,
-        group_name           TEXT NOT NULL,
-        placeholder_template TEXT NOT NULL,
-        PRIMARY KEY (rule_name, group_name),
-        FOREIGN KEY (rule_name) REFERENCES [structured_placeholder_rules](rule_name) ON DELETE CASCADE
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [source_residual_rules] (
-        rule_id       TEXT PRIMARY KEY,
-        rule_type     TEXT NOT NULL,
-        location_path TEXT NOT NULL,
-        pattern_text  TEXT NOT NULL,
-        allowed_terms TEXT NOT NULL,
-        check_group   TEXT NOT NULL,
-        reason        TEXT NOT NULL
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [mv_virtual_namebox_rules] (
-        rule_order      INTEGER NOT NULL,
-        rule_name       TEXT NOT NULL,
-        pattern_text    TEXT NOT NULL,
-        speaker_group   TEXT NOT NULL,
-        body_group      TEXT NOT NULL,
-        speaker_policy  TEXT NOT NULL,
-        render_template TEXT NOT NULL,
-        PRIMARY KEY (rule_order),
-        UNIQUE (rule_name)
-    )
-;
-
---sql
-    CREATE TABLE IF NOT EXISTS [rule_review_states] (
-        rule_domain    TEXT PRIMARY KEY,
-        scope_hash     TEXT NOT NULL,
-        reviewed_empty INTEGER NOT NULL,
-        updated_at     TEXT NOT NULL
     )
 ;
 

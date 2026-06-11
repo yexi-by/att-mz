@@ -64,6 +64,30 @@ def read_sqlite_table_names(db_path: Path) -> set[str]:
     return {row[0] for row in table_rows}
 
 
+@pytest.mark.asyncio
+async def test_current_schema_does_not_create_old_domain_rule_tables(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    registry = GameRegistry(tmp_path / "db")
+    record = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    async with await registry.open_game(record.game_title) as session:
+        rows = await session.connection.execute_fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table'",
+        )
+
+    table_names = {cast(str, row[0]) for row in rows}
+    assert "plugin_text_rules" not in table_names
+    assert "plugin_source_text_rules" not in table_names
+    assert "nonstandard_data_text_rules" not in table_names
+    assert "event_command_text_rule_groups" not in table_names
+    assert "placeholder_rules" not in table_names
+    assert "structured_placeholder_rules" not in table_names
+    assert "source_residual_rules" not in table_names
+    assert "mv_virtual_namebox_rules" not in table_names
+
+
 def make_text_fact_scope(
     *,
     scope_key: str = "scope-current",
@@ -1538,18 +1562,29 @@ async def test_source_residual_rule_type_must_be_known(minimal_game_dir: Path, t
     async with await registry.open_game("テストゲーム") as session:
         _ = await session.connection.execute(
             """
-            INSERT INTO source_residual_rules
-            (rule_id, rule_type, location_path, pattern_text, allowed_terms, check_group, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rules
+            (rule_id, domain, rule_order, matcher_kind, matcher_value, payload_json, enabled, source_kind, rule_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "broken:1",
-                "unknown",
+                "rule:broken",
+                "source_residual",
+                0,
+                "literal",
                 "Map001.json/1/0/0",
-                "",
-                "[]",
-                "",
-                "损坏测试",
+                json.dumps(
+                    {
+                        "rule_id": "broken:1",
+                        "rule_type": "unknown",
+                        "location_path": "Map001.json/1/0/0",
+                        "allowed_terms": [],
+                        "reason": "损坏测试",
+                    },
+                    ensure_ascii=False,
+                ),
+                1,
+                "external_import",
+                "broken",
             ),
         )
         await session.connection.commit()

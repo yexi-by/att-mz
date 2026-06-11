@@ -37,7 +37,7 @@ async def test_reset_game_restores_runtime_and_deletes_registration(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="ja")
     async with aiosqlite.connect(record.db_path) as connection:
-        _ = await connection.execute("DROP TABLE nonstandard_data_text_rules")
+        _ = await connection.execute("DROP TABLE rules")
         await connection.commit()
     data_path = minimal_game_dir / "data" / "System.json"
     data_origin_path = minimal_game_dir / "data_origin" / "System.json"

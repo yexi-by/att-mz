@@ -55,7 +55,7 @@ class RegistryDatabaseIssue:
 
 @dataclass(slots=True)
 class RuleReviewStateRecord:
-    """数据库中保存的外部规则空结果审查状态。"""
+    """数据库中保存的当前规则 domain 确认状态。"""
 
     rule_domain: RuleReviewDomain
     scope_hash: str

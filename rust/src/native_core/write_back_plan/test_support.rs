@@ -2322,35 +2322,22 @@ fn create_minimal_database(db_path: &Path) {
             );
             CREATE TABLE translation_quality_errors (run_id TEXT NOT NULL);
             CREATE TABLE llm_failures (run_id TEXT NOT NULL);
-            CREATE TABLE source_residual_rules (
+            CREATE TABLE rules (
                 rule_id TEXT PRIMARY KEY,
-                rule_type TEXT NOT NULL,
-                location_path TEXT NOT NULL,
-                pattern_text TEXT NOT NULL,
-                allowed_terms TEXT NOT NULL,
-                check_group TEXT NOT NULL,
-                reason TEXT NOT NULL
-            );
-            CREATE TABLE plugin_source_text_rules (
-                file_name TEXT NOT NULL,
-                file_hash TEXT NOT NULL,
-                selector TEXT NOT NULL,
-                selector_kind TEXT NOT NULL,
-                PRIMARY KEY (file_name, selector)
+                domain TEXT NOT NULL,
+                rule_order INTEGER NOT NULL,
+                matcher_kind TEXT NOT NULL,
+                matcher_value TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                rule_hash TEXT NOT NULL,
+                UNIQUE(domain, rule_order, rule_id)
             );
             CREATE TABLE terminology_field_terms (
                 category TEXT NOT NULL,
                 source_text TEXT NOT NULL,
                 translated_text TEXT NOT NULL
-            );
-            CREATE TABLE mv_virtual_namebox_rules (
-                rule_order INTEGER NOT NULL,
-                rule_name TEXT NOT NULL,
-                pattern_text TEXT NOT NULL,
-                speaker_group TEXT NOT NULL,
-                body_group TEXT NOT NULL,
-                speaker_policy TEXT NOT NULL,
-                render_template TEXT NOT NULL
             );
             CREATE TABLE text_index_items (
                 location_path TEXT PRIMARY KEY,
@@ -2928,6 +2915,38 @@ fn insert_stale_translation_item(
         .expect("测试译文应可写入");
 }
 
+fn insert_runtime_rule(
+    db_path: &Path,
+    domain: &str,
+    rule_order: i64,
+    matcher_kind: &str,
+    matcher_value: &str,
+    payload: Value,
+) {
+    let connection = Connection::open(db_path).expect("测试数据库应可打开");
+    let payload_json = payload.to_string();
+    let rule_hash = sha256_text(&format!(
+        "{domain}\0{rule_order}\0{matcher_kind}\0{matcher_value}\0{payload_json}"
+    ));
+    let rule_id = format!("{domain}:{rule_hash}");
+    connection
+        .execute(
+            "INSERT INTO rules \
+             (rule_id, domain, rule_order, matcher_kind, matcher_value, payload_json, enabled, source_kind, rule_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'test', ?7)",
+            params![
+                rule_id,
+                domain,
+                rule_order,
+                matcher_kind,
+                matcher_value,
+                payload_json,
+                rule_hash,
+            ],
+        )
+        .expect("测试运行时规则应可写入");
+}
+
 fn insert_plugin_source_text_rule(
     db_path: &Path,
     file_name: &str,
@@ -2935,30 +2954,40 @@ fn insert_plugin_source_text_rule(
     selector: &str,
     selector_kind: &str,
 ) {
-    let connection = Connection::open(db_path).expect("测试数据库应可打开");
-    connection
-        .execute(
-            "INSERT INTO plugin_source_text_rules \
-             (file_name, file_hash, selector, selector_kind) VALUES (?1, ?2, ?3, ?4)",
-            params![file_name, file_hash, selector, selector_kind],
-        )
-        .expect("测试插件源码规则应可写入");
+    insert_runtime_rule(
+        db_path,
+        "plugin_source",
+        0,
+        "ast_selector",
+        selector,
+        json!({
+            "file_name": file_name,
+            "file_hash": file_hash,
+            "selector": selector,
+            "selector_kind": selector_kind,
+        }),
+    );
 }
 
 fn insert_source_residual_rule(db_path: &Path, location_path: &str, allowed_terms: &str) {
-    let connection = Connection::open(db_path).expect("测试数据库应可打开");
-    connection
-        .execute(
-            "INSERT INTO source_residual_rules \
-             (rule_id, rule_type, location_path, pattern_text, allowed_terms, check_group, reason) \
-             VALUES (?1, 'position', ?2, '', ?3, '', '测试允许片段')",
-            params![
-                format!("position:{location_path}"),
-                location_path,
-                allowed_terms,
-            ],
-        )
-        .expect("测试源文残留例外规则应可写入");
+    let allowed_terms_value: Value = serde_json::from_str(allowed_terms)
+        .expect("测试源文残留 allowed_terms 应是字符串数组 JSON");
+    insert_runtime_rule(
+        db_path,
+        "source_residual",
+        0,
+        "literal",
+        location_path,
+        json!({
+            "rule_id": format!("position:{location_path}"),
+            "rule_type": "position",
+            "location_path": location_path,
+            "pattern_text": "",
+            "allowed_terms": allowed_terms_value,
+            "check_group": "",
+            "reason": "测试允许片段",
+        }),
+    );
 }
 
 fn insert_field_term(db_path: &Path, category: &str, source_text: &str, translated_text: &str) {
@@ -3019,7 +3048,6 @@ fn create_mv_virtual_namebox_game_files(game_dir: &Path) {
 }
 
 fn insert_mv_virtual_namebox_rules(db_path: &Path) {
-    let connection = Connection::open(db_path).expect("测试数据库应可打开");
     let rules = [
         (
             0,
@@ -3050,27 +3078,41 @@ fn insert_mv_virtual_namebox_rules(db_path: &Path) {
         ),
     ];
     for rule in rules {
-        connection
-            .execute(
-                "INSERT INTO mv_virtual_namebox_rules \
-                 (rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![rule.0, rule.1, rule.2, rule.3, rule.4, rule.5, rule.6],
-            )
-            .expect("MV 虚拟名字框规则应可写入");
+        insert_runtime_rule(
+            db_path,
+            "mv_virtual_namebox",
+            rule.0,
+            "pcre2_pattern",
+            rule.2,
+            json!({
+                "name": rule.1,
+                "pattern": rule.2,
+                "speaker_group": rule.3,
+                "body_group": rule.4,
+                "speaker_policy": rule.5,
+                "render_template": rule.6,
+            }),
+        );
     }
 }
 
 fn insert_mv_angle_namebox_rule(db_path: &Path) {
-    let connection = Connection::open(db_path).expect("测试数据库应可打开");
-    connection
-        .execute(
-            "INSERT INTO mv_virtual_namebox_rules \
-             (rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template) \
-             VALUES (0, 'angle-inline', ?1, 'speaker', 'body', 'translate', '<{speaker}:> {body}')",
-            params![r"^<(?P<speaker>[^:<>]+):>\s*(?P<body>.*)$"],
-        )
-        .expect("MV angle 虚拟名字框规则应可写入");
+    let pattern = r"^<(?P<speaker>[^:<>]+):>\s*(?P<body>.*)$";
+    insert_runtime_rule(
+        db_path,
+        "mv_virtual_namebox",
+        0,
+        "pcre2_pattern",
+        pattern,
+        json!({
+            "name": "angle-inline",
+            "pattern": pattern,
+            "speaker_group": "speaker",
+            "body_group": "body",
+            "speaker_policy": "translate",
+            "render_template": "<{speaker}:> {body}",
+        }),
+    );
 }
 
 fn insert_mv_virtual_namebox_text_fact(

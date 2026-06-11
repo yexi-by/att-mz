@@ -6,6 +6,7 @@ use crate::native_core::models::NativeSourceResidualRule;
 use crate::native_core::rule_runtime::adapters::mv_virtual_namebox::compile_mv_virtual_namebox_pattern;
 use crate::native_core::text_facts::CURRENT_TEXT_FACT_CONTRACT_VERSION;
 use rusqlite::{Connection, OpenFlags, params_from_iter};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -45,9 +46,83 @@ struct FactTemplateRow {
     source_line_paths_text: String,
 }
 
+struct RuntimeRulePayload {
+    matcher_value: String,
+    payload_json: Value,
+}
+
 pub(super) fn open_readonly_connection(db_path: &Path) -> Result<Connection, String> {
     Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("只读打开数据库失败 {}: {error}", db_path.display()))
+}
+
+fn read_runtime_rule_payloads(
+    connection: &Connection,
+    domain: &str,
+    error_label: &str,
+) -> Result<Vec<RuntimeRulePayload>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT matcher_value, payload_json \
+             FROM rules \
+             WHERE domain = ?1 AND enabled = 1 \
+             ORDER BY rule_order, rule_id",
+        )
+        .map_err(|error| format!("{error_label} SQL 准备失败: {error}"))?;
+    let rows = statement
+        .query_map([domain], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("{error_label}失败: {error}"))?;
+    let mut rules = Vec::new();
+    for row in rows {
+        let (matcher_value, payload_text) =
+            row.map_err(|error| format!("{error_label}行失败: {error}"))?;
+        let payload_json = serde_json::from_str::<Value>(&payload_text)
+            .map_err(|error| format!("{error_label} payload_json 无效: {error}"))?;
+        if !payload_json.is_object() {
+            return Err(format!("{error_label} payload_json 必须是对象"));
+        }
+        rules.push(RuntimeRulePayload {
+            matcher_value,
+            payload_json,
+        });
+    }
+    Ok(rules)
+}
+
+fn payload_string(payload: &Value, field: &str, error_label: &str) -> Result<String, String> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("{error_label}: rules.payload_json.{field} 必须是字符串"))
+}
+
+fn payload_optional_string(payload: &Value, field: &str) -> Option<String> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn payload_string_array(
+    payload: &Value,
+    field: &str,
+    error_label: &str,
+) -> Result<Vec<String>, String> {
+    let values = payload
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{error_label}: rules.payload_json.{field} 必须是字符串数组"))?;
+    values
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                format!("{error_label}: rules.payload_json.{field} 必须是字符串数组")
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -688,25 +763,18 @@ fn text_fact_lines(text: &str, item_type: &str) -> Result<Vec<String>, String> {
 pub(super) fn read_plugin_source_text_rules(
     connection: &Connection,
 ) -> Result<Vec<PluginSourceTextRule>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT file_name, file_hash, selector, selector_kind \
-             FROM plugin_source_text_rules ORDER BY file_name, selector_kind, selector",
-        )
-        .map_err(|error| format!("读取插件源码规则 SQL 准备失败: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            let file_name: String = row.get(0)?;
-            let file_hash: String = row.get(1)?;
-            let selector: String = row.get(2)?;
-            let selector_kind: String = row.get(3)?;
-            Ok((file_name, file_hash, selector, selector_kind))
-        })
-        .map_err(|error| format!("读取插件源码规则失败: {error}"))?;
+    let rows = read_runtime_rule_payloads(connection, "plugin_source", "读取插件源码规则")?;
     let mut rules_by_file: HashMap<String, PluginSourceTextRule> = HashMap::new();
     for row in rows {
-        let (file_name, file_hash, selector, selector_kind) =
-            row.map_err(|error| format!("读取插件源码规则行失败: {error}"))?;
+        let file_name =
+            payload_optional_string(&row.payload_json, "file_name").ok_or_else(|| {
+                "读取插件源码规则: rules.payload_json.file_name 必须是字符串".to_string()
+            })?;
+        let file_hash = payload_optional_string(&row.payload_json, "file_hash").unwrap_or_default();
+        let selector =
+            payload_optional_string(&row.payload_json, "selector").unwrap_or(row.matcher_value);
+        let selector_kind = payload_optional_string(&row.payload_json, "selector_kind")
+            .unwrap_or_else(|| "translate".to_string());
         let record =
             rules_by_file
                 .entry(file_name.clone())
@@ -733,51 +801,25 @@ pub(super) fn read_plugin_source_text_rules(
 pub(super) fn read_source_residual_rules(
     connection: &Connection,
 ) -> Result<Vec<NativeSourceResidualRule>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT rule_id, rule_type, location_path, pattern_text, allowed_terms, check_group, reason \
-             FROM source_residual_rules ORDER BY rule_id",
-        )
-        .map_err(|error| format!("读取源文残留例外规则 SQL 准备失败: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            let rule_id: String = row.get(0)?;
-            let rule_type: String = row.get(1)?;
-            let location_path: String = row.get(2)?;
-            let pattern_text: String = row.get(3)?;
-            let allowed_terms_text: String = row.get(4)?;
-            let check_group: String = row.get(5)?;
-            let reason: String = row.get(6)?;
-            Ok((
-                rule_id,
-                rule_type,
-                location_path,
-                pattern_text,
-                allowed_terms_text,
-                check_group,
-                reason,
-            ))
-        })
-        .map_err(|error| format!("读取源文残留例外规则失败: {error}"))?;
+    let rows = read_runtime_rule_payloads(connection, "source_residual", "读取源文残留例外规则")?;
     let mut rules = Vec::new();
     for row in rows {
-        let (
-            rule_id,
-            rule_type,
-            location_path,
-            pattern_text,
-            allowed_terms_text,
-            check_group,
-            reason,
-        ) = row.map_err(|error| format!("读取源文残留例外规则行失败: {error}"))?;
+        let rule_type = payload_string(&row.payload_json, "rule_type", "读取源文残留例外规则")?;
         rules.push(NativeSourceResidualRule {
-            rule_id,
+            rule_id: payload_string(&row.payload_json, "rule_id", "读取源文残留例外规则")?,
             rule_type,
-            location_path,
-            pattern_text,
-            allowed_terms: parse_string_array(&allowed_terms_text, "allowed_terms")?,
-            check_group,
-            reason,
+            location_path: payload_optional_string(&row.payload_json, "location_path")
+                .unwrap_or_else(|| row.matcher_value.clone()),
+            pattern_text: payload_optional_string(&row.payload_json, "pattern_text")
+                .unwrap_or(row.matcher_value),
+            allowed_terms: payload_string_array(
+                &row.payload_json,
+                "allowed_terms",
+                "读取源文残留例外规则",
+            )?,
+            check_group: payload_optional_string(&row.payload_json, "check_group")
+                .unwrap_or_default(),
+            reason: payload_string(&row.payload_json, "reason", "读取源文残留例外规则")?,
         });
     }
     Ok(rules)
@@ -819,34 +861,27 @@ pub(super) fn read_terminology_terms(
 pub(super) fn read_mv_virtual_namebox_rules(
     connection: &Connection,
 ) -> Result<Vec<MvVirtualNameboxRule>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template \
-             FROM mv_virtual_namebox_rules ORDER BY rule_order",
-        )
-        .map_err(|error| format!("读取 MV 虚拟名字框规则 SQL 准备失败: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            let rule_name: String = row.get(0)?;
-            let pattern_text: String = row.get(1)?;
-            let speaker_group: String = row.get(2)?;
-            let body_group: String = row.get(3)?;
-            let speaker_policy: String = row.get(4)?;
-            let render_template: String = row.get(5)?;
-            Ok((
-                rule_name,
-                pattern_text,
-                speaker_group,
-                body_group,
-                speaker_policy,
-                render_template,
-            ))
-        })
-        .map_err(|error| format!("读取 MV 虚拟名字框规则失败: {error}"))?;
+    let rows =
+        read_runtime_rule_payloads(connection, "mv_virtual_namebox", "读取 MV 虚拟名字框规则")?;
     let mut rules = Vec::new();
     for row in rows {
-        let (rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template) =
-            row.map_err(|error| format!("读取 MV 虚拟名字框规则行失败: {error}"))?;
+        let rule_name = payload_string(&row.payload_json, "name", "读取 MV 虚拟名字框规则")?;
+        let pattern_text =
+            payload_optional_string(&row.payload_json, "pattern").unwrap_or(row.matcher_value);
+        let speaker_group =
+            payload_string(&row.payload_json, "speaker_group", "读取 MV 虚拟名字框规则")?;
+        let body_group =
+            payload_optional_string(&row.payload_json, "body_group").unwrap_or_default();
+        let speaker_policy = payload_string(
+            &row.payload_json,
+            "speaker_policy",
+            "读取 MV 虚拟名字框规则",
+        )?;
+        let render_template = payload_string(
+            &row.payload_json,
+            "render_template",
+            "读取 MV 虚拟名字框规则",
+        )?;
         let pattern = compile_mv_virtual_namebox_pattern(
             &rule_name,
             &pattern_text,
@@ -875,6 +910,6 @@ pub(super) fn parse_mv_virtual_speaker_policy(
         "translate" => Ok(MvVirtualSpeakerPolicy::Translate),
         "preserve" => Ok(MvVirtualSpeakerPolicy::Preserve),
         "actor_name" => Ok(MvVirtualSpeakerPolicy::ActorName),
-        _ => Err("mv_virtual_namebox_rules.speaker_policy 非法，请重新导入规则".to_string()),
+        _ => Err("rules.payload_json.speaker_policy 非法，请重新导入规则".to_string()),
     }
 }

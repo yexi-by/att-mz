@@ -1057,42 +1057,121 @@ fn rule_candidate_text_rules(payload: &RebuildStoragePayload) -> RuleCandidateTe
     payload.rule_candidate_text_rules.clone()
 }
 
-fn read_plugin_text_rules(connection: &Connection) -> Result<Value, String> {
+#[derive(Debug)]
+struct RuntimeRulePayload {
+    rule_order: i64,
+    matcher_value: String,
+    payload_json: Value,
+}
+
+fn read_runtime_rule_payloads(
+    connection: &Connection,
+    domain: &str,
+    error_label: &str,
+) -> Result<Vec<RuntimeRulePayload>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT plugin_index, plugin_name, plugin_hash, path_template \
-             FROM plugin_text_rules \
-             ORDER BY plugin_index, path_template",
+            "SELECT rule_order, matcher_value, payload_json \
+             FROM rules \
+             WHERE domain = ?1 AND enabled = 1 \
+             ORDER BY rule_order, rule_id",
         )
         .map_err(|error| {
             structured_error(
                 "scope_index_rebuild_rules_unreadable",
-                format!("读取插件规则失败: {error}"),
+                format!("{error_label}: {error}"),
             )
         })?;
-    let mut grouped: BTreeMap<(i64, String, String), Vec<String>> = BTreeMap::new();
     let rows = statement
-        .query_map([], |row| {
+        .query_map([domain], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
             ))
         })
         .map_err(|error| {
             structured_error(
                 "scope_index_rebuild_rules_unreadable",
-                format!("读取插件规则失败: {error}"),
+                format!("{error_label}: {error}"),
             )
         })?;
+    let mut rules = Vec::new();
     for row in rows {
-        let (plugin_index, plugin_name, plugin_hash, path_template) = row.map_err(|error| {
+        let (rule_order, matcher_value, payload_text) = row.map_err(|error| {
             structured_error(
                 "scope_index_rebuild_rules_unreadable",
-                format!("解析插件规则失败: {error}"),
+                format!("{error_label}: {error}"),
             )
         })?;
+        let payload_json = serde_json::from_str::<Value>(&payload_text).map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("{error_label}: payload_json 无效: {error}"),
+            )
+        })?;
+        if !payload_json.is_object() {
+            return Err(structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("{error_label}: payload_json 必须是对象"),
+            ));
+        }
+        rules.push(RuntimeRulePayload {
+            rule_order,
+            matcher_value,
+            payload_json,
+        });
+    }
+    Ok(rules)
+}
+
+fn payload_string(payload: &Value, field: &str, error_label: &str) -> Result<String, String> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            structured_error(
+                "scope_index_rebuild_rules_unreadable",
+                format!("{error_label}: payload_json.{field} 必须是字符串"),
+            )
+        })
+}
+
+fn payload_optional_string(payload: &Value, field: &str) -> Option<String> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn payload_i64(payload: &Value, field: &str, error_label: &str) -> Result<i64, String> {
+    payload.get(field).and_then(Value::as_i64).ok_or_else(|| {
+        structured_error(
+            "scope_index_rebuild_rules_unreadable",
+            format!("{error_label}: payload_json.{field} 必须是整数"),
+        )
+    })
+}
+
+fn payload_array(payload: &Value, field: &str) -> Value {
+    payload.get(field).cloned().unwrap_or_else(|| json!([]))
+}
+
+fn payload_object(payload: &Value, field: &str) -> Value {
+    payload.get(field).cloned().unwrap_or_else(|| json!({}))
+}
+
+fn read_plugin_text_rules(connection: &Connection) -> Result<Value, String> {
+    let rows = read_runtime_rule_payloads(connection, "plugin_config", "读取插件规则失败")?;
+    let mut grouped: BTreeMap<(i64, String, String), Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let plugin_index = payload_i64(&row.payload_json, "plugin_index", "解析插件规则失败")?;
+        let plugin_name = payload_string(&row.payload_json, "plugin_name", "解析插件规则失败")?;
+        let plugin_hash =
+            payload_optional_string(&row.payload_json, "plugin_hash").unwrap_or_default();
+        let path_template =
+            payload_optional_string(&row.payload_json, "path").unwrap_or(row.matcher_value);
         grouped
             .entry((plugin_index, plugin_name, plugin_hash))
             .or_default()
@@ -1118,95 +1197,31 @@ fn read_plugin_text_rules(connection: &Connection) -> Result<Value, String> {
 fn read_plugin_text_rule_records(
     connection: &Connection,
 ) -> Result<Vec<PluginConfigRuleInput>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT plugin_index, plugin_name, plugin_hash, path_template \
-             FROM plugin_text_rules \
-             ORDER BY plugin_index, path_template",
+    serde_json::from_value(read_plugin_text_rules(connection)?).map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_rules_unreadable",
+            format!("解析插件规则失败: {error}"),
         )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取插件规则失败: {error}"),
-            )
-        })?;
-    let mut grouped: BTreeMap<(usize, String, String), Vec<String>> = BTreeMap::new();
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, usize>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取插件规则失败: {error}"),
-            )
-        })?;
-    for row in rows {
-        let (plugin_index, plugin_name, plugin_hash, path_template) = row.map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析插件规则失败: {error}"),
-            )
-        })?;
-        grouped
-            .entry((plugin_index, plugin_name, plugin_hash))
-            .or_default()
-            .push(path_template);
-    }
-    Ok(grouped
-        .into_iter()
-        .map(
-            |((plugin_index, plugin_name, plugin_hash), path_templates)| PluginConfigRuleInput {
-                plugin_index,
-                plugin_name,
-                plugin_hash: Some(plugin_hash),
-                path_templates,
-            },
-        )
-        .collect())
+    })
 }
 
 fn read_plugin_source_text_rules(connection: &Connection) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT file_name, file_hash, selector, selector_kind \
-             FROM plugin_source_text_rules \
-             ORDER BY file_name, selector",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取插件源码规则失败: {error}"),
-            )
-        })?;
+    let rows = read_runtime_rule_payloads(connection, "plugin_source", "读取插件源码规则失败")?;
     let mut grouped: BTreeMap<(String, String), (Vec<String>, Vec<String>)> = BTreeMap::new();
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取插件源码规则失败: {error}"),
-            )
-        })?;
     for row in rows {
-        let (file_name, file_hash, selector, selector_kind) = row.map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析插件源码规则失败: {error}"),
-            )
-        })?;
+        let file_name = payload_optional_string(&row.payload_json, "file_name")
+            .or_else(|| payload_optional_string(&row.payload_json, "file"))
+            .ok_or_else(|| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    "解析插件源码规则失败: payload_json.file_name 必须是字符串".to_string(),
+                )
+            })?;
+        let file_hash = payload_optional_string(&row.payload_json, "file_hash").unwrap_or_default();
+        let selector =
+            payload_optional_string(&row.payload_json, "selector").unwrap_or(row.matcher_value);
+        let selector_kind = payload_optional_string(&row.payload_json, "selector_kind")
+            .unwrap_or_else(|| "translate".to_string());
         let entry = grouped.entry((file_name, file_hash)).or_default();
         if selector_kind == "excluded" {
             entry.1.push(selector);
@@ -1243,44 +1258,36 @@ fn read_plugin_source_text_rule_inputs(
 }
 
 fn read_event_command_text_rules(connection: &Connection) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT group_key, command_code \
-             FROM event_command_text_rule_groups \
-             ORDER BY command_code, group_key",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取事件指令规则失败: {error}"),
-            )
-        })?;
-    let groups = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取事件指令规则失败: {error}"),
-            )
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
+    let rows = read_runtime_rule_payloads(connection, "event_commands", "读取事件指令规则失败")?;
+    let mut grouped: BTreeMap<(i64, String), (Value, Vec<String>)> = BTreeMap::new();
+    for row in rows {
+        let command_code = payload_i64(&row.payload_json, "command_code", "解析事件指令规则失败")?;
+        let parameter_filters = payload_array(&row.payload_json, "parameter_filters");
+        let filters_key = serde_json::to_string(&parameter_filters).map_err(|error| {
             structured_error(
                 "scope_index_rebuild_rules_unreadable",
                 format!("解析事件指令规则失败: {error}"),
             )
         })?;
-    let mut output = Vec::new();
-    for (group_key, command_code) in groups {
-        output.push(json!({
-            "command_code": command_code,
-            "parameter_filters": read_event_command_filters(connection, &group_key)?,
-            "path_templates": read_event_command_paths(connection, &group_key)?,
-        }));
+        let path_template =
+            payload_optional_string(&row.payload_json, "path").unwrap_or(row.matcher_value);
+        let entry = grouped
+            .entry((command_code, filters_key))
+            .or_insert_with(|| (parameter_filters, Vec::new()));
+        entry.1.push(path_template);
     }
-    Ok(Value::Array(output))
+    Ok(Value::Array(
+        grouped
+            .into_iter()
+            .map(|((command_code, _), (parameter_filters, path_templates))| {
+                json!({
+                    "command_code": command_code,
+                    "parameter_filters": parameter_filters,
+                    "path_templates": path_templates,
+                })
+            })
+            .collect(),
+    ))
 }
 
 fn read_event_command_text_rule_inputs(
@@ -1294,117 +1301,30 @@ fn read_event_command_text_rule_inputs(
     })
 }
 
-fn read_event_command_filters(connection: &Connection, group_key: &str) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT parameter_index, parameter_value \
-             FROM event_command_text_rule_filters \
-             WHERE group_key = ?1 \
-             ORDER BY parameter_index, parameter_value",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取事件指令规则过滤条件失败: {error}"),
-            )
-        })?;
-    Ok(Value::Array(
-        statement
-            .query_map([group_key], |row| {
-                Ok(json!({
-                    "index": row.get::<_, i64>(0)?,
-                    "value": row.get::<_, String>(1)?,
-                }))
-            })
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("读取事件指令规则过滤条件失败: {error}"),
-                )
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("解析事件指令规则过滤条件失败: {error}"),
-                )
-            })?,
-    ))
-}
-
-fn read_event_command_paths(connection: &Connection, group_key: &str) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT path_template \
-             FROM event_command_text_rule_paths \
-             WHERE group_key = ?1 \
-             ORDER BY path_template",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取事件指令规则路径失败: {error}"),
-            )
-        })?;
-    Ok(Value::Array(
-        statement
-            .query_map([group_key], |row| {
-                Ok(Value::String(row.get::<_, String>(0)?))
-            })
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("读取事件指令规则路径失败: {error}"),
-                )
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("解析事件指令规则路径失败: {error}"),
-                )
-            })?,
-    ))
-}
-
 fn read_note_tag_text_rules(connection: &Connection) -> Result<Value, String> {
-    grouped_string_list_rules(
-        connection,
-        "SELECT file_name, tag_name FROM note_tag_text_rules ORDER BY file_name, tag_name",
-        "tag_names",
-        "读取 Note 标签规则失败",
-    )
+    let rows = read_runtime_rule_payloads(connection, "note_tags", "读取 Note 标签规则失败")?;
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let file_name = payload_string(&row.payload_json, "file_name", "解析 Note 标签规则失败")?;
+        let tag_name = payload_string(&row.payload_json, "tag_name", "解析 Note 标签规则失败")?;
+        grouped.entry(file_name).or_default().push(tag_name);
+    }
+    Ok(Value::Array(
+        grouped
+            .into_iter()
+            .map(|(file_name, tag_names)| json!({"file_name": file_name, "tag_names": tag_names}))
+            .collect(),
+    ))
 }
 
 fn read_note_tag_text_rule_inputs(
     connection: &Connection,
 ) -> Result<Vec<NoteTagTextRuleInput>, String> {
-    let mut statement = connection
-        .prepare("SELECT file_name, tag_name FROM note_tag_text_rules ORDER BY file_name, tag_name")
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取 Note 标签规则失败: {error}"),
-            )
-        })?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取 Note 标签规则失败: {error}"),
-            )
-        })?;
+    let rows = read_runtime_rule_payloads(connection, "note_tags", "读取 Note 标签规则失败")?;
     let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in rows {
-        let (file_name, tag_name) = row.map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析 Note 标签规则失败: {error}"),
-            )
-        })?;
+        let file_name = payload_string(&row.payload_json, "file_name", "解析 Note 标签规则失败")?;
+        let tag_name = payload_string(&row.payload_json, "tag_name", "解析 Note 标签规则失败")?;
         grouped.entry(file_name).or_default().insert(tag_name);
     }
     Ok(grouped
@@ -1417,43 +1337,29 @@ fn read_note_tag_text_rule_inputs(
 }
 
 fn read_nonstandard_data_text_rules(connection: &Connection) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT file_name, file_hash, path_template, path_kind \
-             FROM nonstandard_data_text_rules \
-             ORDER BY file_name, path_kind, path_template",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取非标准 data 规则失败: {error}"),
-            )
-        })?;
+    let rows =
+        read_runtime_rule_payloads(connection, "nonstandard_data", "读取非标准 data 规则失败")?;
     type NonstandardRuleBuckets = BTreeMap<(String, String), (Vec<String>, Vec<String>, bool)>;
 
     let mut grouped: NonstandardRuleBuckets = BTreeMap::new();
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取非标准 data 规则失败: {error}"),
-            )
-        })?;
     for row in rows {
-        let (file_name, file_hash, path_template, path_kind) = row.map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析非标准 data 规则失败: {error}"),
-            )
-        })?;
+        let file_name = payload_optional_string(&row.payload_json, "file_name")
+            .or_else(|| payload_optional_string(&row.payload_json, "file"))
+            .ok_or_else(|| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    "解析非标准 data 规则失败: payload_json.file_name 必须是字符串".to_string(),
+                )
+            })?;
+        let file_hash = payload_optional_string(&row.payload_json, "file_hash").unwrap_or_default();
+        let path_template =
+            payload_optional_string(&row.payload_json, "path").unwrap_or(row.matcher_value);
+        let mut path_kind = payload_optional_string(&row.payload_json, "path_kind")
+            .or_else(|| payload_optional_string(&row.payload_json, "rule_type"))
+            .unwrap_or_else(|| "translate".to_string());
+        if path_kind == "translated" {
+            path_kind = "translate".to_string();
+        }
         let entry = grouped.entry((file_name, file_hash)).or_default();
         match path_kind.as_str() {
             "excluded" => entry.1.push(path_template),
@@ -1482,41 +1388,31 @@ fn read_nonstandard_data_text_rules(connection: &Connection) -> Result<Value, St
 fn read_nonstandard_data_text_rule_inputs(
     connection: &Connection,
 ) -> Result<Vec<NonstandardDataTextRuleInput>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT file_name, file_hash, path_template, path_kind \
-             FROM nonstandard_data_text_rules \
-             ORDER BY file_name, path_kind, path_template",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取非标准 data 文件文本规则失败: {error}"),
-            )
-        })?;
+    let rows = read_runtime_rule_payloads(
+        connection,
+        "nonstandard_data",
+        "读取非标准 data 文件文本规则失败",
+    )?;
     let mut grouped: BTreeMap<String, NonstandardDataTextRuleInput> = BTreeMap::new();
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取非标准 data 文件文本规则失败: {error}"),
-            )
-        })?;
     for row in rows {
-        let (file_name, file_hash, path_template, path_kind) = row.map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析非标准 data 文件文本规则失败: {error}"),
-            )
-        })?;
+        let file_name = payload_optional_string(&row.payload_json, "file_name")
+            .or_else(|| payload_optional_string(&row.payload_json, "file"))
+            .ok_or_else(|| {
+                structured_error(
+                    "scope_index_rebuild_rules_unreadable",
+                    "解析非标准 data 文件文本规则失败: payload_json.file_name 必须是字符串"
+                        .to_string(),
+                )
+            })?;
+        let file_hash = payload_optional_string(&row.payload_json, "file_hash").unwrap_or_default();
+        let path_template =
+            payload_optional_string(&row.payload_json, "path").unwrap_or(row.matcher_value);
+        let mut path_kind = payload_optional_string(&row.payload_json, "path_kind")
+            .or_else(|| payload_optional_string(&row.payload_json, "rule_type"))
+            .unwrap_or_else(|| "translate".to_string());
+        if path_kind == "translated" {
+            path_kind = "translate".to_string();
+        }
         let entry =
             grouped
                 .entry(file_name.clone())
@@ -1563,207 +1459,97 @@ fn read_nonstandard_data_text_rule_inputs(
 }
 
 fn read_placeholder_rules(connection: &Connection) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT pattern_text, placeholder_template \
-             FROM placeholder_rules \
-             ORDER BY pattern_text, placeholder_template",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取普通占位符规则失败: {error}"),
-            )
-        })?;
+    let rows = read_runtime_rule_payloads(connection, "placeholders", "读取普通占位符规则失败")?;
     Ok(Value::Array(
-        statement
-            .query_map([], |row| {
+        rows.into_iter()
+            .map(|row| {
                 Ok(json!({
-                    "pattern_text": row.get::<_, String>(0)?,
-                    "placeholder_template": row.get::<_, String>(1)?,
+                    "pattern_text": row.matcher_value,
+                    "placeholder_template": payload_string(&row.payload_json, "placeholder_template", "解析普通占位符规则失败")?,
                 }))
             })
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("读取普通占位符规则失败: {error}"),
-                )
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("解析普通占位符规则失败: {error}"),
-                )
-            })?,
+            .collect::<Result<Vec<_>, String>>()?,
     ))
 }
 
 fn read_structured_placeholder_rules(connection: &Connection) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT rule_name, rule_type, pattern_text, translatable_group \
-             FROM structured_placeholder_rules \
-             ORDER BY rule_name",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取结构化占位符规则失败: {error}"),
-            )
-        })?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取结构化占位符规则失败: {error}"),
-            )
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析结构化占位符规则失败: {error}"),
-            )
-        })?;
-    let mut output = Vec::new();
-    for (rule_name, rule_type, pattern_text, translatable_group) in rows {
-        output.push(json!({
-            "rule_name": rule_name,
-            "rule_type": rule_type,
-            "pattern_text": pattern_text,
-            "translatable_group": translatable_group,
-            "protected_groups": read_structured_placeholder_groups(connection, &rule_name)?,
-        }));
-    }
-    Ok(Value::Array(output))
-}
-
-fn read_structured_placeholder_groups(
-    connection: &Connection,
-    rule_name: &str,
-) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT group_name, placeholder_template \
-             FROM structured_placeholder_rule_groups \
-             WHERE rule_name = ?1 \
-             ORDER BY group_name",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取结构化占位符分组失败: {error}"),
-            )
-        })?;
-    let pairs = statement
-        .query_map([rule_name], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取结构化占位符分组失败: {error}"),
-            )
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析结构化占位符分组失败: {error}"),
-            )
-        })?;
-    let mut object = serde_json::Map::new();
-    for (group_name, placeholder_template) in pairs {
-        object.insert(group_name, Value::String(placeholder_template));
-    }
-    Ok(Value::Object(object))
+    let rows = read_runtime_rule_payloads(
+        connection,
+        "structured_placeholders",
+        "读取结构化占位符规则失败",
+    )?;
+    Ok(Value::Array(
+        rows.into_iter()
+            .map(|row| {
+                Ok(json!({
+                    "rule_name": payload_string(&row.payload_json, "rule_name", "解析结构化占位符规则失败")?,
+                    "rule_type": payload_string(&row.payload_json, "rule_type", "解析结构化占位符规则失败")?,
+                    "pattern_text": payload_optional_string(&row.payload_json, "pattern").unwrap_or(row.matcher_value),
+                    "translatable_group": payload_string(&row.payload_json, "translatable_group", "解析结构化占位符规则失败")?,
+                    "protected_groups": payload_object(&row.payload_json, "protected_groups"),
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    ))
 }
 
 fn read_mv_virtual_namebox_rules(connection: &Connection) -> Result<Value, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template \
-             FROM mv_virtual_namebox_rules \
-             ORDER BY rule_order",
-        )
-        .map_err(|error| structured_error("scope_index_rebuild_rules_unreadable", format!("读取 MV 虚拟名字框规则失败: {error}")))?;
+    let rows = read_runtime_rule_payloads(
+        connection,
+        "mv_virtual_namebox",
+        "读取 MV 虚拟名字框规则失败",
+    )?;
     Ok(Value::Array(
-        statement
-            .query_map([], |row| {
+        rows.into_iter()
+            .map(|row| {
                 Ok(json!({
-                    "rule_order": row.get::<_, i64>(0)?,
-                    "rule_name": row.get::<_, String>(1)?,
-                    "pattern_text": row.get::<_, String>(2)?,
-                    "speaker_group": row.get::<_, String>(3)?,
-                    "body_group": row.get::<_, String>(4)?,
-                    "speaker_policy": row.get::<_, String>(5)?,
-                    "render_template": row.get::<_, String>(6)?,
+                    "rule_order": row.rule_order,
+                    "rule_name": payload_string(&row.payload_json, "name", "解析 MV 虚拟名字框规则失败")?,
+                    "pattern_text": payload_optional_string(&row.payload_json, "pattern").unwrap_or(row.matcher_value),
+                    "speaker_group": payload_string(&row.payload_json, "speaker_group", "解析 MV 虚拟名字框规则失败")?,
+                    "body_group": payload_optional_string(&row.payload_json, "body_group").unwrap_or_default(),
+                    "speaker_policy": payload_string(&row.payload_json, "speaker_policy", "解析 MV 虚拟名字框规则失败")?,
+                    "render_template": payload_string(&row.payload_json, "render_template", "解析 MV 虚拟名字框规则失败")?,
                 }))
             })
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("读取 MV 虚拟名字框规则失败: {error}"),
-                )
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                structured_error(
-                    "scope_index_rebuild_rules_unreadable",
-                    format!("解析 MV 虚拟名字框规则失败: {error}"),
-                )
-            })?,
+            .collect::<Result<Vec<_>, String>>()?,
     ))
 }
 
 fn read_mv_virtual_namebox_rule_inputs(
     connection: &Connection,
 ) -> Result<Vec<RawMvVirtualNameboxRule>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template \
-             FROM mv_virtual_namebox_rules \
-             ORDER BY rule_order",
-        )
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取 MV 虚拟名字框规则失败: {error}"),
-            )
-        })?;
-    statement
-        .query_map([], |row| {
+    let rows = read_runtime_rule_payloads(
+        connection,
+        "mv_virtual_namebox",
+        "读取 MV 虚拟名字框规则失败",
+    )?;
+    rows.into_iter()
+        .map(|row| {
             Ok(RawMvVirtualNameboxRule {
-                rule_name: row.get(0)?,
-                pattern_text: row.get(1)?,
-                speaker_group: row.get(2)?,
-                body_group: row.get(3)?,
-                speaker_policy: row.get(4)?,
-                render_template: row.get(5)?,
+                rule_name: payload_string(&row.payload_json, "name", "解析 MV 虚拟名字框规则失败")?,
+                pattern_text: payload_optional_string(&row.payload_json, "pattern")
+                    .unwrap_or(row.matcher_value),
+                speaker_group: payload_string(
+                    &row.payload_json,
+                    "speaker_group",
+                    "解析 MV 虚拟名字框规则失败",
+                )?,
+                body_group: payload_optional_string(&row.payload_json, "body_group")
+                    .unwrap_or_default(),
+                speaker_policy: payload_string(
+                    &row.payload_json,
+                    "speaker_policy",
+                    "解析 MV 虚拟名字框规则失败",
+                )?,
+                render_template: payload_string(
+                    &row.payload_json,
+                    "render_template",
+                    "解析 MV 虚拟名字框规则失败",
+                )?,
             })
         })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("读取 MV 虚拟名字框规则失败: {error}"),
-            )
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("解析 MV 虚拟名字框规则失败: {error}"),
-            )
-        })
+        .collect()
 }
 
 fn compile_mv_virtual_namebox_rules(
@@ -1778,7 +1564,7 @@ fn compile_mv_virtual_namebox_rules(
             ) {
                 return Err(structured_error(
                     "scope_index_rebuild_rules_unreadable",
-                    "mv_virtual_namebox_rules.speaker_policy 非法，请重新导入规则".to_string(),
+                    "rules.payload_json.speaker_policy 非法，请重新导入规则".to_string(),
                 ));
             }
             let pattern = compile_mv_virtual_namebox_pattern(
@@ -1803,46 +1589,6 @@ fn compile_mv_virtual_namebox_rules(
             })
         })
         .collect()
-}
-
-fn grouped_string_list_rules(
-    connection: &Connection,
-    sql: &str,
-    list_key: &str,
-    error_label: &str,
-) -> Result<Value, String> {
-    let mut statement = connection.prepare(sql).map_err(|error| {
-        structured_error(
-            "scope_index_rebuild_rules_unreadable",
-            format!("{error_label}: {error}"),
-        )
-    })?;
-    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("{error_label}: {error}"),
-            )
-        })?;
-    for row in rows {
-        let (file_name, item) = row.map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_rules_unreadable",
-                format!("{error_label}: {error}"),
-            )
-        })?;
-        grouped.entry(file_name).or_default().push(item);
-    }
-    Ok(Value::Array(
-        grouped
-            .into_iter()
-            .map(|(file_name, values)| json!({"file_name": file_name, list_key: values}))
-            .collect(),
-    ))
 }
 
 fn resolve_source_layout(game_path: &Path) -> Result<SourceLayout, String> {

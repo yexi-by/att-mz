@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -18,7 +19,7 @@ from app.native_scope_index import (
 )
 from app.native_write_plan import NativePlannedFile, NativeWriteBackPlan, build_native_write_back_plan
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
-from app.persistence.session_utils import build_event_command_group_key, current_timestamp_text
+from app.persistence.session_utils import current_timestamp_text
 from app.persistence.sql import (
     INSERT_SOURCE_SNAPSHOT_FILE,
     current_schema_sql,
@@ -458,6 +459,49 @@ def _fact_identity_candidate_paths(item: TranslationItem) -> list[str]:
     return paths
 
 
+def _insert_runtime_rule(
+    connection: sqlite3.Connection,
+    *,
+    domain: str,
+    rule_order: int,
+    matcher_kind: str,
+    matcher_value: str,
+    payload_json: JsonObject,
+) -> None:
+    """按当前统一规则模型写入测试规则。"""
+    payload_text = json.dumps(payload_json, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    rule_hash_input = json.dumps(
+        {
+            "domain": domain,
+            "rule_order": rule_order,
+            "matcher_kind": matcher_kind,
+            "matcher_value": matcher_value,
+            "payload_json": payload_json,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    rule_hash = hashlib.sha256(rule_hash_input.encode("utf-8")).hexdigest()
+    rule_id = f"{domain}:{rule_hash}"
+    _ = connection.execute(
+        """
+        INSERT OR REPLACE INTO rules
+        (rule_id, domain, rule_order, matcher_kind, matcher_value, payload_json, enabled, source_kind, rule_hash)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 'test', ?)
+        """,
+        (
+            rule_id,
+            domain,
+            rule_order,
+            matcher_kind,
+            matcher_value,
+            payload_text,
+            rule_hash,
+        ),
+    )
+
+
 def _insert_inferred_plugin_text_rules(
     connection: sqlite3.Connection,
     game_data: GameData,
@@ -484,14 +528,22 @@ def _insert_inferred_plugin_text_rules(
             )
         )
     if rows:
-        _ = connection.executemany(
-            """
-            INSERT OR REPLACE INTO plugin_text_rules
-            (plugin_index, plugin_name, plugin_hash, path_template)
-            VALUES (?, ?, ?, ?)
-            """,
-            sorted(set(rows)),
-        )
+        for rule_order, (plugin_index, plugin_name, plugin_hash, path_template) in enumerate(
+            sorted(set(rows))
+        ):
+            _insert_runtime_rule(
+                connection,
+                domain="plugin_config",
+                rule_order=rule_order,
+                matcher_kind="json_path_template",
+                matcher_value=path_template,
+                payload_json={
+                    "plugin_index": plugin_index,
+                    "plugin_name": plugin_name,
+                    "plugin_hash": plugin_hash,
+                    "path": path_template,
+                },
+            )
 
 
 def _insert_inferred_note_tag_rules(
@@ -505,13 +557,18 @@ def _insert_inferred_note_tag_rules(
         if parsed is not None:
             rows.append(parsed)
     if rows:
-        _ = connection.executemany(
-            """
-            INSERT OR REPLACE INTO note_tag_text_rules (file_name, tag_name)
-            VALUES (?, ?)
-            """,
-            sorted(set(rows)),
-        )
+        for rule_order, (file_name, tag_name) in enumerate(sorted(set(rows))):
+            _insert_runtime_rule(
+                connection,
+                domain="note_tags",
+                rule_order=rule_order,
+                matcher_kind="literal",
+                matcher_value=f"{file_name}:{tag_name}",
+                payload_json={
+                    "file_name": file_name,
+                    "tag_name": tag_name,
+                },
+            )
 
 
 def _insert_inferred_event_command_rules(
@@ -534,26 +591,22 @@ def _insert_inferred_event_command_rules(
     if not rule_records:
         return
 
-    group_rows: list[tuple[str, int]] = []
-    path_rows: list[tuple[str, str]] = []
+    rows: list[tuple[int, str]] = []
     for record in rule_records.values():
-        group_key = build_event_command_group_key(record)
-        group_rows.append((group_key, record.command_code))
-        path_rows.extend((group_key, path_template) for path_template in record.path_templates)
-    _ = connection.executemany(
-        """
-        INSERT OR REPLACE INTO event_command_text_rule_groups (group_key, command_code)
-        VALUES (?, ?)
-        """,
-        sorted(set(group_rows)),
-    )
-    _ = connection.executemany(
-        """
-        INSERT OR REPLACE INTO event_command_text_rule_paths (group_key, path_template)
-        VALUES (?, ?)
-        """,
-        sorted(set(path_rows)),
-    )
+        rows.extend((record.command_code, path_template) for path_template in record.path_templates)
+    for rule_order, (command_code, path_template) in enumerate(sorted(set(rows))):
+        _insert_runtime_rule(
+            connection,
+            domain="event_commands",
+            rule_order=rule_order,
+            matcher_kind="json_path_template",
+            matcher_value=path_template,
+            payload_json={
+                "command_code": command_code,
+                "parameter_filters": [],
+                "path": path_template,
+            },
+        )
 
 
 def _parse_event_command_rule_location_path(
@@ -634,14 +687,22 @@ def _insert_inferred_nonstandard_data_rules(
         source_text = source_path.read_text(encoding="utf-8")
         rows.append((file_name, build_nonstandard_data_file_hash(source_text), path_template, "translate"))
     if rows:
-        _ = connection.executemany(
-            """
-            INSERT OR REPLACE INTO nonstandard_data_text_rules
-            (file_name, file_hash, path_template, path_kind)
-            VALUES (?, ?, ?, ?)
-            """,
-            sorted(set(rows)),
-        )
+        for rule_order, (file_name, file_hash, path_template, path_kind) in enumerate(
+            sorted(set(rows))
+        ):
+            _insert_runtime_rule(
+                connection,
+                domain="nonstandard_data",
+                rule_order=rule_order,
+                matcher_kind="json_path_template",
+                matcher_value=path_template,
+                payload_json={
+                    "file_name": file_name,
+                    "file_hash": file_hash,
+                    "path": path_template,
+                    "path_kind": path_kind,
+                },
+            )
 
 
 def _insert_nonstandard_data_rules(
@@ -664,14 +725,20 @@ def _insert_nonstandard_data_rules(
         if record.skipped:
             rows.append((record.file_name, record.file_hash, "", "skipped"))
     if rows:
-        _ = connection.executemany(
-            """
-            INSERT OR REPLACE INTO nonstandard_data_text_rules
-            (file_name, file_hash, path_template, path_kind)
-            VALUES (?, ?, ?, ?)
-            """,
-            rows,
-        )
+        for rule_order, (file_name, file_hash, path_template, path_kind) in enumerate(rows):
+            _insert_runtime_rule(
+                connection,
+                domain="nonstandard_data",
+                rule_order=rule_order,
+                matcher_kind="json_path_template" if path_template else "domain_payload",
+                matcher_value=path_template,
+                payload_json={
+                    "file_name": file_name,
+                    "file_hash": file_hash,
+                    "path": path_template,
+                    "path_kind": path_kind,
+                },
+            )
 
 
 def _parse_plugin_parameter_location_path(location_path: str) -> tuple[int, list[str]] | None:
@@ -796,25 +863,22 @@ def _insert_mv_virtual_namebox_rules(
     """写入测试 MV 虚拟名字框规则。"""
     if not records:
         return
-    _ = connection.executemany(
-        """
-        INSERT INTO mv_virtual_namebox_rules
-        (rule_order, rule_name, pattern_text, speaker_group, body_group, speaker_policy, render_template)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                record.rule_order,
-                record.rule_name,
-                record.pattern_text,
-                record.speaker_group,
-                record.body_group,
-                record.speaker_policy,
-                record.render_template,
-            )
-            for record in records
-        ],
-    )
+    for record in records:
+        _insert_runtime_rule(
+            connection,
+            domain="mv_virtual_namebox",
+            rule_order=record.rule_order,
+            matcher_kind="pcre2_pattern",
+            matcher_value=record.pattern_text,
+            payload_json={
+                "name": record.rule_name,
+                "pattern": record.pattern_text,
+                "speaker_group": record.speaker_group,
+                "body_group": record.body_group,
+                "speaker_policy": record.speaker_policy,
+                "render_template": record.render_template,
+            },
+        )
 
 
 def _insert_plugin_source_text_rules(
@@ -836,14 +900,20 @@ def _insert_plugin_source_text_rules(
         )
     if not rows:
         return
-    _ = connection.executemany(
-        """
-        INSERT INTO plugin_source_text_rules
-        (file_name, file_hash, selector, selector_kind)
-        VALUES (?, ?, ?, ?)
-        """,
-        rows,
-    )
+    for rule_order, (file_name, file_hash, selector, selector_kind) in enumerate(rows):
+        _insert_runtime_rule(
+            connection,
+            domain="plugin_source",
+            rule_order=rule_order,
+            matcher_kind="ast_selector",
+            matcher_value=selector,
+            payload_json={
+                "file_name": file_name,
+                "file_hash": file_hash,
+                "selector": selector,
+                "selector_kind": selector_kind,
+            },
+        )
 
 
 def _insert_inferred_plugin_source_text_rules(
@@ -884,14 +954,20 @@ def _insert_inferred_plugin_source_text_rules(
             rows.append((file_name, file_hash, selector, "excluded"))
     if not rows:
         return
-    _ = connection.executemany(
-        """
-        INSERT OR REPLACE INTO plugin_source_text_rules
-        (file_name, file_hash, selector, selector_kind)
-        VALUES (?, ?, ?, ?)
-        """,
-        sorted(set(rows)),
-    )
+    for rule_order, (file_name, file_hash, selector, selector_kind) in enumerate(sorted(set(rows))):
+        _insert_runtime_rule(
+            connection,
+            domain="plugin_source",
+            rule_order=rule_order,
+            matcher_kind="ast_selector",
+            matcher_value=selector,
+            payload_json={
+                "file_name": file_name,
+                "file_hash": file_hash,
+                "selector": selector,
+                "selector_kind": selector_kind,
+            },
+        )
 
 
 def _parse_plugin_source_location_path(location_path: str) -> tuple[str, str] | None:

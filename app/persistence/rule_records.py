@@ -1,6 +1,8 @@
 """插件、事件指令、Note 标签和文本规则记录会话能力。"""
 
+import hashlib
 import json
+from dataclasses import dataclass
 from typing import cast
 
 from app.rule_review import (
@@ -8,7 +10,7 @@ from app.rule_review import (
     rule_review_domain_for_runtime_domain,
     rule_runtime_domain_for_review_domain,
 )
-from app.rmmz.json_types import coerce_json_value, ensure_json_object
+from app.rmmz.json_types import JsonObject, JsonValue, coerce_json_value, ensure_json_object
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -24,161 +26,372 @@ from app.rmmz.schema import (
 )
 
 from .records import RuleReviewStateRecord
-from .rows import decode_string_list, row_int, row_str
+from .rows import row_int, row_str
 from .session_base import SessionMixinBase
-from .session_utils import build_event_command_group_key, current_timestamp_text, parse_source_residual_rule_type
+from .session_utils import current_timestamp_text, parse_source_residual_rule_type
 from .sql import (
-    DELETE_ALL_EVENT_COMMAND_TEXT_RULE_FILTERS,
-    DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS,
-    DELETE_ALL_EVENT_COMMAND_TEXT_RULE_PATHS,
-    DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES,
-    DELETE_ALL_NONSTANDARD_DATA_TEXT_RULES,
-    DELETE_ALL_NOTE_TAG_TEXT_RULES,
     DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS,
-    DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES,
-    DELETE_ALL_PLACEHOLDER_RULES,
-    DELETE_ALL_PLUGIN_TEXT_RULES,
-    DELETE_ALL_SOURCE_RESIDUAL_RULES,
-    DELETE_ALL_STRUCTURED_PLACEHOLDER_RULE_GROUPS,
-    DELETE_ALL_STRUCTURED_PLACEHOLDER_RULES,
+    DELETE_RULES_BY_DOMAIN,
     DELETE_RULE_REVIEW_STATE,
-    INSERT_EVENT_COMMAND_TEXT_RULE_FILTER,
-    INSERT_EVENT_COMMAND_TEXT_RULE_GROUP,
-    INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
-    INSERT_MV_VIRTUAL_NAMEBOX_RULE,
-    INSERT_NONSTANDARD_DATA_TEXT_RULE,
-    INSERT_NOTE_TAG_TEXT_RULE,
-    INSERT_PLUGIN_SOURCE_TEXT_RULE,
-    INSERT_PLACEHOLDER_RULE,
-    INSERT_PLUGIN_TEXT_RULE,
-    INSERT_SOURCE_RESIDUAL_RULE,
-    INSERT_STRUCTURED_PLACEHOLDER_RULE,
-    INSERT_STRUCTURED_PLACEHOLDER_RULE_GROUP,
-    SELECT_EVENT_COMMAND_TEXT_RULE_FILTERS,
-    SELECT_EVENT_COMMAND_TEXT_RULE_GROUPS,
-    SELECT_EVENT_COMMAND_TEXT_RULE_PATHS,
-    SELECT_MV_VIRTUAL_NAMEBOX_RULES,
-    SELECT_NONSTANDARD_DATA_TEXT_RULES,
-    SELECT_NOTE_TAG_TEXT_RULES,
-    SELECT_PLUGIN_SOURCE_TEXT_RULES,
-    SELECT_PLACEHOLDER_RULES,
-    SELECT_PLUGIN_TEXT_RULES,
+    INSERT_RULE,
+    SELECT_RULES_BY_DOMAIN,
     SELECT_RULE_REVIEW_STATE,
-    SELECT_SOURCE_RESIDUAL_RULES,
-    SELECT_STRUCTURED_PLACEHOLDER_RULE_GROUPS,
-    SELECT_STRUCTURED_PLACEHOLDER_RULES,
+    UPSERT_RULE_SET,
     UPSERT_RULE_REVIEW_STATE,
 )
+
+_RULE_SOURCE_KIND = "external_import"
+_RULE_RUNTIME_CONTRACT_VERSION = 1
+_RULE_STORE_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeRuleDraft:
+    """待写入统一规则表的一条规范化规则。"""
+
+    rule_order: int
+    matcher_kind: str
+    matcher_value: str
+    payload_json: JsonObject
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeRuleRow:
+    """从统一规则表读取的一条规则。"""
+
+    rule_order: int
+    matcher_kind: str
+    matcher_value: str
+    payload_json: JsonObject
+
+
+def _stable_json(value: JsonValue) -> str:
+    """生成规则存储用稳定 JSON 文本。"""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _sha256_text(value: str) -> str:
+    """计算文本 SHA-256。"""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _rule_hash(
+    *,
+    domain: str,
+    rule_order: int,
+    matcher_kind: str,
+    matcher_value: str,
+    payload_json: JsonObject,
+) -> str:
+    """计算统一规则内容 hash。"""
+    return _sha256_text(
+        _stable_json(
+            {
+                "domain": domain,
+                "rule_order": rule_order,
+                "matcher_kind": matcher_kind,
+                "matcher_value": matcher_value,
+                "payload_json": payload_json,
+            }
+        )
+    )
+
+
+def _rules_hash(domain: str, rules: list[_RuntimeRuleDraft]) -> str:
+    """计算某个 domain 的规则集合 hash。"""
+    return _sha256_text(
+        _stable_json(
+            {
+                "domain": domain,
+                "rules": [
+                    {
+                        "rule_order": rule.rule_order,
+                        "matcher_kind": rule.matcher_kind,
+                        "matcher_value": rule.matcher_value,
+                        "payload_json": rule.payload_json,
+                    }
+                    for rule in rules
+                ],
+            }
+        )
+    )
+
+
+def _payload_from_text(value: str, *, db_path: object, context: str) -> JsonObject:
+    """把 rules.payload_json 收窄为当前 JSON 对象。"""
+    try:
+        return ensure_json_object(coerce_json_value(cast(object, json.loads(value))), context)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"{context} 必须是 JSON 对象: {db_path}") from error
+
+
+def _required_string(payload: JsonObject, field: str, *, db_path: object, context: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise RuntimeError(f"{context}.{field} 必须是字符串: {db_path}")
+    return value
+
+
+def _optional_string(payload: JsonObject, field: str, default: str = "") -> str:
+    value = payload.get(field)
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _required_int(payload: JsonObject, field: str, *, db_path: object, context: str) -> int:
+    value = payload.get(field)
+    if not isinstance(value, int):
+        raise RuntimeError(f"{context}.{field} 必须是整数: {db_path}")
+    return value
+
+
+def _string_list(payload: JsonObject, field: str, *, db_path: object, context: str) -> list[str]:
+    value = payload.get(field, [])
+    if not isinstance(value, list):
+        raise RuntimeError(f"{context}.{field} 必须是字符串数组: {db_path}")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise RuntimeError(f"{context}.{field}[{index}] 必须是字符串: {db_path}")
+        result.append(item)
+    return result
+
+
+def _string_map(payload: JsonObject, field: str, *, db_path: object, context: str) -> dict[str, str]:
+    value = payload.get(field, {})
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{context}.{field} 必须是字符串对象: {db_path}")
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(item, str):
+            raise RuntimeError(f"{context}.{field}.{key} 必须是字符串: {db_path}")
+        result[key] = item
+    return result
+
+
+def _event_parameter_filters(payload: JsonObject, *, db_path: object) -> list[EventCommandParameterFilter]:
+    value = payload.get("parameter_filters", [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise RuntimeError(f"rules.payload_json.parameter_filters 必须是数组: {db_path}")
+    result: list[EventCommandParameterFilter] = []
+    for item_index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"rules.payload_json.parameter_filters[{item_index}] 必须是对象: {db_path}")
+        item_object = ensure_json_object(
+            coerce_json_value(cast(object, item)),
+            "rules.payload_json.parameter_filters[]",
+        )
+        result.append(
+            EventCommandParameterFilter(
+                index=_required_int(
+                    item_object,
+                    "index",
+                    db_path=db_path,
+                    context="rules.payload_json.parameter_filters[]",
+                ),
+                value=_required_string(
+                    item_object,
+                    "value",
+                    db_path=db_path,
+                    context="rules.payload_json.parameter_filters[]",
+                ),
+            )
+        )
+    return result
 
 
 class RuleRecordSessionMixin(SessionMixinBase):
     """负责当前游戏规则记录的替换、读取与数据库值收窄。"""
 
+    async def _replace_runtime_rules(self, *, domain: str, rules: list[_RuntimeRuleDraft]) -> None:
+        """替换某个 rule_runtime domain 的统一规则。"""
+        _ = await self.connection.execute(DELETE_RULES_BY_DOMAIN, (domain,))
+        for rule in rules:
+            rule_hash = _rule_hash(
+                domain=domain,
+                rule_order=rule.rule_order,
+                matcher_kind=rule.matcher_kind,
+                matcher_value=rule.matcher_value,
+                payload_json=rule.payload_json,
+            )
+            _ = await self.connection.execute(
+                INSERT_RULE,
+                (
+                    f"rule:{rule_hash}",
+                    domain,
+                    rule.rule_order,
+                    rule.matcher_kind,
+                    rule.matcher_value,
+                    _stable_json(rule.payload_json),
+                    1,
+                    _RULE_SOURCE_KIND,
+                    rule_hash,
+                ),
+            )
+        rules_hash = _rules_hash(domain, rules)
+        _ = await self.connection.execute(
+            UPSERT_RULE_SET,
+            (
+                domain,
+                _RULE_SOURCE_KIND,
+                len(rules),
+                _sha256_text(domain),
+                rules_hash,
+                _RULE_RUNTIME_CONTRACT_VERSION,
+                _RULE_STORE_SCHEMA_VERSION,
+                current_timestamp_text(),
+            ),
+        )
+        await self.commit()
+
+    async def _read_runtime_rules(self, *, domain: str) -> list[_RuntimeRuleRow]:
+        """读取某个 rule_runtime domain 的统一规则。"""
+        async with self.connection.execute(SELECT_RULES_BY_DOMAIN, (domain,)) as cursor:
+            rows = await cursor.fetchall()
+        rules: list[_RuntimeRuleRow] = []
+        for row in rows:
+            if row_int(row, "enabled", self.db_path) != 1:
+                continue
+            rules.append(
+                _RuntimeRuleRow(
+                    rule_order=row_int(row, "rule_order", self.db_path),
+                    matcher_kind=row_str(row, "matcher_kind", self.db_path),
+                    matcher_value=row_str(row, "matcher_value", self.db_path),
+                    payload_json=_payload_from_text(
+                        row_str(row, "payload_json", self.db_path),
+                        db_path=self.db_path,
+                        context="rules.payload_json",
+                    ),
+                )
+            )
+        return rules
+
     async def read_plugin_text_rules(self) -> list[PluginTextRuleRecord]:
         """读取当前游戏保存的全部插件文本规则。"""
-        async with self.connection.execute(SELECT_PLUGIN_TEXT_RULES) as cursor:
-            rows = await cursor.fetchall()
-
+        rows = await self._read_runtime_rules(domain="plugin_config")
         grouped_records: dict[int, PluginTextRuleRecord] = {}
         for row in rows:
-            plugin_index = row_int(row, "plugin_index", self.db_path)
+            payload = row.payload_json
+            plugin_index = _required_int(payload, "plugin_index", db_path=self.db_path, context="rules.payload_json")
             record = grouped_records.get(plugin_index)
             if record is None:
                 record = PluginTextRuleRecord(
                     plugin_index=plugin_index,
-                    plugin_name=row_str(row, "plugin_name", self.db_path),
-                    plugin_hash=row_str(row, "plugin_hash", self.db_path),
+                    plugin_name=_required_string(
+                        payload,
+                        "plugin_name",
+                        db_path=self.db_path,
+                        context="rules.payload_json",
+                    ),
+                    plugin_hash=_optional_string(payload, "plugin_hash"),
                     path_templates=[],
                 )
                 grouped_records[plugin_index] = record
-            record.path_templates.append(row_str(row, "path_template", self.db_path))
-        return list(grouped_records.values())
+            record.path_templates.append(_optional_string(payload, "path", row.matcher_value))
+        return [grouped_records[key] for key in sorted(grouped_records)]
 
     async def replace_plugin_text_rules(
         self,
         rule_records: list[PluginTextRuleRecord],
     ) -> None:
         """用一次外部导入结果替换当前游戏的全部插件文本规则。"""
-        _ = await self.connection.execute(DELETE_ALL_PLUGIN_TEXT_RULES)
+        drafts: list[_RuntimeRuleDraft] = []
         for rule_record in rule_records:
             for path_template in rule_record.path_templates:
-                _ = await self.connection.execute(
-                    INSERT_PLUGIN_TEXT_RULE,
-                    (
-                        rule_record.plugin_index,
-                        rule_record.plugin_name,
-                        rule_record.plugin_hash,
-                        path_template,
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="json_path_template",
+                        matcher_value=path_template,
+                        payload_json={
+                            "plugin_index": rule_record.plugin_index,
+                            "plugin_name": rule_record.plugin_name,
+                            "plugin_hash": rule_record.plugin_hash,
+                            "path": path_template,
+                        },
+                    )
                 )
-        await self.commit()
+        await self._replace_runtime_rules(domain="plugin_config", rules=drafts)
 
     async def read_plugin_source_text_rules(self) -> list[PluginSourceTextRuleRecord]:
         """读取当前游戏保存的插件源码文本规则。"""
-        async with self.connection.execute(SELECT_PLUGIN_SOURCE_TEXT_RULES) as cursor:
-            rows = await cursor.fetchall()
-
+        rows = await self._read_runtime_rules(domain="plugin_source")
         grouped_records: dict[str, PluginSourceTextRuleRecord] = {}
         for row in rows:
-            file_name = row_str(row, "file_name", self.db_path)
+            payload = row.payload_json
+            file_name = _optional_string(payload, "file_name", _optional_string(payload, "file"))
+            if not file_name:
+                raise RuntimeError(f"rules.payload_json.file_name 必须是字符串: {self.db_path}")
             record = grouped_records.get(file_name)
             if record is None:
                 record = PluginSourceTextRuleRecord(
                     file_name=file_name,
-                    file_hash=row_str(row, "file_hash", self.db_path),
+                    file_hash=_optional_string(payload, "file_hash"),
                     selectors=[],
                     excluded_selectors=[],
                 )
                 grouped_records[file_name] = record
-            selector = row_str(row, "selector", self.db_path)
-            selector_kind = row_str(row, "selector_kind", self.db_path)
+            selector = _optional_string(payload, "selector", row.matcher_value)
+            selector_kind = _optional_string(payload, "selector_kind", "translate")
             if selector_kind == "translate":
                 record.selectors.append(selector)
             elif selector_kind == "excluded":
                 record.excluded_selectors.append(selector)
             else:
                 raise RuntimeError(f"插件源码规则 selector 类型无效: {selector_kind}")
-        return list(grouped_records.values())
+        return [grouped_records[key] for key in sorted(grouped_records)]
 
     async def replace_plugin_source_text_rules(
         self,
         rule_records: list[PluginSourceTextRuleRecord],
     ) -> None:
         """用一次外部导入结果替换当前游戏的插件源码文本规则。"""
-        _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_TEXT_RULES)
         _ = await self.connection.execute(DELETE_ALL_PLUGIN_SOURCE_RUNTIME_WRITE_MAPS)
+        drafts: list[_RuntimeRuleDraft] = []
         for rule_record in rule_records:
             for selector in rule_record.selectors:
-                _ = await self.connection.execute(
-                    INSERT_PLUGIN_SOURCE_TEXT_RULE,
-                    (
-                        rule_record.file_name,
-                        rule_record.file_hash,
-                        selector,
-                        "translate",
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="ast_selector",
+                        matcher_value=selector,
+                        payload_json={
+                            "file_name": rule_record.file_name,
+                            "file_hash": rule_record.file_hash,
+                            "selector": selector,
+                            "selector_kind": "translate",
+                        },
+                    )
                 )
             for selector in rule_record.excluded_selectors:
-                _ = await self.connection.execute(
-                    INSERT_PLUGIN_SOURCE_TEXT_RULE,
-                    (
-                        rule_record.file_name,
-                        rule_record.file_hash,
-                        selector,
-                        "excluded",
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="ast_selector",
+                        matcher_value=selector,
+                        payload_json={
+                            "file_name": rule_record.file_name,
+                            "file_hash": rule_record.file_hash,
+                            "selector": selector,
+                            "selector_kind": "excluded",
+                        },
+                    )
                 )
-        await self.commit()
+        await self._replace_runtime_rules(domain="plugin_source", rules=drafts)
 
     async def read_nonstandard_data_text_rules(self) -> list[NonstandardDataTextRuleRecord]:
         """读取当前游戏保存的非标准 data 文件文本规则。"""
-        async with self.connection.execute(SELECT_NONSTANDARD_DATA_TEXT_RULES) as cursor:
-            rows = await cursor.fetchall()
-
+        rows = await self._read_runtime_rules(domain="nonstandard_data")
         grouped_records: dict[str, NonstandardDataTextRuleRecord] = {}
         for row in rows:
-            file_name = row_str(row, "file_name", self.db_path)
-            file_hash = row_str(row, "file_hash", self.db_path)
+            payload = row.payload_json
+            file_name = _optional_string(payload, "file_name", _optional_string(payload, "file"))
+            if not file_name:
+                raise RuntimeError(f"rules.payload_json.file_name 必须是字符串: {self.db_path}")
+            file_hash = _optional_string(payload, "file_hash")
             record = grouped_records.get(file_name)
             if record is None:
                 record = NonstandardDataTextRuleRecord(
@@ -191,8 +404,10 @@ class RuleRecordSessionMixin(SessionMixinBase):
                 grouped_records[file_name] = record
             elif record.file_hash != file_hash:
                 raise RuntimeError(f"非标准 data 规则文件哈希不一致，请重新导入规则: {file_name}")
-            path_template = row_str(row, "path_template", self.db_path)
-            path_kind = row_str(row, "path_kind", self.db_path)
+            path_template = _optional_string(payload, "path", row.matcher_value)
+            path_kind = _optional_string(payload, "path_kind", _optional_string(payload, "rule_type", "translate"))
+            if path_kind == "translated":
+                path_kind = "translate"
             if path_kind == "translate":
                 record.path_templates.append(path_template)
             elif path_kind == "excluded":
@@ -203,163 +418,176 @@ class RuleRecordSessionMixin(SessionMixinBase):
                 record.skipped = True
             else:
                 raise RuntimeError(f"非标准 data 规则 path_kind 非法，请重新导入规则: {path_kind}")
-        return list(grouped_records.values())
+        return [grouped_records[key] for key in sorted(grouped_records)]
 
     async def replace_nonstandard_data_text_rules(
         self,
         rule_records: list[NonstandardDataTextRuleRecord],
     ) -> None:
         """用一次外部导入结果替换当前游戏的非标准 data 文件文本规则。"""
-        _ = await self.connection.execute(DELETE_ALL_NONSTANDARD_DATA_TEXT_RULES)
+        drafts: list[_RuntimeRuleDraft] = []
         for rule_record in rule_records:
             if rule_record.skipped:
-                _ = await self.connection.execute(
-                    INSERT_NONSTANDARD_DATA_TEXT_RULE,
-                    (
-                        rule_record.file_name,
-                        rule_record.file_hash,
-                        "",
-                        "skipped",
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="domain_payload",
+                        matcher_value="",
+                        payload_json={
+                            "file_name": rule_record.file_name,
+                            "file_hash": rule_record.file_hash,
+                            "path": "",
+                            "path_kind": "skipped",
+                        },
+                    )
                 )
                 continue
             for path_template in rule_record.path_templates:
-                _ = await self.connection.execute(
-                    INSERT_NONSTANDARD_DATA_TEXT_RULE,
-                    (
-                        rule_record.file_name,
-                        rule_record.file_hash,
-                        path_template,
-                        "translate",
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="json_path_template",
+                        matcher_value=path_template,
+                        payload_json={
+                            "file_name": rule_record.file_name,
+                            "file_hash": rule_record.file_hash,
+                            "path": path_template,
+                            "path_kind": "translate",
+                        },
+                    )
                 )
             for path_template in rule_record.excluded_path_templates:
-                _ = await self.connection.execute(
-                    INSERT_NONSTANDARD_DATA_TEXT_RULE,
-                    (
-                        rule_record.file_name,
-                        rule_record.file_hash,
-                        path_template,
-                        "excluded",
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="json_path_template",
+                        matcher_value=path_template,
+                        payload_json={
+                            "file_name": rule_record.file_name,
+                            "file_hash": rule_record.file_hash,
+                            "path": path_template,
+                            "path_kind": "excluded",
+                        },
+                    )
                 )
-        await self.commit()
+        await self._replace_runtime_rules(domain="nonstandard_data", rules=drafts)
 
     async def read_note_tag_text_rules(self) -> list[NoteTagTextRuleRecord]:
         """读取当前游戏保存的 Note 标签文本规则。"""
-        async with self.connection.execute(SELECT_NOTE_TAG_TEXT_RULES) as cursor:
-            rows = await cursor.fetchall()
-
+        rows = await self._read_runtime_rules(domain="note_tags")
         grouped_records: dict[str, NoteTagTextRuleRecord] = {}
         for row in rows:
-            file_name = row_str(row, "file_name", self.db_path)
+            payload = row.payload_json
+            file_name = _required_string(payload, "file_name", db_path=self.db_path, context="rules.payload_json")
             record = grouped_records.get(file_name)
             if record is None:
                 record = NoteTagTextRuleRecord(file_name=file_name, tag_names=[])
                 grouped_records[file_name] = record
-            record.tag_names.append(row_str(row, "tag_name", self.db_path))
-        return list(grouped_records.values())
+            record.tag_names.append(_required_string(payload, "tag_name", db_path=self.db_path, context="rules.payload_json"))
+        return [grouped_records[key] for key in sorted(grouped_records)]
 
     async def replace_note_tag_text_rules(
         self,
         rule_records: list[NoteTagTextRuleRecord],
     ) -> None:
         """用一次外部导入结果替换当前游戏的 Note 标签文本规则。"""
-        _ = await self.connection.execute(DELETE_ALL_NOTE_TAG_TEXT_RULES)
+        drafts: list[_RuntimeRuleDraft] = []
         for rule_record in rule_records:
             for tag_name in rule_record.tag_names:
-                _ = await self.connection.execute(
-                    INSERT_NOTE_TAG_TEXT_RULE,
-                    (
-                        rule_record.file_name,
-                        tag_name,
-                    ),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="literal",
+                        matcher_value=f"{rule_record.file_name}:{tag_name}",
+                        payload_json={
+                            "file_name": rule_record.file_name,
+                            "tag_name": tag_name,
+                        },
+                    )
                 )
-        await self.commit()
+        await self._replace_runtime_rules(domain="note_tags", rules=drafts)
 
     async def read_event_command_text_rules(self) -> list[EventCommandTextRuleRecord]:
         """读取当前游戏保存的事件指令文本规则。"""
-        async with self.connection.execute(SELECT_EVENT_COMMAND_TEXT_RULE_GROUPS) as cursor:
-            group_rows = await cursor.fetchall()
-        async with self.connection.execute(SELECT_EVENT_COMMAND_TEXT_RULE_FILTERS) as cursor:
-            filter_rows = await cursor.fetchall()
-        async with self.connection.execute(SELECT_EVENT_COMMAND_TEXT_RULE_PATHS) as cursor:
-            path_rows = await cursor.fetchall()
-
-        filters_by_group: dict[str, list[EventCommandParameterFilter]] = {}
-        for row in filter_rows:
-            group_key = row_str(row, "group_key", self.db_path)
-            filters_by_group.setdefault(group_key, []).append(
-                EventCommandParameterFilter(
-                    index=row_int(row, "parameter_index", self.db_path),
-                    value=row_str(row, "parameter_value", self.db_path),
-                )
+        rows = await self._read_runtime_rules(domain="event_commands")
+        grouped_records: dict[tuple[int, tuple[tuple[int, str], ...]], EventCommandTextRuleRecord] = {}
+        for row in rows:
+            payload = row.payload_json
+            command_code = _required_int(payload, "command_code", db_path=self.db_path, context="rules.payload_json")
+            parameter_filters = _event_parameter_filters(payload, db_path=self.db_path)
+            group_key = (
+                command_code,
+                tuple((item.index, item.value) for item in parameter_filters),
             )
-
-        paths_by_group: dict[str, list[str]] = {}
-        for row in path_rows:
-            group_key = row_str(row, "group_key", self.db_path)
-            paths_by_group.setdefault(group_key, []).append(row_str(row, "path_template", self.db_path))
-
-        records: list[EventCommandTextRuleRecord] = []
-        for row in group_rows:
-            group_key = row_str(row, "group_key", self.db_path)
-            records.append(
-                EventCommandTextRuleRecord(
-                    command_code=row_int(row, "command_code", self.db_path),
-                    parameter_filters=filters_by_group.get(group_key, []),
-                    path_templates=paths_by_group.get(group_key, []),
+            record = grouped_records.get(group_key)
+            if record is None:
+                record = EventCommandTextRuleRecord(
+                    command_code=command_code,
+                    parameter_filters=parameter_filters,
+                    path_templates=[],
                 )
-            )
-        return records
+                grouped_records[group_key] = record
+            record.path_templates.append(_optional_string(payload, "path", row.matcher_value))
+        return [grouped_records[key] for key in sorted(grouped_records)]
 
     async def replace_event_command_text_rules(
         self,
         rule_records: list[EventCommandTextRuleRecord],
     ) -> None:
         """用一次外部导入结果替换当前游戏的事件指令文本规则。"""
-        _ = await self.connection.execute(DELETE_ALL_EVENT_COMMAND_TEXT_RULE_PATHS)
-        _ = await self.connection.execute(DELETE_ALL_EVENT_COMMAND_TEXT_RULE_FILTERS)
-        _ = await self.connection.execute(DELETE_ALL_EVENT_COMMAND_TEXT_RULE_GROUPS)
+        drafts: list[_RuntimeRuleDraft] = []
         for rule_record in rule_records:
-            group_key = build_event_command_group_key(rule_record)
-            _ = await self.connection.execute(
-                INSERT_EVENT_COMMAND_TEXT_RULE_GROUP,
-                (group_key, rule_record.command_code),
-            )
-            for parameter_filter in rule_record.parameter_filters:
-                _ = await self.connection.execute(
-                    INSERT_EVENT_COMMAND_TEXT_RULE_FILTER,
-                    (group_key, parameter_filter.index, parameter_filter.value),
-                )
             for path_template in rule_record.path_templates:
-                _ = await self.connection.execute(
-                    INSERT_EVENT_COMMAND_TEXT_RULE_PATH,
-                    (group_key, path_template),
+                drafts.append(
+                    _RuntimeRuleDraft(
+                        rule_order=len(drafts),
+                        matcher_kind="json_path_template",
+                        matcher_value=path_template,
+                        payload_json={
+                            "command_code": rule_record.command_code,
+                            "parameter_filters": [
+                                {
+                                    "index": parameter_filter.index,
+                                    "value": parameter_filter.value,
+                                }
+                                for parameter_filter in rule_record.parameter_filters
+                            ],
+                            "path": path_template,
+                        },
+                    )
                 )
-        await self.commit()
+        await self._replace_runtime_rules(domain="event_commands", rules=drafts)
 
     async def replace_placeholder_rules(
         self,
         rules: list[PlaceholderRuleRecord],
     ) -> None:
         """用当前游戏专用规则替换数据库中的自定义占位符规则。"""
-        _ = await self.connection.execute(DELETE_ALL_PLACEHOLDER_RULES)
-        for rule in rules:
-            _ = await self.connection.execute(
-                INSERT_PLACEHOLDER_RULE,
-                (rule.pattern_text, rule.placeholder_template),
-            )
-        await self.commit()
+        await self._replace_runtime_rules(
+            domain="placeholders",
+            rules=[
+                _RuntimeRuleDraft(
+                    rule_order=index,
+                    matcher_kind="pcre2_pattern",
+                    matcher_value=rule.pattern_text,
+                    payload_json={"placeholder_template": rule.placeholder_template},
+                )
+                for index, rule in enumerate(rules)
+            ],
+        )
 
     async def read_placeholder_rules(self) -> list[PlaceholderRuleRecord]:
         """读取当前游戏专用自定义占位符规则。"""
-        async with self.connection.execute(SELECT_PLACEHOLDER_RULES) as cursor:
-            rows = await cursor.fetchall()
+        rows = await self._read_runtime_rules(domain="placeholders")
         return [
             PlaceholderRuleRecord(
-                pattern_text=row_str(row, "pattern_text", self.db_path),
-                placeholder_template=row_str(row, "placeholder_template", self.db_path),
+                pattern_text=row.matcher_value,
+                placeholder_template=_required_string(
+                    row.payload_json,
+                    "placeholder_template",
+                    db_path=self.db_path,
+                    context="rules.payload_json",
+                ),
             )
             for row in rows
         ]
@@ -369,52 +597,47 @@ class RuleRecordSessionMixin(SessionMixinBase):
         rules: list[StructuredPlaceholderRuleRecord],
     ) -> None:
         """用当前游戏专用规则替换数据库中的结构化占位符规则。"""
-        _ = await self.connection.execute(DELETE_ALL_STRUCTURED_PLACEHOLDER_RULE_GROUPS)
-        _ = await self.connection.execute(DELETE_ALL_STRUCTURED_PLACEHOLDER_RULES)
-        for rule in rules:
-            _ = await self.connection.execute(
-                INSERT_STRUCTURED_PLACEHOLDER_RULE,
-                (
-                    rule.rule_name,
-                    rule.rule_type,
-                    rule.pattern_text,
-                    rule.translatable_group,
-                ),
-            )
-            for group_name, placeholder_template in rule.protected_groups.items():
-                _ = await self.connection.execute(
-                    INSERT_STRUCTURED_PLACEHOLDER_RULE_GROUP,
-                    (
-                        rule.rule_name,
-                        group_name,
-                        placeholder_template,
-                    ),
+        await self._replace_runtime_rules(
+            domain="structured_placeholders",
+            rules=[
+                _RuntimeRuleDraft(
+                    rule_order=index,
+                    matcher_kind="pcre2_pattern",
+                    matcher_value=rule.pattern_text,
+                    payload_json={
+                        "rule_name": rule.rule_name,
+                        "rule_type": rule.rule_type,
+                        "pattern": rule.pattern_text,
+                        "translatable_group": rule.translatable_group,
+                        "protected_groups": dict(rule.protected_groups),
+                    },
                 )
-        await self.commit()
+                for index, rule in enumerate(rules)
+            ],
+        )
 
     async def read_structured_placeholder_rules(self) -> list[StructuredPlaceholderRuleRecord]:
         """读取当前游戏专用结构化占位符规则。"""
-        async with self.connection.execute(SELECT_STRUCTURED_PLACEHOLDER_RULES) as cursor:
-            rule_rows = await cursor.fetchall()
-        async with self.connection.execute(SELECT_STRUCTURED_PLACEHOLDER_RULE_GROUPS) as cursor:
-            group_rows = await cursor.fetchall()
-
-        groups_by_rule: dict[str, dict[str, str]] = {}
-        for row in group_rows:
-            rule_name = row_str(row, "rule_name", self.db_path)
-            groups_by_rule.setdefault(rule_name, {})[
-                row_str(row, "group_name", self.db_path)
-            ] = row_str(row, "placeholder_template", self.db_path)
-
+        rows = await self._read_runtime_rules(domain="structured_placeholders")
         return [
             StructuredPlaceholderRuleRecord(
-                rule_name=row_str(row, "rule_name", self.db_path),
-                rule_type=row_str(row, "rule_type", self.db_path),
-                pattern_text=row_str(row, "pattern_text", self.db_path),
-                translatable_group=row_str(row, "translatable_group", self.db_path),
-                protected_groups=groups_by_rule.get(row_str(row, "rule_name", self.db_path), {}),
+                rule_name=_required_string(row.payload_json, "rule_name", db_path=self.db_path, context="rules.payload_json"),
+                rule_type=_required_string(row.payload_json, "rule_type", db_path=self.db_path, context="rules.payload_json"),
+                pattern_text=_optional_string(row.payload_json, "pattern", row.matcher_value),
+                translatable_group=_required_string(
+                    row.payload_json,
+                    "translatable_group",
+                    db_path=self.db_path,
+                    context="rules.payload_json",
+                ),
+                protected_groups=_string_map(
+                    row.payload_json,
+                    "protected_groups",
+                    db_path=self.db_path,
+                    context="rules.payload_json",
+                ),
             )
-            for row in rule_rows
+            for row in rows
         ]
 
     async def replace_source_residual_rules(
@@ -422,38 +645,47 @@ class RuleRecordSessionMixin(SessionMixinBase):
         rules: list[SourceResidualRuleRecord],
     ) -> None:
         """用当前游戏专用规则替换源文残留例外规则。"""
-        _ = await self.connection.execute(DELETE_ALL_SOURCE_RESIDUAL_RULES)
-        for rule in rules:
-            _ = await self.connection.execute(
-                INSERT_SOURCE_RESIDUAL_RULE,
-                (
-                    rule.rule_id,
-                    rule.rule_type,
-                    rule.location_path,
-                    rule.pattern_text,
-                    json.dumps(rule.allowed_terms, ensure_ascii=False),
-                    rule.check_group,
-                    rule.reason,
-                ),
-            )
-        await self.commit()
+        await self._replace_runtime_rules(
+            domain="source_residual",
+            rules=[
+                _RuntimeRuleDraft(
+                    rule_order=index if rule.rule_type == "position" else 10_000 + index,
+                    matcher_kind="literal" if rule.rule_type == "position" else "pcre2_pattern",
+                    matcher_value=rule.location_path if rule.rule_type == "position" else rule.pattern_text,
+                    payload_json={
+                        "rule_id": rule.rule_id,
+                        "rule_type": rule.rule_type,
+                        "location_path": rule.location_path,
+                        "pattern_text": rule.pattern_text,
+                        "allowed_terms": list(rule.allowed_terms),
+                        "check_group": rule.check_group,
+                        "reason": rule.reason,
+                    },
+                )
+                for index, rule in enumerate(rules)
+            ],
+        )
 
     async def read_source_residual_rules(self) -> list[SourceResidualRuleRecord]:
         """读取当前游戏专用源文残留例外规则。"""
-        async with self.connection.execute(SELECT_SOURCE_RESIDUAL_RULES) as cursor:
-            rows = await cursor.fetchall()
+        rows = await self._read_runtime_rules(domain="source_residual")
         return [
             SourceResidualRuleRecord(
-                rule_id=row_str(row, "rule_id", self.db_path),
-                rule_type=parse_source_residual_rule_type(row_str(row, "rule_type", self.db_path), self.db_path),
-                location_path=row_str(row, "location_path", self.db_path),
-                pattern_text=row_str(row, "pattern_text", self.db_path),
-                allowed_terms=decode_string_list(
-                    row_str(row, "allowed_terms", self.db_path),
-                    "allowed_terms",
+                rule_id=_optional_string(row.payload_json, "rule_id"),
+                rule_type=parse_source_residual_rule_type(
+                    _required_string(row.payload_json, "rule_type", db_path=self.db_path, context="rules.payload_json"),
+                    self.db_path,
                 ),
-                check_group=row_str(row, "check_group", self.db_path),
-                reason=row_str(row, "reason", self.db_path),
+                location_path=_optional_string(row.payload_json, "location_path", row.matcher_value),
+                pattern_text=_optional_string(row.payload_json, "pattern_text", row.matcher_value),
+                allowed_terms=_string_list(
+                    row.payload_json,
+                    "allowed_terms",
+                    db_path=self.db_path,
+                    context="rules.payload_json",
+                ),
+                check_group=_optional_string(row.payload_json, "check_group"),
+                reason=_required_string(row.payload_json, "reason", db_path=self.db_path, context="rules.payload_json"),
             )
             for row in rows
         ]
@@ -463,38 +695,51 @@ class RuleRecordSessionMixin(SessionMixinBase):
         rules: list[MvVirtualNameboxRuleRecord],
     ) -> None:
         """用当前游戏专用规则替换数据库中的 MV 虚拟名字框规则。"""
-        _ = await self.connection.execute(DELETE_ALL_MV_VIRTUAL_NAMEBOX_RULES)
-        for rule in rules:
-            _ = await self.connection.execute(
-                INSERT_MV_VIRTUAL_NAMEBOX_RULE,
-                (
-                    rule.rule_order,
-                    rule.rule_name,
-                    rule.pattern_text,
-                    rule.speaker_group,
-                    rule.body_group,
-                    rule.speaker_policy,
-                    rule.render_template,
-                ),
-            )
-        await self.commit()
+        await self._replace_runtime_rules(
+            domain="mv_virtual_namebox",
+            rules=[
+                _RuntimeRuleDraft(
+                    rule_order=rule.rule_order,
+                    matcher_kind="pcre2_pattern",
+                    matcher_value=rule.pattern_text,
+                    payload_json={
+                        "name": rule.rule_name,
+                        "pattern": rule.pattern_text,
+                        "speaker_group": rule.speaker_group,
+                        "body_group": rule.body_group,
+                        "speaker_policy": rule.speaker_policy,
+                        "render_template": rule.render_template,
+                    },
+                )
+                for rule in rules
+            ],
+        )
 
     async def read_mv_virtual_namebox_rules(self) -> list[MvVirtualNameboxRuleRecord]:
         """读取当前游戏专用 MV 虚拟名字框规则。"""
-        async with self.connection.execute(SELECT_MV_VIRTUAL_NAMEBOX_RULES) as cursor:
-            rows = await cursor.fetchall()
+        rows = await self._read_runtime_rules(domain="mv_virtual_namebox")
         return [
             MvVirtualNameboxRuleRecord(
-                rule_order=row_int(row, "rule_order", self.db_path),
-                rule_name=row_str(row, "rule_name", self.db_path),
-                pattern_text=row_str(row, "pattern_text", self.db_path),
-                speaker_group=row_str(row, "speaker_group", self.db_path),
-                body_group=row_str(row, "body_group", self.db_path),
+                rule_order=row.rule_order,
+                rule_name=_required_string(row.payload_json, "name", db_path=self.db_path, context="rules.payload_json"),
+                pattern_text=_optional_string(row.payload_json, "pattern", row.matcher_value),
+                speaker_group=_required_string(row.payload_json, "speaker_group", db_path=self.db_path, context="rules.payload_json"),
+                body_group=_optional_string(row.payload_json, "body_group"),
                 speaker_policy=_parse_mv_virtual_namebox_speaker_policy(
-                    row_str(row, "speaker_policy", self.db_path),
+                    _required_string(
+                        row.payload_json,
+                        "speaker_policy",
+                        db_path=self.db_path,
+                        context="rules.payload_json",
+                    ),
                     self.db_path,
                 ),
-                render_template=row_str(row, "render_template", self.db_path),
+                render_template=_required_string(
+                    row.payload_json,
+                    "render_template",
+                    db_path=self.db_path,
+                    context="rules.payload_json",
+                ),
             )
             for row in rows
         ]
@@ -573,4 +818,4 @@ def _parse_mv_virtual_namebox_speaker_policy(value: str, db_path: object) -> MvV
         return "preserve"
     if value == "actor_name":
         return "actor_name"
-    raise RuntimeError(f"mv_virtual_namebox_rules.speaker_policy 非法，请重新导入规则: {db_path}")
+    raise RuntimeError(f"rules.payload_json.speaker_policy 非法，请重新导入规则: {db_path}")

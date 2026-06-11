@@ -347,26 +347,38 @@ fn validate_metadata_contract(metadata: &TextIndexMetadataInput) -> Result<(), S
 
 fn read_database_summary(connection: &Connection) -> Result<DatabaseSummary, String> {
     Ok(DatabaseSummary {
-        plugin_text_rule_count: count_table(connection, "plugin_text_rules")?,
-        plugin_source_text_rule_count: count_table(connection, "plugin_source_text_rules")?,
-        nonstandard_data_text_rule_count: count_table(connection, "nonstandard_data_text_rules")?,
-        note_tag_text_rule_count: count_table(connection, "note_tag_text_rules")?,
-        event_command_text_rule_group_count: count_table(
+        plugin_text_rule_count: count_rules_by_domain(connection, "plugin_config")?,
+        plugin_source_text_rule_count: count_rules_by_domain(connection, "plugin_source")?,
+        nonstandard_data_text_rule_count: count_rules_by_domain(connection, "nonstandard_data")?,
+        note_tag_text_rule_count: count_rules_by_domain(connection, "note_tags")?,
+        event_command_text_rule_group_count: count_rules_by_domain(connection, "event_commands")?,
+        event_command_text_rule_path_count: count_rules_by_domain(connection, "event_commands")?,
+        mv_virtual_namebox_rule_count: count_rules_by_domain(connection, "mv_virtual_namebox")?,
+        placeholder_rule_count: count_rules_by_domain(connection, "placeholders")?,
+        structured_placeholder_rule_count: count_rules_by_domain(
             connection,
-            "event_command_text_rule_groups",
+            "structured_placeholders",
         )?,
-        event_command_text_rule_path_count: count_table(
-            connection,
-            "event_command_text_rule_paths",
-        )?,
-        mv_virtual_namebox_rule_count: count_table(connection, "mv_virtual_namebox_rules")?,
-        placeholder_rule_count: count_table(connection, "placeholder_rules")?,
-        structured_placeholder_rule_count: count_table(connection, "structured_placeholder_rules")?,
-        source_residual_rule_count: count_table(connection, "source_residual_rules")?,
+        source_residual_rule_count: count_rules_by_domain(connection, "source_residual")?,
         translation_item_count: count_table(connection, "translation_items")?,
         translation_quality_error_count: count_table(connection, "translation_quality_errors")?,
         text_index_item_count: count_table(connection, "text_index_items")?,
     })
+}
+
+fn count_rules_by_domain(connection: &Connection, domain: &str) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM rules WHERE domain = ?1 AND enabled = 1",
+            [domain],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            structured_error(
+                "scope_index_storage_db_read_failed",
+                format!("读取规则 domain {domain} 数量失败: {error}"),
+            )
+        })
 }
 
 fn count_table(connection: &Connection, table_name: &str) -> Result<i64, String> {
