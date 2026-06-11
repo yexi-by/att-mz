@@ -23,7 +23,7 @@ pub(crate) struct RuleImportStorePlan {
     pub(crate) domain: RuleDomain,
     /// 本次导入后的完整当前规则集合。
     pub(crate) rules: Vec<StoredRule>,
-    /// 当前 domain 状态；None 表示清除旧的空规则确认状态。
+    /// 当前 domain 状态；None 表示清除旧的候选审查确认状态。
     pub(crate) domain_state: Option<DomainStateDraft>,
     /// 本次导入对应的上下文 hash。
     pub(crate) context_hash: String,
@@ -425,7 +425,11 @@ mod tests {
                 domain: RuleDomain::MvVirtualNamebox,
                 rules: Vec::new(),
                 domain_state: Some(DomainStateDraft {
-                    state_json: json!({"confirmed_empty": true}),
+                    state_json: json!({
+                        "reviewed_candidates": true,
+                        "confirmed_empty": true,
+                        "rule_count": 0
+                    }),
                     scope_hash: "scope-hash".to_string(),
                 }),
                 context_hash: "scope-hash".to_string(),

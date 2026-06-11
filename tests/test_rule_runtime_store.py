@@ -62,3 +62,5 @@ def test_confirm_empty_is_stored_as_domain_state_not_fake_rule() -> None:
         "domain_state",
     )
     assert domain_state["confirmed_empty"] is True
+    assert domain_state["reviewed_candidates"] is True
+    assert domain_state["rule_count"] == 0

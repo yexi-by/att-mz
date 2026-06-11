@@ -306,18 +306,7 @@ def _placeholder_import_report(
         *_runtime_issues_to_agent_issues(commit_result.warnings),
     ]
     if coverage.uncovered_count:
-        if imported_rule_count == 0:
-            warnings.append(issue(reviewed_warning_code, reviewed_warning_message))
-        else:
-            warnings.append(
-                issue(
-                    reviewed_warning_code.removesuffix("_reviewed"),
-                    reviewed_warning_message.replace(
-                        "，本次导入已记录当前审查状态",
-                        "，这些候选仍会在流程检查中提示",
-                    ),
-                )
-            )
+        warnings.append(issue(reviewed_warning_code, reviewed_warning_message))
     if deleted_translation_count > 0 and deleted_translation_backup_path is not None:
         warnings.append(
             issue(

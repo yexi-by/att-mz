@@ -95,7 +95,8 @@ class RuleReviewDecision:
     message: str
     scope_hash: str
     confirmation_status: RuleConfirmationStatus
-    reviewed_empty: bool | None
+    reviewed_candidates: bool | None
+    confirmed_empty: bool | None
     uncovered_count: int
     rule_count: int
     samples: JsonArray
@@ -117,7 +118,7 @@ async def build_rule_review_decision(
     custom_rules_supplied: bool = False,
 ) -> RuleReviewDecision:
     """按统一候选覆盖结果和数据库确认状态生成阶段决策。"""
-    confirmation_status, reviewed_empty = await read_confirmation_status(
+    confirmation_status, reviewed_candidates, confirmed_empty = await read_confirmation_status(
         session=session,
         rule_domain=coverage.rule_domain,
         scope_hash=coverage.scope_hash,
@@ -132,12 +133,13 @@ async def build_rule_review_decision(
             message="",
             scope_hash=coverage.scope_hash,
             confirmation_status="not_needed",
-            reviewed_empty=reviewed_empty,
+            reviewed_candidates=reviewed_candidates,
+            confirmed_empty=confirmed_empty,
             uncovered_count=coverage.uncovered_count,
             rule_count=coverage.rule_count,
             samples=samples,
         )
-    if confirmation_status == "confirmed" and not custom_rules_supplied:
+    if confirmation_status == "confirmed" and reviewed_candidates is True and not custom_rules_supplied:
         return RuleReviewDecision(
             rule_domain=coverage.rule_domain,
             stage=stage,
@@ -146,7 +148,8 @@ async def build_rule_review_decision(
             message=reviewed_message,
             scope_hash=coverage.scope_hash,
             confirmation_status=confirmation_status,
-            reviewed_empty=reviewed_empty,
+            reviewed_candidates=reviewed_candidates,
+            confirmed_empty=confirmed_empty,
             uncovered_count=coverage.uncovered_count,
             rule_count=coverage.rule_count,
             samples=samples,
@@ -159,7 +162,8 @@ async def build_rule_review_decision(
         message=unreviewed_message,
         scope_hash=coverage.scope_hash,
         confirmation_status=confirmation_status,
-        reviewed_empty=reviewed_empty,
+        reviewed_candidates=reviewed_candidates,
+        confirmed_empty=confirmed_empty,
         uncovered_count=coverage.uncovered_count,
         rule_count=coverage.rule_count,
         samples=samples,
@@ -181,12 +185,12 @@ async def build_empty_rule_review_decision(
     stale_message: str | None = None,
 ) -> RuleReviewDecision:
     """按统一规则生成空规则确认状态决策。"""
-    confirmation_status, reviewed_empty = await read_confirmation_status(
+    confirmation_status, reviewed_candidates, confirmed_empty = await read_confirmation_status(
         session=session,
         rule_domain=rule_domain,
         scope_hash=scope_hash,
     )
-    if confirmation_status == "confirmed" and reviewed_empty is True:
+    if confirmation_status == "confirmed" and confirmed_empty is True:
         return RuleReviewDecision(
             rule_domain=rule_domain,
             stage=stage,
@@ -195,7 +199,8 @@ async def build_empty_rule_review_decision(
             message="",
             scope_hash=scope_hash,
             confirmation_status=confirmation_status,
-            reviewed_empty=reviewed_empty,
+            reviewed_candidates=reviewed_candidates,
+            confirmed_empty=confirmed_empty,
             uncovered_count=0,
             rule_count=0,
             samples=[],
@@ -209,7 +214,8 @@ async def build_empty_rule_review_decision(
             message=stale_message or f"{label}曾确认为空，但当前游戏内容已经变化，请重新扫描并导入规则",
             scope_hash=scope_hash,
             confirmation_status=confirmation_status,
-            reviewed_empty=reviewed_empty,
+            reviewed_candidates=reviewed_candidates,
+            confirmed_empty=confirmed_empty,
             uncovered_count=0,
             rule_count=0,
             samples=[],
@@ -222,7 +228,8 @@ async def build_empty_rule_review_decision(
         message=missing_message or f"{label}为空且没有显式确认当前游戏没有对应规则，检查没通过，不能继续",
         scope_hash=scope_hash,
         confirmation_status=confirmation_status,
-        reviewed_empty=reviewed_empty,
+        reviewed_candidates=reviewed_candidates,
+        confirmed_empty=confirmed_empty,
         uncovered_count=0,
         rule_count=0,
         samples=[],
@@ -234,14 +241,14 @@ async def read_confirmation_status(
     session: TargetGameSession,
     rule_domain: RuleReviewDomain,
     scope_hash: str,
-) -> tuple[RuleConfirmationStatus, bool | None]:
+) -> tuple[RuleConfirmationStatus, bool | None, bool | None]:
     """读取当前规则域确认状态。"""
     state = await session.read_rule_review_state(rule_domain=rule_domain)
     if state is None:
-        return "missing", None
+        return "missing", None, None
     if state.scope_hash == scope_hash:
-        return "confirmed", state.reviewed_empty
-    return "stale", state.reviewed_empty
+        return "confirmed", state.reviewed_candidates, state.confirmed_empty
+    return "stale", state.reviewed_candidates, state.confirmed_empty
 
 
 def report_array_full(items: JsonArray) -> JsonObject:

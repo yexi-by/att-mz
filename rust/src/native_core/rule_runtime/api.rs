@@ -181,7 +181,8 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
     let config_patterns_hash = stable_value_hash(&payload.settings_runtime_patterns)?;
     let cleanup_fact_ids = cleanup_fact_ids(&payload.cleanup_input);
     let rules = stored_rules_from_normalized(&normalized_rules)?;
-    let domain_state = prepared_domain_state(&payload, normalized_rules.len(), &context_hash);
+    let domain_state =
+        prepared_domain_state(&payload, domain, normalized_rules.len(), &context_hash);
     let db_fingerprint = prepare_db_fingerprint(payload.db_path.as_deref(), &config_patterns_hash)?;
     let prepared_plan = PreparedRuleImportPlan {
         domain: payload.domain.clone(),
@@ -407,23 +408,52 @@ fn domain_state_summary(
 ) -> Value {
     serde_json::json!({
         "domain": &payload.domain,
+        "reviewed_candidates": (payload.confirm_empty && rule_count == 0)
+            || (placeholder_review_domain(&payload.domain) && rule_count > 0),
         "confirmed_empty": payload.confirm_empty && rule_count == 0,
         "scope_hash": context_hash,
+        "rule_count": rule_count,
     })
 }
 
 fn prepared_domain_state(
     payload: &PrepareRuleImportPayload,
+    domain: RuleDomain,
     rule_count: usize,
     context_hash: &str,
 ) -> Option<PreparedDomainState> {
     if payload.confirm_empty && rule_count == 0 {
         return Some(PreparedDomainState {
-            state_json: serde_json::json!({"confirmed_empty": true}),
+            state_json: domain_state_json(rule_count, true),
+            scope_hash: context_hash.to_string(),
+        });
+    }
+    if placeholder_review_rule_domain(domain) && rule_count > 0 {
+        return Some(PreparedDomainState {
+            state_json: domain_state_json(rule_count, false),
             scope_hash: context_hash.to_string(),
         });
     }
     None
+}
+
+fn domain_state_json(rule_count: usize, confirmed_empty: bool) -> Value {
+    serde_json::json!({
+        "reviewed_candidates": true,
+        "confirmed_empty": confirmed_empty,
+        "rule_count": rule_count,
+    })
+}
+
+fn placeholder_review_domain(domain: &str) -> bool {
+    matches!(domain, "placeholders" | "structured_placeholders")
+}
+
+fn placeholder_review_rule_domain(domain: RuleDomain) -> bool {
+    matches!(
+        domain,
+        RuleDomain::Placeholders | RuleDomain::StructuredPlaceholders
+    )
 }
 
 fn game_context_scope_hash(game_context: &Value) -> Result<String, String> {
@@ -854,7 +884,18 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("domain state count should read");
-        assert_eq!(state_count, 0);
+        assert_eq!(state_count, 1);
+        let state_json: String = connection
+            .query_row(
+                "SELECT state_json FROM rule_domain_states WHERE domain = 'placeholders'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("domain state should read");
+        let state: Value = serde_json::from_str(&state_json).expect("state should decode");
+        assert_eq!(state["reviewed_candidates"], true);
+        assert_eq!(state["confirmed_empty"], false);
+        assert_eq!(state["rule_count"], 1);
     }
 
     #[test]

@@ -380,7 +380,7 @@ class RuleRecordSessionMixin(SessionMixinBase):
         *,
         rule_domain: RuleReviewDomain,
     ) -> RuleReviewStateRecord | None:
-        """读取某类外部规则的空结果审查状态。"""
+        """读取某类规则的当前候选审查确认状态。"""
         runtime_domain = rule_runtime_domain_for_review_domain(rule_domain)
         async with self.connection.execute(SELECT_RULE_REVIEW_STATE, (runtime_domain,)) as cursor:
             row = await cursor.fetchone()
@@ -394,13 +394,20 @@ class RuleRecordSessionMixin(SessionMixinBase):
             )
         except (TypeError, json.JSONDecodeError) as error:
             raise RuntimeError(f"rule_domain_states.state_json 必须是 JSON 对象: {self.db_path}") from error
-        confirmed_empty = state.get("confirmed_empty", state.get("reviewed_empty"))
+        reviewed_candidates = state.get("reviewed_candidates")
+        if not isinstance(reviewed_candidates, bool):
+            message = "rule_domain_states.state_json.reviewed_candidates 必须是布尔值，" + (
+                f"请重新导入对应规则以生成当前契约状态: {self.db_path}"
+            )
+            raise RuntimeError(message)
+        confirmed_empty = state.get("confirmed_empty")
         if not isinstance(confirmed_empty, bool):
             raise RuntimeError(f"rule_domain_states.state_json.confirmed_empty 必须是布尔值: {self.db_path}")
         return RuleReviewStateRecord(
             rule_domain=rule_review_domain_for_runtime_domain(row_str(row, "domain", self.db_path)),
             scope_hash=row_str(row, "scope_hash", self.db_path),
-            reviewed_empty=confirmed_empty,
+            reviewed_candidates=reviewed_candidates,
+            confirmed_empty=confirmed_empty,
             updated_at=row_str(row, "confirmed_at", self.db_path),
         )
 

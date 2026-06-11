@@ -1948,7 +1948,8 @@ async def test_import_empty_placeholder_rules_confirms_uncovered_candidates(
     assert report.summary["uncovered_count"] != 0
     assert "placeholder_uncovered_reviewed" in {warning.code for warning in doctor_report.warnings}
     assert state is not None
-    assert state.reviewed_empty is True
+    assert state.reviewed_candidates is True
+    assert state.confirmed_empty is True
     assert state.scope_hash == coverage.scope_hash
     assert "placeholder_uncovered" not in {error.code for error in errors}
 @pytest.mark.asyncio
@@ -2086,7 +2087,7 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """非空普通占位符规则仍有候选时，不写空规则确认状态。"""
+    """非空普通占位符规则仍有候选时，保存当前候选审查状态。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     await _install_minimal_workflow_gate_prerequisites(
@@ -2123,14 +2124,20 @@ async def test_import_nonempty_placeholder_rules_confirms_remaining_uncovered_ca
             custom_placeholder_rules_supplied=False,
             scope=scope,
         )
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
 
     assert report.status == "warning"
-    assert "placeholder_uncovered" in {warning.code for warning in report.warnings}
+    assert "placeholder_uncovered_reviewed" in {warning.code for warning in report.warnings}
     assert report.summary["imported_rule_count"] == 1
     assert report.summary["uncovered_count"] != 0
-    assert state is None
+    assert state is not None
+    assert state.reviewed_candidates is True
+    assert state.confirmed_empty is False
+    assert state.scope_hash == coverage.scope_hash
     assert coverage.uncovered_count == report.summary["uncovered_count"]
-    assert "placeholder_uncovered" in {error.code for error in errors}
+    assert "placeholder_uncovered" not in {error.code for error in errors}
+    assert rebuild_report.status == "ok"
+    assert rebuild_report.summary["source_branch_gate_status"] == "prechecked"
 @pytest.mark.asyncio
 async def test_import_empty_structured_placeholder_rules_confirms_uncovered_candidates(
     minimal_english_game_dir: Path,
@@ -2191,7 +2198,8 @@ async def test_import_empty_structured_placeholder_rules_confirms_uncovered_cand
     assert report.summary["uncovered_count"] == 1
     assert "structured_placeholder_uncovered_reviewed" in {warning.code for warning in doctor_report.warnings}
     assert state is not None
-    assert state.reviewed_empty is True
+    assert state.reviewed_candidates is True
+    assert state.confirmed_empty is True
     assert state.scope_hash == coverage.scope_hash
     assert "structured_placeholder_uncovered" not in {error.code for error in errors}
 
@@ -2281,7 +2289,7 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
     minimal_english_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """非空结构化规则仍未覆盖候选时，不写空规则确认状态。"""
+    """非空结构化规则仍未覆盖候选时，保存当前候选审查状态。"""
     _replace_first_common_event_text(minimal_english_game_dir, "<名前: Alraune>")
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_english_game_dir, source_language="en")
@@ -2337,12 +2345,15 @@ async def test_import_nonempty_structured_placeholder_rules_confirms_remaining_u
         )
 
     assert report.status == "warning"
-    assert "structured_placeholder_uncovered" in {warning.code for warning in report.warnings}
+    assert "structured_placeholder_uncovered_reviewed" in {warning.code for warning in report.warnings}
     assert report.summary["imported_rule_count"] == 1
     assert report.summary["uncovered_count"] == 1
-    assert state is None
+    assert state is not None
+    assert state.reviewed_candidates is True
+    assert state.confirmed_empty is False
+    assert state.scope_hash == coverage.scope_hash
     assert coverage.uncovered_count == report.summary["uncovered_count"]
-    assert "structured_placeholder_uncovered" in {error.code for error in errors}
+    assert "structured_placeholder_uncovered" not in {error.code for error in errors}
 @pytest.mark.asyncio
 async def test_placeholder_candidate_review_rejects_sampled_hash(
     minimal_english_game_dir: Path,

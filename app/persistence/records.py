@@ -59,7 +59,8 @@ class RuleReviewStateRecord:
 
     rule_domain: RuleReviewDomain
     scope_hash: str
-    reviewed_empty: bool
+    reviewed_candidates: bool
+    confirmed_empty: bool
     updated_at: str
 
 

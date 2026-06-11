@@ -86,13 +86,15 @@
 | 字段 | 说明 |
 |------|------|
 | `domain` | 规则域 |
-| `state_json` | 当前状态 JSON |
+| `state_json` | 当前状态 JSON；必须包含 `reviewed_candidates` 和 `confirmed_empty` |
 | `scope_hash` | 该确认状态对应的完整候选范围 hash |
 | `confirmed_at` | 确认时间 |
 | `rule_runtime_contract_version` | 规则运行时契约版本 |
 | `rule_store_schema_version` | 规则存储模型版本 |
 
 确认状态只在当前候选范围一致时有效。游戏源文件、配置或规则变化后，相关命令会要求重新扫描、重新审查并按当前命令导入规则。
+
+当前 `state_json` 契约中，`reviewed_candidates` 表示该完整候选范围已经审查，`confirmed_empty` 只表示当前规则确认为空；普通/结构化占位符非空规则仍有未覆盖候选时，`reviewed_candidates=true` 且 `confirmed_empty=false`。
 
 ## 当前文本事实与译文
 

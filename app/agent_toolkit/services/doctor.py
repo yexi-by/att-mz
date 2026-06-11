@@ -407,7 +407,7 @@ def _decision_reviewed_empty(decision: RuleReviewDecision | None) -> bool:
     """判断统一决策是否代表仍有效的空规则确认。"""
     return (
         decision is not None
-        and decision.reviewed_empty is True
+        and decision.confirmed_empty is True
         and decision.confirmation_status == "confirmed"
     )
 
