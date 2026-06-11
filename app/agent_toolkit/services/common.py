@@ -1370,7 +1370,7 @@ def _validate_source_residual_rule_records(
 
 
 def _source_residual_records_to_runtime_payload(records: Sequence[SourceResidualRuleRecord]) -> JsonObject:
-    """把旧表过渡记录转换为当前 source_residual rule_runtime payload。"""
+    """把当前统一规则记录转换为 source_residual rule_runtime payload。"""
     position_rules: JsonObject = {}
     structural_rules: JsonArray = []
     for record in records:
