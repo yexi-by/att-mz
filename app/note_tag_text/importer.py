@@ -8,9 +8,11 @@ import aiofiles
 from pydantic import TypeAdapter
 
 from app.external_input import ExternalStr
+from app.native_rule_runtime import prepare_rule_import, runtime_config_patterns_from_setting
 from app.note_tag_text.parser import iter_note_tag_matches
 from app.note_tag_text.sources import collect_note_tag_sources, matched_note_file_names
 from app.rmmz.schema import GameData, NoteTagTextRuleRecord
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import TextRules, coerce_json_value, get_default_text_rules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
@@ -62,6 +64,7 @@ def build_note_tag_rule_records_from_import(
 ) -> list[NoteTagTextRuleRecord]:
     """把外部 Note 标签映射转换成数据库规则记录。"""
     rules = text_rules if text_rules is not None else get_default_text_rules()
+    _ensure_note_tag_rule_runtime_prepare(import_file=import_file, text_rules=rules)
     records: list[NoteTagTextRuleRecord] = []
     for file_name, tag_names in import_file.items():
         normalized_file_name = file_name.strip()
@@ -134,7 +137,7 @@ def _validate_note_tag_rule_hit(
         )
         if not normalized_value:
             continue
-        if text_rules.should_translate_source_text(normalized_value):
+        if is_source_text_required(text_rules, normalized_value):
             translatable_hit_count += 1
 
     if hit_count == 0:
@@ -142,6 +145,29 @@ def _validate_note_tag_rule_hit(
 
     if translatable_hit_count == 0:
         raise ValueError(f"Note 标签规则没有命中玩家可见可翻译文本: {file_name}/{tag_name}")
+
+
+def _ensure_note_tag_rule_runtime_prepare(
+    *,
+    import_file: NoteTagRuleImportFile,
+    text_rules: TextRules,
+) -> None:
+    """用统一 rule_runtime 校验 Note 标签规则结构。"""
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "note_tags",
+            "rules_payload": {
+                str(file_name): [str(tag_name) for tag_name in tag_names]
+                for file_name, tag_names in import_file.items()
+            },
+            "game_context": {},
+            "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+        }
+    )
+    if result.errors:
+        messages = "；".join(error.message for error in result.errors)
+        raise ValueError(messages)
 
 
 __all__: list[str] = [

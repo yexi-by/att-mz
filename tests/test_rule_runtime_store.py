@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -23,4 +24,5 @@ async def test_current_schema_creates_unified_rule_store(
             """,
         )
 
-    assert {str(row[0]) for row in rows} == {"rule_sets", "rules", "rule_domain_states"}
+    table_names = {cast(str, row[0]) for row in rows}
+    assert table_names == {"rule_sets", "rules", "rule_domain_states"}

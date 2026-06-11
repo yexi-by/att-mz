@@ -98,6 +98,10 @@ from app.rmmz.schema import (
     TranslationErrorItem,
     TranslationItem,
 )
+from app.rmmz.source_text_detection import (
+    is_source_text_required,
+    source_text_required_by_line_groups,
+)
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object, ensure_json_string_list
@@ -160,7 +164,6 @@ from app.persistence.repository import current_timestamp_text
 from app.source_residual import (
     SourceResidualRuleSet,
     build_source_residual_rule_records_from_import,
-    check_source_residual_for_item,
     parse_source_residual_rule_import_text,
 )
 from app.text_scope import (
@@ -1171,11 +1174,11 @@ def _placeholder_preview_loses_visible_source_text(
     if not isinstance(original_text, str) or not isinstance(text_for_model, str):
         return False
     detection_rules = TextRules.from_setting(text_rules.setting)
-    if not detection_rules.should_translate_source_text(original_text):
+    if not is_source_text_required(detection_rules, original_text):
         return False
     model_visible_text = detection_rules.placeholder_token_pattern.sub("", text_for_model)
     model_visible_text = detection_rules.strip_rm_control_sequences(model_visible_text)
-    return not detection_rules.should_translate_source_text(model_visible_text)
+    return not is_source_text_required(detection_rules, model_visible_text)
 
 
 def _build_coverage_report(
@@ -1228,15 +1231,20 @@ def _build_coverage_report(
     if active_unwritable_items:
         errors.append(issue("coverage_unwritable", f"发现 {len(active_unwritable_items)} 条当前文本无法写进游戏文件"))
 
-    unwritable_rule_items: JsonArray = []
-    for entry in scope.entries:
-        if entry.enters_translation:
-            continue
-        if entry.source_type == "standard_data":
-            continue
-        if not text_rules.should_translate_source_lines(entry.original_lines):
-            continue
-        unwritable_rule_items.append(entry.to_json_object())
+    unwritable_rule_entries = [
+        entry
+        for entry in scope.entries
+        if not entry.enters_translation and entry.source_type != "standard_data"
+    ]
+    unwritable_rule_flags = source_text_required_by_line_groups(
+        text_rules,
+        [entry.original_lines for entry in unwritable_rule_entries],
+    )
+    unwritable_rule_items: JsonArray = [
+        entry.to_json_object()
+        for entry, has_source_text in zip(unwritable_rule_entries, unwritable_rule_flags, strict=True)
+        if has_source_text
+    ]
     if unwritable_rule_items:
         errors.append(issue("rule_hits_unwritable", f"发现 {len(unwritable_rule_items)} 条规则命中文本没有进入当前可写范围"))
 
@@ -3253,12 +3261,13 @@ def _prepare_manual_translation_item(
     )
     cloned_item.verify_placeholders(text_rules)
     cloned_item.translation_lines = list(cloned_item.translation_lines_with_placeholders)
-    source_residual_rule_set = SourceResidualRuleSet.from_records(source_residual_rules or [])
-    check_source_residual_for_item(
-        item=cloned_item,
+    native_quality_counts = collect_native_quality_counts(
+        items=[cloned_item],
         text_rules=text_rules,
-        rule_set=source_residual_rule_set,
+        source_residual_rules=source_residual_rules or [],
     )
+    if native_quality_counts.source_residual_count:
+        raise ValueError(f"译文存在{text_rules.setting.source_residual_label}残留风险")
     cloned_item.translation_lines = list(normalized_translation_lines)
     return cloned_item
 
@@ -3411,7 +3420,6 @@ __all__: list[str] = [
     'SourceResidualRuleSet',
     'build_rule_runtime_settings_patterns',
     'build_source_residual_rule_records_from_import',
-    'check_source_residual_for_item',
     'parse_source_residual_rule_import_text',
     'TextScopeEntry',
     'TextScopeResult',

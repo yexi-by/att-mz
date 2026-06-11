@@ -8,8 +8,9 @@ from typing import cast
 
 from pydantic import TypeAdapter
 
+from app.native_rule_runtime import prepare_rule_import, runtime_config_patterns_from_setting
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
-from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value
+from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value, ensure_json_object
 
 from .models import (
     PluginSourceRuleImportEntry,
@@ -45,6 +46,7 @@ def build_plugin_source_rule_records_from_import(
     """按当前游戏源码校验外部插件源码规则并转换为数据库记录。"""
     if not import_file.rules:
         return []
+    _ensure_plugin_source_rule_runtime_prepare(import_file=import_file, text_rules=text_rules)
     if scan is None:
         scan = build_native_plugin_source_scan(
             game_data=game_data,
@@ -146,6 +148,30 @@ def plugin_source_rule_records_to_import_json(records: list[PluginSourceTextRule
         }
         for record in sorted(records, key=lambda item: item.file_name)
     ]
+
+
+def _ensure_plugin_source_rule_runtime_prepare(
+    *,
+    import_file: PluginSourceRuleImportFile,
+    text_rules: TextRules,
+) -> None:
+    """用统一 rule_runtime 校验插件源码规则结构。"""
+    rules_payload: JsonObject = ensure_json_object(
+        coerce_json_value(cast(object, import_file.model_dump(mode="json"))),
+        "plugin_source_rule_import",
+    )
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "plugin_source",
+            "rules_payload": rules_payload,
+            "game_context": {},
+            "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+        }
+    )
+    if result.errors:
+        messages = "；".join(error.message for error in result.errors)
+        raise ValueError(messages)
 
 
 def _validate_plugin_source_file_name(file_name: str) -> str:

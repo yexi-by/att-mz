@@ -10,6 +10,7 @@ from app.native_scope_index import (
 )
 from app.plugin_text import extract_plugin_name
 from app.rmmz.schema import GameData, PluginSourceTextRuleRecord
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, ensure_json_array, ensure_json_object
 
 from .models import (
@@ -658,9 +659,9 @@ def _native_plugin_source_candidate_should_translate(
     text_rules: TextRules,
     index: int,
 ) -> bool:
-    """用 Python re 语义执行用户配置的最终源文识别。"""
+    """用统一 rule_runtime 语义执行用户配置的最终源文识别。"""
     text = _json_str(candidate, "text", f"native_rule_candidates_result.candidates[{index}]")
-    return text_rules.should_translate_source_text(text)
+    return is_source_text_required(text_rules, text)
 
 
 def _native_plugin_source_candidate_file(candidate: JsonObject, label: str) -> str:

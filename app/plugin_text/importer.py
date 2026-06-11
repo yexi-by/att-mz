@@ -9,6 +9,7 @@ from pydantic import Field, TypeAdapter, field_validator
 
 from app.external_input import ExternalInputModel, ExternalInt, ExternalStr
 from app.rmmz.schema import GameData, PluginTextRuleRecord
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, get_default_text_rules
 
@@ -144,7 +145,7 @@ def build_plugin_rule_record(
             if leaf_value is None:
                 continue
             normalized_value = normalize_visible_text_for_extraction(leaf_value)
-            if text_rules.should_translate_source_text(normalized_value):
+            if is_source_text_required(text_rules, normalized_value):
                 translatable_hit_found = True
                 break
         if not translatable_hit_found:

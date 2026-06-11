@@ -18,8 +18,11 @@ from app.rmmz.schema import (
     PluginSourceRuntimeStringLiteralCacheRecord,
     PluginSourceRuntimeWriteMapRecord,
     PluginSourceTextRuleRecord,
+    TranslationItem,
 )
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, coerce_json_value, ensure_json_object
+from app.source_residual import check_source_residual_for_item
 
 from .scanner import (
     PluginSourceBatchTextScan,
@@ -625,13 +628,15 @@ def _audit_literal(
                 hint=_control_hint_for_fragment(native_issue_fact, fragment),
             )
         )
-    try:
-        text_rules.check_source_residual([literal.text])
-    except ValueError as error:
+    source_residual_error = _source_residual_error_for_runtime_literal(
+        literal=literal,
+        text_rules=text_rules,
+    )
+    if source_residual_error is not None:
         issues.append(
             ActiveRuntimePluginSourceIssue(
                 code="active_runtime_source_residual",
-                message=f"当前游戏运行文件里的插件源码仍有源文残留: {error}",
+                message=f"当前游戏运行文件里的插件源码仍有源文残留: {source_residual_error}",
                 file_name=literal.file_name,
                 fragment="",
                 literal=literal,
@@ -642,6 +647,25 @@ def _audit_literal(
             )
         )
     return _deduplicate_issues(issues)
+
+
+def _source_residual_error_for_runtime_literal(
+    *,
+    literal: PluginSourceStringLiteral,
+    text_rules: TextRules,
+) -> str | None:
+    """用 native 质检判断运行插件源码字面量是否残留源文。"""
+    item = TranslationItem(
+        location_path=f"{literal.file_name}/{literal.selector}",
+        item_type="short_text",
+        original_lines=[],
+        translation_lines=[literal.text],
+    )
+    try:
+        check_source_residual_for_item(item=item, text_rules=text_rules, rule_set=None)
+    except ValueError as error:
+        return str(error)
+    return None
 
 
 def _classify_literal_issue(
@@ -704,7 +728,7 @@ def _classify_literal_issue(
 
     source_review_required = (
         literal_kind == "unknown"
-        and text_rules.should_translate_source_text(literal.text)
+        and is_source_text_required(text_rules, literal.text)
     )
     return _LiteralIssueClassification(
         blocking=source_review_required,

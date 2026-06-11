@@ -1,11 +1,13 @@
 from pathlib import Path
 
+import pytest
+
 from app.native_rule_runtime import (
     commit_rule_import,
     evaluate_runtime_config_patterns,
     prepare_rule_import,
 )
-from app.rmmz.json_types import JsonObject
+from app.rmmz.json_types import JsonObject, JsonValue, ensure_json_array, ensure_json_object
 
 
 def _valid_runtime_patterns() -> JsonObject:
@@ -60,6 +62,68 @@ def test_evaluate_runtime_config_patterns_uses_current_pcre2_pattern() -> None:
 
     assert result.status == "ok"
     assert [entry.source_text_required for entry in result.entries] == [True, False]
+    assert [entry.line_width_count for entry in result.entries] == [5, 9]
+
+
+@pytest.mark.parametrize(
+    ("domain", "payload", "matcher_kind"),
+    [
+        (
+            "plugin_config",
+            [
+                {
+                    "plugin_index": 0,
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Message']"],
+                }
+            ],
+            "json_path_template",
+        ),
+        (
+            "event_commands",
+            {"357": [{"match": {"0": "Speaker"}, "paths": ["$['parameters'][1]['message']"]}]},
+            "json_path_template",
+        ),
+        ("note_tags", {"Actors.json": ["profile"]}, "literal"),
+        (
+            "nonstandard_data",
+            {"Data.json": ["$['items'][*]['description']"]},
+            "json_path_template",
+        ),
+        (
+            "plugin_source",
+            {
+                "rules": [
+                    {
+                        "file": "Foo.js",
+                        "selectors": ["string@0:4"],
+                        "excluded_selectors": [],
+                    }
+                ]
+            },
+            "ast_selector",
+        ),
+    ],
+)
+def test_prepare_non_regex_domains_do_not_require_pcre2(
+    domain: str,
+    payload: JsonValue,
+    matcher_kind: str,
+) -> None:
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": domain,
+            "rules_payload": payload,
+            "game_context": {"allow_empty_context_for_contract_test": True},
+            "settings_runtime_patterns": _valid_runtime_patterns(),
+        }
+    )
+
+    assert result.status == "ok"
+    runtime_summary = ensure_json_object(result.summary["rule_runtime"], "rule_runtime")
+    matcher_kinds = ensure_json_array(runtime_summary["matcher_kinds"], "rule_runtime.matcher_kinds")
+    assert matcher_kinds[0] == matcher_kind
 
 
 def test_validate_prepare_returns_plan_without_db_write(tmp_path: Path) -> None:

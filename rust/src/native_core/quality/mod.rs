@@ -200,4 +200,35 @@ mod tests {
         assert_eq!(item["hint"]["possible_split"]["control"], json!(r"\fb2"));
         assert_eq!(item["hint"]["possible_split"]["tail"], json!("1st"));
     }
+
+    #[test]
+    fn quality_scan_reports_english_long_residual_without_original() {
+        let mut payload = quality_payload(json!([
+            {
+                "location_path": "Plugin.js/string@1:1",
+                "item_type": "short_text",
+                "role": null,
+                "original_lines": [],
+                "translation_lines": ["alpha beta gamma delta"]
+            }
+        ]));
+        payload["text_rules"]["source_residual_segment_pattern"] = json!(r"[A-Za-z]+");
+        payload["text_rules"]["source_residual_detection_profile"] = json!("english_source_copy");
+        payload["text_rules"]["english_source_copy_min_words"] = json!(4);
+        payload["text_rules"]["english_source_copy_min_letters"] = json!(12);
+
+        let output_text = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let output: Value = serde_json::from_str(&output_text).expect("输出应是 JSON");
+
+        assert_eq!(
+            output["source_residual_items"][0]["location_path"],
+            json!("Plugin.js/string@1:1")
+        );
+        assert!(
+            output["source_residual_items"][0]["reason"]
+                .as_str()
+                .expect("reason should be text")
+                .contains("alpha beta gamma delta")
+        );
+    }
 }

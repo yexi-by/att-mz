@@ -9,8 +9,10 @@ from typing import cast
 
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
+from app.config.schemas import TextRulesSetting
 from app.external_input import ExternalInputModel, ExternalStr
 from app.json_path_protocol import ResolvedLeaf, jsonpath_to_path_parts
+from app.native_rule_runtime import prepare_rule_import, runtime_config_patterns_from_setting
 from app.native_scope_index import scan_native_rule_candidates
 from app.rmmz.json_types import JsonArray, JsonObject, coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.schema import NonstandardDataTextRuleRecord
@@ -129,6 +131,7 @@ def validate_nonstandard_data_rules(
     rule_records: list[NonstandardDataTextRuleRecord] | None = None,
 ) -> NonstandardDataRuleValidationResult:
     """校验规则结构、路径命中和候选全量归类状态。"""
+    _ensure_nonstandard_data_rule_runtime_prepare(import_file=import_file)
     coverage = _evaluate_native_nonstandard_data_rule_coverage(
         scan=scan,
         import_file=import_file,
@@ -202,6 +205,32 @@ def nonstandard_data_rule_records_to_import_json(
         spec.model_dump(mode="json")
         for spec in nonstandard_data_rule_records_to_import_file(records)
     ]
+
+
+def _ensure_nonstandard_data_rule_runtime_prepare(
+    *,
+    import_file: NonstandardDataRuleImportFile,
+) -> None:
+    """用统一 rule_runtime 校验非标准 data 规则结构。"""
+    rules_payload: JsonArray = [
+        ensure_json_object(
+            coerce_json_value(cast(object, rule.model_dump(mode="json"))),
+            "nonstandard_data_rule",
+        )
+        for rule in import_file
+    ]
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "nonstandard_data",
+            "rules_payload": rules_payload,
+            "game_context": {},
+            "settings_runtime_patterns": runtime_config_patterns_from_setting(TextRulesSetting()),
+        }
+    )
+    if result.errors:
+        messages = "；".join(error.message for error in result.errors)
+        raise ValueError(messages)
 
 
 def _evaluate_native_nonstandard_data_rule_coverage(

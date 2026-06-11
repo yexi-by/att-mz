@@ -15,6 +15,7 @@ from app.native_javascript_ast import (
     parse_native_javascript_string_spans_batch,
 )
 from app.rmmz.schema import PluginSourceRuntimeLiteralAuditSeverity, PluginSourceRuntimeLiteralKind
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import JsonObject, TextRules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
@@ -284,7 +285,7 @@ def _build_literals_and_candidates_from_spans(
         )
         if text_rules is None:
             continue
-        should_translate = text_rules.should_translate_source_text(text)
+        should_translate = is_source_text_required(text_rules, text)
         if not should_translate:
             continue
         structural_flags = tuple(_plugin_source_text_structural_flags(text))

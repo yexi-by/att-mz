@@ -22,6 +22,7 @@ from app.rmmz.schema import (
     GameLayout,
 )
 from app.rmmz.loader import resolve_game_layout, validate_data_directory_integrity
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 
 type SourceLanguageProbeClassification = Literal["ja", "en", "mixed", "other"]
@@ -468,13 +469,7 @@ def _classify_visible_text(
 
 def _contains_required_source_text(*, text: str, rules: TextRules) -> bool:
     """只按源语言字符规则判断玩家可见文本，避免把断词对白当协议噪音。"""
-    normalized_text = rules.normalize_extraction_text(text)
-    if not normalized_text:
-        return False
-    detection_text = rules.strip_rm_control_sequences(normalized_text)
-    if not detection_text:
-        return False
-    return rules.source_text_required_pattern.search(detection_text) is not None
+    return is_source_text_required(rules, text, apply_exclusion_profile=False)
 
 
 def _recommend_source_language(

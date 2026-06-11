@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.json_path_protocol import jsonpath_template_is_ancestor
+from app.native_rule_runtime import prepare_rule_import, runtime_config_patterns_from_setting
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
     build_native_plugin_config_candidates_payload,
@@ -37,6 +38,7 @@ def build_native_plugin_rule_validation_context_from_import(
     rules = plugin_rule_import_file_to_native_rules(import_file)
     if not rules:
         return _empty_context()
+    _ensure_plugin_config_rule_runtime_prepare(rules=rules, text_rules=text_rules)
     native_result = scan_native_rule_candidates(
         build_native_plugin_config_candidates_payload(
             game_data=game_data,
@@ -58,6 +60,10 @@ def build_native_plugin_rule_validation_context(
     """从已保存插件规则记录构造 native 校验上下文。"""
     if not records:
         return _empty_context()
+    _ensure_plugin_config_rule_runtime_prepare(
+        rules=plugin_rule_records_to_native_rules(records),
+        text_rules=text_rules,
+    )
     native_result = scan_native_rule_candidates(
         build_native_plugin_config_candidates_payload(
             game_data=game_data,
@@ -100,6 +106,22 @@ def plugin_rule_records_to_native_rules(records: list[PluginTextRuleRecord]) -> 
             }
         )
     return rules
+
+
+def _ensure_plugin_config_rule_runtime_prepare(*, rules: JsonArray, text_rules: TextRules) -> None:
+    """用统一 rule_runtime 校验插件配置规则结构。"""
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "plugin_config",
+            "rules_payload": rules,
+            "game_context": {},
+            "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+        }
+    )
+    if result.errors:
+        messages = "；".join(error.message for error in result.errors)
+        raise ValueError(messages)
 
 
 def _plugin_rule_records_from_native_summary(
@@ -154,10 +176,16 @@ def _ensure_plugin_rule_records_have_current_hash(
         _ensure_plugin_rule_paths_have_hits(
             rule_summary=rule_summary,
             plugin_summary=plugin_summary,
+            require_translatable_hits=False,
         )
 
 
-def _ensure_plugin_rule_paths_have_hits(*, rule_summary: JsonObject, plugin_summary: JsonObject) -> None:
+def _ensure_plugin_rule_paths_have_hits(
+    *,
+    rule_summary: JsonObject,
+    plugin_summary: JsonObject,
+    require_translatable_hits: bool = True,
+) -> None:
     """确认规则路径命中当前可翻译插件文本。"""
     plugin_name = _json_str(rule_summary, "plugin_name", "plugin_config.rule_summaries[]")
     for path_hit_count in ensure_json_array(
@@ -174,7 +202,7 @@ def _ensure_plugin_rule_paths_have_hits(*, rule_summary: JsonObject, plugin_summ
                 plugin_summary=plugin_summary,
             )
             raise ValueError(f"插件 {plugin_name} 的路径没有命中当前插件字符串叶子: {path_template}{hint}")
-        if translatable_hit_count == 0:
+        if require_translatable_hits and translatable_hit_count == 0:
             raise ValueError(f"插件 {plugin_name} 的路径没有命中玩家可见可翻译文本: {path_template}")
 
 

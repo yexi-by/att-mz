@@ -359,6 +359,8 @@ fn check_source_residual(
 struct ResidualToken {
     text: String,
     normalized: String,
+    start_index: usize,
+    end_index: usize,
 }
 
 fn check_english_source_copy_residual(
@@ -373,7 +375,7 @@ fn check_english_source_copy_residual(
         .join("\n");
     let original_tokens = collect_english_residual_tokens(&original_text, rules);
     if original_tokens.is_empty() {
-        return Ok(());
+        return check_english_long_residual_without_original(lines, rules);
     }
     let original_token_values = original_tokens
         .iter()
@@ -413,9 +415,94 @@ fn collect_english_residual_tokens(text: &str, rules: &CompiledRules) -> Vec<Res
             Some(ResidualToken {
                 text: value.to_string(),
                 normalized,
+                start_index: matched.start(),
+                end_index: matched.end(),
             })
         })
         .collect()
+}
+
+fn check_english_long_residual_without_original(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<(), String> {
+    for (index, line) in lines.iter().enumerate() {
+        let cleaned_line = strip_non_content_for_residual(line, rules);
+        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules);
+        let residual_segments =
+            find_english_long_residual_segments(&cleaned_line, &translation_tokens, rules);
+        if !residual_segments.is_empty() {
+            return Err(format!(
+                "发现{}残留(第 {} 行): {:?}",
+                rules.source_residual_label,
+                index + 1,
+                residual_segments
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn find_english_long_residual_segments(
+    cleaned_line: &str,
+    translation_tokens: &[ResidualToken],
+    rules: &CompiledRules,
+) -> Vec<String> {
+    let mut residual_segments = Vec::new();
+    let mut current_run: Vec<&ResidualToken> = Vec::new();
+    let mut previous_token: Option<&ResidualToken> = None;
+    for token in translation_tokens {
+        if let Some(previous) = previous_token {
+            let gap = cleaned_line
+                .get(previous.end_index..token.start_index)
+                .unwrap_or_default();
+            if english_token_gap_breaks_run(gap) {
+                append_english_run_if_residual(&mut residual_segments, &current_run, rules);
+                current_run.clear();
+            }
+        }
+        current_run.push(token);
+        previous_token = Some(token);
+    }
+    append_english_run_if_residual(&mut residual_segments, &current_run, rules);
+    residual_segments
+}
+
+fn english_token_gap_breaks_run(gap: &str) -> bool {
+    for character in gap.chars() {
+        if character.is_whitespace() {
+            continue;
+        }
+        if character.is_ascii() && !character.is_ascii_alphanumeric() {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn append_english_run_if_residual(
+    residual_segments: &mut Vec<String>,
+    tokens: &[&ResidualToken],
+    rules: &CompiledRules,
+) {
+    if tokens.len() < rules.english_source_copy_min_words {
+        return;
+    }
+    let letter_count = tokens
+        .iter()
+        .map(|token| ascii_letter_count(&token.text))
+        .sum::<usize>();
+    if letter_count < rules.english_source_copy_min_letters {
+        return;
+    }
+    residual_segments.push(
+        tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<&str>>()
+            .join(" "),
+    );
 }
 
 fn find_english_source_copy_segments(

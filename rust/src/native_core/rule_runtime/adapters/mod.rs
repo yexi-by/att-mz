@@ -1,5 +1,10 @@
 pub(crate) mod config_patterns;
+pub(crate) mod event_commands;
 pub(crate) mod mv_virtual_namebox;
+pub(crate) mod nonstandard_data;
+pub(crate) mod note_tags;
 pub(crate) mod placeholders;
+pub(crate) mod plugin_config;
+pub(crate) mod plugin_source;
 pub(crate) mod source_residual;
 pub(crate) mod structured_placeholders;

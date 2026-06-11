@@ -3,8 +3,13 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::adapters::config_patterns::validate_runtime_config_patterns;
+use super::adapters::event_commands::normalize_event_command_rules;
 use super::adapters::mv_virtual_namebox::normalize_mv_virtual_namebox_rules;
+use super::adapters::nonstandard_data::normalize_nonstandard_data_rules;
+use super::adapters::note_tags::normalize_note_tag_rules;
 use super::adapters::placeholders::normalize_placeholder_rules;
+use super::adapters::plugin_config::normalize_plugin_config_rules;
+use super::adapters::plugin_source::normalize_plugin_source_rules;
 use super::adapters::source_residual::normalize_source_residual_rules;
 use super::adapters::structured_placeholders::normalize_structured_placeholder_rules;
 use super::errors::RuleRuntimeIssue;
@@ -94,6 +99,7 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
             "rule_runtime": {
                 "domain": &payload.domain,
                 "rule_count": normalized_rules.len(),
+                "matcher_kinds": matcher_kinds(&normalized_rules),
             },
         }),
     })
@@ -167,6 +173,21 @@ fn is_current_rule_domain(domain: &str) -> bool {
 fn normalize_domain_rules(
     payload: &PrepareRuleImportPayload,
 ) -> Result<Vec<NormalizedRuleInput>, Vec<RuleRuntimeIssue>> {
+    if payload.domain == "plugin_config" {
+        return normalize_plugin_config_rules(&payload.rules_payload);
+    }
+    if payload.domain == "event_commands" {
+        return normalize_event_command_rules(&payload.rules_payload);
+    }
+    if payload.domain == "note_tags" {
+        return normalize_note_tag_rules(&payload.rules_payload);
+    }
+    if payload.domain == "nonstandard_data" {
+        return normalize_nonstandard_data_rules(&payload.rules_payload);
+    }
+    if payload.domain == "plugin_source" {
+        return normalize_plugin_source_rules(&payload.rules_payload);
+    }
     if payload.domain == "placeholders" {
         return normalize_placeholder_rules(&payload.rules_payload);
     }
@@ -180,6 +201,17 @@ fn normalize_domain_rules(
         return normalize_mv_virtual_namebox_rules(&payload.rules_payload);
     }
     Ok(Vec::new())
+}
+
+fn matcher_kinds(rules: &[NormalizedRuleInput]) -> Vec<Value> {
+    let mut values = Vec::new();
+    for rule in rules {
+        let value = serde_json::to_value(rule.matcher_kind).unwrap_or(Value::Null);
+        if !values.iter().any(|item| item == &value) {
+            values.push(value);
+        }
+    }
+    values
 }
 
 fn serialize_report(report: RuleImportReport) -> Result<String, String> {

@@ -35,6 +35,7 @@ struct RuntimeConfigEvaluationReport {
 struct RuntimeConfigEvaluationEntry {
     id: String,
     source_text_required: bool,
+    line_width_count: usize,
 }
 
 pub(crate) fn validate_runtime_config_patterns(value: &Value) -> Vec<RuleRuntimeIssue> {
@@ -110,6 +111,21 @@ pub(crate) fn evaluate_runtime_config_patterns_impl(payload_json: &str) -> Resul
                 });
             }
         };
+    let line_width_count_pattern =
+        match Pcre2Engine::compile(&patterns.line_width_count_pattern, &config) {
+            Ok(pattern) => pattern,
+            Err(error) => {
+                return serialize_report(RuntimeConfigEvaluationReport {
+                    status: "error".to_string(),
+                    errors: vec![runtime_config_pattern_issue(
+                        "line_width_count_pattern",
+                        &patterns.line_width_count_pattern,
+                        error,
+                    )],
+                    entries: Vec::new(),
+                });
+            }
+        };
 
     let mut entries = Vec::with_capacity(payload.texts.len());
     for text_input in payload.texts {
@@ -127,9 +143,25 @@ pub(crate) fn evaluate_runtime_config_patterns_impl(payload_json: &str) -> Resul
                 });
             }
         };
+        let line_width_count =
+            match count_line_width_chars(&text_input.text, &line_width_count_pattern) {
+                Ok(count) => count,
+                Err(error) => {
+                    return serialize_report(RuntimeConfigEvaluationReport {
+                        status: "error".to_string(),
+                        errors: vec![runtime_config_pattern_issue(
+                            "line_width_count_pattern",
+                            &patterns.line_width_count_pattern,
+                            error,
+                        )],
+                        entries: Vec::new(),
+                    });
+                }
+            };
         entries.push(RuntimeConfigEvaluationEntry {
             id: text_input.id,
             source_text_required,
+            line_width_count,
         });
     }
 
@@ -138,6 +170,19 @@ pub(crate) fn evaluate_runtime_config_patterns_impl(payload_json: &str) -> Resul
         errors: Vec::new(),
         entries,
     })
+}
+
+fn count_line_width_chars(
+    text: &str,
+    line_width_count_pattern: &super::super::engine::Pcre2Pattern,
+) -> Result<usize, Pcre2EngineError> {
+    let mut count = 0usize;
+    for character in text.chars() {
+        if line_width_count_pattern.is_match(&character.to_string())? {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn runtime_config_pattern_issue(
@@ -191,5 +236,7 @@ mod tests {
         assert_eq!(report["status"], "ok");
         assert_eq!(report["entries"][0]["source_text_required"], true);
         assert_eq!(report["entries"][1]["source_text_required"], false);
+        assert_eq!(report["entries"][0]["line_width_count"], 5);
+        assert_eq!(report["entries"][1]["line_width_count"], 9);
     }
 }

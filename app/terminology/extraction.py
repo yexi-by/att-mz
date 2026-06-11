@@ -6,6 +6,7 @@ from app.rmmz.game_data import BaseItem, EventCommand
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.rmmz.schema import Code, GameData
 from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import TextRules, get_default_text_rules
 
 from .schemas import (
@@ -263,7 +264,7 @@ def is_translatable_terminology_source(source_text: str, text_rules: TextRules |
         return False
     rules = text_rules if text_rules is not None else get_default_text_rules()
     if rules.setting.source_language == "en":
-        return rules.should_translate_source_text(normalized_text)
+        return is_source_text_required(rules, normalized_text)
     return True
 
 

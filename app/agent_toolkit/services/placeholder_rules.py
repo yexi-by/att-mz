@@ -36,9 +36,9 @@ from app.native_placeholder_scan import (
     collect_native_placeholder_candidate_details_from_entries,
     count_uncovered_placeholder_candidate_details,
 )
-from app.config.schemas import Setting
+from app.config.schemas import Setting, TextRulesSetting
 from app.persistence import TargetGameSession
-from app.rmmz.json_types import JsonObject
+from app.rmmz.json_types import JsonArray, JsonObject, JsonValue
 from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
@@ -109,6 +109,7 @@ def _placeholder_rule_runtime_prepare_report(
     source_label: str,
     game_title: str | None,
     sample_count: int,
+    details: JsonObject,
 ) -> AgentReport:
     """把 rule_runtime prepare 结果转换成 Agent 报告。"""
     rule_runtime_summary = _rule_runtime_summary(result.summary)
@@ -125,7 +126,7 @@ def _placeholder_rule_runtime_prepare_report(
         errors=_runtime_issues_to_agent_issues(result.errors),
         warnings=_runtime_issues_to_agent_issues(result.warnings),
         summary=summary,
-        details={},
+        details=details,
     )
 
 
@@ -180,6 +181,76 @@ def _summary_int(summary: JsonObject, key: str, default: int) -> int:
 
 def _runtime_issues_to_agent_issues(items: list[RuleRuntimeIssue]) -> list[AgentIssue]:
     return [issue(item.code, item.message) for item in items]
+
+
+def _custom_placeholder_prepare_details(
+    *,
+    rules_payload: JsonValue,
+    setting_text_rules: TextRulesSetting,
+) -> JsonObject:
+    """按旧验证报告形状渲染普通占位符规则明细。"""
+    if not isinstance(rules_payload, dict):
+        return {"rules": [], "samples": []}
+    text_rules = TextRules.from_setting(setting_text_rules)
+    rules: JsonArray = []
+    for pattern, template in rules_payload.items():
+        if not isinstance(template, str):
+            continue
+        rules.append(
+            {
+                "pattern": pattern,
+                "placeholder_template": template,
+                "placeholder_preview": text_rules.format_custom_placeholder(
+                    template=template,
+                    index=1,
+                ),
+            }
+        )
+    return {"rules": rules, "samples": []}
+
+
+def _structured_placeholder_prepare_details(
+    *,
+    rules_payload: JsonValue,
+    setting_text_rules: TextRulesSetting,
+) -> JsonObject:
+    """按旧验证报告形状渲染结构化占位符规则明细。"""
+    if not isinstance(rules_payload, dict):
+        return {"rules": [], "samples": []}
+    raw_rules = rules_payload.get("paired_shell_rules", [])
+    if not isinstance(raw_rules, list):
+        return {"rules": [], "samples": []}
+    text_rules = TextRules.from_setting(setting_text_rules)
+    rules: JsonArray = []
+    for raw_rule in raw_rules:
+        if not isinstance(raw_rule, dict):
+            continue
+        protected_groups = raw_rule.get("protected_groups", {})
+        protected_group_details: JsonArray = []
+        if isinstance(protected_groups, dict):
+            for group_name, placeholder_template in sorted(protected_groups.items()):
+                if not isinstance(placeholder_template, str):
+                    continue
+                protected_group_details.append(
+                    {
+                        "group_name": str(group_name),
+                        "placeholder_template": placeholder_template,
+                        "placeholder_preview": text_rules.format_custom_placeholder(
+                            template=placeholder_template,
+                            index=1,
+                        ),
+                    }
+                )
+        rules.append(
+            {
+                "name": raw_rule.get("name", ""),
+                "type": "paired_shell",
+                "pattern": raw_rule.get("pattern", ""),
+                "translatable_group": raw_rule.get("translatable_group", ""),
+                "protected_groups": protected_group_details,
+            }
+        )
+    return {"rules": rules, "samples": []}
 
 
 class PlaceholderRuleAgentMixin:
@@ -286,6 +357,10 @@ class PlaceholderRuleAgentMixin:
             source_label=source_label,
             game_title=game_title,
             sample_count=len(sample_texts),
+            details=_custom_placeholder_prepare_details(
+                rules_payload=rules_payload,
+                setting_text_rules=setting.text_rules,
+            ),
         )
 
     async def import_placeholder_rules(
@@ -334,6 +409,10 @@ class PlaceholderRuleAgentMixin:
                 source_label="--placeholder-rules",
                 game_title=game_title,
                 sample_count=0,
+                details=_custom_placeholder_prepare_details(
+                    rules_payload=rules_payload,
+                    setting_text_rules=setting.text_rules,
+                ),
             )
         if prepare_result.plan_token is None:
             raise RuntimeError("普通占位符规则导入缺少 rule_runtime plan token")
@@ -395,6 +474,10 @@ class PlaceholderRuleAgentMixin:
             source_label="structured-placeholder-rules",
             game_title=game_title,
             sample_count=len(sample_texts),
+            details=_structured_placeholder_prepare_details(
+                rules_payload=rules_payload,
+                setting_text_rules=setting.text_rules,
+            ),
         )
 
     async def scan_structured_placeholder_candidates(
@@ -496,6 +579,10 @@ class PlaceholderRuleAgentMixin:
                 source_label="structured-placeholder-rules",
                 game_title=game_title,
                 sample_count=0,
+                details=_structured_placeholder_prepare_details(
+                    rules_payload=rules_payload,
+                    setting_text_rules=setting.text_rules,
+                ),
             )
         if prepare_result.plan_token is None:
             raise RuntimeError("结构化占位符规则导入缺少 rule_runtime plan token")

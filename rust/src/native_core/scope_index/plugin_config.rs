@@ -131,6 +131,7 @@ pub(super) fn scan_plugin_config_rule_candidates(
     let mut seen_rule_plugin_indices = BTreeSet::new();
     let mut candidates = Vec::new();
     let mut seen_candidate_paths = BTreeSet::new();
+    let mut seen_hit_paths = BTreeSet::new();
     let mut hit_details = Vec::new();
     let mut rule_summaries = Vec::new();
 
@@ -160,12 +161,23 @@ pub(super) fn scan_plugin_config_rule_candidates(
             let mut translatable_hit_count = 0usize;
             for leaf in matched_leaves.iter() {
                 let original_text = normalize_visible_text_for_extraction(&leaf.text);
+                let location_path =
+                    jsonpath_to_plugin_location_path(&leaf.path, plugin_scan.plugin_index)?;
+                if seen_hit_paths.insert(location_path.clone()) {
+                    hit_details.push(PluginConfigHitDetailOutput {
+                        json_path: leaf.path.clone(),
+                        location_path: location_path.clone(),
+                        original_text: original_text.clone(),
+                        path_template: path_template.clone(),
+                        plugin_index: plugin_scan.plugin_index,
+                        plugin_name: plugin_scan.plugin_name.clone(),
+                        rule_index,
+                    });
+                }
                 if !should_translate_plugin_source_text(&original_text, &compiled_rules)? {
                     continue;
                 }
                 translatable_hit_count += 1;
-                let location_path =
-                    jsonpath_to_plugin_location_path(&leaf.path, plugin_scan.plugin_index)?;
                 if seen_candidate_paths.insert(location_path.clone()) {
                     let rule_key = format!("plugin_config.{}.rule.{rule_index}", rule.plugin_index);
                     candidates.push(RuleCandidateOutput {
@@ -197,15 +209,6 @@ pub(super) fn scan_plugin_config_rule_candidates(
                         confidence: None,
                         structural_flags: None,
                         file_hash: Some(plugin_scan.plugin_hash.clone()),
-                    });
-                    hit_details.push(PluginConfigHitDetailOutput {
-                        json_path: leaf.path.clone(),
-                        location_path,
-                        original_text,
-                        path_template: path_template.clone(),
-                        plugin_index: plugin_scan.plugin_index,
-                        plugin_name: plugin_scan.plugin_name.clone(),
-                        rule_index,
                     });
                 }
             }

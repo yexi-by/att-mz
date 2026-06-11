@@ -54,6 +54,7 @@ class RuntimeConfigEvaluationEntry:
 
     id: str
     source_text_required: bool
+    line_width_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +229,11 @@ def _read_runtime_config_entries(
             RuntimeConfigEvaluationEntry(
                 id=_read_string(entry, "id", f"{context}[{index}]"),
                 source_text_required=source_text_required,
+                line_width_count=_read_int(
+                    entry,
+                    "line_width_count",
+                    f"{context}[{index}]",
+                ),
             )
         )
     return entries
@@ -246,6 +252,13 @@ def _read_optional_string(payload: JsonObject, field_name: str, context: str) ->
         return None
     if not isinstance(value, str):
         raise TypeError(f"{context}.{field_name} 必须是字符串或 null")
+    return value
+
+
+def _read_int(payload: JsonObject, field_name: str, context: str) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{context}.{field_name} 必须是整数")
     return value
 
 

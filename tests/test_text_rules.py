@@ -26,9 +26,22 @@ from app.rmmz.control_codes import (
     StructuredPlaceholderRule,
 )
 from app.rmmz.schema import SourceResidualRuleRecord, TranslationItem
+from app.rmmz.source_text_detection import is_source_text_required
+from app.rmmz.text_layout import count_line_width_chars
 from app.rmmz.text_rules import TextRules, get_default_text_rules
 from app.source_residual import SourceResidualRuleSet, check_source_residual_for_item
 from app.translation.text_structure import validate_translation_text_structure
+
+
+def _check_source_residual_lines(rules: TextRules, lines: list[str]) -> None:
+    """按当前 native 源文残留契约检查无原文上下文的运行文本。"""
+    item = TranslationItem(
+        location_path="runtime-text",
+        item_type="short_text",
+        original_lines=[],
+        translation_lines=lines,
+    )
+    check_source_residual_for_item(item=item, text_rules=rules, rule_set=None)
 
 
 def test_text_rules_replace_and_restore_standard_rmmz_control_sequences() -> None:
@@ -204,18 +217,19 @@ def test_custom_rule_can_fully_protect_long_candidate_prefix() -> None:
     ] == []
 
 
-def test_custom_placeholder_rules_reject_python_only_regex_before_native_use() -> None:
-    """普通占位符规则必须同时能被 Python re 和 Rust fancy-regex 编译。"""
-    python_only_rule = CustomPlaceholderRule.create(
+def test_custom_placeholder_rules_do_not_run_old_fancy_regex_gate() -> None:
+    """普通占位符运行期不再执行旧 Rust fancy-regex 兼容校验。"""
+    rule = CustomPlaceholderRule.create(
         r"(?a:@PLUGIN\[[^\]]+\])",
         "[CUSTOM_PLUGIN_MARKER_{index}]",
     )
 
-    with pytest.raises(ValueError, match="普通占位符规则.*Rust fancy-regex"):
-        _ = TextRules.from_setting(
-            TextRulesSetting(),
-            custom_placeholder_rules=(python_only_rule,),
-        )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(rule,),
+    )
+
+    assert rules.custom_placeholder_rules == (rule,)
 
 
 def test_custom_rule_covering_nested_candidate_counts_as_covered() -> None:
@@ -233,9 +247,9 @@ def test_custom_rule_covering_nested_candidate_counts_as_covered() -> None:
     assert rules.iter_unprotected_control_sequence_candidates(r"\nn[\v[527]]こんにちは") == []
 
 
-def test_structured_placeholder_rules_reject_python_only_regex_before_native_use() -> None:
-    """结构化占位符规则必须在导入阶段暴露 Rust fancy-regex 不兼容语法。"""
-    python_only_rule = StructuredPlaceholderRule.create(
+def test_structured_placeholder_rules_do_not_run_old_fancy_regex_gate() -> None:
+    """结构化占位符运行期不再执行旧 Rust fancy-regex 兼容校验。"""
+    rule = StructuredPlaceholderRule.create(
         rule_name="INLINE_LABEL",
         rule_type="paired_shell",
         pattern_text=r"(?a:(?P<prefix><label>))(?P<text>[^<]+)(?P<suffix></label>)",
@@ -246,11 +260,12 @@ def test_structured_placeholder_rules_reject_python_only_regex_before_native_use
         },
     )
 
-    with pytest.raises(ValueError, match="结构化占位符规则.*Rust fancy-regex"):
-        _ = TextRules.from_setting(
-            TextRulesSetting(),
-            structured_placeholder_rules=(python_only_rule,),
-        )
+    rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=(rule,),
+    )
+
+    assert rules.structured_placeholder_rules == (rule,)
 
 
 def test_text_rules_filter_resource_and_japanese_residual() -> None:
@@ -258,7 +273,7 @@ def test_text_rules_filter_resource_and_japanese_residual() -> None:
     rules = get_default_text_rules()
 
     with pytest.raises(ValueError, match="日文残留"):
-        rules.check_source_residual(["你好カ"])
+        _check_source_residual_lines(rules, ["你好カ"])
 
 
 def test_japanese_tail_allowlist_does_not_hide_untranslated_short_lines() -> None:
@@ -266,25 +281,25 @@ def test_japanese_tail_allowlist_does_not_hide_untranslated_short_lines() -> Non
     rules = get_default_text_rules()
 
     with pytest.raises(ValueError, match="日文残留"):
-        rules.check_source_residual(["「なっ……」"])
+        _check_source_residual_lines(rules, ["「なっ……」"])
 
     with pytest.raises(ValueError, match="日文残留"):
-        rules.check_source_residual(['"え？"'])
+        _check_source_residual_lines(rules, ['"え？"'])
 
-    rules.check_source_residual(["已经好了よ"])
+    _check_source_residual_lines(rules, ["已经好了よ"])
 
 
 def test_text_rules_requires_configured_source_characters_for_translation() -> None:
     """原文必须包含平假名、片假名或汉字才进入正文翻译。"""
     rules = get_default_text_rules()
 
-    assert rules.should_translate_source_text("こんにちは")
-    assert rules.should_translate_source_text("テスト")
-    assert rules.should_translate_source_text("勇者")
-    assert not rules.should_translate_source_text("Untitled")
-    assert not rules.should_translate_source_text("Back")
-    assert not rules.should_translate_source_text("123")
-    assert not rules.should_translate_source_text("img/pictures/Actor1.png")
+    assert is_source_text_required(rules, "こんにちは")
+    assert is_source_text_required(rules, "テスト")
+    assert is_source_text_required(rules, "勇者")
+    assert not is_source_text_required(rules, "Untitled")
+    assert not is_source_text_required(rules, "Back")
+    assert not is_source_text_required(rules, "123")
+    assert not is_source_text_required(rules, "img/pictures/Actor1.png")
 
 
 def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> None:
@@ -300,39 +315,39 @@ def test_english_text_rules_extract_visible_text_and_skip_protocol_noise() -> No
         )
     )
 
-    assert rules.should_translate_source_text("Are you really going in there?")
-    assert rules.should_translate_source_text("Open the old chest")
-    assert rules.should_translate_source_text("Inventory")
-    assert rules.should_translate_source_text("With this rope...")
-    assert rules.should_translate_source_text("Command your nano-suit to inject this...")
-    assert rules.should_translate_source_text("Although it looks strange, this weapon works.")
-    assert rules.should_translate_source_text("Return to town")
-    assert rules.should_translate_source_text("Let me handle this.")
-    assert rules.should_translate_source_text("Pay $5 to enter.")
-    assert rules.should_translate_source_text("Go east; then open the gate.")
-    assert rules.should_translate_source_text("Use {item} to continue.")
-    assert rules.should_translate_source_text("Look => move")
-    assert rules.should_translate_source_text(r"\c[14]The water level has dropped...")
-    assert rules.should_translate_source_text("Auto")
-    assert rules.should_translate_source_text("Default")
-    assert rules.should_translate_source_text("GameOver")
-    assert rules.should_translate_source_text("AutoSave")
-    assert rules.should_translate_source_text("SkillTree")
-    assert rules.should_translate_source_text("Route66")
-    assert rules.should_translate_source_text("Save_File")
-    assert not rules.should_translate_source_text(r"\c[14]水池的水位已然降低...")
-    assert not rules.should_translate_source_text("img/pictures/Actor1.png")
-    assert not rules.should_translate_source_text("audio/se/Decision1.ogg")
-    assert not rules.should_translate_source_text("damageFormula")
-    assert not rules.should_translate_source_text("a.hpRate() >= 0.5")
-    assert not rules.should_translate_source_text("this._window.visible = true")
-    assert not rules.should_translate_source_text("return a.hpRate() >= 0.5;")
-    assert not rules.should_translate_source_text("Math.max(a.atk, b.def)")
-    assert not rules.should_translate_source_text("$gameVariables.value(1)")
-    assert not rules.should_translate_source_text("const payload = {name: value};")
-    assert not rules.should_translate_source_text("(value) => value + 1")
-    assert not rules.should_translate_source_text("true")
-    assert not rules.should_translate_source_text("123")
+    assert is_source_text_required(rules, "Are you really going in there?")
+    assert is_source_text_required(rules, "Open the old chest")
+    assert is_source_text_required(rules, "Inventory")
+    assert is_source_text_required(rules, "With this rope...")
+    assert is_source_text_required(rules, "Command your nano-suit to inject this...")
+    assert is_source_text_required(rules, "Although it looks strange, this weapon works.")
+    assert is_source_text_required(rules, "Return to town")
+    assert is_source_text_required(rules, "Let me handle this.")
+    assert is_source_text_required(rules, "Pay $5 to enter.")
+    assert is_source_text_required(rules, "Go east; then open the gate.")
+    assert is_source_text_required(rules, "Use {item} to continue.")
+    assert is_source_text_required(rules, "Look => move")
+    assert is_source_text_required(rules, r"\c[14]The water level has dropped...")
+    assert is_source_text_required(rules, "Auto")
+    assert is_source_text_required(rules, "Default")
+    assert is_source_text_required(rules, "GameOver")
+    assert is_source_text_required(rules, "AutoSave")
+    assert is_source_text_required(rules, "SkillTree")
+    assert is_source_text_required(rules, "Route66")
+    assert is_source_text_required(rules, "Save_File")
+    assert not is_source_text_required(rules, r"\c[14]水池的水位已然降低...")
+    assert not is_source_text_required(rules, "img/pictures/Actor1.png")
+    assert not is_source_text_required(rules, "audio/se/Decision1.ogg")
+    assert not is_source_text_required(rules, "damageFormula")
+    assert not is_source_text_required(rules, "a.hpRate() >= 0.5")
+    assert not is_source_text_required(rules, "this._window.visible = true")
+    assert not is_source_text_required(rules, "return a.hpRate() >= 0.5;")
+    assert not is_source_text_required(rules, "Math.max(a.atk, b.def)")
+    assert not is_source_text_required(rules, "$gameVariables.value(1)")
+    assert not is_source_text_required(rules, "const payload = {name: value};")
+    assert not is_source_text_required(rules, "(value) => value + 1")
+    assert not is_source_text_required(rules, "true")
+    assert not is_source_text_required(rules, "123")
 
 
 def test_english_source_residual_allows_default_ui_abbreviations() -> None:
@@ -389,11 +404,9 @@ def test_english_source_residual_without_original_checks_long_runs() -> None:
     """当前运行文件缺少原文上下文时，英文长句残留不能被静默放行。"""
     rules = TextRules.from_setting(build_text_rules_setting_for_language_profile("en"))
 
-    rules.check_source_residual(
-        ["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"]
-    )
+    _check_source_residual_lines(rules, ["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"])
     with pytest.raises(ValueError, match="Press the red switch before opening") as error_info:
-        rules.check_source_residual(["不要 Press the red switch before opening 继续。"])
+        _check_source_residual_lines(rules, ["不要 Press the red switch before opening 继续。"])
 
     assert "Alice" not in str(error_info.value)
 
@@ -500,48 +513,57 @@ def test_structural_source_residual_rule_respects_ignore_case() -> None:
 
 
 def test_structural_source_residual_rule_rejects_corrupt_records() -> None:
-    """数据库里的损坏结构性例外规则不能被静默忽略。"""
-    with pytest.raises(ValueError, match="正则损坏"):
-        _ = SourceResidualRuleSet.from_records(
-            [
-                SourceResidualRuleRecord(
-                    rule_id="structural:broken",
-                    rule_type="structural",
-                    pattern_text="[",
-                    allowed_terms=["LABEL"],
-                    check_group="visible",
-                    reason="broken",
-                )
-            ]
-        )
+    """数据库里的损坏结构性例外规则在 native 执行前显式失败。"""
+    rules = get_default_text_rules()
+    item = TranslationItem(
+        location_path="CommonEvents.json/1/0",
+        item_type="short_text",
+        original_lines=["こんにちは"],
+        translation_lines=["こんにちは"],
+    )
+    corrupt_rule_set = SourceResidualRuleSet.from_records(
+        [
+            SourceResidualRuleRecord(
+                rule_id="structural:broken",
+                rule_type="structural",
+                pattern_text="[",
+                allowed_terms=["LABEL"],
+                check_group="visible",
+                reason="broken",
+            )
+        ]
+    )
+    missing_group_rule_set = SourceResidualRuleSet.from_records(
+        [
+            SourceResidualRuleRecord(
+                rule_id="structural:missing_group",
+                rule_type="structural",
+                pattern_text=r"^(?<protocol>label):(?<visible>.*)$",
+                allowed_terms=["LABEL"],
+                check_group="missing",
+                reason="broken",
+            )
+        ]
+    )
+    pcre2_rule_set = SourceResidualRuleSet.from_records(
+        [
+            SourceResidualRuleRecord(
+                rule_id="structural:pcre2_lookbehind",
+                rule_type="structural",
+                pattern_text=r"(?<=<label>)(?<visible>[^<]+)(?=</label>)",
+                allowed_terms=["label"],
+                check_group="visible",
+                reason="current_pcre2",
+            )
+        ]
+    )
 
+    with pytest.raises(ValueError, match="PCRE2 pattern 损坏"):
+        check_source_residual_for_item(item=item, text_rules=rules, rule_set=corrupt_rule_set)
     with pytest.raises(ValueError, match="缺少命名分组"):
-        _ = SourceResidualRuleSet.from_records(
-            [
-                SourceResidualRuleRecord(
-                    rule_id="structural:missing_group",
-                    rule_type="structural",
-                    pattern_text=r"^(?P<protocol>label):(?P<visible>.*)$",
-                    allowed_terms=["LABEL"],
-                    check_group="missing",
-                    reason="broken",
-                )
-            ]
-        )
-
-    with pytest.raises(ValueError, match="结构性源文残留规则.*Rust regex"):
-        _ = SourceResidualRuleSet.from_records(
-            [
-                SourceResidualRuleRecord(
-                    rule_id="structural:rust_unsupported",
-                    rule_type="structural",
-                    pattern_text=r"(?<=<label>)(?P<visible>[^<]+)(?=</label>)",
-                    allowed_terms=["label"],
-                    check_group="visible",
-                    reason="broken",
-                )
-            ]
-        )
+        check_source_residual_for_item(item=item, text_rules=rules, rule_set=missing_group_rule_set)
+    with pytest.raises(ValueError, match="日文残留"):
+        check_source_residual_for_item(item=item, text_rules=rules, rule_set=pcre2_rule_set)
 
 
 def test_position_source_residual_rule_rejects_corrupt_records() -> None:
@@ -584,7 +606,7 @@ def test_text_rules_keep_book_title_quote_during_extraction() -> None:
     rules = get_default_text_rules()
 
     assert rules.normalize_extraction_text("『リコの銀行』") == "『リコの銀行』"
-    assert rules.should_translate_source_text("『リコの銀行』")
+    assert is_source_text_required(rules, "『リコの銀行』")
 
 
 def test_text_rules_normalize_translation_lines_strips_outer_whitespace() -> None:
@@ -624,8 +646,8 @@ def test_text_rules_can_apply_custom_placeholder_json_rules() -> None:
     item.verify_placeholders(rules)
     item.restore_placeholders()
     assert item.translation_lines == ["你好@V[1]<tag:abc>\\V[2]"]
-    assert rules.count_line_width_chars("@@中文") == 2
-    assert rules.is_line_width_counted_char("@")
+    assert count_line_width_chars("@@中文", rules) == 2
+    assert count_line_width_chars("@", rules) == 1
 
 
 def test_custom_prefix_control_keeps_adjacent_dialogue_translatable() -> None:

@@ -9,6 +9,7 @@ import aiofiles
 from app.note_tag_text.parser import iter_note_tag_matches
 from app.note_tag_text.sources import candidate_file_pattern, collect_note_tag_sources
 from app.rmmz.schema import GameData
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules, get_default_text_rules
 from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
@@ -98,7 +99,7 @@ def collect_note_tag_candidates(*, game_data: GameData, text_rules: TextRules) -
                 match.value,
                 plain_text_normalizer=text_rules.normalize_extraction_text,
             )
-            if text_rules.should_translate_source_text(normalized_value):
+            if is_source_text_required(text_rules, normalized_value):
                 stat["translatable_hit_count"] = _json_int(stat["translatable_hit_count"]) + 1
             samples = samples_by_key.setdefault(key, [])
             if normalized_value and normalized_value not in samples and len(samples) < 5:

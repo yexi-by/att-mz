@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.native_rule_runtime import prepare_rule_import, runtime_config_patterns_from_setting
 from app.native_scope_index import (
     build_native_event_command_candidates_payload,
     build_native_event_command_data_files,
     scan_native_rule_candidates,
 )
+from app.rmmz.source_text_detection import is_source_text_required
 from app.rmmz.json_types import ensure_json_array, ensure_json_object
 from app.rmmz.schema import GameData, EventCommandTextRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, TextRules
@@ -41,10 +43,12 @@ def build_native_event_command_rule_validation_context(
             translation_prefixes_by_index=[],
         )
 
+    rules = event_command_rule_records_to_native_rules(records)
+    _ensure_event_command_rule_runtime_prepare(rules=rules, text_rules=text_rules)
     payload = build_native_event_command_candidates_payload(
         event_command_data_files=build_native_event_command_data_files(game_data),
         command_codes=frozenset(),
-        rules=event_command_rule_records_to_native_rules(records),
+        rules=rules,
     )
     native_result = scan_native_rule_candidates(payload)
     event_summary = ensure_json_object(
@@ -77,7 +81,7 @@ def build_native_event_command_rule_validation_context(
             raise TypeError(f"event_commands.hit_details[{index}].rule_index 超出规则范围")
         location_path = read_json_string_field(hit, "location_path", f"event_commands.hit_details[{index}]")
         original_text = read_json_string_field(hit, "original_text", f"event_commands.hit_details[{index}]")
-        if not text_rules.should_translate_source_text(original_text):
+        if not is_source_text_required(text_rules, original_text):
             continue
         item = TranslationItem(
             location_path=location_path,
@@ -118,6 +122,22 @@ def event_command_rule_records_to_native_rules(records: list[EventCommandTextRul
             }
         )
     return rules
+
+
+def _ensure_event_command_rule_runtime_prepare(*, rules: JsonArray, text_rules: TextRules) -> None:
+    """用统一 rule_runtime 校验事件指令规则结构。"""
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "event_commands",
+            "rules_payload": rules,
+            "game_context": {},
+            "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+        }
+    )
+    if result.errors:
+        messages = "；".join(error.message for error in result.errors)
+        raise ValueError(messages)
 
 
 def ensure_native_event_command_rules_have_current_hits(
