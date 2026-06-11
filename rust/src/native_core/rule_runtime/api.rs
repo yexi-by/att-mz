@@ -3,7 +3,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::adapters::config_patterns::validate_runtime_config_patterns;
+use super::adapters::placeholders::normalize_placeholder_rules;
 use super::errors::RuleRuntimeIssue;
+use super::model::NormalizedRuleInput;
 use super::model::{RULE_RUNTIME_CONTRACT_VERSION, RULE_STORE_SCHEMA_VERSION};
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +59,25 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
     if !is_current_rule_domain(&payload.domain) {
         return invalid_domain_report(&payload.domain);
     }
+    let normalized_rules = match normalize_domain_rules(&payload) {
+        Ok(rules) => rules,
+        Err(errors) => {
+            return serialize_report(RuleImportReport {
+                status: "error".to_string(),
+                rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
+                rule_store_schema_version: RULE_STORE_SCHEMA_VERSION,
+                errors,
+                warnings: Vec::new(),
+                plan_token: None,
+                summary: serde_json::json!({
+                    "mode": &payload.mode,
+                    "rule_runtime": {
+                        "domain": &payload.domain,
+                    },
+                }),
+            });
+        }
+    };
 
     serialize_report(RuleImportReport {
         status: "ok".to_string(),
@@ -65,7 +86,13 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
         errors: Vec::new(),
         warnings: Vec::new(),
         plan_token: Some(plan_token_for(&payload)?),
-        summary: serde_json::json!({"mode": payload.mode}),
+        summary: serde_json::json!({
+            "mode": &payload.mode,
+            "rule_runtime": {
+                "domain": &payload.domain,
+                "rule_count": normalized_rules.len(),
+            },
+        }),
     })
 }
 
@@ -132,6 +159,15 @@ fn is_current_rule_domain(domain: &str) -> bool {
             | "nonstandard_data"
             | "plugin_source"
     )
+}
+
+fn normalize_domain_rules(
+    payload: &PrepareRuleImportPayload,
+) -> Result<Vec<NormalizedRuleInput>, Vec<RuleRuntimeIssue>> {
+    if payload.domain == "placeholders" {
+        return normalize_placeholder_rules(&payload.rules_payload);
+    }
+    Ok(Vec::new())
 }
 
 fn serialize_report(report: RuleImportReport) -> Result<String, String> {

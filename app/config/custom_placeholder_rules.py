@@ -8,7 +8,7 @@ from typing import cast
 
 from app.external_input import normalize_external_str
 from app.rmmz.control_codes import CustomPlaceholderRule
-from app.rmmz.json_types import coerce_json_value, ensure_json_object
+from app.rmmz.json_types import JsonObject, coerce_json_value, ensure_json_object
 
 
 def load_custom_placeholder_rules_file(
@@ -40,6 +40,18 @@ def load_custom_placeholder_rules_import_text(rules_text: str) -> tuple[CustomPl
         raise ValueError("自定义占位符规则 JSON 字符串不能为空")
     raw_value = cast(object, json.loads(stripped_text))
     return parse_custom_placeholder_rules_import(raw_value=raw_value, source_label="--placeholder-rules")
+
+
+def load_custom_placeholder_rules_import_payload(rules_text: str) -> JsonObject:
+    """从 Agent 导入 JSON 字符串读取 rule_runtime 原始占位符规则载荷。"""
+    stripped_text = rules_text.strip()
+    if not stripped_text:
+        raise ValueError("自定义占位符规则 JSON 字符串不能为空")
+    raw_value = cast(object, json.loads(stripped_text))
+    return parse_custom_placeholder_rules_import_payload(
+        raw_value=raw_value,
+        source_label="--placeholder-rules",
+    )
 
 
 def parse_custom_placeholder_rules(
@@ -74,15 +86,15 @@ def parse_custom_placeholder_rules_import(
     source_label: str,
 ) -> tuple[CustomPlaceholderRule, ...]:
     """把 Agent 导入 JSON 对象转换成自定义占位符规则集合。"""
-    json_value = coerce_json_value(raw_value)
-    raw_rules = ensure_json_object(json_value, source_label)
+    raw_rules = parse_custom_placeholder_rules_import_payload(
+        raw_value=raw_value,
+        source_label=source_label,
+    )
 
     rules: list[CustomPlaceholderRule] = []
-    for pattern_text, raw_placeholder_template in raw_rules.items():
-        placeholder_template = normalize_external_str(
-            raw_placeholder_template,
-            f"{source_label} 中 {pattern_text} 的值",
-        )
+    for pattern_text, placeholder_template in raw_rules.items():
+        if not isinstance(placeholder_template, str):
+            raise TypeError(f"{source_label} 中 {pattern_text} 的值必须是字符串")
         try:
             rule = CustomPlaceholderRule.create(
                 pattern_text=pattern_text,
@@ -96,10 +108,30 @@ def parse_custom_placeholder_rules_import(
     return tuple(rules)
 
 
+def parse_custom_placeholder_rules_import_payload(
+    *,
+    raw_value: object,
+    source_label: str,
+) -> JsonObject:
+    """把 Agent 导入 JSON 对象转换成 rule_runtime 原始占位符规则载荷。"""
+    json_value = coerce_json_value(raw_value)
+    raw_rules = ensure_json_object(json_value, source_label)
+
+    rules: JsonObject = {}
+    for pattern_text, raw_placeholder_template in raw_rules.items():
+        rules[pattern_text] = normalize_external_str(
+            raw_placeholder_template,
+            f"{source_label} 中 {pattern_text} 的值",
+        )
+    return rules
+
+
 __all__: list[str] = [
     "load_custom_placeholder_rules_file",
+    "load_custom_placeholder_rules_import_payload",
     "load_custom_placeholder_rules_import_text",
     "load_custom_placeholder_rules_text",
     "parse_custom_placeholder_rules",
     "parse_custom_placeholder_rules_import",
+    "parse_custom_placeholder_rules_import_payload",
 ]

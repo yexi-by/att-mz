@@ -35,6 +35,30 @@ def _quality_fix_template_entry_by_text_position(
 
 
 @pytest.mark.asyncio
+async def test_validate_placeholder_rules_uses_pcre2_named_contract(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """普通占位符规则校验使用 PCRE2 当前命名捕获契约。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    report = await service.validate_placeholder_rules(
+        game_title="テストゲーム",
+        custom_placeholder_rules_text=json.dumps(
+            {r"(?<control>\\V\[\d+\])": "[CUSTOM_VAR_{index}]"},
+            ensure_ascii=False,
+        ),
+        sample_texts=[r"\V[1]こんにちは"],
+    )
+
+    assert report.status == "ok", report.model_dump(mode="json")
+    rule_runtime = ensure_json_object(coerce_json_value(report.summary["rule_runtime"]), "rule_runtime")
+    assert rule_runtime["domain"] == "placeholders"
+
+
+@pytest.mark.asyncio
 async def test_export_quality_fix_template_stops_on_text_scope_blocker(
     minimal_game_dir: Path,
     tmp_path: Path,

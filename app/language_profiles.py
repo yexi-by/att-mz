@@ -28,9 +28,9 @@ class LanguageProfile:
 JAPANESE_PROFILE = LanguageProfile(
     source_language="ja",
     residual_label="日文",
-    source_text_required_pattern=r"[\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+",
+    source_text_required_pattern=r"[\p{Hiragana}\p{Katakana}\p{Han}ー]+",
     source_text_exclusion_profile="none",
-    source_residual_segment_pattern=r"[\u3040-\u309F\u30A0-\u30FF]+",
+    source_residual_segment_pattern=r"[\p{Hiragana}\p{Katakana}ー]+",
     source_residual_detection_profile="japanese_strict",
     source_residual_allowed_chars=("っ", "ッ", "ー", "・", "。", "～", "…"),
     source_residual_allowed_tail_chars=(

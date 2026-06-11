@@ -4,9 +4,11 @@
 
 from .custom_placeholder_rules import (
     load_custom_placeholder_rules_file,
+    load_custom_placeholder_rules_import_payload,
     load_custom_placeholder_rules_import_text,
     load_custom_placeholder_rules_text,
     parse_custom_placeholder_rules,
+    parse_custom_placeholder_rules_import_payload,
     parse_custom_placeholder_rules_import,
 )
 from .structured_placeholder_rules import (
@@ -72,6 +74,7 @@ __all__: list[str] = [
     "apply_environment_overrides",
     "apply_setting_overrides",
     "load_custom_placeholder_rules_file",
+    "load_custom_placeholder_rules_import_payload",
     "load_custom_placeholder_rules_import_text",
     "load_custom_placeholder_rules_text",
     "load_environment_overrides",
@@ -79,6 +82,7 @@ __all__: list[str] = [
     "load_structured_placeholder_rules_import_text",
     "load_structured_placeholder_rules_text",
     "parse_custom_placeholder_rules",
+    "parse_custom_placeholder_rules_import_payload",
     "parse_custom_placeholder_rules_import",
     "parse_structured_placeholder_rules",
     "parse_structured_placeholder_rules_import",
