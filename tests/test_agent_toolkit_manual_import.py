@@ -59,6 +59,41 @@ async def test_validate_placeholder_rules_uses_pcre2_named_contract(
 
 
 @pytest.mark.asyncio
+async def test_structured_placeholder_requires_current_named_capture(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """结构化占位符规则校验使用 PCRE2 当前命名捕获契约。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rules_text = json.dumps(
+        {
+            "paired_shell_rules": [
+                {
+                    "name": "COLOR_WRAP",
+                    "type": "paired_shell",
+                    "pattern": r"\\C\[(?<color>\d+)\](?<body>.*?)\\C\[0\]",
+                    "translatable_group": "body",
+                    "protected_groups": {"color": "[CUSTOM_COLOR_{index}]"},
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    report = await service.validate_structured_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text=rules_text,
+        sample_texts=[r"\C[1]赤\C[0]"],
+    )
+
+    assert report.status == "ok", report.model_dump(mode="json")
+    rule_runtime = ensure_json_object(coerce_json_value(report.summary["rule_runtime"]), "rule_runtime")
+    assert rule_runtime["domain"] == "structured_placeholders"
+
+
+@pytest.mark.asyncio
 async def test_export_quality_fix_template_stops_on_text_scope_blocker(
     minimal_game_dir: Path,
     tmp_path: Path,

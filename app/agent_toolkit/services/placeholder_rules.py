@@ -7,8 +7,6 @@ from .common import (
     AgentServiceContext,
     Path,
     Sequence,
-    StructuredPlaceholderRule,
-    StructuredPlaceholderRuleRecord,
     TextRules,
     _build_custom_placeholder_rule_draft_from_details,
     _build_joined_text_boundary_warnings,
@@ -16,12 +14,12 @@ from .common import (
     _build_structured_placeholder_coverage_report_with_context,
     _build_unprotected_control_warnings,
     _joined_text_boundary_markers_from_details,
-    _validate_structured_placeholder_rules_with_context,
     aiofiles,
     issue,
     json,
     load_custom_placeholder_rules_import_payload,
     load_custom_placeholder_rules_text,
+    load_structured_placeholder_rules_import_payload,
     load_structured_placeholder_rules_import_text,
     load_setting,
 )
@@ -37,17 +35,9 @@ from app.native_placeholder_scan import (
     collect_native_placeholder_candidate_details_from_entries,
     count_uncovered_placeholder_candidate_details,
 )
-from app.application.flow_gate import (
-    build_structured_placeholder_coverage_result,
-    ensure_empty_rule_import_allowed,
-)
 from app.config.schemas import Setting
-from app.persistence import RuleImportUnitOfWork, TargetGameSession
+from app.persistence import TargetGameSession
 from app.rmmz.json_types import JsonObject
-from app.rule_review import (
-    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-)
-from app.rule_review_decision import RuleCoverageResult
 from app.text_index import (
     collect_text_index_external_rule_gate_errors,
     detect_text_index_invalidations,
@@ -379,29 +369,12 @@ class PlaceholderRuleAgentMixin:
         rules_text: str,
         sample_texts: Sequence[str],
     ) -> AgentReport:
-        """校验结构化占位符规则，并预览协议外壳保护效果。"""
+        """校验结构化占位符规则。"""
         try:
-            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
+            rules_payload = load_structured_placeholder_rules_import_payload(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
-                custom_rules = await self._resolve_custom_rules(
-                    session=session,
-                    custom_placeholder_rules_text=None,
-                )
-                text_rules = TextRules.from_setting(
-                    setting.text_rules,
-                    custom_placeholder_rules=custom_rules,
-                    structured_placeholder_rules=structured_rules,
-                )
-                if not sample_texts:
-                    _ = await _ensure_current_text_facts_for_placeholder_rules(
-                        session=session,
-                        setting=setting,
-                        text_rules=text_rules,
-                    )
-                    translation_data_map = await read_current_text_fact_translation_data_map(session)
-                else:
-                    translation_data_map = None
+                db_path = session.db_path
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[
@@ -418,13 +391,20 @@ class PlaceholderRuleAgentMixin:
                 },
                 details={},
             )
-        return _validate_structured_placeholder_rules_with_context(
+        prepare_result = prepare_rule_import(
+            _placeholder_rule_runtime_payload(
+                mode="validate",
+                domain="structured_placeholders",
+                rules_payload=rules_payload,
+                setting=setting,
+                db_path=db_path,
+            )
+        )
+        return _placeholder_rule_runtime_prepare_report(
+            result=prepare_result,
+            source_label="structured-placeholder-rules",
             game_title=game_title,
-            rules_text=rules_text,
-            setting_text_rules=setting.text_rules,
-            custom_rules=custom_rules,
-            sample_texts=sample_texts,
-            translation_data_map=translation_data_map,
+            sample_count=len(sample_texts),
         )
 
     async def scan_structured_placeholder_candidates(
@@ -487,43 +467,22 @@ class PlaceholderRuleAgentMixin:
         rules_text: str,
         confirm_empty: bool = False,
     ) -> AgentReport:
-        """校验并导入当前游戏专用结构化占位符规则。"""
-        coverage: RuleCoverageResult | None = None
+        """导入当前游戏专用结构化占位符规则。"""
+        _ = confirm_empty
         try:
-            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
-            rule_records = _structured_placeholder_rule_records_from_runtime(structured_rules)
+            rules_payload = load_structured_placeholder_rules_import_payload(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
-                custom_rules = await self._resolve_custom_rules(
-                    session=session,
-                    custom_placeholder_rules_text=None,
-                )
-                text_rules = TextRules.from_setting(
-                    setting.text_rules,
-                    custom_placeholder_rules=custom_rules,
-                    structured_placeholder_rules=structured_rules,
-                )
-                _ = await _ensure_current_text_facts_for_placeholder_rules(
-                    session=session,
-                    setting=setting,
-                    text_rules=text_rules,
-                )
-                translation_data_map = await read_current_text_fact_translation_data_map(session)
-                validation_report = _validate_structured_placeholder_rules_with_context(
-                    game_title=game_title,
-                    rules_text=rules_text,
-                    setting_text_rules=setting.text_rules,
-                    custom_rules=custom_rules,
-                    sample_texts=[],
-                    translation_data_map=translation_data_map,
-                )
-                if not validation_report.errors:
-                    coverage = build_structured_placeholder_coverage_result(
-                        translation_data_map=translation_data_map,
-                        structured_rules=structured_rules,
-                        rule_count=len(rule_records),
-                        text_rules=text_rules,
+                db_path = session.db_path
+                prepare_result = prepare_rule_import(
+                    _placeholder_rule_runtime_payload(
+                        mode="import",
+                        domain="structured_placeholders",
+                        rules_payload=rules_payload,
+                        setting=setting,
+                        db_path=db_path,
                     )
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[
@@ -541,101 +500,28 @@ class PlaceholderRuleAgentMixin:
                 },
                 details={},
             )
-        if validation_report.errors:
-            return AgentReport.from_parts(
-                errors=validation_report.errors,
-                warnings=validation_report.warnings,
-                summary={
-                    "game": game_title,
-                    "imported_rule_count": 0,
-                    "validated_rule_count": validation_report.summary.get("rule_count", 0),
-                    "sample_count": validation_report.summary.get("sample_count", 0),
-                },
-                details={
-                    "validation": {
-                        "summary": validation_report.summary,
-                        "details": validation_report.details,
-                    }
-                },
+        if prepare_result.errors:
+            return _placeholder_rule_runtime_prepare_report(
+                result=prepare_result,
+                source_label="structured-placeholder-rules",
+                game_title=game_title,
+                sample_count=0,
             )
-        if coverage is None:
-            raise RuntimeError("结构化占位符规则导入缺少覆盖检查结果")
-        uncovered_count = coverage.uncovered_count
-        if not rule_records:
-            try:
-                ensure_empty_rule_import_allowed(
-                    rule_label="结构化占位符规则",
-                    confirm_empty=confirm_empty,
-                )
-            except RuntimeError as error:
-                return AgentReport.from_parts(
-                    errors=[issue("structured_placeholder_rules_empty_unconfirmed", str(error))],
-                    warnings=validation_report.warnings,
-                    summary={
-                        "game": game_title,
-                        "imported_rule_count": 0,
-                        "validated_rule_count": validation_report.summary.get("rule_count", 0),
-                        "sample_count": validation_report.summary.get("sample_count", 0),
-                    },
-                    details={
-                        "validation": {
-                            "summary": validation_report.summary,
-                            "details": validation_report.details,
-                        },
-                        "coverage": {
-                            "summary": coverage.summary(detail_mode="full"),
-                            "details": coverage.full_details(),
-                        },
-                    },
-                )
-        async with await self.game_registry.open_game(game_title) as session:
-            async with RuleImportUnitOfWork(session):
-                await session.replace_structured_placeholder_rules(rule_records)
-                if uncovered_count:
-                    await session.replace_rule_review_state(
-                        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                        scope_hash=coverage.scope_hash,
-                        reviewed_empty=not rule_records,
-                    )
-                elif rule_records:
-                    await session.delete_rule_review_state(rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN)
-                else:
-                    await session.replace_rule_review_state(
-                        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-                        scope_hash=coverage.scope_hash,
-                        reviewed_empty=True,
-                    )
-        warnings = [*validation_report.warnings]
-        if not rule_records:
-            warnings.append(issue("structured_placeholder_rules_empty", "已导入空结构化占位符规则"))
-        if uncovered_count:
-            warnings.append(
-                issue(
-                    "structured_placeholder_uncovered_reviewed",
-                    f"仍有 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选；本次导入已确认当前候选风险",
-                )
-            )
-        return AgentReport.from_parts(
-            errors=[],
-            warnings=warnings,
-            summary={
-                "game": game_title,
-                "report_detail_mode": "full",
-                "imported_rule_count": len(rule_records),
-                "validated_rule_count": validation_report.summary.get("rule_count", len(rule_records)),
-                "sample_count": validation_report.summary.get("sample_count", 0),
-                "uncovered_count": uncovered_count,
-            },
-            details={
-                "validation": {
-                    "summary": validation_report.summary,
-                    "details": validation_report.details,
-                },
-                "coverage": {
-                    "summary": coverage.summary(detail_mode="full"),
-                    "details": coverage.full_details(),
-                }
-            },
+        if prepare_result.plan_token is None:
+            raise RuntimeError("结构化占位符规则导入缺少 rule_runtime plan token")
+
+        commit_result = commit_rule_import(
+            {
+                "db_path": str(db_path),
+                "domain": "structured_placeholders",
+                "plan_token": prepare_result.plan_token,
+                "backup_path": None,
+            }
+        )
+        return _placeholder_rule_runtime_commit_report(
+            result=commit_result,
+            prepare_result=prepare_result,
+            game_title=game_title,
         )
 
     async def build_placeholder_rules(
@@ -762,19 +648,3 @@ def _collect_unprotected_control_warning_samples_from_entries(
             if len(samples) >= 10:
                 return samples
     return samples
-
-
-def _structured_placeholder_rule_records_from_runtime(
-    rules: Sequence[StructuredPlaceholderRule],
-) -> list[StructuredPlaceholderRuleRecord]:
-    """把运行时结构化规则转换成数据库记录。"""
-    return [
-        StructuredPlaceholderRuleRecord(
-            rule_name=rule.rule_name,
-            rule_type=rule.rule_type,
-            pattern_text=rule.pattern_text,
-            translatable_group=rule.translatable_group,
-            protected_groups=dict(rule.protected_groups),
-        )
-        for rule in rules
-    ]

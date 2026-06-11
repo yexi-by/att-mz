@@ -70,7 +70,8 @@ pub(crate) fn normalize_placeholder_rules(
             ));
             continue;
         };
-        if let Err(message) = validate_placeholder_template(template_text) {
+        if let Err(message) = validate_custom_placeholder_template(template_text, "普通占位符模板")
+        {
             issues.push(placeholder_issue(
                 "placeholder_template_invalid",
                 message,
@@ -107,14 +108,17 @@ fn placeholder_issue(code: &str, message: String, field: &str, details: Value) -
     }
 }
 
-fn validate_placeholder_template(template: &str) -> Result<(), String> {
+pub(crate) fn validate_custom_placeholder_template(
+    template: &str,
+    label: &str,
+) -> Result<(), String> {
     if template.trim().is_empty() {
-        return Err("普通占位符模板不能为空".to_string());
+        return Err(format!("{label}不能为空"));
     }
     let preview = render_placeholder_template(template)?;
     if !is_custom_placeholder_preview(&preview) {
         return Err(format!(
-            "普通占位符模板必须生成形如 [CUSTOM_NAME_1] 的方括号占位符，当前生成: {preview}"
+            "{label}必须生成形如 [CUSTOM_NAME_1] 的方括号占位符，当前生成: {preview}"
         ));
     }
     Ok(())

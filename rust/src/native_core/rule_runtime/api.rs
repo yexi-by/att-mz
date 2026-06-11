@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::adapters::config_patterns::validate_runtime_config_patterns;
 use super::adapters::placeholders::normalize_placeholder_rules;
+use super::adapters::structured_placeholders::normalize_structured_placeholder_rules;
 use super::errors::RuleRuntimeIssue;
 use super::model::NormalizedRuleInput;
 use super::model::{RULE_RUNTIME_CONTRACT_VERSION, RULE_STORE_SCHEMA_VERSION};
@@ -166,6 +167,9 @@ fn normalize_domain_rules(
 ) -> Result<Vec<NormalizedRuleInput>, Vec<RuleRuntimeIssue>> {
     if payload.domain == "placeholders" {
         return normalize_placeholder_rules(&payload.rules_payload);
+    }
+    if payload.domain == "structured_placeholders" {
+        return normalize_structured_placeholder_rules(&payload.rules_payload);
     }
     Ok(Vec::new())
 }

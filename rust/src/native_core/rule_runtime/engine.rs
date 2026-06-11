@@ -73,6 +73,15 @@ impl Pcre2Pattern {
 
         Ok(Some(Pcre2Captures { named }))
     }
+
+    pub(crate) fn capture_names(&self) -> Vec<String> {
+        self.regex
+            .capture_names()
+            .iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

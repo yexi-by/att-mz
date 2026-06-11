@@ -25,6 +25,7 @@ from app.config import (
     empty_structured_placeholder_rules_payload,
     load_custom_placeholder_rules_import_text,
     load_custom_placeholder_rules_text,
+    load_structured_placeholder_rules_import_payload,
     load_structured_placeholder_rules_import_text,
     load_structured_placeholder_rules_text,
 )
@@ -3237,6 +3238,7 @@ __all__: list[str] = [
     'load_custom_placeholder_rules_import_payload',
     'load_custom_placeholder_rules_text',
     'load_structured_placeholder_rules_import_text',
+    'load_structured_placeholder_rules_import_payload',
     'load_structured_placeholder_rules_text',
     'load_environment_overrides',
     'DEFAULT_SOURCE_LANGUAGE',
