@@ -17,8 +17,9 @@ from app.plugin_source_text import (
     plugin_source_location_path,
 )
 from app.rmmz.loader import load_active_runtime_game_data
-from app.rmmz.schema import PluginSourceRuntimeWriteMapRecord, TranslationItem
+from app.rmmz.schema import PlaceholderRuleRecord, PluginSourceRuntimeWriteMapRecord, TranslationItem
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array
+from app.text_facts import read_current_text_fact_translation_items_by_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
@@ -30,6 +31,67 @@ def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:
         f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
         encoding="utf-8",
     )
+
+
+@pytest.mark.asyncio
+async def test_rule_import_writes_backup_before_commit(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """普通占位符规则导入清理旧译文前必须先写备份文件。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    raw_common_events = cast(object, json.loads(common_events_path.read_text(encoding="utf-8")))
+    common_events = ensure_json_array(coerce_json_value(raw_common_events), "CommonEvents.json")
+    event = cast(dict[str, JsonValue], common_events[1])
+    commands = ensure_json_array(event["list"], "CommonEvents.json[1].list")
+    commands.insert(1, {"code": 401, "parameters": [r"\Shakeこんにちは"]})
+    _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
+
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    async with await registry.open_game("テストゲーム") as session:
+        await session.replace_placeholder_rules(
+            [
+                PlaceholderRuleRecord(
+                    pattern_text=r"\\Shake",
+                    placeholder_template="[CUSTOM_SHAKE_{index}]",
+                )
+            ]
+        )
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        text_index_items = await session.read_text_index_items()
+        target_item = next(
+            item
+            for item in text_index_items
+            if any(r"\Shake" in line and "こんにちは" in line for line in item.original_lines)
+        )
+        current_items = await read_current_text_fact_translation_items_by_paths(
+            session,
+            [target_item.location_path],
+        )
+        translation_item = next(
+            item
+            for item in current_items
+            if item.original_lines == target_item.original_lines
+        )
+        translation_item.translation_lines = ["变量问候"]
+        await session.write_translation_items([translation_item])
+
+    report = await service.import_placeholder_rules(
+        game_title="テストゲーム",
+        rules_text="{}",
+        confirm_empty=True,
+        backup_output_dir=tmp_path,
+    )
+
+    assert report.status in {"ok", "warning"}
+    assert report.summary["cleanup_count"] == 1
+    backup_path = Path(str(report.summary["deleted_translation_backup_path"]))
+    assert backup_path.exists()
+    assert json.loads(backup_path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.asyncio

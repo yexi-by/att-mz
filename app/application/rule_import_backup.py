@@ -18,6 +18,8 @@ type RuleImportBackupDomain = Literal[
     "event-command-rules",
     "note-tag-rules",
     "plugin-source-rules",
+    "placeholder-rules",
+    "structured-placeholder-rules",
 ]
 
 
@@ -34,12 +36,17 @@ async def write_rule_import_translation_backup(
     game_title: str,
     domain: RuleImportBackupDomain,
     items: list[TranslationItem],
+    output_dir: Path | None = None,
 ) -> RuleImportBackupSummary | None:
     """把即将清理的已保存译文写成可重新导入的备份 JSON。"""
     if not items:
         return None
 
-    backup_path = _build_backup_path(game_title=game_title, domain=domain)
+    backup_path = _build_backup_path(
+        game_title=game_title,
+        domain=domain,
+        output_dir=output_dir,
+    )
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _build_backup_payload(items)
     async with aiofiles.open(backup_path, "w", encoding="utf-8") as file:
@@ -50,10 +57,22 @@ async def write_rule_import_translation_backup(
     )
 
 
-def _build_backup_path(*, game_title: str, domain: RuleImportBackupDomain) -> Path:
+def _build_backup_path(
+    *,
+    game_title: str,
+    domain: RuleImportBackupDomain,
+    output_dir: Path | None,
+) -> Path:
     """生成稳定可定位的规则导入译文备份路径。"""
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe_game_title = _safe_filename_part(game_title)
+    if output_dir is not None:
+        return (
+            output_dir
+            / "rule-import-backups"
+            / safe_game_title
+            / f"{domain}-{timestamp}.json"
+        )
     return resolve_app_path(
         "outputs",
         "rule-import-backups",

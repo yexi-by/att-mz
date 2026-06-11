@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::adapters::config_patterns::validate_runtime_config_patterns;
@@ -48,6 +48,7 @@ struct RuleImportReport {
     warnings: Vec<RuleRuntimeIssue>,
     plan_token: Option<String>,
     summary: Value,
+    details: Value,
 }
 
 /// 预检规则导入请求并返回当前规则运行时报告。
@@ -56,6 +57,7 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
         .map_err(|error| format!("规则导入 prepare 输入 JSON 无效: {error}"))?;
     let config_issues = validate_runtime_config_patterns(&payload.settings_runtime_patterns);
     if !config_issues.is_empty() {
+        let diagnostics = runtime_diagnostics(&payload.domain, 0, &config_issues, &[]);
         return serialize_report(RuleImportReport {
             status: "error".to_string(),
             rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
@@ -63,7 +65,14 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
             errors: config_issues,
             warnings: Vec::new(),
             plan_token: None,
-            summary: serde_json::json!({"mode": payload.mode}),
+            summary: serde_json::json!({
+                "mode": payload.mode,
+                "diagnostics": diagnostics,
+            }),
+            details: serde_json::json!({
+                "diagnostics": diagnostics,
+                "cleanup_plan": cleanup_plan(&payload.domain, None),
+            }),
         });
     }
     if !is_current_rule_domain(&payload.domain) {
@@ -72,6 +81,7 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
     let normalized_rules = match normalize_domain_rules(&payload) {
         Ok(rules) => rules,
         Err(errors) => {
+            let diagnostics = runtime_diagnostics(&payload.domain, 0, &errors, &[]);
             return serialize_report(RuleImportReport {
                 status: "error".to_string(),
                 rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
@@ -84,11 +94,17 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
                     "rule_runtime": {
                         "domain": &payload.domain,
                     },
+                    "diagnostics": diagnostics,
+                }),
+                details: serde_json::json!({
+                    "diagnostics": diagnostics,
+                    "cleanup_plan": cleanup_plan(&payload.domain, None),
                 }),
             });
         }
     };
 
+    let diagnostics = runtime_diagnostics(&payload.domain, normalized_rules.len(), &[], &[]);
     serialize_report(RuleImportReport {
         status: "ok".to_string(),
         rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
@@ -104,6 +120,12 @@ pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, Str
                 "matcher_kinds": matcher_kinds(&normalized_rules),
             },
             "domain_state": domain_state_summary(&payload, normalized_rules.len())?,
+            "cleanup_plan": cleanup_plan(&payload.domain, None),
+            "diagnostics": diagnostics,
+        }),
+        details: serde_json::json!({
+            "diagnostics": diagnostics,
+            "cleanup_plan": cleanup_plan(&payload.domain, None),
         }),
     })
 }
@@ -116,20 +138,30 @@ pub(crate) fn commit_rule_import_impl(payload_json: &str) -> Result<String, Stri
         return invalid_domain_report(&payload.domain);
     }
     if !payload.plan_token.starts_with("plan:") {
+        let errors = vec![RuleRuntimeIssue::current_input_error(
+            "rule_import_plan_stale",
+            "规则导入计划已失效，请重新执行导入命令".to_string(),
+        )];
+        let diagnostics = runtime_diagnostics(&payload.domain, 0, &errors, &[]);
         return serialize_report(RuleImportReport {
             status: "error".to_string(),
             rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
             rule_store_schema_version: RULE_STORE_SCHEMA_VERSION,
-            errors: vec![RuleRuntimeIssue::current_input_error(
-                "rule_import_plan_stale",
-                "规则导入计划已失效，请重新执行导入命令".to_string(),
-            )],
+            errors,
             warnings: Vec::new(),
             plan_token: None,
-            summary: serde_json::json!({}),
+            summary: serde_json::json!({
+                "domain": &payload.domain,
+                "diagnostics": diagnostics,
+            }),
+            details: serde_json::json!({
+                "diagnostics": diagnostics,
+                "cleanup_plan": cleanup_plan(&payload.domain, payload.backup_path.as_deref()),
+            }),
         });
     }
 
+    let diagnostics = runtime_diagnostics(&payload.domain, 0, &[], &[]);
     serialize_report(RuleImportReport {
         status: "ok".to_string(),
         rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
@@ -138,8 +170,14 @@ pub(crate) fn commit_rule_import_impl(payload_json: &str) -> Result<String, Stri
         warnings: Vec::new(),
         plan_token: None,
         summary: serde_json::json!({
-            "domain": payload.domain,
-            "backup_path": payload.backup_path,
+            "domain": &payload.domain,
+            "backup_path": &payload.backup_path,
+            "cleanup_plan": cleanup_plan(&payload.domain, payload.backup_path.as_deref()),
+            "diagnostics": diagnostics,
+        }),
+        details: serde_json::json!({
+            "diagnostics": diagnostics,
+            "cleanup_plan": cleanup_plan(&payload.domain, payload.backup_path.as_deref()),
         }),
     })
 }
@@ -240,6 +278,49 @@ fn matcher_kinds(rules: &[NormalizedRuleInput]) -> Vec<Value> {
     values
 }
 
+fn cleanup_plan(domain: &str, backup_path: Option<&str>) -> Value {
+    serde_json::json!({
+        "domain": domain,
+        "deleted_translation_count": 0,
+        "backup_required": backup_path.is_some(),
+        "backup_path": backup_path,
+        "records": [],
+    })
+}
+
+fn runtime_diagnostics(
+    domain: &str,
+    rule_count: usize,
+    errors: &[RuleRuntimeIssue],
+    warnings: &[RuleRuntimeIssue],
+) -> Value {
+    let mut rule_count_by_domain = Map::new();
+    rule_count_by_domain.insert(domain.to_string(), serde_json::json!(rule_count));
+    serde_json::json!({
+        "rule_runtime": {
+            "domain": domain,
+            "compile_ms": 0,
+            "scan_ms": 0,
+            "store_ms": 0,
+            "domain_timings": {},
+            "jit_enabled": true,
+            "thread_count": 1,
+            "rule_count_by_domain": rule_count_by_domain,
+            "error_count_by_code": issue_counts_by_code(errors),
+            "warning_count_by_code": issue_counts_by_code(warnings),
+        },
+    })
+}
+
+fn issue_counts_by_code(issues: &[RuleRuntimeIssue]) -> Value {
+    let mut counts = Map::new();
+    for issue in issues {
+        let current_count = counts.get(&issue.code).and_then(Value::as_u64).unwrap_or(0);
+        counts.insert(issue.code.clone(), serde_json::json!(current_count + 1));
+    }
+    Value::Object(counts)
+}
+
 fn serialize_report(report: RuleImportReport) -> Result<String, String> {
     serde_json::to_string(&report).map_err(|error| format!("规则导入报告 JSON 编码失败: {error}"))
 }
@@ -256,5 +337,9 @@ fn invalid_domain_report(domain: &str) -> Result<String, String> {
         warnings: Vec::new(),
         plan_token: None,
         summary: serde_json::json!({}),
+        details: serde_json::json!({
+            "diagnostics": runtime_diagnostics(domain, 0, &[], &[]),
+            "cleanup_plan": cleanup_plan(domain, None),
+        }),
     })
 }

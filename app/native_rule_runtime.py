@@ -35,6 +35,7 @@ class RuleImportPrepareResult:
     warnings: list[RuleRuntimeIssue]
     plan_token: str | None
     summary: JsonObject
+    details: JsonObject
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,7 @@ class RuleImportCommitResult:
     warnings: list[RuleRuntimeIssue]
     plan_token: str | None
     summary: JsonObject
+    details: JsonObject
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,10 @@ def prepare_rule_import(payload: JsonObject) -> RuleImportPrepareResult:
             result.get("summary", {}),
             "rule_runtime.prepare_rule_import.summary",
         ),
+        details=ensure_json_object(
+            result.get("details", {}),
+            "rule_runtime.prepare_rule_import.details",
+        ),
     )
 
 
@@ -142,6 +148,10 @@ def commit_rule_import(payload: JsonObject) -> RuleImportCommitResult:
         summary=ensure_json_object(
             result.get("summary", {}),
             "rule_runtime.commit_rule_import.summary",
+        ),
+        details=ensure_json_object(
+            result.get("details", {}),
+            "rule_runtime.commit_rule_import.details",
         ),
     )
 
