@@ -160,6 +160,20 @@ pub(crate) fn compile_structured_placeholder_pattern(
             ));
         }
     }
+    match compiled.is_match("") {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(format!(
+                "结构化占位符规则 {rule_name} 的 PCRE2 pattern 不能匹配空字符串"
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "结构化占位符规则 {rule_name} PCRE2 pattern 空串检测失败: {}",
+                error.message
+            ));
+        }
+    }
     Ok(compiled)
 }
 

@@ -191,7 +191,7 @@ def _plugin_source_text_rules_payload() -> JsonObject:
         "custom_placeholder_rules": [],
         "structured_placeholder_rules": [],
         "strip_wrapping_punctuation_pairs": [["「", "」"]],
-        "source_text_required_pattern": r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]+",
+        "source_text_required_pattern": r"[\x{3040}-\x{30FF}\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}]+",
         "source_text_exclusion_profile": "none",
     }
 

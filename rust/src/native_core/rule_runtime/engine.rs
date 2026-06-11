@@ -74,6 +74,36 @@ impl Pcre2Pattern {
         Ok(Some(Pcre2Captures { named }))
     }
 
+    pub(crate) fn captures_full_match(
+        &self,
+        text: &str,
+    ) -> Result<Option<Pcre2Captures>, Pcre2EngineError> {
+        let Some(captures) = self
+            .regex
+            .captures(text.as_bytes())
+            .map_err(Pcre2EngineError::matching)?
+        else {
+            return Ok(None);
+        };
+        let Some(full_match) = captures.get(0) else {
+            return Ok(None);
+        };
+        if full_match.start() != 0 || full_match.end() != text.len() {
+            return Ok(None);
+        }
+
+        let mut named = BTreeMap::new();
+        for name in self.regex.capture_names().iter().flatten() {
+            if let Some(matched) = captures.name(name) {
+                let value =
+                    str::from_utf8(matched.as_bytes()).map_err(Pcre2EngineError::capture_utf8)?;
+                named.insert(name.clone(), value.to_owned());
+            }
+        }
+
+        Ok(Some(Pcre2Captures { named }))
+    }
+
     pub(crate) fn captures_iter(
         &self,
         text: &str,
@@ -231,6 +261,19 @@ mod tests {
         assert_eq!(matches[0].full_span.end, 18);
         assert_eq!(matches[0].named_span("visible").unwrap().start, 6);
         assert_eq!(matches[0].named_span("visible").unwrap().end, 11);
+    }
+
+    #[test]
+    fn pcre2_engine_full_match_rejects_substring_match() {
+        let config = Pcre2EngineConfig::for_test();
+        let pattern = Pcre2Engine::compile("(?<speaker>Alice)", &config)
+            .expect("PCRE2 pattern should compile");
+
+        let matched = pattern
+            .captures_full_match("Alice: hello")
+            .expect("matching should not fail");
+
+        assert!(matched.is_none());
     }
 
     #[test]

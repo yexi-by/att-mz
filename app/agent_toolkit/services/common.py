@@ -587,8 +587,12 @@ def _append_placeholder_rule_safety_issues(
     warnings: list[AgentIssue],
 ) -> None:
     """检查自定义占位符规则是否误匹配常见正文或裸转义文本。"""
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        custom_placeholder_rules=(rule,),
+    )
     for sample_text, label in COMMON_ESCAPE_SAMPLES.items():
-        if rule.pattern.fullmatch(sample_text) is None and rule.pattern.search(sample_text) is None:
+        if not text_rules.has_custom_placeholder_rule_match(sample_text):
             continue
         errors.append(
             issue(
@@ -597,7 +601,7 @@ def _append_placeholder_rule_safety_issues(
             )
         )
     for sample_text in PLAIN_TEXT_RULE_SAMPLES:
-        if rule.pattern.search(sample_text) is None:
+        if not text_rules.has_custom_placeholder_rule_match(sample_text):
             continue
         warnings.append(
             issue(
@@ -2480,7 +2484,11 @@ def _line_matches_structured_rules(
     structured_rules: Sequence[StructuredPlaceholderRule],
 ) -> bool:
     """判断一行文本是否命中任一结构化规则。"""
-    return any(rule.pattern.search(text) is not None for rule in structured_rules)
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=tuple(structured_rules),
+    )
+    return text_rules.has_structured_placeholder_rule_match(text)
 
 
 def _validate_structured_placeholder_rules_with_context(

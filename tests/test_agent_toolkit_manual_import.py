@@ -73,9 +73,12 @@ async def test_structured_placeholder_requires_current_named_capture(
                 {
                     "name": "COLOR_WRAP",
                     "type": "paired_shell",
-                    "pattern": r"\\C\[(?<color>\d+)\](?<body>.*?)\\C\[0\]",
+                    "pattern": r"(?<open><color>)(?<body>.*?)(?<close></color>)",
                     "translatable_group": "body",
-                    "protected_groups": {"color": "[CUSTOM_COLOR_{index}]"},
+                    "protected_groups": {
+                        "open": "[CUSTOM_COLOR_OPEN_{index}]",
+                        "close": "[CUSTOM_COLOR_CLOSE_{index}]",
+                    },
                 }
             ]
         },
@@ -85,7 +88,7 @@ async def test_structured_placeholder_requires_current_named_capture(
     report = await service.validate_structured_placeholder_rules(
         game_title="テストゲーム",
         rules_text=rules_text,
-        sample_texts=[r"\C[1]赤\C[0]"],
+        sample_texts=["<color>赤</color>"],
     )
 
     assert report.status == "ok", report.model_dump(mode="json")

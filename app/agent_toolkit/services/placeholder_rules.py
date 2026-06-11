@@ -549,12 +549,10 @@ class PlaceholderRuleAgentMixin:
                             custom_placeholder_rules_text=None,
                         )
                     else:
-                        custom_rules = load_custom_placeholder_rules_import_text(
-                            custom_placeholder_rules_text
-                        )
                         rules_payload = load_custom_placeholder_rules_import_payload(
                             custom_placeholder_rules_text
                         )
+                        custom_rules = ()
                     structured_rules = await self._resolve_structured_rules(session=session)
                     db_path = session.db_path
                     translation_data_map: dict[str, TranslationData] | None = None
@@ -567,10 +565,8 @@ class PlaceholderRuleAgentMixin:
                 translation_data_map = None
             else:
                 setting = load_setting(self.setting_path)
-                custom_rules = load_custom_placeholder_rules_import_text(
-                    custom_placeholder_rules_text
-                )
                 rules_payload = load_custom_placeholder_rules_import_payload(custom_placeholder_rules_text)
+                custom_rules = ()
                 structured_rules = ()
                 db_path = None
                 translation_data_map = None
@@ -611,6 +607,10 @@ class PlaceholderRuleAgentMixin:
                     setting_text_rules=setting.text_rules,
                 ),
             )
+        if custom_placeholder_rules_text is not None:
+            custom_rules = load_custom_placeholder_rules_import_text(
+                custom_placeholder_rules_text
+            )
         if game_title is not None:
             async with await self.game_registry.open_game(game_title) as session:
                 text_rules = TextRules.from_setting(
@@ -647,7 +647,6 @@ class PlaceholderRuleAgentMixin:
     ) -> AgentReport:
         """导入当前游戏专用自定义占位符规则。"""
         try:
-            custom_rules = load_custom_placeholder_rules_import_text(rules_text)
             rules_payload = load_custom_placeholder_rules_import_payload(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
@@ -673,6 +672,7 @@ class PlaceholderRuleAgentMixin:
                             setting_text_rules=setting.text_rules,
                         ),
                     )
+                custom_rules = load_custom_placeholder_rules_import_text(rules_text)
                 if not custom_rules:
                     ensure_empty_rule_confirmed(
                         rule_label="自定义占位符规则",
@@ -803,7 +803,6 @@ class PlaceholderRuleAgentMixin:
     ) -> AgentReport:
         """校验结构化占位符规则。"""
         try:
-            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
             rules_payload = load_structured_placeholder_rules_import_payload(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
@@ -847,6 +846,24 @@ class PlaceholderRuleAgentMixin:
                     rules_payload=rules_payload,
                     setting_text_rules=setting.text_rules,
                 ),
+            )
+        try:
+            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[
+                    issue(
+                        "structured_placeholder_rules_invalid",
+                        f"结构化占位符规则不可用: {type(error).__name__}: {error}",
+                    )
+                ],
+                warnings=[],
+                summary={
+                    "game": game_title,
+                    "rule_count": 0,
+                    "sample_count": len(sample_texts),
+                },
+                details={},
             )
         async with await self.game_registry.open_game(game_title) as session:
             text_rules = TextRules.from_setting(
@@ -936,7 +953,6 @@ class PlaceholderRuleAgentMixin:
     ) -> AgentReport:
         """导入当前游戏专用结构化占位符规则。"""
         try:
-            structured_rules = load_structured_placeholder_rules_import_text(rules_text)
             rules_payload = load_structured_placeholder_rules_import_payload(rules_text)
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
@@ -965,6 +981,7 @@ class PlaceholderRuleAgentMixin:
                             setting_text_rules=setting.text_rules,
                         ),
                     )
+                structured_rules = load_structured_placeholder_rules_import_text(rules_text)
                 if not structured_rules:
                     ensure_empty_rule_confirmed(
                         rule_label="结构化占位符规则",

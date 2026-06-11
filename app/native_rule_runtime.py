@@ -68,6 +68,30 @@ class RuntimeConfigEvaluationResult:
     entries: list[RuntimeConfigEvaluationEntry]
 
 
+@dataclass(frozen=True, slots=True)
+class RuleRuntimeControlSpan:
+    """Rust rule_runtime 返回的控制符保护跨度。"""
+
+    start_index: int
+    end_index: int
+    original: str
+    source: str
+    placeholder: str | None
+    custom_template: str | None
+    priority: int
+    custom_index_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RuleRuntimeMvVirtualNameboxMatch:
+    """Rust rule_runtime 返回的 MV 虚拟名字框命中。"""
+
+    rule_order: int
+    rule_name: str
+    matched_text: str
+    group_values: dict[str, str]
+
+
 class _NativeRuleRuntimeModule(Protocol):
     """PyO3 扩展暴露的 rule_runtime 接口。"""
 
@@ -85,6 +109,14 @@ class _NativeRuleRuntimeModule(Protocol):
 
     def evaluate_runtime_config_patterns(self, payload_json: str) -> str:
         """执行配置中的运行时正则并返回 JSON 文本。"""
+        raise NotImplementedError
+
+    def collect_control_sequence_spans(self, payload_json: str) -> str:
+        """执行控制符规则并返回保护跨度 JSON 文本。"""
+        raise NotImplementedError
+
+    def match_mv_virtual_namebox_rules(self, payload_json: str) -> str:
+        """执行 MV 虚拟名字框规则并返回命中 JSON 文本。"""
         raise NotImplementedError
 
 
@@ -191,6 +223,51 @@ def evaluate_runtime_config_patterns(payload: JsonObject) -> RuntimeConfigEvalua
     )
 
 
+def collect_control_sequence_spans(payload: JsonObject) -> list[RuleRuntimeControlSpan]:
+    """调用 Rust rule_runtime 执行用户/Agent 可写控制符规则。"""
+    native = _load_native_module()
+    result = _call_native_json(
+        native.collect_control_sequence_spans,
+        payload,
+        "rule_runtime.collect_control_sequence_spans",
+    )
+    return _read_control_spans(
+        result.get("spans", []),
+        "rule_runtime.collect_control_sequence_spans.spans",
+    )
+
+
+def validate_control_sequence_rules(
+    *,
+    custom_placeholder_rules: list[JsonObject],
+    structured_placeholder_rules: list[JsonObject],
+) -> None:
+    """仅编译校验用户/Agent 可写控制符规则，不消费匹配结果。"""
+    payload = cast(
+        JsonObject,
+        {
+            "text": "",
+            "custom_placeholder_rules": custom_placeholder_rules,
+            "structured_placeholder_rules": structured_placeholder_rules,
+        },
+    )
+    _ = collect_control_sequence_spans(payload)
+
+
+def match_mv_virtual_namebox_rules(payload: JsonObject) -> list[RuleRuntimeMvVirtualNameboxMatch]:
+    """调用 Rust rule_runtime 执行 MV 虚拟名字框规则。"""
+    native = _load_native_module()
+    result = _call_native_json(
+        native.match_mv_virtual_namebox_rules,
+        payload,
+        "rule_runtime.match_mv_virtual_namebox_rules",
+    )
+    return _read_mv_virtual_namebox_matches(
+        result.get("matches", []),
+        "rule_runtime.match_mv_virtual_namebox_rules.matches",
+    )
+
+
 def _load_native_module() -> _NativeRuleRuntimeModule:
     native_module = cast(object, import_module("app._native"))
     ensure_native_contract_version(native_module)
@@ -249,6 +326,64 @@ def _read_runtime_config_entries(
     return entries
 
 
+def _read_control_spans(value: object, context: str) -> list[RuleRuntimeControlSpan]:
+    spans: list[RuleRuntimeControlSpan] = []
+    for index, raw_span in enumerate(ensure_json_array(coerce_json_value(value), context)):
+        span = ensure_json_object(raw_span, f"{context}[{index}]")
+        spans.append(
+            RuleRuntimeControlSpan(
+                start_index=_read_int(span, "start_index", f"{context}[{index}]"),
+                end_index=_read_int(span, "end_index", f"{context}[{index}]"),
+                original=_read_string(span, "original", f"{context}[{index}]"),
+                source=_read_string(span, "source", f"{context}[{index}]"),
+                placeholder=_read_optional_string(span, "placeholder", f"{context}[{index}]"),
+                custom_template=_read_optional_string(
+                    span,
+                    "custom_template",
+                    f"{context}[{index}]",
+                ),
+                priority=_read_int(span, "priority", f"{context}[{index}]"),
+                custom_index_key=_read_optional_string(
+                    span,
+                    "custom_index_key",
+                    f"{context}[{index}]",
+                ),
+            )
+        )
+    return spans
+
+
+def _read_mv_virtual_namebox_matches(
+    value: object,
+    context: str,
+) -> list[RuleRuntimeMvVirtualNameboxMatch]:
+    matches: list[RuleRuntimeMvVirtualNameboxMatch] = []
+    for index, raw_match in enumerate(ensure_json_array(coerce_json_value(value), context)):
+        matched = ensure_json_object(raw_match, f"{context}[{index}]")
+        matches.append(
+            RuleRuntimeMvVirtualNameboxMatch(
+                rule_order=_read_int(matched, "rule_order", f"{context}[{index}]"),
+                rule_name=_read_string(matched, "rule_name", f"{context}[{index}]"),
+                matched_text=_read_string(matched, "matched_text", f"{context}[{index}]"),
+                group_values=_read_string_map(
+                    matched.get("group_values", {}),
+                    f"{context}[{index}].group_values",
+                ),
+            )
+        )
+    return matches
+
+
+def _read_string_map(value: object, context: str) -> dict[str, str]:
+    raw_map = ensure_json_object(coerce_json_value(value), context)
+    result: dict[str, str] = {}
+    for key, raw_value in raw_map.items():
+        if not isinstance(raw_value, str):
+            raise TypeError(f"{context}.{key} 必须是字符串")
+        result[key] = raw_value
+    return result
+
+
 def _read_string(payload: JsonObject, field_name: str, context: str) -> str:
     value = payload.get(field_name)
     if not isinstance(value, str):
@@ -275,11 +410,16 @@ def _read_int(payload: JsonObject, field_name: str, context: str) -> int:
 __all__ = [
     "RuntimeConfigEvaluationEntry",
     "RuntimeConfigEvaluationResult",
+    "RuleRuntimeControlSpan",
     "RuleImportCommitResult",
     "RuleImportPrepareResult",
+    "RuleRuntimeMvVirtualNameboxMatch",
     "RuleRuntimeIssue",
     "commit_rule_import",
+    "collect_control_sequence_spans",
     "evaluate_runtime_config_patterns",
+    "match_mv_virtual_namebox_rules",
     "prepare_rule_import",
     "runtime_config_patterns_from_setting",
+    "validate_control_sequence_rules",
 ]

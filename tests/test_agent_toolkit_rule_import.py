@@ -1224,7 +1224,7 @@ async def test_validate_placeholder_rules_normalizes_integer_template() -> None:
     )
 
     assert report.status == "error"
-    assert "placeholder_rules_invalid" in {error.code for error in report.errors}
+    assert "placeholder_template_invalid" in {error.code for error in report.errors}
     assert "必须生成形如" in report.errors[0].message
 
 

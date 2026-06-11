@@ -7,7 +7,7 @@ mod native_core;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-const NATIVE_CONTRACT_VERSION: usize = 14;
+const NATIVE_CONTRACT_VERSION: usize = 15;
 
 #[pyfunction]
 fn native_contract_version() -> usize {
@@ -79,6 +79,24 @@ fn commit_rule_import(py: Python<'_>, payload_json: String) -> PyResult<String> 
 fn evaluate_runtime_config_patterns(py: Python<'_>, payload_json: String) -> PyResult<String> {
     let result = py.detach(move || {
         native_core::evaluate_runtime_config_patterns_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn collect_control_sequence_spans(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::collect_control_sequence_spans_impl(&payload_json)
+            .map_err(|error| error.to_string())
+    });
+    result.map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn match_mv_virtual_namebox_rules(py: Python<'_>, payload_json: String) -> PyResult<String> {
+    let result = py.detach(move || {
+        native_core::match_mv_virtual_namebox_rules_impl(&payload_json)
             .map_err(|error| error.to_string())
     });
     result.map_err(PyValueError::new_err)
@@ -217,6 +235,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prepare_rule_import, m)?)?;
     m.add_function(wrap_pyfunction!(commit_rule_import, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_runtime_config_patterns, m)?)?;
+    m.add_function(wrap_pyfunction!(collect_control_sequence_spans, m)?)?;
+    m.add_function(wrap_pyfunction!(match_mv_virtual_namebox_rules, m)?)?;
     m.add_function(wrap_pyfunction!(build_scope_index, m)?)?;
     m.add_function(wrap_pyfunction!(scan_rule_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_scope_gate, m)?)?;

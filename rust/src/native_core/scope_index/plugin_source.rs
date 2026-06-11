@@ -14,6 +14,7 @@ use crate::native_core::javascript_ast::{
     JavaScriptStringAstContext, JavaScriptStringSpan, parse_javascript_string_spans,
 };
 use crate::native_core::models::{CompiledRules, NativeTextRules};
+use crate::native_core::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use crate::native_core::rules::compile_rules;
 use crate::native_core::write_back_plan::{
     candidate_selector_for_span, normalize_visible_text_for_extraction, unescape_js_text,
@@ -37,7 +38,7 @@ pub(super) struct PluginSourceTextRuleInput {
 
 pub(super) struct CompiledRuleCandidateTextRules {
     pub(super) control_rules: CompiledRules,
-    pub(super) source_text_required_re: Regex,
+    pub(super) source_text_required_re: Pcre2Pattern,
     pub(super) source_text_exclusion_profile: String,
     pub(super) strip_wrapping_punctuation_pairs: Vec<(String, String)>,
 }
@@ -846,8 +847,11 @@ pub(super) fn compile_rule_candidate_text_rules(
         residual_escape_sequence_pattern: r"\\[nrt]".to_string(),
         long_text_line_width_limit: 999,
     })?;
-    let source_text_required_re = Regex::new(&text_rules.source_text_required_pattern)
-        .map_err(|error| format!("插件源码源文识别正则无效: {error}"))?;
+    let source_text_required_re = Pcre2Engine::compile(
+        &text_rules.source_text_required_pattern,
+        &Pcre2EngineConfig::default_runtime(),
+    )
+    .map_err(|error| format!("插件源码源文识别 PCRE2 pattern 无效: {}", error.message))?;
     Ok(CompiledRuleCandidateTextRules {
         control_rules,
         source_text_required_re,
@@ -984,7 +988,10 @@ pub(super) fn should_translate_plugin_source_text(
     if detection_text.is_empty() {
         return Ok(false);
     }
-    Ok(text_rules.source_text_required_re.is_match(&detection_text))
+    text_rules
+        .source_text_required_re
+        .is_match(&detection_text)
+        .map_err(|error| format!("插件源码源文识别 PCRE2 pattern 匹配失败: {}", error.message))
 }
 
 pub(super) fn normalize_extraction_text(text: &str, wrapping_pairs: &[(String, String)]) -> String {

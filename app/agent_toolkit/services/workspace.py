@@ -468,15 +468,12 @@ def _workspace_placeholder_preview_sample_texts(
     limit: int = 100,
 ) -> list[str]:
     """从轻量索引正文提取普通占位符规则预览样本。"""
-    custom_rules = text_rules.custom_placeholder_rules
-    structured_rules = text_rules.structured_placeholder_rules
-
     def likely_placeholder_text(text: str) -> bool:
         return (
             "\\" in text
             or "<" in text
-            or any(rule.pattern.search(text) is not None for rule in custom_rules)
-            or any(rule.pattern.search(text) is not None for rule in structured_rules)
+            or text_rules.has_custom_placeholder_rule_match(text)
+            or text_rules.has_structured_placeholder_rule_match(text)
         )
 
     return _workspace_preview_sample_texts(
@@ -498,9 +495,13 @@ def _workspace_structured_placeholder_preview_sample_texts(
     limit: int = 100,
 ) -> list[str]:
     """从轻量索引正文提取结构化占位符规则预览样本。"""
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=structured_rules,
+    )
 
     def matches_structured_rule(text: str) -> bool:
-        return any(rule.pattern.search(text) is not None for rule in structured_rules)
+        return text_rules.has_structured_placeholder_rule_match(text)
 
     return _workspace_preview_sample_texts(
         [

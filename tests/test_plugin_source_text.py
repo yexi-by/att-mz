@@ -1846,12 +1846,12 @@ async def test_scan_plugin_source_text_uses_native_candidate_scan(
 
 
 @pytest.mark.asyncio
-async def test_scan_plugin_source_text_keeps_python_only_source_pattern_contract(
+async def test_scan_plugin_source_text_uses_pcre2_source_pattern_contract(
     minimal_game_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """source_text_required_pattern 只承诺 Python re，命令不能把它升级成 Rust regex 约束。"""
+    """source_text_required_pattern 在插件源码扫描路径使用 PCRE2 当前契约。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
     plugins.append({"name": "PythonRegexSource", "status": True, "description": "", "parameters": {}})

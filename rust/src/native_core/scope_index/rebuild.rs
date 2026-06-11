@@ -43,7 +43,9 @@ use super::structured_placeholders::{
 };
 use super::{RuleCandidateOutput, RuleCandidateTextRules};
 use crate::native_core::rule_runtime::adapters::mv_virtual_namebox::compile_mv_virtual_namebox_pattern;
-use crate::native_core::rule_runtime::engine::{Pcre2CaptureMatch, Pcre2Pattern};
+use crate::native_core::rule_runtime::engine::{
+    Pcre2CaptureMatch, Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern,
+};
 use crate::native_core::text_facts::{
     CURRENT_TEXT_FACT_CONTRACT_VERSION, TextFact, TextFactDomainPayload, TextFactRenderPart,
     TextFactScope, build_fact_id, domains,
@@ -103,7 +105,7 @@ struct RebuildStorageOutput {
 struct RebuildContext {
     source_snapshot_fingerprint: String,
     rules_fingerprint: String,
-    source_text_required_re: Regex,
+    source_text_required_re: Pcre2Pattern,
     plugin_text_rules: Vec<PluginConfigRuleInput>,
     event_command_rules: Vec<EventCommandRuleInput>,
     note_tag_rules: Vec<NoteTagTextRuleInput>,
@@ -253,13 +255,16 @@ pub(crate) fn rebuild_scope_index_storage_impl(payload_json: &str) -> Result<Str
     let nonstandard_data_rules = read_nonstandard_data_text_rule_inputs(&connection)?;
     drop(connection);
 
-    let source_text_required_re =
-        Regex::new(&payload.source_text_required_pattern).map_err(|error| {
-            structured_error(
-                "scope_index_rebuild_text_rule_invalid",
-                format!("源文识别正则无效: {error}"),
-            )
-        })?;
+    let source_text_required_re = Pcre2Engine::compile(
+        &payload.source_text_required_pattern,
+        &Pcre2EngineConfig::default_runtime(),
+    )
+    .map_err(|error| {
+        structured_error(
+            "scope_index_rebuild_text_rule_invalid",
+            format!("源文识别 PCRE2 pattern 无效: {}", error.message),
+        )
+    })?;
     let context = RebuildContext {
         source_snapshot_fingerprint,
         rules_fingerprint,
@@ -1844,46 +1849,47 @@ fn scan_nonstandard_data_rows(
     files: &[NonstandardDataFileInput],
     context: &RebuildContext,
 ) -> Result<Vec<DirectTextIndexRow>, String> {
-    collect_nonstandard_data_managed_texts(
+    let managed_texts = collect_nonstandard_data_managed_texts(
         files,
         &context.nonstandard_data_rules,
         context.rule_candidate_text_rules.clone(),
     )
-    .map_err(nonstandard_data_managed_text_error)?
-    .into_iter()
-    .filter_map(|managed_text| {
-        normalized_extractable_text(&managed_text.raw_text, context).map(|normalized| {
-            let location_path = format!(
-                "nonstandard-data/{}/{}",
-                managed_text.file_name, managed_text.json_path
-            );
-            let payload_json = domain_payload_json(
-                "非标准 data",
-                &json!({
-                    "json_path": managed_text.json_path,
-                }),
-            )?;
-            row_with_fact_options(
-                RowInput {
-                    location_path,
-                    item_type: "short_text",
-                    role: None,
-                    original_lines: vec![normalized],
-                    source_line_paths: vec![managed_text.json_path],
-                    source_type: "nonstandard_data",
-                    source_file: &managed_text.file_name,
-                },
-                context,
-                FactOptions {
-                    raw_text: Some(managed_text.raw_text),
-                    visible_text: None,
-                    selector: None,
-                    domain_payload_json: Some(payload_json),
-                },
-            )
-        })
-    })
-    .collect()
+    .map_err(nonstandard_data_managed_text_error)?;
+    let mut rows = Vec::new();
+    for managed_text in managed_texts {
+        let Some(normalized) = normalized_extractable_text(&managed_text.raw_text, context)? else {
+            continue;
+        };
+        let location_path = format!(
+            "nonstandard-data/{}/{}",
+            managed_text.file_name, managed_text.json_path
+        );
+        let payload_json = domain_payload_json(
+            "非标准 data",
+            &json!({
+                "json_path": managed_text.json_path,
+            }),
+        )?;
+        rows.push(row_with_fact_options(
+            RowInput {
+                location_path,
+                item_type: "short_text",
+                role: None,
+                original_lines: vec![normalized],
+                source_line_paths: vec![managed_text.json_path],
+                source_type: "nonstandard_data",
+                source_file: &managed_text.file_name,
+            },
+            context,
+            FactOptions {
+                raw_text: Some(managed_text.raw_text),
+                visible_text: None,
+                selector: None,
+                domain_payload_json: Some(payload_json),
+            },
+        )?);
+    }
+    Ok(rows)
 }
 
 fn nonstandard_data_managed_text_error(error: NonstandardDataManagedTextError) -> String {
@@ -2294,8 +2300,15 @@ fn scan_event_command_rule_rows(
     })?;
     hit_details
         .iter()
-        .filter(|hit| context.source_text_required_re.is_match(&hit.original_text))
+        .filter_map(
+            |hit| match source_text_required_matches(context, &hit.original_text) {
+                Ok(true) => Some(Ok(hit)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
         .map(|hit| {
+            let hit = hit?;
             let payload_json = domain_payload_json(
                 "事件指令",
                 &json!({
@@ -2351,7 +2364,7 @@ fn scan_system_rows(
     let Some(system) = data_file.data.as_object() else {
         return Ok(());
     };
-    if let Some(game_title) = normalized_extractable_string(system.get("gameTitle"), context) {
+    if let Some(game_title) = normalized_extractable_string(system.get("gameTitle"), context)? {
         rows.push(row(
             RowInput {
                 location_path: "System.json/gameTitle".to_string(),
@@ -2369,7 +2382,7 @@ fn scan_system_rows(
         for key in ["basic", "commands", "params"] {
             if let Some(items) = terms.get(key).and_then(Value::as_array) {
                 for (index, item) in items.iter().enumerate() {
-                    if let Some(text) = normalized_extractable_string(Some(item), context) {
+                    if let Some(text) = normalized_extractable_string(Some(item), context)? {
                         rows.push(row(
                             RowInput {
                                 location_path: format!("System.json/terms/{key}/{index}"),
@@ -2388,7 +2401,7 @@ fn scan_system_rows(
         }
         if let Some(messages) = terms.get("messages").and_then(Value::as_object) {
             for (key, value) in messages {
-                if let Some(text) = normalized_extractable_string(Some(value), context) {
+                if let Some(text) = normalized_extractable_string(Some(value), context)? {
                     rows.push(row(
                         RowInput {
                             location_path: format!("System.json/terms/messages/{key}"),
@@ -2447,7 +2460,7 @@ fn scan_base_data_rows(
             "message3",
             "message4",
         ] {
-            if let Some(text) = normalized_extractable_string(object.get(field_name), context) {
+            if let Some(text) = normalized_extractable_string(object.get(field_name), context)? {
                 rows.push(row(
                     RowInput {
                         location_path: format!("{}/{id}/{field_name}", data_file.file_name),
@@ -2620,7 +2633,7 @@ fn scan_command_list(
             }
             401 => {
                 flush_scroll(file_name, &mut pending_scroll, context, rows)?;
-                let Some(text) = command_text(command_object, context) else {
+                let Some(text) = command_text(command_object, context)? else {
                     continue;
                 };
                 if let Some(last) = rows.last_mut()
@@ -2646,7 +2659,7 @@ fn scan_command_list(
             }
             102 => {
                 flush_scroll(file_name, &mut pending_scroll, context, rows)?;
-                if let Some(lines) = command_choices(command_object, context)
+                if let Some(lines) = command_choices(command_object, context)?
                     && !lines.is_empty()
                 {
                     rows.push(row(
@@ -2664,7 +2677,7 @@ fn scan_command_list(
                 }
             }
             405 => {
-                let Some(text) = command_text(command_object, context) else {
+                let Some(text) = command_text(command_object, context)? else {
                     flush_scroll(file_name, &mut pending_scroll, context, rows)?;
                     last_scroll_index = None;
                     continue;
@@ -2700,27 +2713,40 @@ fn scan_command_list(
 fn command_text(
     command_object: &serde_json::Map<String, Value>,
     context: &RebuildContext,
-) -> Option<String> {
-    command_object
+) -> Result<Option<String>, String> {
+    let Some(value) = command_object
         .get("parameters")
         .and_then(Value::as_array)
         .and_then(|parameters| parameters.first())
-        .and_then(|value| normalized_extractable_string(Some(value), context))
+    else {
+        return Ok(None);
+    };
+    normalized_extractable_string(Some(value), context)
 }
 
 fn command_choices(
     command_object: &serde_json::Map<String, Value>,
     context: &RebuildContext,
-) -> Option<Vec<String>> {
-    let lines = command_object
+) -> Result<Option<Vec<String>>, String> {
+    let Some(values) = command_object
         .get("parameters")
-        .and_then(Value::as_array)?
-        .first()?
-        .as_array()?
-        .iter()
-        .filter_map(|value| normalized_extractable_string(Some(value), context))
-        .collect::<Vec<_>>();
-    if lines.is_empty() { None } else { Some(lines) }
+        .and_then(Value::as_array)
+        .and_then(|parameters| parameters.first())
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let mut lines = Vec::new();
+    for value in values {
+        if let Some(text) = normalized_extractable_string(Some(value), context)? {
+            lines.push(text);
+        }
+    }
+    if lines.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(lines))
+    }
 }
 
 fn flush_scroll(
@@ -2753,17 +2779,34 @@ fn flush_scroll(
 fn normalized_extractable_string(
     value: Option<&Value>,
     context: &RebuildContext,
-) -> Option<String> {
-    let text = value?.as_str()?;
+) -> Result<Option<String>, String> {
+    let Some(text) = value.and_then(Value::as_str) else {
+        return Ok(None);
+    };
     normalized_extractable_text(text, context)
 }
 
-fn normalized_extractable_text(text: &str, context: &RebuildContext) -> Option<String> {
+fn normalized_extractable_text(
+    text: &str,
+    context: &RebuildContext,
+) -> Result<Option<String>, String> {
     let normalized = normalize_visible_text_for_extraction(text);
-    if normalized.is_empty() || !context.source_text_required_re.is_match(&normalized) {
-        return None;
+    if normalized.is_empty() || !source_text_required_matches(context, &normalized)? {
+        return Ok(None);
     }
-    Some(normalized)
+    Ok(Some(normalized))
+}
+
+fn source_text_required_matches(context: &RebuildContext, text: &str) -> Result<bool, String> {
+    context
+        .source_text_required_re
+        .is_match(text)
+        .map_err(|error| {
+            structured_error(
+                "scope_index_rebuild_text_rule_match_failed",
+                format!("源文识别 PCRE2 pattern 匹配失败: {}", error.message),
+            )
+        })
 }
 
 fn actor_names_by_id(data_files: &[ParsedDataFile]) -> BTreeMap<i64, String> {
