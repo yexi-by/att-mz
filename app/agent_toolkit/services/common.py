@@ -127,7 +127,6 @@ from app.translation.text_structure import (
 )
 from app.utils.config_loader_utils import load_setting, resolve_setting_path
 from app.event_command_text import (
-    EventCommandTextExtraction,
     build_event_command_rule_records_from_import,
     build_event_command_rule_records_from_import_shape,
     export_event_commands_json_file,
@@ -3336,7 +3335,6 @@ __all__: list[str] = [
     'validate_translation_text_structure',
     'load_setting',
     'resolve_setting_path',
-    'EventCommandTextExtraction',
     'build_event_command_rule_records_from_import',
     'build_event_command_rule_records_from_import_shape',
     'export_event_commands_json_file',

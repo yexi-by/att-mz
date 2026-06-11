@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from app.native_scope_index import (
     build_native_note_tag_candidates_payload,
     build_native_note_tag_validation_payload,
@@ -114,53 +112,6 @@ def collect_native_note_tag_source_details(*, game_data: GameData, text_rules: T
         )
         for index, item in enumerate(raw_source_details)
     ]
-
-
-def collect_native_note_tag_extraction_details(
-    *,
-    game_data: GameData,
-    text_rules: TextRules,
-) -> tuple[JsonArray, JsonArray]:
-    """调用一次 native Note 标签候选入口并返回正文提取所需来源与命中明细。"""
-    payload = build_native_note_tag_candidates_payload(game_data, text_rules)
-    result = scan_native_rule_candidates(payload)
-    summary_value = result.scan_summary.get("note_tags")
-    if summary_value is None:
-        return [], []
-    summary = ensure_json_object(summary_value, "native_note_tag_extraction.note_tags")
-    if "source_details" not in summary:
-        raise RuntimeError("native_note_tag_extraction.note_tags.source_details 缺失，请重新构建 Rust 原生扩展")
-    if "hit_details" not in summary:
-        raise RuntimeError("native_note_tag_extraction.note_tags.hit_details 缺失，请重新构建 Rust 原生扩展")
-    raw_source_details = ensure_json_array(
-        summary["source_details"],
-        "native_note_tag_extraction.note_tags.source_details",
-    )
-    raw_hit_details = ensure_json_array(
-        summary["hit_details"],
-        "native_note_tag_extraction.note_tags.hit_details",
-    )
-    source_details = cast(
-        JsonArray,
-        [
-            _normalize_native_note_tag_source_detail(
-                ensure_json_object(item, f"native_note_tag_extraction.source_details[{index}]"),
-                f"native_note_tag_extraction.source_details[{index}]",
-            )
-            for index, item in enumerate(raw_source_details)
-        ],
-    )
-    hit_details = cast(
-        JsonArray,
-        [
-            _normalize_native_note_tag_hit_detail(
-                ensure_json_object(item, f"native_note_tag_extraction.hit_details[{index}]"),
-                f"native_note_tag_extraction.hit_details[{index}]",
-            )
-            for index, item in enumerate(raw_hit_details)
-        ],
-    )
-    return source_details, hit_details
 
 
 def collect_native_note_tag_rule_validation(
@@ -330,7 +281,6 @@ def _read_int(candidate: JsonObject, field_name: str, label: str) -> int:
 __all__: list[str] = [
     "build_note_tag_rule_records_from_native_candidates",
     "collect_native_note_tag_candidate_details",
-    "collect_native_note_tag_extraction_details",
     "collect_native_note_tag_hit_details",
     "collect_native_note_tag_rule_validation",
     "collect_native_note_tag_source_details",

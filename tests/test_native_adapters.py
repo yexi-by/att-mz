@@ -26,15 +26,11 @@ from app.text_scope.models import WriteBackProbeError
 from app.text_scope.write_probe import collect_write_back_probe_reasons
 
 
-def test_old_python_scanners_are_not_public_agent_toolkit_api() -> None:
-    """旧 Python 扫描器不能继续作为包根公共 API 暴露。"""
+def test_placeholder_scanner_is_not_public_agent_toolkit_api() -> None:
+    """占位符扫描器不能作为 agent_toolkit 包根公共 API 暴露。"""
     import app.agent_toolkit as agent_toolkit
-    import app.nonstandard_data as nonstandard_data
-    import app.plugin_source_text as plugin_source_text
 
     assert not hasattr(agent_toolkit, "scan_placeholder_candidates")
-    assert not hasattr(plugin_source_text, "PluginSourceTextExtraction")
-    assert not hasattr(nonstandard_data, "NonstandardDataTextExtraction")
 
 
 class _FakeWritePlanModule:
@@ -1210,90 +1206,6 @@ def test_collect_native_note_tag_source_details_requires_source_details(
 
     with pytest.raises(RuntimeError, match="source_details 缺失"):
         _ = native_note_tag_scan.collect_native_note_tag_source_details(
-            game_data=_sample_game_data_for_note_tag_payload(),
-            text_rules=TextRules.from_setting(TextRulesSetting()),
-        )
-
-
-def test_collect_native_note_tag_extraction_details_returns_sources_and_hits_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Note 标签正文提取组合 helper 必须一次 native 扫描返回来源和命中。"""
-    fake_module = _FakeScopeIndexModule(
-        {
-            "candidates": [],
-            "candidate_summary": [],
-            "scan_summary": {
-                "note_tags": {
-                    "source_details": [
-                        {
-                            "file_name": "Items.json",
-                            "location_prefix": "Items.json/1",
-                        }
-                    ],
-                    "hit_details": [
-                        {
-                            "file_name": "Items.json",
-                            "tag_name": "拡張説明",
-                            "location_path": "Items.json/1/note/拡張説明",
-                            "original_text": "薬草の詳細",
-                            "translatable": True,
-                        }
-                    ],
-                }
-            },
-        }
-    )
-
-    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
-        """返回测试用 Scope/Index 模块。"""
-        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
-
-    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
-
-    source_details, hit_details = native_note_tag_scan.collect_native_note_tag_extraction_details(
-        game_data=_sample_game_data_for_note_tag_payload(),
-        text_rules=TextRules.from_setting(TextRulesSetting()),
-    )
-
-    assert fake_module.calls == 1
-    assert source_details == [
-        {
-            "file_name": "Items.json",
-            "location_prefix": "Items.json/1",
-        }
-    ]
-    assert hit_details == [
-        {
-            "file_name": "Items.json",
-            "tag_name": "拡張説明",
-            "location_path": "Items.json/1/note/拡張説明",
-            "original_text": "薬草の詳細",
-            "translatable": True,
-        }
-    ]
-
-
-def test_collect_native_note_tag_extraction_details_requires_both_detail_lists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """组合 helper 缺任一明细字段时必须显式要求重建 native 扩展。"""
-    fake_module = _FakeScopeIndexModule(
-        {
-            "candidates": [],
-            "candidate_summary": [],
-            "scan_summary": {"note_tags": {"source_details": []}},
-        }
-    )
-
-    def load_fake_module() -> native_scope_index.NativeScopeIndexModule:
-        """返回测试用 Scope/Index 模块。"""
-        return cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module))
-
-    monkeypatch.setattr(native_scope_index, "_load_native_scope_index_module", load_fake_module)
-
-    with pytest.raises(RuntimeError, match="hit_details 缺失"):
-        _ = native_note_tag_scan.collect_native_note_tag_extraction_details(
             game_data=_sample_game_data_for_note_tag_payload(),
             text_rules=TextRules.from_setting(TextRulesSetting()),
         )

@@ -514,7 +514,6 @@ async def test_validate_agent_workspace_uses_native_plugin_source_scan_for_branc
 async def test_validate_agent_workspace_uses_plugin_source_note_tag_native_paths(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """工作区验收规则分支使用当前 native 候选路径。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
@@ -593,23 +592,6 @@ async def test_validate_agent_workspace_uses_plugin_source_note_tag_native_paths
     manifest_files = ensure_json_array(coerce_json_value(manifest["files"]), "manifest.files")
     manifest_files.append(str(workspace / "plugin-source-rules.json"))
     _ = manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def forbidden_plugin_source_extractor(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("validate-agent-workspace 不应构造 PluginSourceTextExtraction")
-
-    def forbidden_note_tag_extractor(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("validate-agent-workspace 不应构造 NoteTagTextExtraction")
-
-    monkeypatch.setattr(
-        "app.plugin_source_text.extraction._PluginSourceTextExtraction",
-        forbidden_plugin_source_extractor,
-    )
-    monkeypatch.setattr(
-        "app.note_tag_text.extraction.NoteTagTextExtraction",
-        forbidden_note_tag_extractor,
-    )
 
     report = await service.validate_agent_workspace(game_title="テストゲーム", workspace=workspace)
 

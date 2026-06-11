@@ -39,7 +39,6 @@ from app.plugin_source_text import (
     parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
-from app.plugin_source_text.extraction import _PluginSourceTextExtraction
 from app.plugin_source_text.scanner import (
     PluginSourceBatchTextScan,
     build_plugin_source_file_hash,
@@ -108,10 +107,23 @@ def _invalid_fact_translation_item_for_test(item: TranslationItem) -> Translatio
     )
 
 
+def _plugin_source_translation_item_for_test(candidate: PluginSourceCandidate) -> TranslationItem:
+    """由当前插件源码候选构造测试写回项，避免重新引入旧 Python 提取入口。"""
+    location_path = plugin_source_location_path(
+        file_name=candidate.file_name,
+        selector=candidate.selector,
+    )
+    return TranslationItem(
+        location_path=location_path,
+        item_type="short_text",
+        original_lines=[candidate.text],
+        source_line_paths=[location_path],
+    )
+
+
 def test_plugin_source_scanner_public_surface_is_current() -> None:
     """包根只暴露业务级插件源码能力，低层 scanner API 留在 scanner 模块内。"""
     removed_names = {
-        "PluginSourceTextExtraction",
         "build_plugin_source_scan",
         "scan_plugin_source_files_text_strict",
         "find_candidate_by_selector",
@@ -510,8 +522,8 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
         text_rules=text_rules,
     )
 
-    extracted = _PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()
-    items = extracted["js/plugins/HardcodedText.js"].translation_items
+    assert records[0].selectors == [title_candidate.selector]
+    items = [_plugin_source_translation_item_for_test(title_candidate)]
     assert [item.original_lines for item in items] == [["プラグイン直書き"]]
 
     items[0].translation_lines = ["插件直写"]
@@ -528,76 +540,6 @@ async def test_plugin_source_rules_extract_and_write_back_ast_string(minimal_gam
     backup_path = minimal_game_dir / "js" / "plugins_source_origin" / "HardcodedText.js"
     assert backup_path.exists()
     assert "title: 'プラグイン直書き'" in backup_path.read_text(encoding="utf-8")
-
-
-@pytest.mark.asyncio
-async def test_plugin_source_extraction_allows_mismatched_rule_hash_when_selector_matches(
-    minimal_game_dir: Path,
-) -> None:
-    """插件源码规则文件 hash 只做诊断；selector 和原文仍命中时可以继续提取。"""
-    plugins_path = minimal_game_dir / "js" / "plugins.js"
-    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
-    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
-    _rewrite_plugins_js(plugins_path, plugins)
-    plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "HardcodedText.js").write_text(
-        "const Messages = { title: 'プラグイン直書き' };\n",
-        encoding="utf-8",
-    )
-    game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    text_rules = TextRules.from_setting(TextRulesSetting())
-    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    candidate = next(candidate for candidate in scan.candidates if candidate.file_name == "HardcodedText.js")
-    record = PluginSourceTextRuleRecord(
-        file_name="HardcodedText.js",
-        file_hash="mismatch-hash",
-        selectors=[candidate.selector],
-    )
-
-    extracted = _PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()
-
-    item = extracted["js/plugins/HardcodedText.js"].translation_items[0]
-    assert item.location_path == plugin_source_location_path(
-        file_name="HardcodedText.js",
-        selector=candidate.selector,
-    )
-    assert item.original_lines == ["プラグイン直書き"]
-
-
-@pytest.mark.asyncio
-async def test_plugin_source_extraction_rejects_missing_selector_after_source_change(
-    minimal_game_dir: Path,
-) -> None:
-    """插件源码规则 selector 失效时仍必须显式报过期。"""
-    plugins_path = minimal_game_dir / "js" / "plugins.js"
-    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
-    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
-    _rewrite_plugins_js(plugins_path, plugins)
-    plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir(exist_ok=True)
-    source_path = plugin_source_dir / "HardcodedText.js"
-    _ = source_path.write_text(
-        "const Messages = { title: 'プラグイン直書き' };\n",
-        encoding="utf-8",
-    )
-    text_rules = TextRules.from_setting(TextRulesSetting())
-    initial_game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    initial_scan = build_native_plugin_source_scan(game_data=initial_game_data, text_rules=text_rules)
-    initial_candidate = next(candidate for candidate in initial_scan.candidates if candidate.file_name == "HardcodedText.js")
-    _ = source_path.write_text(
-        "const Messages = { title: '変更後プラグイン直書き' };\n",
-        encoding="utf-8",
-    )
-    changed_game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    record = PluginSourceTextRuleRecord(
-        file_name="HardcodedText.js",
-        file_hash="mismatch-hash",
-        selectors=[initial_candidate.selector],
-    )
-
-    with pytest.raises(RuntimeError, match="插件源码规则已过期"):
-        _ = _PluginSourceTextExtraction(changed_game_data, [record], text_rules).extract_all_text()
 
 
 @pytest.mark.asyncio
@@ -651,68 +593,6 @@ async def test_plugin_source_ast_map_exports_short_source_text_with_ast_context(
 
 
 @pytest.mark.asyncio
-async def test_plugin_source_extraction_scans_each_file_once(
-    minimal_game_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """同一插件源码文件的多条 selector 提取时只能解析一次源码。"""
-    plugins_path = minimal_game_dir / "js" / "plugins.js"
-    plugins = ensure_json_array(_read_test_json_from_plugins_js(plugins_path), "plugins")
-    plugins.append({"name": "HardcodedText", "status": True, "description": "", "parameters": {}})
-    _rewrite_plugins_js(plugins_path, plugins)
-    plugin_source_dir = minimal_game_dir / "js" / "plugins"
-    plugin_source_dir.mkdir(exist_ok=True)
-    _ = (plugin_source_dir / "HardcodedText.js").write_text(
-        "\n".join(
-            f"Window_Base.prototype.drawText('抽出テキスト{i}', 0, 0, 320);"
-            for i in range(5)
-        ),
-        encoding="utf-8",
-    )
-    text_rules = TextRules.from_setting(TextRulesSetting())
-    game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
-    scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "HardcodedText.js")
-    selectors = [candidate.selector for candidate in scan.candidates if candidate.file_name == "HardcodedText.js"]
-    record = PluginSourceTextRuleRecord(
-        file_name="HardcodedText.js",
-        file_hash=file_scan.file_hash,
-        selectors=selectors,
-    )
-    clear_plugin_source_native_scan_cache()
-    python_ast_scan_count = 0
-    native_scan_count = 0
-
-    from app.native_javascript_ast import NativeJavaScriptStringScan, parse_native_javascript_string_spans_batch
-
-    def counting_native_batch(files: Mapping[str, str]) -> dict[str, NativeJavaScriptStringScan]:
-        """统计源码提取阶段调用批量原生 AST 的次数。"""
-        nonlocal python_ast_scan_count
-        python_ast_scan_count += 1
-        return parse_native_javascript_string_spans_batch(files)
-
-    def counting_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
-        nonlocal native_scan_count
-        native_scan_count += 1
-        return real_scan_native_rule_candidates(payload)
-
-    monkeypatch.setattr(
-        "app.plugin_source_text.scanner.parse_native_javascript_string_spans_batch",
-        counting_native_batch,
-    )
-    monkeypatch.setattr(
-        "app.plugin_source_text.native_scan.scan_native_rule_candidates",
-        counting_scan_native_rule_candidates,
-    )
-
-    extracted = _PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()
-
-    assert len(extracted["js/plugins/HardcodedText.js"].translation_items) == len(selectors)
-    assert native_scan_count == 1
-    assert python_ast_scan_count == 0
-
-
-@pytest.mark.asyncio
 async def test_plugin_source_write_back_scans_changed_file_for_runtime_write_maps(
     minimal_game_dir: Path,
 ) -> None:
@@ -733,16 +613,11 @@ async def test_plugin_source_write_back_scans_changed_file_for_runtime_write_map
     text_rules = TextRules.from_setting(TextRulesSetting())
     game_data = await _load_active_runtime_game_data_for_test(minimal_game_dir)
     scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-    file_scan = next(file_scan for file_scan in scan.files if file_scan.file_name == "HardcodedText.js")
-    selectors = [candidate.selector for candidate in scan.candidates if candidate.file_name == "HardcodedText.js"]
-    record = PluginSourceTextRuleRecord(
-        file_name="HardcodedText.js",
-        file_hash=file_scan.file_hash,
-        selectors=selectors,
-    )
-    items = _PluginSourceTextExtraction(game_data, [record], text_rules).extract_all_text()[
-        "js/plugins/HardcodedText.js"
-    ].translation_items
+    items = [
+        _plugin_source_translation_item_for_test(candidate)
+        for candidate in scan.candidates
+        if candidate.file_name == "HardcodedText.js"
+    ]
     for index, item in enumerate(items):
         item.translation_lines = [f"写回文本{index}"]
     _create_test_source_snapshot(game_data)
@@ -864,13 +739,11 @@ async def test_plugin_source_rules_support_excluded_selectors(
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_plugin_source_text_rules(records)
         persisted_records = await session.read_plugin_source_text_rules()
-    extracted = _PluginSourceTextExtraction(game_data, persisted_records, text_rules).extract_all_text()
     exported_rules = plugin_source_rule_records_to_import_json(persisted_records)
     exported_rule = ensure_json_object(ensure_json_array(exported_rules, "rules")[0], "rules[0]")
 
     assert persisted_records[0].selectors == [title_candidate.selector]
     assert persisted_records[0].excluded_selectors == [icon_candidate.selector]
-    assert extracted["js/plugins/HardcodedText.js"].translation_items[0].original_lines == ["翻訳する本文"]
     assert exported_rule["excluded_selectors"] == [icon_candidate.selector]
 
 
@@ -1480,16 +1353,14 @@ async def test_plugin_source_write_back_requires_native_ast(
         for candidate in build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules).candidates
         if candidate.text == "プラグイン直書き"
     )
-    records = build_plugin_source_rule_records_from_import(
+    _ = build_plugin_source_rule_records_from_import(
         game_data=game_data,
         import_file=parse_plugin_source_rule_import_text(
             json.dumps([{"file": "HardcodedText.js", "selectors": [candidate.selector]}], ensure_ascii=False)
         ),
         text_rules=text_rules,
     )
-    item = _PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()[
-        "js/plugins/HardcodedText.js"
-    ].translation_items[0]
+    item = _plugin_source_translation_item_for_test(candidate)
     item.translation_lines = ["插件直写"]
 
     def missing_native_module() -> object:
@@ -1534,14 +1405,12 @@ async def test_plugin_source_partial_backup_keeps_unmodified_files_visible(minim
     scan = build_native_plugin_source_scan(game_data=game_data, text_rules=text_rules)
     candidate = next(item for item in scan.candidates if item.file_name == "SourceA.js")
     rule_text = json.dumps([{"file": "SourceA.js", "selectors": [candidate.selector]}], ensure_ascii=False)
-    records = build_plugin_source_rule_records_from_import(
+    _ = build_plugin_source_rule_records_from_import(
         game_data=game_data,
         import_file=parse_plugin_source_rule_import_text(rule_text),
         text_rules=text_rules,
     )
-    item = _PluginSourceTextExtraction(game_data, records, text_rules).extract_all_text()[
-        "js/plugins/SourceA.js"
-    ].translation_items[0]
+    item = _plugin_source_translation_item_for_test(candidate)
     item.translation_lines = ["第一个正文"]
 
     _create_test_source_snapshot(game_data)
@@ -2416,17 +2285,14 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
         text_rules=text_rules,
         scan=scan,
     )
-    extracted_map = _PluginSourceTextExtraction(
-        game_data,
-        rule_records=records,
-        text_rules=text_rules,
-        scan=scan,
-    ).extract_all_text()
-    target_item = next(
-        item
-        for translation_data in extracted_map.values()
-        for item in translation_data.translation_items
-        if item.location_path.startswith("js/plugins/OneCandidateSource.js/")
+    target_candidate = next(
+        candidate
+        for candidate in scan.candidates
+        if candidate.file_name == "OneCandidateSource.js"
+    )
+    target_location_path = plugin_source_location_path(
+        file_name=target_candidate.file_name,
+        selector=target_candidate.selector,
     )
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
@@ -2440,7 +2306,7 @@ async def test_validate_plugin_source_rules_uses_prefix_read_for_translated_coun
             fact
             for fact in facts
             if fact.domain == "plugin_source"
-            and fact.location_path == target_item.location_path
+            and fact.location_path == target_location_path
         )
         index_records = await session.read_text_index_items_by_paths([target_fact.location_path])
         current_item = text_fact_record_to_translation_item(target_fact, index_record=index_records[0])

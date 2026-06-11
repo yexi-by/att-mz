@@ -9,7 +9,6 @@ from .common import (
     extract_plugin_name,
     resolve_plugin_leaves,
 )
-from .extraction import PluginTextExtraction
 from .exporter import export_plugins_json_file
 from .importer import (
     PluginRuleImportFile,
@@ -28,7 +27,6 @@ __all__: list[str] = [
     "NativePluginRuleValidationContext",
     "PluginRuleImportFile",
     "PluginRuleSpec",
-    "PluginTextExtraction",
     "build_native_plugin_rule_validation_context",
     "build_native_plugin_rule_validation_context_from_import",
     "build_json_string_leaf_path_hint",

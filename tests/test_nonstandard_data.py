@@ -22,7 +22,6 @@ from app.nonstandard_data import (
     parse_nonstandard_data_rule_import_text,
     validate_nonstandard_data_rules,
 )
-from app.nonstandard_data.extraction import NonstandardDataTextExtraction
 from app.nonstandard_data.scanner import (
     NonstandardDataScan,
     build_nonstandard_data_file_hash,
@@ -32,7 +31,7 @@ from app.persistence import GameRegistry
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_json_object
 from app.rmmz.loader import load_translation_source_game_data, resolve_game_layout
-from app.rmmz.schema import NonstandardDataTextRuleRecord
+from app.rmmz.schema import NonstandardDataTextRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonObject, TextRules
 from app.text_scope.rule_hits import collect_nonstandard_data_rule_hits
 from app.utils.config_loader_utils import load_setting
@@ -715,7 +714,6 @@ async def test_nonstandard_data_text_scope_uses_native_leaves_for_imported_rules
 async def test_nonstandard_data_rule_hits_use_native_details_without_python_expansion(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """非标准 data text-scope 命中必须消费 native hit_details。"""
     _write_high_risk_nonstandard_data(minimal_game_dir)
@@ -740,16 +738,6 @@ async def test_nonstandard_data_rule_hits_use_native_details_without_python_expa
     text_rules = TextRules.from_setting(setting.text_rules)
     async with await registry.open_game("テストゲーム") as session:
         records = await session.read_nonstandard_data_text_rules()
-
-    def forbidden_collect_rule_hits(*args: object, **kwargs: object) -> object:
-        _ = (args, kwargs)
-        raise AssertionError("非标准 data text-scope 命中不应调用 Python collect_rule_hits")
-
-    monkeypatch.setattr(
-        "app.nonstandard_data.extraction.NonstandardDataTextExtraction.collect_rule_hits",
-        forbidden_collect_rule_hits,
-        raising=False,
-    )
 
     hits = collect_nonstandard_data_rule_hits(
         game_data=game_data,
@@ -853,10 +841,16 @@ async def test_nonstandard_data_write_back_updates_managed_json_leaf(
     game_data = await load_translation_source_game_data(minimal_game_dir)
     async with await registry.open_game("テストゲーム") as session:
         records = await session.read_nonstandard_data_text_rules()
-    items = NonstandardDataTextExtraction(game_data, records).extract_all_text()[
-        "nonstandard-data/UnknownPluginData.json"
-    ].translation_items
-    items[0].translation_lines = ["非标准译文"]
+    location_path = "nonstandard-data/UnknownPluginData.json/$[0]['name']"
+    items = [
+        TranslationItem(
+            location_path=location_path,
+            item_type="short_text",
+            original_lines=["これは無視される"],
+            source_line_paths=[location_path],
+            translation_lines=["非标准译文"],
+        )
+    ]
 
     write_data_text(game_data, items, nonstandard_data_rule_records=records)
 
@@ -866,49 +860,6 @@ async def test_nonstandard_data_write_back_updates_managed_json_leaf(
     )
     written_value = ensure_json_array(coerce_json_value(written_raw), "UnknownPluginData.json")
     assert written_value == [{"id": 1, "name": "非标准译文"}]
-
-
-@pytest.mark.asyncio
-async def test_nonstandard_data_write_back_extraction_uses_native_leaves(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """写回输入提取已管理非标准 data 叶子时复用 native leaves。"""
-    _write_high_risk_nonstandard_data(minimal_game_dir)
-    registry = GameRegistry(tmp_path / "db")
-    _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
-    _ = await service.import_nonstandard_data_rules(
-        game_title="テストゲーム",
-        rules_text=json.dumps(
-            [
-                {
-                    "file": "UnknownPluginData.json",
-                    "paths": ["$[*]['name']"],
-                    "excluded_paths": [],
-                }
-            ],
-            ensure_ascii=False,
-        ),
-    )
-    monkeypatch.setattr(
-        "app.nonstandard_data.extraction.resolve_nonstandard_data_leaves",
-        _forbid_python_nonstandard_data_leaf_resolver,
-        raising=False,
-    )
-    game_data = await load_translation_source_game_data(minimal_game_dir)
-    async with await registry.open_game("テストゲーム") as session:
-        records = await session.read_nonstandard_data_text_rules()
-
-    items = NonstandardDataTextExtraction(game_data, records).extract_all_text()[
-        "nonstandard-data/UnknownPluginData.json"
-    ].translation_items
-
-    assert [item.location_path for item in items] == [
-        "nonstandard-data/UnknownPluginData.json/$[0]['name']"
-    ]
-    assert items[0].original_lines == ["これは無視される"]
 
 
 @pytest.mark.asyncio

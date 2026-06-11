@@ -42,8 +42,6 @@ from app.config import SettingOverrides
 
 from app.config.schemas import Setting, TextRulesSetting
 
-from app.event_command_text import EventCommandTextExtraction
-
 from app.language import SourceLanguage
 
 from app.llm import LLMHandler
@@ -597,7 +595,6 @@ __all__ = (
     "SettingOverrides",
     "Setting",
     "TextRulesSetting",
-    "EventCommandTextExtraction",
     "SourceLanguage",
     "LLMHandler",
     "NativeQualityDetails",

@@ -4,7 +4,6 @@ from .exporter import (
     export_event_commands_json_file,
     resolve_event_command_codes,
 )
-from .extraction import EventCommandTextExtraction
 from .importer import (
     EventCommandRuleImportFile,
     EventCommandRuleSpec,
@@ -19,7 +18,6 @@ from .importer import (
 __all__: list[str] = [
     "EventCommandRuleImportFile",
     "EventCommandRuleSpec",
-    "EventCommandTextExtraction",
     "build_event_command_rule_records_from_import",
     "build_event_command_rule_records_from_import_shape",
     "command_matches_filters",

@@ -36,7 +36,7 @@ from app.config import SettingOverrides
 
 from app.config.schemas import Setting, TextRulesSetting, WriteBackSetting
 
-from app.note_tag_text import NoteTagTextExtraction, build_note_tag_rule_records_from_import
+from app.note_tag_text import build_note_tag_rule_records_from_import
 
 from app.note_tag_text.exporter import collect_note_tag_candidates
 
@@ -455,7 +455,6 @@ __all__ = (
     "Setting",
     "TextRulesSetting",
     "WriteBackSetting",
-    "NoteTagTextExtraction",
     "build_note_tag_rule_records_from_import",
     "collect_note_tag_candidates",
     "LLMHandler",

@@ -1,6 +1,4 @@
 """规则导入事务边界测试。"""
-# pyright: reportPrivateUsage=false
-
 import json
 from pathlib import Path
 from typing import cast
@@ -16,10 +14,10 @@ from app.plugin_source_text import (
     build_native_plugin_source_scan,
     build_plugin_source_rule_records_from_import,
     parse_plugin_source_rule_import_text,
+    plugin_source_location_path,
 )
-from app.plugin_source_text.extraction import _PluginSourceTextExtraction
 from app.rmmz.loader import load_active_runtime_game_data
-from app.rmmz.schema import PluginSourceRuntimeWriteMapRecord
+from app.rmmz.schema import PluginSourceRuntimeWriteMapRecord, TranslationItem
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,10 +85,17 @@ async def test_plugin_source_rule_import_rolls_back_when_tail_step_fails(
         text_rules=text_rules,
         scan=scan,
     )
-    old_item = _PluginSourceTextExtraction(game_data, old_records, text_rules, scan=scan).extract_all_text()[
-        "js/plugins/RuleSource.js"
-    ].translation_items[0]
-    old_item.translation_lines = ["旧译文"]
+    old_location_path = plugin_source_location_path(
+        file_name="RuleSource.js",
+        selector=old_candidate.selector,
+    )
+    old_item = TranslationItem(
+        location_path=old_location_path,
+        item_type="short_text",
+        original_lines=["古い本文"],
+        source_line_paths=[old_location_path],
+        translation_lines=["旧译文"],
+    )
     runtime_map = PluginSourceRuntimeWriteMapRecord(
         location_path=old_item.location_path,
         source_file_name="RuleSource.js",

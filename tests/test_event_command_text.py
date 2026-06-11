@@ -10,17 +10,25 @@ from pydantic import TypeAdapter, ValidationError
 from app.cli import build_parser, read_bool_arg, read_int_set_arg, read_optional_str_arg
 from app.config.schemas import EventCommandTextSetting
 from app.event_command_text import (
-    EventCommandTextExtraction,
     build_event_command_rule_records_from_import,
     export_event_commands_json_file,
     load_event_command_rule_import_file,
     resolve_event_command_codes,
 )
+from app.event_command_text.native_validation import build_native_event_command_rule_validation_context
 from app.native_scope_index import NativeContractVersions, NativeRuleCandidatesResult
 from app.rmmz.loader import load_active_runtime_game_data
-from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationData, TranslationItem
+from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
-from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
+from app.rmmz.text_rules import (
+    JsonArray,
+    JsonObject,
+    JsonValue,
+    coerce_json_value,
+    ensure_json_array,
+    ensure_json_object,
+    get_default_text_rules,
+)
 from tests._native_write_plan_helper import reset_writable_copies, write_data_text
 
 
@@ -34,6 +42,19 @@ def _create_test_source_snapshot(game_data: GameData) -> None:
     ):
         return
     create_source_snapshot_for_clean_game(layout)
+
+
+def _event_command_rule_items_for_test(
+    game_data: GameData,
+    records: list[EventCommandTextRuleRecord],
+) -> list[TranslationItem]:
+    """从当前 native 事件指令规则命中上下文读取测试写回项。"""
+    context = build_native_event_command_rule_validation_context(
+        records=records,
+        game_data=game_data,
+        text_rules=get_default_text_rules(),
+    )
+    return list(context.extracted_items)
 
 
 @pytest.mark.asyncio
@@ -275,7 +296,6 @@ def test_restore_font_parser_accepts_replacement_font_path() -> None:
 async def test_event_command_rule_import_extracts_and_writes_back(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令文本由外部规则导入后按数据库规则提取并写回。"""
     game_data = await load_active_runtime_game_data(minimal_game_dir)
@@ -311,21 +331,12 @@ async def test_event_command_rule_import_extracts_and_writes_back(
         "$['parameters'][3]['message']",
         "$['parameters'][3]['file']",
     ]
-    def forbidden_rule_item_extract(
-        _self: EventCommandTextExtraction,
-    ) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
-        raise AssertionError("普通事件指令提取不应构造规则组命中明细")
-
-    monkeypatch.setattr(EventCommandTextExtraction, "extract_all_text_with_rule_items", forbidden_rule_item_extract)
-
-    extracted = EventCommandTextExtraction(game_data, records).extract_all_text()
-    items = extracted["CommonEvents.json"].translation_items
+    items = _event_command_rule_items_for_test(game_data, records)
     assert [item.location_path for item in items] == [
         "CommonEvents.json/1/4/parameters/3/message",
     ]
     item = items[0]
     assert item.location_path == "CommonEvents.json/1/4/parameters/3/message"
-    assert item.source_line_paths == ["CommonEvents.json/1/4/parameters/3/message"]
     assert item.original_lines == ["プラグイン台詞"]
 
     item.translation_lines = ["事件指令译文"]
@@ -384,7 +395,7 @@ async def test_event_command_extraction_rejects_stale_command_match(
     stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="事件指令规则已过期"):
-        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+        _ = _event_command_rule_items_for_test(stale_game_data, records)
 
 
 @pytest.mark.asyncio
@@ -430,7 +441,7 @@ async def test_event_command_extraction_rejects_stale_path_template(
     stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
-        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+        _ = _event_command_rule_items_for_test(stale_game_data, records)
 
 
 @pytest.mark.asyncio
@@ -476,7 +487,7 @@ async def test_event_command_extraction_rejects_path_changed_to_non_string_leaf(
     stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
-        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+        _ = _event_command_rule_items_for_test(stale_game_data, records)
 
 
 @pytest.mark.asyncio
@@ -512,9 +523,7 @@ async def test_event_command_nested_write_error_reports_location_path(
         game_data=game_data,
         import_file=import_file,
     )
-    item = EventCommandTextExtraction(game_data, records).extract_all_text()[
-        "CommonEvents.json"
-    ].translation_items[0]
+    item = _event_command_rule_items_for_test(game_data, records)[0]
     item.location_path = "CommonEvents.json/1/4/parameters/3/missing"
     item.translation_lines = ["事件指令译文"]
 
@@ -573,9 +582,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
         game_data=game_data,
         import_file=import_file,
     )
-    item = EventCommandTextExtraction(game_data, records).extract_all_text()[
-        "CommonEvents.json"
-    ].translation_items[0]
+    item = _event_command_rule_items_for_test(game_data, records)[0]
     assert item.original_lines == [source_message.strip()]
 
     translated_message = "\n　" + r"\C[2]任务说明\C[0]\n前往村子。" + "　\n"
@@ -637,8 +644,7 @@ async def test_event_command_direct_parameter_string_writes_back(
         game_data=game_data,
         import_file=import_file,
     )
-    extracted = EventCommandTextExtraction(game_data, records).extract_all_text()
-    items = extracted["CommonEvents.json"].translation_items
+    items = _event_command_rule_items_for_test(game_data, records)
     assert [item.location_path for item in items] == [
         "CommonEvents.json/1/4/parameters/2",
     ]

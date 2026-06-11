@@ -79,7 +79,7 @@ def test_json_path_protocol_is_neutral_between_plugin_and_event_domains() -> Non
     ) == "CommonEvents.json/1/4/parameters/2"
 
     event_sources = [
-        Path("app/event_command_text/extraction.py").read_text(encoding="utf-8"),
+        Path("app/event_command_text/native_validation.py").read_text(encoding="utf-8"),
         Path("app/event_command_text/importer.py").read_text(encoding="utf-8"),
         Path("app/text_scope/rule_hits.py").read_text(encoding="utf-8"),
     ]
@@ -253,7 +253,6 @@ def test_nonstandard_data_scanner_helpers_are_not_package_root_exports() -> None
     assert scanner_api <= scanner_exports
     assert package_exports.isdisjoint(scanner_api)
     assert "validate_nonstandard_data_rules" in package_exports
-    assert "NonstandardDataTextExtraction" not in package_exports
 
 
 def test_current_runtime_and_p1c_commands_do_not_rebuild_text_scope_by_default() -> None:

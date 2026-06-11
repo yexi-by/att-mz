@@ -2913,18 +2913,9 @@ async def test_validate_plugin_rules_uses_native_plugin_config_hit_details(
             ]
         )
 
-    class ForbiddenPluginTextExtraction:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            raise AssertionError("validate-plugin-rules 必须使用当前插件规则命中事实")
-
     def forbidden_old_record_builder(**_kwargs: object) -> list[PluginTextRuleRecord]:
         raise AssertionError("validate-plugin-rules 必须消费 Rust 插件参数规则候选输出")
 
-    monkeypatch.setattr(
-        "app.agent_toolkit.services.common.PluginTextExtraction",
-        ForbiddenPluginTextExtraction,
-        raising=False,
-    )
     monkeypatch.setattr(
         "app.agent_toolkit.services.rule_validation.build_plugin_rule_records_from_import",
         forbidden_old_record_builder,
@@ -3759,7 +3750,6 @@ async def test_import_note_tag_rules_replaces_stale_existing_rule(
 async def test_public_rule_validation_and_import_use_native_candidate_paths(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """插件源码和 Note 标签公共规则命令使用当前 native 候选路径。"""
     plugins_path = minimal_game_dir / "js" / "plugins.js"
@@ -3815,23 +3805,6 @@ async def test_public_rule_validation_and_import_use_native_candidate_paths(
         ensure_ascii=False,
     )
     note_rules_text = json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False)
-
-    def forbidden_plugin_source_extractor(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("公共插件源码规则命令不应构造 PluginSourceTextExtraction")
-
-    def forbidden_note_tag_extractor(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("公共 Note 标签规则命令不应构造 NoteTagTextExtraction")
-
-    monkeypatch.setattr(
-        "app.plugin_source_text.extraction._PluginSourceTextExtraction",
-        forbidden_plugin_source_extractor,
-    )
-    monkeypatch.setattr(
-        "app.note_tag_text.extraction.NoteTagTextExtraction",
-        forbidden_note_tag_extractor,
-    )
 
     plugin_ast_map_report = await service.export_plugin_source_ast_map(
         game_title="テストゲーム",
@@ -4385,7 +4358,6 @@ async def test_validate_event_command_rules_previews_direct_parameter_write_back
 async def test_validate_event_command_rules_reports_hits_per_rule(
     minimal_game_dir: Path,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """事件指令规则报告用 native 明细按规则组统计命中数量。"""
     registry = GameRegistry(tmp_path / "db")
@@ -4409,20 +4381,6 @@ async def test_validate_event_command_rules_reports_hits_per_rule(
         },
         ensure_ascii=False,
     )
-    def forbidden_extract_with_rule_items(
-        _self: EventCommandTextExtraction,
-    ) -> tuple[dict[str, TranslationData], list[list[TranslationItem]]]:
-        raise AssertionError("事件指令规则校验必须消费 native hit details")
-
-    def forbidden_extract_all_text(_self: EventCommandTextExtraction) -> dict[str, TranslationData]:
-        raise AssertionError("事件指令规则校验不能为每条规则组重复提取")
-
-    monkeypatch.setattr(
-        EventCommandTextExtraction,
-        "extract_all_text_with_rule_items",
-        forbidden_extract_with_rule_items,
-    )
-    monkeypatch.setattr(EventCommandTextExtraction, "extract_all_text", forbidden_extract_all_text)
 
     report = await service.validate_event_command_rules(
         game_title="テストゲーム",
