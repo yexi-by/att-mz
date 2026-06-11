@@ -181,6 +181,107 @@ def scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResu
     )
 
 
+def native_scan_summary_scope_hash(result: NativeRuleCandidatesResult, summary_key: str) -> str:
+    """读取 native 规则候选摘要里的 scope_hash。"""
+    summary = ensure_json_object(
+        result.scan_summary.get(summary_key),
+        f"native_rule_candidates_result.scan_summary.{summary_key}",
+    )
+    value = summary.get("scope_hash")
+    if not isinstance(value, str) or len(value) != 64 or not set(value) <= _HEX_DIGITS:
+        raise TypeError(f"native_rule_candidates_result.scan_summary.{summary_key}.scope_hash 必须是 64 位 SHA-256 十六进制字符串")
+    return value
+
+
+def collect_native_plugin_config_scope_hash(*, game_data: GameData, text_rules: TextRules) -> str:
+    """读取 Rust 插件参数规则确认范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(
+            build_native_plugin_config_candidates_payload(
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+        ),
+        "plugin_config",
+    )
+
+
+def collect_native_event_command_scope_hash(
+    *,
+    game_data: GameData,
+    command_codes: set[int] | frozenset[int],
+) -> str:
+    """读取 Rust 事件指令规则确认范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(
+            build_native_event_command_candidates_payload(
+                event_command_data_files=build_native_event_command_data_files(game_data),
+                command_codes=command_codes,
+            )
+        ),
+        "event_commands",
+    )
+
+
+def collect_native_note_tag_scope_hash(*, game_data: GameData, text_rules: TextRules) -> str:
+    """读取 Rust Note 标签规则确认范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(build_native_note_tag_candidates_payload(game_data, text_rules)),
+        "note_tags",
+    )
+
+
+def collect_native_mv_virtual_namebox_scope_hash(*, game_data: GameData) -> str:
+    """读取 Rust MV 虚拟名字框规则确认范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(build_native_mv_virtual_namebox_candidates_payload(game_data=game_data)),
+        "mv_virtual_namebox",
+    )
+
+
+def collect_native_placeholder_scope_hash(
+    *,
+    translation_data_map: dict[str, TranslationData],
+    text_rules: TextRules,
+) -> str:
+    """读取 Rust 普通占位符规则确认范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(build_native_placeholder_candidates_payload(translation_data_map, text_rules)),
+        "placeholders",
+    )
+
+
+def collect_native_structured_placeholder_scope_hash(
+    *,
+    translation_data_map: dict[str, TranslationData],
+    text_rules: TextRules,
+) -> str:
+    """读取 Rust 结构化占位符规则确认范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(
+            build_native_structured_placeholder_candidates_payload(translation_data_map, text_rules)
+        ),
+        "structured_placeholders",
+    )
+
+
+def collect_native_nonstandard_data_scope_hash(
+    *,
+    nonstandard_data_files: dict[str, JsonValue],
+    text_rules: TextRules,
+) -> str:
+    """读取 Rust 非标准 data 候选范围哈希。"""
+    return native_scan_summary_scope_hash(
+        scan_native_rule_candidates(
+            build_native_nonstandard_data_candidates_payload(
+                nonstandard_data_files=nonstandard_data_files,
+                text_rules=text_rules,
+            )
+        ),
+        "nonstandard_data",
+    )
+
+
 def evaluate_native_scope_gate(payload: JsonObject) -> NativeScopeGateResult:
     """调用 Rust 评估范围门禁。"""
     native_module = _load_native_scope_index_module()
@@ -367,6 +468,7 @@ def build_native_placeholder_candidates_payload(
                 )
     return {
         "placeholder_texts": placeholder_texts,
+        "placeholder_scope_hash_requested": True,
         "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
     }
 
@@ -389,6 +491,7 @@ def build_native_structured_placeholder_candidates_payload(
                 )
     return {
         "structured_placeholder_texts": structured_placeholder_texts,
+        "structured_placeholder_scope_hash_requested": True,
         "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
     }
 
@@ -693,10 +796,18 @@ __all__ = [
     "build_native_rule_candidate_text_rules_payload",
     "build_native_scope_index",
     "build_native_structured_placeholder_candidates_payload",
+    "collect_native_event_command_scope_hash",
+    "collect_native_mv_virtual_namebox_scope_hash",
+    "collect_native_nonstandard_data_scope_hash",
+    "collect_native_note_tag_scope_hash",
+    "collect_native_placeholder_scope_hash",
+    "collect_native_plugin_config_scope_hash",
+    "collect_native_structured_placeholder_scope_hash",
     "evaluate_native_scope_gate",
     "inspect_native_scope_index_storage",
     "mv_virtual_namebox_rule_records_to_native_rules",
     "native_schema_fingerprint",
+    "native_scan_summary_scope_hash",
     "rebuild_native_scope_index_storage",
     "scan_native_rule_candidates",
     "write_native_scope_index_storage",

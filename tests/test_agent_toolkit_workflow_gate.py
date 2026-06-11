@@ -10,6 +10,7 @@ from app.llm.schemas import ChatMessage
 from app.persistence.sql import TEXT_INDEX_META_KEY, TEXT_INDEX_META_TABLE_NAME
 from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 from app.terminology import TerminologyPromptIndex
 
 @pytest.mark.asyncio
@@ -112,7 +113,10 @@ async def test_workflow_gate_blocks_external_rule_hits_outside_writable_scope(
         )
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            scope_hash=plugin_rule_scope_hash(game_data),
+            scope_hash=collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(
@@ -614,11 +618,11 @@ async def test_translate_max_items_warm_index_uses_placeholder_gate_metadata(
     rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
     assert rebuild_report.status == "ok"
     monkeypatch.setattr(
-        "app.application.flow_gate.collect_native_placeholder_candidate_details",
+        "app.application.flow_gate.collect_native_placeholder_candidate_scan",
         forbidden_placeholder_scan,
     )
     monkeypatch.setattr(
-        "app.application.flow_gate.collect_native_structured_placeholder_candidate_details",
+        "app.application.flow_gate.collect_native_structured_placeholder_candidate_scan",
         forbidden_structured_placeholder_scan,
     )
     monkeypatch.setattr(TranslationHandler, "_run_text_translation_batches", run_batches_with_prepared_state)

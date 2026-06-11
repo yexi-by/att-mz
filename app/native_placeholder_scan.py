@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 from app.native_scope_index import (
     build_native_rule_candidate_text_rules_payload,
     build_native_placeholder_candidates_payload,
+    native_scan_summary_scope_hash,
     scan_native_rule_candidates,
 )
 from app.rmmz.schema import TranslationData
@@ -20,29 +22,52 @@ from app.rmmz.text_rules import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class NativePlaceholderCandidateScan:
+    """普通占位符 native 候选扫描结果。"""
+
+    candidate_details: JsonArray
+    scope_hash: str
+
+
 def collect_native_placeholder_candidate_details(
     *,
     translation_data_map: dict[str, TranslationData],
     text_rules: TextRules,
 ) -> JsonArray:
     """调用 native 普通占位符候选入口并返回当前候选明细。"""
+    return collect_native_placeholder_candidate_scan(
+        translation_data_map=translation_data_map,
+        text_rules=text_rules,
+    ).candidate_details
+
+
+def collect_native_placeholder_candidate_scan(
+    *,
+    translation_data_map: dict[str, TranslationData],
+    text_rules: TextRules,
+) -> NativePlaceholderCandidateScan:
+    """调用 native 普通占位符候选入口并返回候选明细和范围哈希。"""
     payload = build_native_placeholder_candidates_payload(translation_data_map, text_rules)
     result = scan_native_rule_candidates(payload)
     summary_value = result.scan_summary.get("placeholders")
     if summary_value is None:
-        return []
+        raise RuntimeError("native placeholders 扫描结果缺少 placeholders 摘要，请重新执行 uv run maturin develop")
     summary = ensure_json_object(summary_value, "native_placeholder_candidates.placeholders")
     raw_candidates = ensure_json_array(
         summary.get("candidates", []),
         "native_placeholder_candidates.placeholders.candidates",
     )
-    return [
-        _normalize_native_placeholder_candidate_detail(
-            ensure_json_object(item, f"native_placeholder_candidates.candidates[{index}]"),
-            f"native_placeholder_candidates.candidates[{index}]",
-        )
-        for index, item in enumerate(raw_candidates)
-    ]
+    return NativePlaceholderCandidateScan(
+        candidate_details=[
+            _normalize_native_placeholder_candidate_detail(
+                ensure_json_object(item, f"native_placeholder_candidates.candidates[{index}]"),
+                f"native_placeholder_candidates.candidates[{index}]",
+            )
+            for index, item in enumerate(raw_candidates)
+        ],
+        scope_hash=native_scan_summary_scope_hash(result, "placeholders"),
+    )
 
 
 def collect_native_placeholder_candidate_details_from_entries(
@@ -51,6 +76,18 @@ def collect_native_placeholder_candidate_details_from_entries(
     text_rules: TextRules,
 ) -> JsonArray:
     """用轻量索引正文条目调用 native 普通占位符候选入口。"""
+    return collect_native_placeholder_candidate_scan_from_entries(
+        entries=entries,
+        text_rules=text_rules,
+    ).candidate_details
+
+
+def collect_native_placeholder_candidate_scan_from_entries(
+    *,
+    entries: Iterable[tuple[str, Sequence[str]]],
+    text_rules: TextRules,
+) -> NativePlaceholderCandidateScan:
+    """用轻量索引正文条目调用 native 普通占位符候选入口并返回范围哈希。"""
     placeholder_texts: JsonArray = [
         {
             "source_name": f"{location_path}#{line_index}",
@@ -62,24 +99,28 @@ def collect_native_placeholder_candidate_details_from_entries(
     result = scan_native_rule_candidates(
         {
             "placeholder_texts": placeholder_texts,
+            "placeholder_scope_hash_requested": True,
             "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
         }
     )
     summary_value = result.scan_summary.get("placeholders")
     if summary_value is None:
-        return []
+        raise RuntimeError("native placeholders 扫描结果缺少 placeholders 摘要，请重新执行 uv run maturin develop")
     summary = ensure_json_object(summary_value, "native_placeholder_candidates.placeholders")
     raw_candidates = ensure_json_array(
         summary.get("candidates", []),
         "native_placeholder_candidates.placeholders.candidates",
     )
-    return [
-        _normalize_native_placeholder_candidate_detail(
-            ensure_json_object(item, f"native_placeholder_candidates.candidates[{index}]"),
-            f"native_placeholder_candidates.candidates[{index}]",
-        )
-        for index, item in enumerate(raw_candidates)
-    ]
+    return NativePlaceholderCandidateScan(
+        candidate_details=[
+            _normalize_native_placeholder_candidate_detail(
+                ensure_json_object(item, f"native_placeholder_candidates.candidates[{index}]"),
+                f"native_placeholder_candidates.candidates[{index}]",
+            )
+            for index, item in enumerate(raw_candidates)
+        ],
+        scope_hash=native_scan_summary_scope_hash(result, "placeholders"),
+    )
 
 
 def count_uncovered_placeholder_candidate_details(candidate_details: JsonArray) -> int:
@@ -124,7 +165,10 @@ def _normalize_native_placeholder_candidate_detail(candidate: JsonObject, label:
 
 
 __all__: list[str] = [
+    "NativePlaceholderCandidateScan",
     "collect_native_placeholder_candidate_details",
     "collect_native_placeholder_candidate_details_from_entries",
+    "collect_native_placeholder_candidate_scan",
+    "collect_native_placeholder_candidate_scan_from_entries",
     "count_uncovered_placeholder_candidate_details",
 ]

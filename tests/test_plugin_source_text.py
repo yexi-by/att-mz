@@ -25,6 +25,7 @@ from app.config.schemas import Setting, TextRulesSetting
 from app.native_javascript_ast import NativeRuntimeLiteralIssueFact, NativeRuntimeLiteralIssueInput
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
+    collect_native_plugin_config_scope_hash,
     scan_native_rule_candidates as real_scan_native_rule_candidates,
 )
 from app.persistence import GameRegistry
@@ -57,7 +58,6 @@ from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    plugin_rule_scope_hash,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_scope import TextScopeResult
@@ -241,7 +241,10 @@ async def _install_minimal_external_workflow_reviews(
         )
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            scope_hash=plugin_rule_scope_hash(game_data),
+            scope_hash=collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(

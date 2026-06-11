@@ -27,8 +27,6 @@ from app.application.write_plan_applier import RuntimeWritePlan, WritePlanApplie
 
 from app.application.flow_gate import note_tag_rule_scope_hash_for_text_rules, structured_placeholder_scope_hash
 
-from app.application.flow_gate import event_command_rule_scope_hash_for_setting
-
 from app.application.font_replacement import (
     read_plugins_js_file,
     restore_font_references_from_origin_backups,
@@ -66,7 +64,6 @@ from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    plugin_rule_scope_hash,
 )
 
 from app.rmmz import (
@@ -104,10 +101,7 @@ from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_
 
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 
-from app.text_facts import (
-    read_current_text_fact_translation_data_map,
-    read_current_text_fact_translation_items_by_paths,
-)
+from app.text_facts import read_current_text_fact_translation_items_by_paths
 
 from app.text_index import rebuild_text_index_native_storage
 
@@ -265,39 +259,29 @@ async def _prepare_write_gate_session(
         ),
         structured_placeholder_rules=(),
     )
-    await session.replace_rule_review_state(
-        rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-        scope_hash=plugin_rule_scope_hash(game_data),
-        reviewed_empty=True,
-    )
-    await session.replace_rule_review_state(
-        rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-        scope_hash=event_command_rule_scope_hash_for_setting(
-            game_data=game_data,
-            setting=setting,
-        ),
-        reviewed_empty=True,
-    )
-    await session.replace_rule_review_state(
-        rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-        scope_hash=note_tag_rule_scope_hash_for_text_rules(
-            game_data=game_data,
-            text_rules=text_rules,
-        ),
-        reviewed_empty=True,
-    )
-    _ = await rebuild_text_index_native_storage(
+    metadata = await rebuild_text_index_native_storage(
         session=session,
         setting=setting,
         text_rules=text_rules,
     )
-    translation_data_map = await read_current_text_fact_translation_data_map(session)
+    await session.replace_rule_review_state(
+        rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+        scope_hash=metadata.workflow_gate_scope_hashes[PLUGIN_TEXT_RULE_DOMAIN],
+        reviewed_empty=True,
+    )
+    await session.replace_rule_review_state(
+        rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+        scope_hash=metadata.workflow_gate_scope_hashes[EVENT_COMMAND_TEXT_RULE_DOMAIN],
+        reviewed_empty=True,
+    )
+    await session.replace_rule_review_state(
+        rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+        scope_hash=metadata.workflow_gate_scope_hashes[NOTE_TAG_TEXT_RULE_DOMAIN],
+        reviewed_empty=True,
+    )
     await session.replace_rule_review_state(
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=structured_placeholder_scope_hash(
-            translation_data_map=translation_data_map,
-            structured_rules=(),
-        ),
+        scope_hash=metadata.workflow_gate_scope_hashes["workflow_gate:structured_placeholder_rules:scope_hash"],
         reviewed_empty=True,
     )
     await session.replace_rule_review_state(
@@ -465,7 +449,6 @@ __all__ = (
     "WritePlanApplier",
     "note_tag_rule_scope_hash_for_text_rules",
     "structured_placeholder_scope_hash",
-    "event_command_rule_scope_hash_for_setting",
     "read_plugins_js_file",
     "restore_font_references_from_origin_backups",
     "SettingOverrides",
@@ -493,7 +476,6 @@ __all__ = (
     "PLACEHOLDER_RULE_DOMAIN",
     "PLUGIN_TEXT_RULE_DOMAIN",
     "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
-    "plugin_rule_scope_hash",
     "DataTextExtraction",
     "GameFileView",
     "load_active_runtime_game_data",

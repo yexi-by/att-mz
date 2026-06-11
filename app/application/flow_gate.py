@@ -11,10 +11,11 @@ from app.application.errors import WorkflowGateError
 from app.config.schemas import Setting, TextRulesSetting
 from app.event_command_text import resolve_event_command_codes
 from app.native_placeholder_scan import (
-    collect_native_placeholder_candidate_details,
+    collect_native_placeholder_candidate_scan,
     count_uncovered_placeholder_candidate_details,
 )
 from app.native_structured_placeholder_scan import (
+    collect_native_structured_placeholder_candidate_scan,
     collect_native_structured_placeholder_candidate_details,
     count_uncovered_structured_placeholder_candidate_details,
 )
@@ -34,9 +35,15 @@ from app.plugin_source_text import (
 from app.rmmz.commands import iter_all_commands
 from app.rmmz.control_codes import StructuredPlaceholderRule
 from app.rmmz.game_file_view import GameFileView
-from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.rmmz.schema import GameData, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
+from app.native_scope_index import (
+    collect_native_event_command_scope_hash,
+    collect_native_mv_virtual_namebox_scope_hash,
+    collect_native_placeholder_scope_hash,
+    collect_native_plugin_config_scope_hash,
+    collect_native_structured_placeholder_scope_hash,
+)
 from app.rule_review_decision import (
     RuleCoverageResult,
     RuleReviewDecision as CandidateReviewDecision,
@@ -54,10 +61,6 @@ from app.rule_review import (
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
-    event_command_rule_scope_hash_for_codes,
-    placeholder_rule_scope_hash,
-    plugin_rule_scope_hash,
-    structured_placeholder_rule_scope_hash,
 )
 from app.terminology import collect_terminology_bundle_errors
 from app.text_index import read_current_text_index_gate_facts, text_index_gate_facts_to_workflow_gate_issues
@@ -359,7 +362,7 @@ def event_command_rule_scope_hash_for_command_codes(
     """按指定事件指令编码计算空规则确认范围哈希。"""
     if not command_codes:
         raise ValueError("事件指令编码不能为空")
-    return event_command_rule_scope_hash_for_codes(game_data=game_data, command_codes=command_codes)
+    return collect_native_event_command_scope_hash(game_data=game_data, command_codes=command_codes)
 
 
 def count_note_tag_rule_candidates(*, game_data: GameData, text_rules: TextRules) -> int:
@@ -379,8 +382,7 @@ def note_tag_rule_scope_hash_for_text_rules(*, game_data: GameData, text_rules: 
 
 def mv_virtual_namebox_rule_scope_hash_for_game_data(game_data: GameData) -> str:
     """按 native MV 虚拟名字框候选计算空规则确认范围哈希。"""
-    native_scan = scan_native_mv_virtual_namebox(game_data=game_data)
-    return native_scan.scope_hash
+    return collect_native_mv_virtual_namebox_scope_hash(game_data=game_data)
 
 
 def normal_placeholder_scope_hash(
@@ -389,12 +391,13 @@ def normal_placeholder_scope_hash(
     text_rules: TextRules,
 ) -> str:
     """计算普通占位符空规则确认依赖的当前候选哈希。"""
-    coverage = build_normal_placeholder_coverage_result(
+    scope_hash = collect_native_placeholder_scope_hash(
         translation_data_map=translation_data_map,
         text_rules=text_rules,
-        rule_count=len(text_rules.custom_placeholder_rules),
     )
-    return coverage.scope_hash
+    if not scope_hash:
+        raise RuntimeError("native 普通占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
+    return scope_hash
 
 
 def structured_placeholder_scope_hash(
@@ -404,13 +407,18 @@ def structured_placeholder_scope_hash(
     text_rules: TextRules | None = None,
 ) -> str:
     """计算结构化占位符空规则确认依赖的当前候选哈希。"""
-    coverage = build_structured_placeholder_coverage_result(
-        translation_data_map=translation_data_map,
-        structured_rules=structured_rules,
-        rule_count=len(structured_rules),
-        text_rules=text_rules,
+    active_text_rules = (
+        text_rules
+        if text_rules is not None
+        else _structured_placeholder_candidate_text_rules(structured_rules)
     )
-    return coverage.scope_hash
+    scope_hash = collect_native_structured_placeholder_scope_hash(
+        translation_data_map=translation_data_map,
+        text_rules=active_text_rules,
+    )
+    if not scope_hash:
+        raise RuntimeError("native 结构化占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
+    return scope_hash
 
 
 def build_normal_placeholder_coverage_result(
@@ -420,14 +428,17 @@ def build_normal_placeholder_coverage_result(
     rule_count: int,
 ) -> RuleCoverageResult:
     """构建普通占位符候选覆盖的完整内部结果。"""
-    candidate_details = collect_native_placeholder_candidate_details(
+    scan = collect_native_placeholder_candidate_scan(
         translation_data_map=translation_data_map,
         text_rules=text_rules,
     )
+    candidate_details = scan.candidate_details
     uncovered_count = count_uncovered_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 普通占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
     return RuleCoverageResult(
         rule_domain=PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        scope_hash=scan.scope_hash,
         rule_count=rule_count,
         candidate_count=len(candidate_details),
         covered_count=len(candidate_details) - uncovered_count,
@@ -449,14 +460,17 @@ def build_structured_placeholder_coverage_result(
         if text_rules is not None
         else _structured_placeholder_candidate_text_rules(structured_rules)
     )
-    details = collect_native_structured_placeholder_candidate_details(
+    scan = collect_native_structured_placeholder_candidate_scan(
         translation_data_map=translation_data_map,
         text_rules=active_text_rules,
     )
+    details = scan.candidate_details
     uncovered_count = count_uncovered_structured_placeholder_candidate_details(details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 结构化占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
     return RuleCoverageResult(
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=structured_placeholder_rule_scope_hash(details),
+        scope_hash=scan.scope_hash,
         rule_count=rule_count,
         candidate_count=len(details),
         covered_count=len(details) - uncovered_count,
@@ -529,7 +543,10 @@ async def _external_rule_gate_errors(
             await _empty_rule_review_errors(
                 session=session,
                 rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-                current_scope_hash=plugin_rule_scope_hash(game_data),
+                current_scope_hash=collect_native_plugin_config_scope_hash(
+                    game_data=game_data,
+                    text_rules=text_rules,
+                ),
                 label="插件规则",
             )
         )

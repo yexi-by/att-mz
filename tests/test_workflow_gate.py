@@ -11,11 +11,11 @@ from app.application.handler import TranslationHandler, TranslationRunLimits
 from app.application.summaries import TextTranslationSummary
 from app.application.flow_gate import (
     normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
     structured_placeholder_scope_hash,
 )
 from app.utils.config_loader_utils import load_setting
 from app.llm import LLMHandler
-from app.note_tag_text.exporter import collect_note_tag_candidates
 from app.persistence import GameRegistry
 from app.plugin_text import build_plugin_hash
 from app.rmmz.loader import load_translation_source_game_data
@@ -25,7 +25,6 @@ from app.rule_review import (
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    note_tag_rule_scope_hash_for_candidates,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_facts import read_current_text_fact_translation_data_map
@@ -90,7 +89,6 @@ async def _install_non_plugin_source_gate_prerequisites(
         raise TypeError("测试插件名必须是字符串")
     setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
     text_rules = TextRules.from_setting(setting.text_rules)
-    note_candidates = collect_note_tag_candidates(game_data=game_data, text_rules=text_rules)
     async with await registry.open_game(game_title) as session:
         await session.replace_plugin_text_rules(
             [
@@ -116,7 +114,10 @@ async def _install_non_plugin_source_gate_prerequisites(
         )
         await session.replace_rule_review_state(
             rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-            scope_hash=note_tag_rule_scope_hash_for_candidates(note_candidates),
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_terminology_bundle(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 
 @pytest.mark.asyncio
 async def test_doctor_uses_fake_llm_check_without_real_request(tmp_path: Path) -> None:
@@ -76,7 +77,10 @@ async def test_doctor_respects_reviewed_empty_rule_state_until_scope_changes(
     async with await registry.open_game("テストゲーム") as session:
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            scope_hash=plugin_rule_scope_hash(game_data),
+            scope_hash=collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(

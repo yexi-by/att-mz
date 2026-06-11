@@ -4,10 +4,10 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::RuleCandidateTextRules;
+use super::fingerprint::stable_json_fingerprint;
 use super::plugin_source::{
     compile_rule_candidate_text_rules, normalize_extraction_text,
     should_translate_plugin_source_text,
@@ -352,10 +352,10 @@ fn candidate_file_pattern(file_name: &str) -> String {
 }
 
 fn note_tag_rule_scope_hash(candidates: &[NoteTagCandidateOutput]) -> Result<String, String> {
-    let text = serde_json::to_string(candidates)
-        .map_err(|error| format!("Note 标签 scope hash 序列化失败: {error}"))?;
-    let digest = Sha256::digest(text.as_bytes());
-    Ok(format!("{digest:x}"))
+    stable_json_fingerprint(
+        &serde_json::to_value(candidates)
+            .map_err(|error| format!("Note 标签 scope hash 序列化失败: {error}"))?,
+    )
 }
 
 fn note_file_pattern_matches(file_name: &str, file_pattern: &str) -> bool {

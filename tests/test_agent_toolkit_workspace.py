@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 
 from app.native_scope_index import (
     NativeRuleCandidatesResult,
@@ -1348,7 +1349,10 @@ async def test_validate_agent_workspace_respects_confirmed_empty_external_rule_s
         )
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            scope_hash=plugin_rule_scope_hash(game_data),
+            scope_hash=collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(

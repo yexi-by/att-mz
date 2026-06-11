@@ -46,11 +46,11 @@ from app.native_quality import (
     native_thread_count,
 )
 from app.native_placeholder_scan import (
-    collect_native_placeholder_candidate_details,
+    collect_native_placeholder_candidate_scan,
     count_uncovered_placeholder_candidate_details,
 )
 from app.native_structured_placeholder_scan import (
-    collect_native_structured_placeholder_candidate_details,
+    collect_native_structured_placeholder_candidate_scan,
     count_uncovered_structured_placeholder_candidate_details,
 )
 from app.regex_contract import RegexContractValidationError
@@ -118,8 +118,6 @@ from app.rmmz.text_layout import (
 from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    placeholder_rule_scope_hash,
-    structured_placeholder_rule_scope_hash,
 )
 from app.rule_review_decision import RuleCoverageResult
 from app.translation.text_structure import (
@@ -2515,18 +2513,21 @@ def _build_structured_placeholder_coverage_report_with_context(
             details={},
         )
 
-    candidate_details = collect_native_structured_placeholder_candidate_details(
+    scan = collect_native_structured_placeholder_candidate_scan(
         translation_data_map=translation_data_map,
         text_rules=text_rules,
     )
+    candidate_details = scan.candidate_details
     uncovered_count = count_uncovered_structured_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 结构化占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
     covered_count = len(candidate_details) - uncovered_count
     warnings: list[AgentIssue] = []
     if uncovered_count:
         warnings.append(issue("structured_placeholder_uncovered", f"发现 {uncovered_count} 个未被结构化规则覆盖的协议外壳候选"))
     coverage = RuleCoverageResult(
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=structured_placeholder_rule_scope_hash(candidate_details),
+        scope_hash=scan.scope_hash,
         rule_count=len(active_structured_rules),
         candidate_count=len(candidate_details),
         covered_count=covered_count,
@@ -2667,17 +2668,20 @@ def _build_placeholder_coverage_report_with_context(
         custom_placeholder_rules=custom_rules,
         structured_placeholder_rules=structured_rules,
     )
-    candidate_details = collect_native_placeholder_candidate_details(
+    scan = collect_native_placeholder_candidate_scan(
         translation_data_map=translation_data_map,
         text_rules=text_rules,
     )
+    candidate_details = scan.candidate_details
     uncovered_count = count_uncovered_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 普通占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
     warnings: list[AgentIssue] = []
     if uncovered_count:
         warnings.append(issue("placeholder_uncovered", f"发现 {uncovered_count} 个未覆盖的疑似自定义控制符"))
     coverage = RuleCoverageResult(
         rule_domain=PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        scope_hash=scan.scope_hash,
         rule_count=len(custom_rules),
         candidate_count=len(candidate_details),
         covered_count=len(candidate_details) - uncovered_count,

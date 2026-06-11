@@ -1,13 +1,6 @@
-"""外部文本规则审查状态与输入范围哈希工具。"""
+"""外部文本规则审查领域定义。"""
 
-import hashlib
-import json
 from typing import Literal
-
-from app.plugin_text import build_plugins_file_hash
-from app.rmmz.commands import iter_all_commands
-from app.rmmz.schema import GameData
-from app.rmmz.text_rules import JsonArray, JsonValue
 
 type RuleReviewDomain = Literal[
     "plugin_text",
@@ -24,58 +17,6 @@ NOTE_TAG_TEXT_RULE_DOMAIN: RuleReviewDomain = "note_tag_text"
 PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "placeholder_rules"
 STRUCTURED_PLACEHOLDER_RULE_DOMAIN: RuleReviewDomain = "structured_placeholder_rules"
 MV_VIRTUAL_NAMEBOX_RULE_DOMAIN: RuleReviewDomain = "mv_virtual_namebox"
-
-
-def plugin_rule_scope_hash(game_data: GameData) -> str:
-    """计算插件规则空结果审查依赖的当前插件配置哈希。"""
-    return build_plugins_file_hash(game_data.plugins_js)
-
-
-def event_command_rule_scope_hash_for_codes(*, game_data: GameData, command_codes: frozenset[int]) -> str:
-    """按指定事件指令编码计算空结果审查依赖的参数哈希。"""
-    command_snapshots: JsonArray = []
-    for path, _display_name, command in iter_all_commands(game_data):
-        if command.code not in command_codes:
-            continue
-        command_snapshots.append(
-            {
-                "path": [part for part in path],
-                "code": command.code,
-                "parameters": [parameter for parameter in command.parameters],
-            }
-        )
-    return _stable_json_hash(
-        {
-            "command_codes": [code for code in sorted(command_codes)],
-            "commands": command_snapshots,
-        }
-    )
-
-
-def note_tag_rule_scope_hash_for_candidates(candidates: JsonArray) -> str:
-    """按当前 Note 标签候选集合计算空结果审查依赖的哈希。"""
-    return _stable_json_hash(candidates)
-
-
-def placeholder_rule_scope_hash(payload: JsonValue) -> str:
-    """计算普通占位符空结果审查依赖的当前候选哈希。"""
-    return _stable_json_hash(payload)
-
-
-def structured_placeholder_rule_scope_hash(payload: JsonValue) -> str:
-    """计算结构化占位符空结果审查依赖的当前候选哈希。"""
-    return _stable_json_hash(payload)
-
-
-def mv_virtual_namebox_rule_scope_hash(payload: JsonValue) -> str:
-    """计算 MV 虚拟名字框空规则审查依赖的当前候选哈希。"""
-    return _stable_json_hash(payload)
-
-
-def _stable_json_hash(payload: JsonValue) -> str:
-    """对 JSON 兼容载荷计算稳定哈希。"""
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def parse_rule_review_domain(value: str) -> RuleReviewDomain:
@@ -103,11 +44,5 @@ __all__: list[str] = [
     "MV_VIRTUAL_NAMEBOX_RULE_DOMAIN",
     "RuleReviewDomain",
     "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
-    "event_command_rule_scope_hash_for_codes",
-    "note_tag_rule_scope_hash_for_candidates",
     "parse_rule_review_domain",
-    "placeholder_rule_scope_hash",
-    "plugin_rule_scope_hash",
-    "mv_virtual_namebox_rule_scope_hash",
-    "structured_placeholder_rule_scope_hash",
 ]

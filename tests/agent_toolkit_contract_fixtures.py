@@ -116,10 +116,6 @@ from app.rule_review import (
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-    mv_virtual_namebox_rule_scope_hash,
-    placeholder_rule_scope_hash,
-    plugin_rule_scope_hash,
-    structured_placeholder_rule_scope_hash,
 )
 
 from app.text_scope import TextScopeEntry, TextScopeResult
@@ -661,10 +657,6 @@ __all__ = (
     "PLUGIN_TEXT_RULE_DOMAIN",
     "STRUCTURED_PLACEHOLDER_RULE_DOMAIN",
     "MV_VIRTUAL_NAMEBOX_RULE_DOMAIN",
-    "mv_virtual_namebox_rule_scope_hash",
-    "placeholder_rule_scope_hash",
-    "plugin_rule_scope_hash",
-    "structured_placeholder_rule_scope_hash",
     "TextScopeEntry",
     "TextScopeResult",
     "TranslationBatch",

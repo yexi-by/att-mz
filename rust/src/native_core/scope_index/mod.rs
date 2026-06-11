@@ -12,6 +12,7 @@ use super::pool;
 
 mod contracts;
 mod event_commands;
+mod fingerprint;
 mod mv_virtual_namebox;
 mod nonstandard_data;
 mod note_tags;
@@ -24,6 +25,7 @@ mod storage;
 mod structured_placeholders;
 
 use self::contracts::{ContractVersionsOutput, current_contract_versions};
+use self::fingerprint::stable_json_fingerprint;
 use self::plugin_source::{
     PluginSourceFileInput, PluginSourceTextRuleInput, scan_plugin_source_rule_candidates_with_rules,
 };
@@ -79,7 +81,11 @@ struct RuleCandidatesPayload {
     #[serde(default)]
     placeholder_texts: Vec<placeholders::PlaceholderTextInput>,
     #[serde(default)]
+    placeholder_scope_hash_requested: bool,
+    #[serde(default)]
     structured_placeholder_texts: Vec<structured_placeholders::StructuredPlaceholderTextInput>,
+    #[serde(default)]
+    structured_placeholder_scope_hash_requested: bool,
     #[serde(default)]
     note_tag_data_files: BTreeMap<String, Value>,
     note_tag_rule_validation: Option<note_tags::NoteTagRuleValidationInput>,
@@ -606,7 +612,9 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
         nonstandard_data_leaves,
         nonstandard_data_rule_coverage,
         placeholder_texts,
+        placeholder_scope_hash_requested,
         structured_placeholder_texts,
+        structured_placeholder_scope_hash_requested,
         note_tag_data_files,
         note_tag_rule_validation,
         event_command_data_files,
@@ -652,13 +660,14 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
         );
         candidates.extend(plugin_source_scan.candidates);
     }
-    if !placeholder_texts.is_empty() {
+    if !placeholder_texts.is_empty() || placeholder_scope_hash_requested {
         let text_rules = text_rules
             .clone()
             .ok_or_else(|| "规则候选扫描缺少普通占位符提取文本规则 text_rules".to_string())?;
         let placeholder_scan =
             placeholders::scan_placeholder_rule_candidates(&placeholder_texts, text_rules)?;
         let candidate_count = placeholder_scan.candidates.len();
+        let scope_hash = stable_json_fingerprint(&json!(placeholder_scan.candidates))?;
         let covered_count = placeholder_scan
             .candidates
             .iter()
@@ -682,13 +691,14 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "candidates": placeholder_scan.candidates,
                 "covered_count": covered_count,
                 "custom_covered_count": custom_covered_count,
+                "scope_hash": scope_hash,
                 "scanned_text_count": placeholder_scan.scanned_text_count,
                 "standard_covered_count": standard_covered_count,
                 "uncovered_count": candidate_count - covered_count,
             }),
         );
     }
-    if !structured_placeholder_texts.is_empty() {
+    if !structured_placeholder_texts.is_empty() || structured_placeholder_scope_hash_requested {
         let text_rules = text_rules
             .clone()
             .ok_or_else(|| "规则候选扫描缺少结构化占位符提取文本规则 text_rules".to_string())?;
@@ -697,6 +707,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
             text_rules,
         )?;
         let candidate_count = structured_scan.candidates.len();
+        let scope_hash = stable_json_fingerprint(&json!(structured_scan.candidates))?;
         let covered_count = structured_scan
             .candidates
             .iter()
@@ -709,6 +720,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "candidate_count": candidate_count,
                 "candidates": structured_scan.candidates,
                 "covered_count": covered_count,
+                "scope_hash": scope_hash,
                 "scanned_text_count": structured_scan.scanned_text_count,
                 "uncovered_count": candidate_count - covered_count,
             }),
@@ -741,6 +753,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "candidate_value_count": note_tag_scan.candidate_value_count,
                 "candidates": note_tag_scan.candidates,
                 "hit_details": note_tag_scan.hit_details,
+                "scope_hash": stable_json_fingerprint(&json!(note_tag_scan.candidates))?,
                 "scanned_source_count": note_tag_scan.scanned_source_count,
                 "source_details": note_tag_scan.source_details,
                 "translatable_value_count": note_tag_scan.translatable_value_count,
@@ -749,6 +762,11 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
         );
     }
     if !event_command_data_files.is_empty() {
+        let scope_hash =
+            stable_json_fingerprint(&event_commands::event_command_scope_hash_payload(
+                &event_command_data_files,
+                &event_command_codes,
+            ))?;
         let event_command_scan = event_commands::scan_event_command_rule_candidates(
             &event_command_data_files,
             &event_command_codes,
@@ -764,6 +782,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "rule_summaries": event_command_scan.rule_summaries,
                 "sample_count": event_command_scan.sample_count,
                 "samples_by_code": event_command_scan.samples_by_code,
+                "scope_hash": scope_hash,
                 "scanned_command_count": event_command_scan.scanned_command_count,
             }),
         );
@@ -773,6 +792,12 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
         let text_rules = text_rules
             .clone()
             .ok_or_else(|| "规则候选扫描缺少插件参数提取文本规则 text_rules".to_string())?;
+        let scope_hash = stable_json_fingerprint(&Value::Array(
+            plugin_config_plugins
+                .iter()
+                .map(|input| input.plugin.clone())
+                .collect(),
+        ))?;
         let plugin_config_scan = plugin_config::scan_plugin_config_rule_candidates(
             &plugin_config_plugins,
             &plugin_config_rules,
@@ -786,6 +811,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "plugin_count": plugin_config_scan.plugin_count,
                 "plugins": plugin_config_scan.plugins,
                 "rule_summaries": plugin_config_scan.rule_summaries,
+                "scope_hash": scope_hash,
                 "string_leaf_count": plugin_config_scan.string_leaf_count,
             }),
         );
@@ -822,6 +848,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
             &nonstandard_data_files,
             text_rules,
         )?;
+        let scope_hash = stable_json_fingerprint(&json!(nonstandard_data_scan.candidates))?;
         scan_summary.insert(
             "nonstandard_data".to_string(),
             json!({
@@ -829,6 +856,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
                 "files": nonstandard_data_scan.file_scans,
                 "high_risk": !nonstandard_data_scan.candidates.is_empty(),
                 "nonstandard_file_count": nonstandard_data_scan.nonstandard_file_count,
+                "scope_hash": scope_hash,
                 "scanned_file_count": nonstandard_data_scan.nonstandard_file_count,
             }),
         );

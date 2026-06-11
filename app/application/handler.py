@@ -70,6 +70,7 @@ from app.event_command_text.native_validation import (
     NativeEventCommandRuleValidationContext,
     build_native_event_command_rule_validation_context,
 )
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 from app.terminology import (
     TerminologyExportSummary,
     TerminologyExtraction,
@@ -89,7 +90,6 @@ from app.persistence.repository import current_timestamp_text
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
-    plugin_rule_scope_hash,
 )
 from app.plugin_text import (
     build_native_plugin_rule_validation_context_from_import,
@@ -625,7 +625,10 @@ class TranslationHandler:
                 else:
                     await session.replace_rule_review_state(
                         rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-                        scope_hash=plugin_rule_scope_hash(game_data),
+                        scope_hash=collect_native_plugin_config_scope_hash(
+                            game_data=game_data,
+                            text_rules=text_rules,
+                        ),
                         reviewed_empty=True,
                     )
         imported_rule_count = sum(len(record.path_templates) for record in rule_records)

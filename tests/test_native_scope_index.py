@@ -1238,6 +1238,7 @@ def test_scan_native_rule_candidates_scans_event_command_candidates() -> None:
         result.scan_summary["event_commands"],
         "native_rule_candidates_result.scan_summary.event_commands",
     )
+    assert isinstance(event_summary["scope_hash"], str) and len(event_summary["scope_hash"]) == 64
     assert event_summary["command_codes"] == [357, 401]
     assert event_summary["scanned_command_count"] == 3
     assert event_summary["matched_command_count"] == 3
@@ -1331,6 +1332,7 @@ def test_scan_native_rule_candidates_scans_plugin_config_rule_hits() -> None:
     assert plugin_summary["plugin_count"] == 1
     assert plugin_summary["candidate_count"] == 2
     assert plugin_summary["string_leaf_count"] == 2
+    assert isinstance(plugin_summary["scope_hash"], str) and len(plugin_summary["scope_hash"]) == 64
     hit_details = ensure_json_array(plugin_summary["hit_details"], "plugin_config.hit_details")
     assert hit_details == [
         {
@@ -1566,6 +1568,7 @@ def test_scan_native_rule_candidates_scans_nonstandard_data_files() -> None:
     assert nonstandard_summary["nonstandard_file_count"] == 2
     assert nonstandard_summary["candidate_count"] == 2
     assert nonstandard_summary["high_risk"] is True
+    assert isinstance(nonstandard_summary["scope_hash"], str) and len(nonstandard_summary["scope_hash"]) == 64
     raw_files = ensure_json_array(nonstandard_summary["files"], "nonstandard_data.files")
     files = [
         ensure_json_object(item, f"nonstandard_data.files[{index}]")
@@ -1771,10 +1774,12 @@ def test_scan_native_rule_candidates_scans_placeholder_candidates() -> None:
         "candidates": candidates,
         "covered_count": 2,
         "custom_covered_count": 1,
+        "scope_hash": placeholder_summary["scope_hash"],
         "scanned_text_count": 2,
         "standard_covered_count": 1,
         "uncovered_count": 1,
     }
+    assert isinstance(placeholder_summary["scope_hash"], str) and len(placeholder_summary["scope_hash"]) == 64
 
 
 def test_build_native_structured_placeholder_candidates_payload_includes_texts_and_rules() -> None:
@@ -1910,9 +1915,11 @@ def test_scan_native_rule_candidates_scans_structured_placeholder_candidates() -
         "candidate_count": 4,
         "candidates": candidates,
         "covered_count": 1,
+        "scope_hash": structured_summary["scope_hash"],
         "scanned_text_count": 2,
         "uncovered_count": 3,
     }
+    assert isinstance(structured_summary["scope_hash"], str) and len(structured_summary["scope_hash"]) == 64
 
 
 def test_build_native_note_tag_candidates_payload_includes_data_and_text_rules() -> None:
@@ -1988,6 +1995,7 @@ def test_scan_native_rule_candidates_scans_note_tag_candidates() -> None:
         (candidate["file_name"], candidate["tag_name"]): candidate
         for candidate in candidates
     }
+    assert isinstance(note_summary["scope_hash"], str) and len(note_summary["scope_hash"]) == 64
 
     item_desc = candidates_by_key[("Items.json", "desc")]
     assert item_desc["hit_count"] == 2
@@ -2071,6 +2079,7 @@ def test_scan_native_rule_candidates_scans_note_tag_candidates() -> None:
         "candidate_value_count": 8,
         "candidates": candidates,
         "hit_details": hit_details,
+        "scope_hash": note_summary["scope_hash"],
         "scanned_source_count": 2,
         "source_details": source_details,
         "translatable_value_count": 6,

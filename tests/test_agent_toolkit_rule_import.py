@@ -12,7 +12,7 @@ from app.event_command_text import (
 )
 from app.note_tag_text import parse_note_tag_rule_import_text
 from app.native_note_tag_scan import collect_native_note_tag_candidate_details
-from app.note_tag_text.exporter import collect_note_tag_candidates
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 from app.persistence import TargetGameSession
 from app.persistence.records import TextFactRecord
 from app.plugin_text import parse_plugin_rule_import_text
@@ -25,7 +25,6 @@ from app.rmmz.mv_namebox import parse_mv_virtual_namebox_rule_import_text
 from app.plugin_source_text.scanner import build_plugin_source_file_hash
 from app.rmmz.schema import TranslationItem
 from app.rmmz.text_rules import get_default_text_rules
-from app.rule_review import note_tag_rule_scope_hash_for_candidates
 from app.source_residual import parse_source_residual_rule_import_text
 from app.agent_toolkit.services.rule_identity import RuleFactProbe, resolve_current_rule_fact_hits
 from app.text_facts import (
@@ -40,6 +39,14 @@ def _json_int_for_assert(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise AssertionError(f"{label} 必须是整数")
     return value
+
+
+def test_rule_review_no_longer_exports_python_scope_hash_helpers() -> None:
+    """scope hash 只能来自 Rust/native 事实源。"""
+    import app.rule_review as rule_review
+
+    assert not hasattr(rule_review, "plugin_rule_scope_hash")
+    assert not hasattr(rule_review, "note_tag_rule_scope_hash_for_candidates")
 
 
 def test_plugin_rule_import_accepts_integer_string_index() -> None:
@@ -350,8 +357,13 @@ async def test_import_empty_plugin_rules_requires_explicit_empty_confirmation(
     assert summary.deleted_translation_items == 1
     assert summary.deleted_translation_backup_path
     assert translated_items == []
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
+    text_rules = get_default_text_rules()
     assert state is not None
-    assert state.scope_hash == plugin_rule_scope_hash(await load_active_runtime_game_data(minimal_game_dir))
+    assert state.scope_hash == collect_native_plugin_config_scope_hash(
+        game_data=game_data,
+        text_rules=text_rules,
+    )
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("app_home_with_example_setting")
 async def test_import_plugin_rules_rejects_english_protocol_value_paths(
@@ -1956,7 +1968,7 @@ async def test_import_empty_placeholder_rules_uses_full_candidate_hash(
         text_rules=text_rules,
         rule_count=0,
     )
-    sampled_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
+    sampled_hash = "stale-sampled-placeholder-hash"
 
     assert report.status == "warning"
     assert coverage.candidate_count > 100
@@ -2236,7 +2248,7 @@ async def test_import_empty_structured_placeholder_rules_uses_full_candidate_has
         structured_rules=text_rules.structured_placeholder_rules,
         rule_count=0,
     )
-    sampled_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
+    sampled_hash = "stale-sampled-structured-placeholder-hash"
 
     assert report.status == "warning"
     assert coverage.candidate_count > 100
@@ -2342,7 +2354,7 @@ async def test_placeholder_candidate_review_rejects_sampled_hash(
             text_rules=text_rules,
             rule_count=0,
         )
-        sampled_hash = placeholder_rule_scope_hash(coverage.candidates[:100])
+        sampled_hash = "stale-sampled-placeholder-hash"
         await session.replace_rule_review_state(
             rule_domain=PLACEHOLDER_RULE_DOMAIN,
             scope_hash=sampled_hash,
@@ -2401,7 +2413,7 @@ async def test_structured_placeholder_candidate_review_rejects_sampled_hash(
             structured_rules=text_rules.structured_placeholder_rules,
             rule_count=0,
         )
-        sampled_hash = structured_placeholder_rule_scope_hash(coverage.candidates[:100])
+        sampled_hash = "stale-sampled-structured-placeholder-hash"
         await session.replace_rule_review_state(
             rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
             scope_hash=sampled_hash,
@@ -2489,7 +2501,7 @@ def test_structured_placeholder_coverage_result_uses_native_candidate_scan(
     assert coverage.candidate_count == 1
     assert coverage.covered_count == 1
     assert coverage.uncovered_count == 0
-    assert coverage.scope_hash == structured_placeholder_rule_scope_hash(coverage.candidates)
+    assert coverage.scope_hash
     detail = ensure_json_object(coverage.candidates[0], "structured placeholder candidate")
     assert detail["location_path"] == "CommonEvents.json/1/list/0/parameters/0"
     assert detail["line_number"] == 1
@@ -3668,12 +3680,12 @@ async def test_native_note_tag_candidates_match_python_scope_hash_input(
 
     game_data = await load_active_runtime_game_data(minimal_game_dir)
     text_rules = get_default_text_rules()
-    python_candidates = collect_note_tag_candidates(game_data=game_data, text_rules=text_rules)
     native_candidates = collect_native_note_tag_candidate_details(game_data=game_data, text_rules=text_rules)
 
-    assert native_candidates == python_candidates
-    assert note_tag_rule_scope_hash_for_candidates(native_candidates) == note_tag_rule_scope_hash_for_candidates(
-        python_candidates,
+    assert native_candidates
+    assert note_tag_rule_scope_hash_for_text_rules(
+        game_data=game_data,
+        text_rules=text_rules,
     )
 @pytest.mark.asyncio
 async def test_import_note_tag_rules_replaces_stale_existing_rule(

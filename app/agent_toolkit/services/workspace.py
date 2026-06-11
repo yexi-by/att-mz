@@ -86,11 +86,11 @@ from app.nonstandard_data import (
 )
 from app.nonstandard_data.scanner import build_nonstandard_data_scan, export_nonstandard_data_workspace
 from app.native_placeholder_scan import (
-    collect_native_placeholder_candidate_details_from_entries,
+    collect_native_placeholder_candidate_scan_from_entries,
     count_uncovered_placeholder_candidate_details,
 )
 from app.native_structured_placeholder_scan import (
-    collect_native_structured_placeholder_candidate_details_from_entries,
+    collect_native_structured_placeholder_candidate_scan_from_entries,
     count_uncovered_structured_placeholder_candidate_details,
 )
 from app.native_note_tag_scan import (
@@ -134,8 +134,6 @@ from app.rule_review import (
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    placeholder_rule_scope_hash,
-    structured_placeholder_rule_scope_hash,
 )
 from app.rule_review_decision import RuleCoverageResult
 from app.terminology import collect_terminology_bundle_errors
@@ -378,14 +376,17 @@ def _normal_placeholder_coverage_result_from_entries(
     rule_count: int,
 ) -> RuleCoverageResult:
     """用轻量索引正文构建普通占位符覆盖结果。"""
-    candidate_details = collect_native_placeholder_candidate_details_from_entries(
+    scan = collect_native_placeholder_candidate_scan_from_entries(
         entries=entries,
         text_rules=text_rules,
     )
+    candidate_details = scan.candidate_details
     uncovered_count = count_uncovered_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 普通占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
     return RuleCoverageResult(
         rule_domain=PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=placeholder_rule_scope_hash(candidate_details),
+        scope_hash=scan.scope_hash,
         rule_count=rule_count,
         candidate_count=len(candidate_details),
         covered_count=len(candidate_details) - uncovered_count,
@@ -401,14 +402,17 @@ def _structured_placeholder_coverage_result_from_entries(
     rule_count: int,
 ) -> RuleCoverageResult:
     """用轻量索引正文构建结构化占位符覆盖结果。"""
-    candidate_details = collect_native_structured_placeholder_candidate_details_from_entries(
+    scan = collect_native_structured_placeholder_candidate_scan_from_entries(
         entries=entries,
         text_rules=text_rules,
     )
+    candidate_details = scan.candidate_details
     uncovered_count = count_uncovered_structured_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 结构化占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
     return RuleCoverageResult(
         rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-        scope_hash=structured_placeholder_rule_scope_hash(candidate_details),
+        scope_hash=scan.scope_hash,
         rule_count=rule_count,
         candidate_count=len(candidate_details),
         covered_count=len(candidate_details) - uncovered_count,
@@ -771,10 +775,10 @@ class WorkspaceAgentMixin:
         )
         event_rules_path = target_dir / "event-command-rules.json"
         await _write_json_object(event_rules_path, _event_command_rule_records_to_import_json(event_rules))
-        placeholder_candidate_details = collect_native_placeholder_candidate_details_from_entries(
+        placeholder_candidate_details = collect_native_placeholder_candidate_scan_from_entries(
             entries=placeholder_entries,
             text_rules=text_rules,
-        )
+        ).candidate_details
         placeholder_report = AgentReport.from_parts(
             errors=[],
             warnings=[],

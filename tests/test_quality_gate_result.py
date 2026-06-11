@@ -17,6 +17,7 @@ from app.application.flow_gate import (
     structured_placeholder_scope_hash,
 )
 from app.native_quality import NativeQualityDetails
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 from app.persistence import GameRegistry
 from app.rmmz.loader import load_translation_source_game_data
 from app.rmmz.schema import TranslationItem
@@ -27,7 +28,6 @@ from app.rule_review import (
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    plugin_rule_scope_hash,
 )
 from app.terminology import TerminologyGlossary, TerminologyRegistry
 from app.text_fact_core import TextFactContractError
@@ -120,7 +120,10 @@ async def test_quality_report_write_probe_renders_structured_quality_gate_result
         )
         await session.replace_rule_review_state(
             rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            scope_hash=plugin_rule_scope_hash(game_data),
+            scope_hash=collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
             reviewed_empty=True,
         )
         await session.replace_rule_review_state(

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 from app.native_scope_index import (
     build_native_rule_candidate_text_rules_payload,
     build_native_structured_placeholder_candidates_payload,
+    native_scan_summary_scope_hash,
     scan_native_rule_candidates,
 )
 from app.rmmz.schema import TranslationData
@@ -20,14 +22,32 @@ from app.rmmz.text_rules import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class NativeStructuredPlaceholderCandidateScan:
+    """结构化占位符 native 候选扫描结果。"""
+
+    candidate_details: JsonArray
+    scope_hash: str
+
+
 def collect_native_structured_placeholder_candidate_details(
     *,
     translation_data_map: dict[str, TranslationData],
     text_rules: TextRules,
 ) -> JsonArray:
     """调用 native 结构化占位符候选入口并返回当前候选明细。"""
-    if not translation_data_map:
-        return []
+    return collect_native_structured_placeholder_candidate_scan(
+        translation_data_map=translation_data_map,
+        text_rules=text_rules,
+    ).candidate_details
+
+
+def collect_native_structured_placeholder_candidate_scan(
+    *,
+    translation_data_map: dict[str, TranslationData],
+    text_rules: TextRules,
+) -> NativeStructuredPlaceholderCandidateScan:
+    """调用 native 结构化占位符候选入口并返回候选明细和范围哈希。"""
     payload = build_native_structured_placeholder_candidates_payload(translation_data_map, text_rules)
     result = scan_native_rule_candidates(payload)
     summary_value = result.scan_summary.get("structured_placeholders")
@@ -41,13 +61,16 @@ def collect_native_structured_placeholder_candidate_details(
         summary.get("candidates", []),
         "native_structured_placeholder_candidates.structured_placeholders.candidates",
     )
-    return [
-        _normalize_native_structured_placeholder_candidate_detail(
-            ensure_json_object(item, f"native_structured_placeholder_candidates.candidates[{index}]"),
-            f"native_structured_placeholder_candidates.candidates[{index}]",
-        )
-        for index, item in enumerate(raw_candidates)
-    ]
+    return NativeStructuredPlaceholderCandidateScan(
+        candidate_details=[
+            _normalize_native_structured_placeholder_candidate_detail(
+                ensure_json_object(item, f"native_structured_placeholder_candidates.candidates[{index}]"),
+                f"native_structured_placeholder_candidates.candidates[{index}]",
+            )
+            for index, item in enumerate(raw_candidates)
+        ],
+        scope_hash=native_scan_summary_scope_hash(result, "structured_placeholders"),
+    )
 
 
 def collect_native_structured_placeholder_candidate_details_from_entries(
@@ -56,6 +79,18 @@ def collect_native_structured_placeholder_candidate_details_from_entries(
     text_rules: TextRules,
 ) -> JsonArray:
     """用轻量索引正文条目调用 native 结构化占位符候选入口。"""
+    return collect_native_structured_placeholder_candidate_scan_from_entries(
+        entries=entries,
+        text_rules=text_rules,
+    ).candidate_details
+
+
+def collect_native_structured_placeholder_candidate_scan_from_entries(
+    *,
+    entries: Iterable[tuple[str, Sequence[str]]],
+    text_rules: TextRules,
+) -> NativeStructuredPlaceholderCandidateScan:
+    """用轻量索引正文条目调用 native 结构化占位符候选入口并返回范围哈希。"""
     structured_placeholder_texts: JsonArray = [
         {
             "location_path": location_path,
@@ -65,11 +100,10 @@ def collect_native_structured_placeholder_candidate_details_from_entries(
         for location_path, original_lines in entries
         for line_index, text in enumerate(original_lines)
     ]
-    if not structured_placeholder_texts:
-        return []
     result = scan_native_rule_candidates(
         {
             "structured_placeholder_texts": structured_placeholder_texts,
+            "structured_placeholder_scope_hash_requested": True,
             "text_rules": build_native_rule_candidate_text_rules_payload(text_rules),
         }
     )
@@ -84,13 +118,16 @@ def collect_native_structured_placeholder_candidate_details_from_entries(
         summary.get("candidates", []),
         "native_structured_placeholder_candidates.structured_placeholders.candidates",
     )
-    return [
-        _normalize_native_structured_placeholder_candidate_detail(
-            ensure_json_object(item, f"native_structured_placeholder_candidates.candidates[{index}]"),
-            f"native_structured_placeholder_candidates.candidates[{index}]",
-        )
-        for index, item in enumerate(raw_candidates)
-    ]
+    return NativeStructuredPlaceholderCandidateScan(
+        candidate_details=[
+            _normalize_native_structured_placeholder_candidate_detail(
+                ensure_json_object(item, f"native_structured_placeholder_candidates.candidates[{index}]"),
+                f"native_structured_placeholder_candidates.candidates[{index}]",
+            )
+            for index, item in enumerate(raw_candidates)
+        ],
+        scope_hash=native_scan_summary_scope_hash(result, "structured_placeholders"),
+    )
 
 
 def count_uncovered_structured_placeholder_candidate_details(candidate_details: JsonArray) -> int:
@@ -177,7 +214,10 @@ def _read_enum(candidate: JsonObject, field_name: str, allowed_values: set[str],
 
 
 __all__: list[str] = [
+    "NativeStructuredPlaceholderCandidateScan",
     "collect_native_structured_placeholder_candidate_details",
     "collect_native_structured_placeholder_candidate_details_from_entries",
+    "collect_native_structured_placeholder_candidate_scan",
+    "collect_native_structured_placeholder_candidate_scan_from_entries",
     "count_uncovered_structured_placeholder_candidate_details",
 ]
