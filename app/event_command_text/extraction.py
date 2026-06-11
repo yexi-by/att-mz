@@ -112,6 +112,7 @@ class EventCommandTextExtraction:
                                     location_path=location_path,
                                     item_type="short_text",
                                     original_lines=[normalized_value],
+                                    source_line_paths=[location_path],
                                 )
                             )
                         if location_path not in seen_location_paths:
@@ -121,6 +122,7 @@ class EventCommandTextExtraction:
                                     location_path=location_path,
                                     item_type="short_text",
                                     original_lines=[normalized_value],
+                                    source_line_paths=[location_path],
                                 )
                             )
 

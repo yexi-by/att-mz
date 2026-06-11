@@ -18,13 +18,15 @@ from app.native_scope_index import (
 )
 from app.native_write_plan import NativePlannedFile, NativeWriteBackPlan, build_native_write_back_plan
 from app.nonstandard_data.scanner import build_nonstandard_data_file_hash
-from app.persistence.session_utils import current_timestamp_text
+from app.persistence.session_utils import build_event_command_group_key, current_timestamp_text
 from app.persistence.sql import (
     INSERT_SOURCE_SNAPSHOT_FILE,
     current_schema_sql,
 )
 from app.plugin_text.common import build_plugin_hash
+from app.plugin_source_text.scanner import build_plugin_source_candidate_index, build_plugin_source_file_hash
 from app.rmmz.schema import (
+    EventCommandTextRuleRecord,
     PLUGINS_FILE_NAME,
     GameData,
     MvVirtualNameboxRuleRecord,
@@ -33,6 +35,7 @@ from app.rmmz.schema import (
     PluginSourceTextRuleRecord,
     TranslationItem,
 )
+from app.rmmz.commands import iter_all_commands
 from app.rmmz.source_snapshot import collect_source_snapshot_records, validate_source_snapshot_files
 from app.rmmz.text_rules import JsonObject, JsonValue, TextRules, coerce_json_value, get_default_text_rules
 from app.text_index import (
@@ -165,17 +168,20 @@ def _apply_native_write_plan(
 ) -> NativeWriteBackPlan:
     """创建测试数据库并调用 Rust 写回计划。"""
     _require_source_snapshot(game_data)
-    db_path = _write_temp_db(
-        game_data=game_data,
-        content_root=game_data.layout.content_root,
-        items=items,
-        speaker_name_translations=speaker_name_translations,
-        terminology_registry=terminology_registry,
-        mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
-        plugin_source_rule_records=plugin_source_rule_records,
-        text_rules=text_rules,
-        nonstandard_data_rule_records=nonstandard_data_rule_records,
-    )
+    try:
+        db_path = _write_temp_db(
+            game_data=game_data,
+            content_root=game_data.layout.content_root,
+            items=items,
+            speaker_name_translations=speaker_name_translations,
+            terminology_registry=terminology_registry,
+            mv_virtual_namebox_rule_records=mv_virtual_namebox_rule_records,
+            plugin_source_rule_records=plugin_source_rule_records,
+            text_rules=text_rules,
+            nonstandard_data_rule_records=nonstandard_data_rule_records,
+        )
+    except RuntimeError as error:
+        raise ValueError(str(error)) from error
     try:
         plan = build_native_write_back_plan(
             game_path=game_data.layout.game_root,
@@ -243,6 +249,7 @@ def _write_temp_db(
         _ = connection.executescript(current_schema_sql())
         source_snapshot_fingerprint = _insert_source_snapshot_records(connection, game_data)
         _insert_inferred_plugin_text_rules(connection, game_data, items)
+        _insert_inferred_event_command_rules(connection, game_data, items)
         _insert_inferred_note_tag_rules(connection, items)
         _insert_nonstandard_data_rules(connection, nonstandard_data_rule_records)
         if not nonstandard_data_rule_records:
@@ -251,6 +258,8 @@ def _write_temp_db(
         _insert_terminology_registry(connection, terminology_registry)
         _insert_mv_virtual_namebox_rules(connection, mv_virtual_namebox_rule_records)
         _insert_plugin_source_text_rules(connection, plugin_source_rule_records)
+        if not plugin_source_rule_records:
+            _insert_inferred_plugin_source_text_rules(connection, game_data, items, text_rules)
         connection.commit()
         connection.close()
         _rebuild_current_text_facts_for_temp_db(
@@ -401,25 +410,33 @@ def _current_fact_identity_by_item_index(
     used_fact_ids: set[str] = set()
     identities: dict[int, tuple[str, str, str]] = {}
     for item_index, item in enumerate(items):
-        candidates = [
-            row
-            for row in facts_by_path.get(item.location_path, [])
-            if cast(str, row["fact_id"]) not in used_fact_ids
-            and row["translatable_text"] == _text_fact_translatable_text(item)
-            and row["item_type"] == item.item_type
-            and (row["role"] or None) == item.role
-        ]
-        if not candidates:
+        candidates: list[sqlite3.Row] = []
+        for fact_path in _fact_identity_candidate_paths(item):
             candidates = [
                 row
-                for row in facts_by_path.get(item.location_path, [])
+                for row in facts_by_path.get(fact_path, [])
                 if cast(str, row["fact_id"]) not in used_fact_ids
                 and row["translatable_text"] == _text_fact_translatable_text(item)
+                and row["item_type"] == item.item_type
+                and (row["role"] or None) == item.role
             ]
+            if candidates:
+                break
         if not candidates:
-            raise AssertionError(
-                "测试临时库缺少 Rust 冷重建 current text fact: "
-                + f"index={item_index}, path={item.location_path}, text={_text_fact_translatable_text(item)!r}"
+            for fact_path in _fact_identity_candidate_paths(item):
+                candidates = [
+                    row
+                    for row in facts_by_path.get(fact_path, [])
+                    if cast(str, row["fact_id"]) not in used_fact_ids
+                    and row["translatable_text"] == _text_fact_translatable_text(item)
+                ]
+                if candidates:
+                    break
+        if not candidates:
+            searched_paths = ", ".join(_fact_identity_candidate_paths(item))
+            raise ValueError(
+                "已保存译文不再匹配当前文本事实，不能写进游戏文件；请重新运行 rebuild-text-index 后重新翻译或手动导入: "
+                + f"index={item_index}, paths=[{searched_paths}], text={_text_fact_translatable_text(item)!r}"
             )
         fact = candidates[0]
         fact_id = cast(str, fact["fact_id"])
@@ -430,6 +447,15 @@ def _current_fact_identity_by_item_index(
             cast(str, fact["translatable_hash"]),
         )
     return identities
+
+
+def _fact_identity_candidate_paths(item: TranslationItem) -> list[str]:
+    """返回测试 item 可用于匹配 current fact 的当前路径和原始来源路径。"""
+    paths: list[str] = []
+    for path in [item.location_path, *item.source_line_paths]:
+        if path and path not in paths:
+            paths.append(path)
+    return paths
 
 
 def _insert_inferred_plugin_text_rules(
@@ -486,6 +512,108 @@ def _insert_inferred_note_tag_rules(
             """,
             sorted(set(rows)),
         )
+
+
+def _insert_inferred_event_command_rules(
+    connection: sqlite3.Connection,
+    game_data: GameData,
+    items: list[TranslationItem],
+) -> None:
+    """按测试写回 item 精确补事件指令路径规则，让 Rust cold rebuild 生成对应 facts。"""
+    rule_records: dict[tuple[int, str], EventCommandTextRuleRecord] = {}
+    for item in items:
+        for location_path in _fact_identity_candidate_paths(item):
+            parsed = _parse_event_command_rule_location_path(game_data, location_path)
+            if parsed is None:
+                continue
+            command_code, path_template = parsed
+            rule_records[(command_code, path_template)] = EventCommandTextRuleRecord(
+                command_code=command_code,
+                path_templates=[path_template],
+            )
+    if not rule_records:
+        return
+
+    group_rows: list[tuple[str, int]] = []
+    path_rows: list[tuple[str, str]] = []
+    for record in rule_records.values():
+        group_key = build_event_command_group_key(record)
+        group_rows.append((group_key, record.command_code))
+        path_rows.extend((group_key, path_template) for path_template in record.path_templates)
+    _ = connection.executemany(
+        """
+        INSERT OR REPLACE INTO event_command_text_rule_groups (group_key, command_code)
+        VALUES (?, ?)
+        """,
+        sorted(set(group_rows)),
+    )
+    _ = connection.executemany(
+        """
+        INSERT OR REPLACE INTO event_command_text_rule_paths (group_key, path_template)
+        VALUES (?, ?)
+        """,
+        sorted(set(path_rows)),
+    )
+
+
+def _parse_event_command_rule_location_path(
+    game_data: GameData,
+    location_path: str,
+) -> tuple[int, str] | None:
+    """把事件指令字符串叶子路径转换为 Rust event command path rule。"""
+    for command_location_path, command_code, parameters in _event_commands_by_longest_path(game_data):
+        if not location_path.startswith(f"{command_location_path}/"):
+            continue
+        relative_path = location_path.removeprefix(f"{command_location_path}/")
+        path_segments = relative_path.split("/")
+        if not path_segments or path_segments[0] != "parameters":
+            return None
+        leaf_value = _resolve_event_command_leaf({"parameters": parameters}, path_segments)
+        if not isinstance(leaf_value, str):
+            return None
+        return command_code, _json_path_template(path_segments)
+    return None
+
+
+def _event_commands_by_longest_path(game_data: GameData) -> list[tuple[str, int, list[JsonValue]]]:
+    """按路径长度倒序返回当前游戏事件指令，避免短前缀误匹配。"""
+    commands: list[tuple[str, int, list[JsonValue]]] = []
+    for path, _display_name, command in iter_all_commands(game_data):
+        commands.append(("/".join(map(str, path)), command.code, list(command.parameters)))
+    return sorted(commands, key=lambda item: len(item[0]), reverse=True)
+
+
+def _resolve_event_command_leaf(root: JsonObject, path_segments: list[str]) -> JsonValue | None:
+    """解析测试 location path 片段；路径不存在时返回 None。"""
+    current_value: JsonValue = root
+    for segment in path_segments:
+        if isinstance(current_value, dict):
+            if segment not in current_value:
+                return None
+            current_value = current_value[segment]
+            continue
+        if isinstance(current_value, list):
+            if not segment.isdigit():
+                return None
+            index = int(segment)
+            if index >= len(current_value):
+                return None
+            current_value = current_value[index]
+            continue
+        return None
+    return current_value
+
+
+def _json_path_template(path_segments: list[str]) -> str:
+    """把 location path 片段转换为当前 JSONPath 模板。"""
+    template = "$"
+    for segment in path_segments:
+        if segment.isdigit():
+            template += f"[{segment}]"
+        else:
+            escaped_segment = segment.replace("\\", "\\\\").replace("'", "\\'")
+            template += f"['{escaped_segment}']"
+    return template
 
 
 def _insert_inferred_nonstandard_data_rules(
@@ -563,7 +691,8 @@ def _plugin_parameter_path_template(path_segments: list[str]) -> str:
         if segment.isdigit():
             template += f"[{segment}]"
         else:
-            template += f"[{json.dumps(segment, ensure_ascii=False)}]"
+            escaped_segment = segment.replace("\\", "\\\\").replace("'", "\\'")
+            template += f"['{escaped_segment}']"
     return template
 
 
@@ -715,6 +844,65 @@ def _insert_plugin_source_text_rules(
         """,
         rows,
     )
+
+
+def _insert_inferred_plugin_source_text_rules(
+    connection: sqlite3.Connection,
+    game_data: GameData,
+    items: list[TranslationItem],
+    text_rules: TextRules | None,
+) -> None:
+    """按测试写回 item 精确补插件源码规则，让 Rust cold rebuild 生成对应 facts。"""
+    rules = text_rules or get_default_text_rules()
+    selected_selectors_by_file: dict[str, set[str]] = {}
+    rows: list[tuple[str, str, str, str]] = []
+    for item in items:
+        for location_path in _fact_identity_candidate_paths(item):
+            parsed = _parse_plugin_source_location_path(location_path)
+            if parsed is None:
+                continue
+            file_name, selector = parsed
+            source = game_data.plugin_source_files.get(file_name)
+            if source is None:
+                continue
+            selected_selectors_by_file.setdefault(file_name, set()).add(selector)
+    for file_name, selected_selectors in selected_selectors_by_file.items():
+        source = game_data.plugin_source_files.get(file_name)
+        if source is None:
+            continue
+        file_hash = build_plugin_source_file_hash(source)
+        candidate_index = build_plugin_source_candidate_index(
+            file_name=file_name,
+            source=source,
+            active=True,
+            text_rules=rules,
+        )
+        all_selectors = {candidate.selector for candidate in candidate_index.candidates}
+        for selector in selected_selectors:
+            rows.append((file_name, file_hash, selector, "translate"))
+        for selector in sorted(all_selectors.difference(selected_selectors)):
+            rows.append((file_name, file_hash, selector, "excluded"))
+    if not rows:
+        return
+    _ = connection.executemany(
+        """
+        INSERT OR REPLACE INTO plugin_source_text_rules
+        (file_name, file_hash, selector, selector_kind)
+        VALUES (?, ?, ?, ?)
+        """,
+        sorted(set(rows)),
+    )
+
+
+def _parse_plugin_source_location_path(location_path: str) -> tuple[str, str] | None:
+    """解析 `js/plugins/<file>/<selector>` 测试写回路径。"""
+    prefix = "js/plugins/"
+    if not location_path.startswith(prefix):
+        return None
+    parts = location_path.removeprefix(prefix).split("/", maxsplit=1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise AssertionError(f"测试插件源码路径格式非法: {location_path}")
+    return parts[0], parts[1]
 
 
 def _require_source_snapshot(game_data: GameData) -> None:

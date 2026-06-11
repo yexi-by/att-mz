@@ -289,6 +289,18 @@ async def test_force_full_restore_rewrites_all_runtime_files_from_source_snapsho
 @pytest.mark.asyncio
 async def test_write_data_text_restores_converted_outer_quote_before_indent(minimal_game_dir: Path) -> None:
     """写回阶段先修复被模型改写的外层引号，再补跨行视觉缩进。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    first_text_command = ensure_json_object(commands[1], "CommonEvents[1].list[1]")
+    first_text_parameters = ensure_json_array(first_text_command["parameters"], "CommonEvents[1].list[1].parameters")
+    first_text_parameters[0] = "「甲。"
+    commands.insert(2, {"code": 401, "parameters": ["乙」"]})
+    _ = common_events_path.write_text(
+        f"{json.dumps(common_events, ensure_ascii=False, indent=2)}\n",
+        encoding="utf-8",
+    )
     _create_test_source_snapshot(minimal_game_dir)
     game_data = await load_translation_source_game_data(
         minimal_game_dir,
@@ -302,7 +314,6 @@ async def test_write_data_text_restores_converted_outer_quote_before_indent(mini
         for candidate in extracted["CommonEvents.json"].translation_items
         if candidate.location_path == "CommonEvents.json/1/0"
     )
-    item.original_lines = ["「甲。", "乙」"]
     item.translation_lines = ["“甲乙丙。", "丁戊己。”"]
 
     reset_writable_copies(game_data)
@@ -317,6 +328,17 @@ async def test_write_data_text_restores_converted_outer_quote_before_indent(mini
 @pytest.mark.asyncio
 async def test_write_data_text_restores_mismatched_source_quote_slots(minimal_game_dir: Path) -> None:
     """写回阶段按源文真实引号槽位修复错配引号。"""
+    common_events_path = minimal_game_dir / "data" / "CommonEvents.json"
+    common_events = ensure_json_array(_read_test_json(common_events_path), "CommonEvents.json")
+    common_event = ensure_json_object(common_events[1], "CommonEvents[1]")
+    commands = ensure_json_array(common_event["list"], "CommonEvents[1].list")
+    first_text_command = ensure_json_object(commands[1], "CommonEvents[1].list[1]")
+    first_text_parameters = ensure_json_array(first_text_command["parameters"], "CommonEvents[1].list[1].parameters")
+    first_text_parameters[0] = "これが『秒殺テク」……！"
+    _ = common_events_path.write_text(
+        f"{json.dumps(common_events, ensure_ascii=False, indent=2)}\n",
+        encoding="utf-8",
+    )
     _create_test_source_snapshot(minimal_game_dir)
     game_data = await load_translation_source_game_data(
         minimal_game_dir,
@@ -330,7 +352,6 @@ async def test_write_data_text_restores_mismatched_source_quote_slots(minimal_ga
         for candidate in extracted["CommonEvents.json"].translation_items
         if candidate.location_path == "CommonEvents.json/1/0"
     )
-    item.original_lines = ["これが『秒殺テク」……！"]
     item.translation_lines = ["这就是‘秒杀技术’……！"]
 
     reset_writable_copies(game_data)

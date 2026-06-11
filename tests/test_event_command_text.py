@@ -325,6 +325,7 @@ async def test_event_command_rule_import_extracts_and_writes_back(
     ]
     item = items[0]
     assert item.location_path == "CommonEvents.json/1/4/parameters/3/message"
+    assert item.source_line_paths == ["CommonEvents.json/1/4/parameters/3/message"]
     assert item.original_lines == ["プラグイン台詞"]
 
     item.translation_lines = ["事件指令译文"]
@@ -483,7 +484,7 @@ async def test_event_command_nested_write_error_reports_location_path(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """事件指令嵌套参数写回失败时报告当前文本路径。"""
+    """事件指令嵌套参数路径失效时报告当前文本路径。"""
     game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
@@ -524,7 +525,7 @@ async def test_event_command_nested_write_error_reports_location_path(
 
     message = str(exc_info.value)
     assert "CommonEvents.json/1/4/parameters/3/missing" in message
-    assert "参数键不存在 missing" in message
+    assert "已保存译文不再匹配当前文本事实" in message
 
 
 @pytest.mark.asyncio

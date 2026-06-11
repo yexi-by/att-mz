@@ -286,6 +286,7 @@ pub(super) fn read_mv_virtual_namebox_fact_templates(
         templates.push(MvVirtualNameboxFactTemplate {
             location_path: row.location_path,
             role: row.role,
+            raw_text: row.raw_text,
             body_text: row.translatable_text,
             source_line_paths,
             render_parts,

@@ -1,7 +1,8 @@
 use super::command_writer::{find_mv_virtual_speaker_command_ref, write_command_first_parameter};
 use super::models::{
     COMMON_EVENTS_FILE_NAME, EngineKind, Layout, MvVirtualNameboxFactTemplate,
-    MvVirtualNameboxRule, MvVirtualSpeakerPolicy, SYSTEM_FILE_NAME, TROOPS_FILE_NAME,
+    MvVirtualNameboxRule, MvVirtualSpeaker, MvVirtualSpeakerPolicy, SYSTEM_FILE_NAME,
+    TROOPS_FILE_NAME,
 };
 use super::utils::is_map_file;
 use serde_json::Value;
@@ -522,15 +523,12 @@ pub(super) fn collect_mv_virtual_speaker_name_writes_from_commands(
         let Some(translated_speaker) = translations.get(&virtual_speaker.speaker) else {
             continue;
         };
-        let fact_template = mv_virtual_namebox_fact_templates
-            .iter()
-            .find(|template| {
-                template
-                    .source_line_paths
-                    .iter()
-                    .any(|path| path == &speaker_line_path)
-            })
-            .ok_or_else(|| {
+        let fact_template = find_mv_virtual_namebox_fact_template(
+            mv_virtual_namebox_fact_templates,
+            &speaker_line_path,
+            &virtual_speaker,
+        )
+        .ok_or_else(|| {
                 format!(
                     "MV 虚拟名字框术语写回缺少当前文本事实，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
                     speaker_line_path
@@ -545,16 +543,45 @@ pub(super) fn collect_mv_virtual_speaker_name_writes_from_commands(
                 virtual_speaker.speaker,
             ));
         }
-        let translated_text =
-            render_mv_virtual_speaker_line_from_fact_template(fact_template, translated_speaker)?;
+        let translated_text = render_mv_virtual_speaker_line_from_fact_template(
+            fact_template,
+            translated_speaker,
+            !virtual_speaker.body_text.is_empty(),
+        )?;
         targets.push((speaker_line_path, translated_text));
     }
     Ok(())
 }
 
+fn find_mv_virtual_namebox_fact_template<'a>(
+    templates: &'a [MvVirtualNameboxFactTemplate],
+    speaker_line_path: &str,
+    virtual_speaker: &MvVirtualSpeaker,
+) -> Option<&'a MvVirtualNameboxFactTemplate> {
+    if let Some(template) = templates.iter().find(|template| {
+        template
+            .source_line_paths
+            .iter()
+            .any(|path| path == speaker_line_path)
+    }) {
+        return Some(template);
+    }
+    templates.iter().find(|template| {
+        template.role == virtual_speaker.speaker
+            && (virtual_speaker.body_text.is_empty()
+                || template.body_text == virtual_speaker.body_text)
+            && template
+                .raw_text
+                .lines()
+                .next()
+                .is_some_and(|line| line.trim() == virtual_speaker.matched_text)
+    })
+}
+
 fn render_mv_virtual_speaker_line_from_fact_template(
     fact_template: &MvVirtualNameboxFactTemplate,
     translated_speaker: &str,
+    include_body: bool,
 ) -> Result<String, String> {
     if fact_template.render_parts.is_empty() {
         return Err(format!(
@@ -575,6 +602,9 @@ fn render_mv_virtual_speaker_line_from_fact_template(
             continue;
         }
         if part.part_kind == "translated_body" || part.template_key == "body" {
+            if !include_body {
+                break;
+            }
             rendered.push_str(&render_text_fact_body_part(
                 &part.raw_text,
                 &fact_template.body_text,
@@ -588,6 +618,11 @@ fn render_mv_virtual_speaker_line_from_fact_template(
             "MV 虚拟名字框当前文本事实缺少说话人片段，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
             fact_template.location_path
         ));
+    }
+    if !include_body {
+        while rendered.ends_with('\n') || rendered.ends_with('\r') {
+            rendered.pop();
+        }
     }
     Ok(rendered)
 }

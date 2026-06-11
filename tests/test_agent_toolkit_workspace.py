@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.agent_toolkit_contract_fixtures import *
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
+from app.native_placeholder_scan import NativePlaceholderCandidateScan
 from app.native_scope_index import collect_native_plugin_config_scope_hash
 
 from app.native_scope_index import (
@@ -228,28 +229,31 @@ async def test_prepare_agent_workspace_writes_native_placeholder_candidate_manif
     native_candidate_marker = r"\NATIVE_DRAFT[1]"
     native_call_count = 0
 
-    def fake_native_placeholder_details(*args: object, **kwargs: object) -> JsonArray:
+    def fake_native_placeholder_scan(*args: object, **kwargs: object) -> NativePlaceholderCandidateScan:
         nonlocal native_call_count
         _ = (args, kwargs)
         native_call_count += 1
-        return [
-            {
-                "marker": native_candidate_marker,
-                "count": 1,
-                "sources": ["native-source#0"],
-                "standard_covered": False,
-                "custom_covered": False,
-                "covered": False,
-            }
-        ]
+        return NativePlaceholderCandidateScan(
+            candidate_details=[
+                {
+                    "marker": native_candidate_marker,
+                    "count": 1,
+                    "sources": ["native-source#0"],
+                    "standard_covered": False,
+                    "custom_covered": False,
+                    "covered": False,
+                }
+            ],
+            scope_hash="test-native-placeholder-scope",
+        )
 
     def forbidden_python_placeholder_scan(*args: object, **kwargs: object) -> NoReturn:
         _ = (args, kwargs)
         raise AssertionError("prepare-agent-workspace 普通占位符草稿不应调用 Python scanner")
 
     monkeypatch.setattr(
-        "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_details_from_entries",
-        fake_native_placeholder_details,
+        "app.agent_toolkit.services.workspace.collect_native_placeholder_candidate_scan_from_entries",
+        fake_native_placeholder_scan,
         raising=False,
     )
     monkeypatch.setattr(

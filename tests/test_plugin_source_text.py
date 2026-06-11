@@ -150,6 +150,7 @@ async def test_native_write_plan_helper_writes_migrated_event_command_fact_with_
         translation_lines=["你好"],
     )
 
+    _create_test_source_snapshot(game_data)
     db_path = _write_temp_db(
         game_data=game_data,
         content_root=game_data.layout.content_root,
@@ -769,7 +770,7 @@ async def test_data_write_back_ignores_plugin_source_location_paths(minimal_game
     )
 
     _create_test_source_snapshot(game_data)
-    with pytest.raises(ValueError, match="插件源码读取失败"):
+    with pytest.raises(ValueError, match="已保存译文不再匹配当前文本事实"):
         write_data_text(game_data, [item], text_rules=TextRules.from_setting(TextRulesSetting()))
 
 

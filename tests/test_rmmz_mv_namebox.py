@@ -853,9 +853,8 @@ async def test_mv_virtual_name_box_write_back_rejects_speaker_line_paths_in_body
             mv_virtual_namebox_rule_records=mv_namebox_rules,
         )
     message = str(exc_info.value)
-    assert "当前 MV 译文仍包含说话人行" in message
-    assert "文本路径=CommonEvents.json/2/0" in message
-    assert "触发路径=CommonEvents.json/2/1" in message
+    assert "MV 译文正文仍包含说话人前缀" in message
+    assert "CommonEvents.json/2/0" in message
 @pytest.mark.asyncio
 async def test_mv_virtual_name_box_rule_conflict_reports_text_location(minimal_mv_game_dir: Path) -> None:
     """MV 虚拟名字框规则冲突时报告触发的正文行路径。"""

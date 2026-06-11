@@ -42,6 +42,7 @@ pub(super) struct TextFactRenderPart {
 pub(super) struct MvVirtualNameboxFactTemplate {
     pub(super) location_path: String,
     pub(super) role: String,
+    pub(super) raw_text: String,
     pub(super) body_text: String,
     pub(super) source_line_paths: Vec<String>,
     pub(super) render_parts: Vec<TextFactRenderPart>,

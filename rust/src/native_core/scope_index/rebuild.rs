@@ -494,14 +494,14 @@ fn rebuild_with_context(
         text_index_rows: warm_index_rows
             .into_iter()
             .map(|row| {
-                let text_fact_raw_text =
-                    text_index_row_raw_identity_override(&row, &data_files, Some(&context))?;
+                let text_fact_identity =
+                    text_index_row_fact_identity(&row, &data_files, Some(&context))?;
                 Ok(storage::TextIndexRowInput {
                     location_path: row.location_path,
                     item_type: row.item_type,
-                    role: row.role,
+                    role: text_fact_identity.role,
                     original_lines: row.original_lines,
-                    text_fact_raw_text,
+                    text_fact_raw_text: text_fact_identity.raw_text,
                     source_line_paths: row.source_line_paths,
                     source_type: row.source_type,
                     source_file: row.source_file,
@@ -3498,17 +3498,29 @@ fn build_text_fact_storage_payload_with_context(
     })
 }
 
-fn text_index_row_raw_identity_override(
+struct DirectTextIndexFactIdentity {
+    role: Option<String>,
+    raw_text: Option<String>,
+}
+
+fn text_index_row_fact_identity(
     row: &DirectTextIndexRow,
     data_files: &[ParsedDataFile],
     context: Option<&RebuildContext>,
-) -> Result<Option<String>, String> {
+) -> Result<DirectTextIndexFactIdentity, String> {
     let fact_content = direct_text_fact_content(row, data_files, context)?;
     let row_raw_identity = row.original_lines.join("\n");
-    if fact_content.raw_text == row_raw_identity {
-        return Ok(None);
-    }
-    Ok(Some(fact_content.raw_text))
+    let raw_text = if fact_content.raw_text == row_raw_identity {
+        None
+    } else {
+        Some(fact_content.raw_text)
+    };
+    let role = if fact_content.role.is_empty() {
+        None
+    } else {
+        Some(fact_content.role)
+    };
+    Ok(DirectTextIndexFactIdentity { role, raw_text })
 }
 
 fn direct_text_fact_content(
