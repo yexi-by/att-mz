@@ -510,8 +510,46 @@ async def test_indexed_workflow_gate_rejects_missing_rust_gate_facts(
     finally:
         await handler.close()
 
+    report = await service.quality_report(game_title="テストゲーム")
+    error_messages = {error.code: error.message for error in report.errors}
+
     assert summary.blocked_reason is not None
     assert "重新生成当前文本范围索引" in summary.blocked_reason
+    assert "text_index_gate_facts_missing" in error_messages
+    assert "下一步" in error_messages["text_index_gate_facts_missing"]
+
+
+@pytest.mark.asyncio
+async def test_indexed_workflow_gate_reports_contract_changed_code(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+) -> None:
+    """warm index 契约版本旧时，质量报告必须返回稳定错误码。"""
+    _ = app_home_with_example_setting
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+    async with await registry.open_game("テストゲーム") as session:
+        _ = await session.connection.execute(
+            f"UPDATE [{TEXT_INDEX_META_TABLE_NAME}] SET rust_contract_version = ? WHERE index_key = ?",
+            (0, TEXT_INDEX_META_KEY),
+        )
+        await session.connection.commit()
+
+    report = await service.quality_report(game_title="テストゲーム")
+    error_messages = {error.code: error.message for error in report.errors}
+
+    assert "text_index_contract_changed" in error_messages
+    assert "重新生成当前文本范围索引" in error_messages["text_index_contract_changed"]
+    assert "下一步" in error_messages["text_index_contract_changed"]
 
 
 @pytest.mark.asyncio

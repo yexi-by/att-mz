@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Protocol, cast
 
+from app.application.errors import normalize_native_error_issue
 from app.native_contract import ensure_native_contract_version
 from app.rmmz.schema import (
     COMMON_EVENTS_FILE_NAME,
@@ -688,7 +689,8 @@ def _native_storage_error(raw_text: str) -> NativeScopeIndexStorageError:
             if code == "scope_index_rebuild_rules_unreadable" and "MV 虚拟名字框规则" in message
             else code
         )
-        return NativeScopeIndexStorageError(code=public_code, message=f"{message}（{public_code}）")
+        mapped = normalize_native_error_issue(public_code, message)
+        return NativeScopeIndexStorageError(code=mapped.code, message=f"{mapped.message}（{mapped.code}）")
     if isinstance(message, str):
         return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=message)
     return NativeScopeIndexStorageError(code="native_scope_index_storage_error", message=raw_text)

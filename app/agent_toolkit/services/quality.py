@@ -46,6 +46,7 @@ from .common import (
     rule_contract_issues_to_agent_issues,
     write_back_probe_report_fields,
 )
+from app.application.errors import normalize_native_error_issue, normalize_text_index_gate_error_issue
 from app.config.schemas import Setting
 from app.native_write_plan import build_native_write_back_plan, build_native_write_back_setting_payload
 from app.regex_contract import RegexContractValidationError, validate_mv_virtual_namebox_regex_contract
@@ -480,7 +481,8 @@ def _source_branch_gate_errors_from_rebuild_details(details: JsonObject) -> list
             raise TypeError(f"source_branch_gate_errors[{index}].code 必须是字符串")
         if not isinstance(message, str):
             raise TypeError(f"source_branch_gate_errors[{index}].message 必须是字符串")
-        errors.append(issue(code, message))
+        mapped = normalize_native_error_issue(code, message)
+        errors.append(issue(mapped.code, mapped.message))
     return errors
 
 
@@ -1313,13 +1315,14 @@ class QualityAgentMixin:
         try:
             text_index_gate_facts = await read_current_text_index_gate_facts(session)
         except RuntimeError as error:
+            mapped = normalize_text_index_gate_error_issue(str(error))
             source_branch_gate_issues = [
-                issue("text_index_workflow_gate_metadata_missing", str(error))
+                issue(mapped.code, mapped.message)
             ]
             workflow_gate_details: JsonObject = {
                 "source": "rust_text_index_gate_facts",
                 "status": "invalid",
-                "message": str(error),
+                "message": mapped.message,
             }
         else:
             workflow_gate_details = text_index_gate_facts_report(text_index_gate_facts)

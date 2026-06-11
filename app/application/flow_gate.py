@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from app.application.errors import WorkflowGateError
+from app.application.errors import WorkflowGateError, normalize_text_index_gate_error_issue
 from app.config.schemas import Setting, TextRulesSetting
 from app.event_command_text import resolve_event_command_codes
 from app.native_placeholder_scan import (
@@ -169,10 +169,11 @@ async def collect_indexed_workflow_gate_errors(
     try:
         gate_facts = await read_current_text_index_gate_facts(session)
     except RuntimeError as error:
+        mapped = normalize_text_index_gate_error_issue(str(error))
         errors.append(
             WorkflowGateIssue(
-                code="text_index_workflow_gate_metadata_missing",
-                message=str(error),
+                code=mapped.code,
+                message=mapped.message,
             )
         )
     else:

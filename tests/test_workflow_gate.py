@@ -7,6 +7,7 @@ from typing import NoReturn, cast
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
+from app.application.errors import normalize_native_error_issue
 from app.application.handler import TranslationHandler, TranslationRunLimits
 from app.application.summaries import TextTranslationSummary
 from app.application.flow_gate import (
@@ -32,6 +33,26 @@ from app.text_index import rebuild_text_index_native_storage
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "text_index_contract_changed",
+        "plugin_source_selector_filtered",
+        "plugin_source_ast_missing",
+        "nonstandard_data_rule_unmatched",
+        "note_tag_rule_unmatched",
+        "path_template_invalid",
+    ],
+)
+def test_native_error_mapping_explains_stable_user_action(code: str) -> None:
+    """Rust 事实相关错误码必须映射为可行动的中文错误。"""
+    mapped = normalize_native_error_issue(code, "native detail")
+
+    assert mapped.code == code
+    assert "下一步" in mapped.message
+    assert "native detail" in mapped.message
 
 
 def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:

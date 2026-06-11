@@ -8,6 +8,7 @@ from typing import cast
 
 from app.config import SettingOverrides
 from app.config.schemas import Setting
+from app.application.errors import normalize_native_error_issue
 from app.native_scope_index import (
     NativeScopeGateResult,
     build_native_rule_candidate_text_rules_payload,
@@ -304,11 +305,17 @@ def text_index_gate_facts_to_workflow_gate_issues(gate_facts: TextIndexGateFacts
         label = TEXT_INDEX_SOURCE_BRANCH_LABELS[source_branch]
         raw_error_codes = fact.get("error_codes")
         error_codes = [code for code in raw_error_codes if isinstance(code, str)] if isinstance(raw_error_codes, list) else []
-        detail = f"（错误码：{', '.join(error_codes)}）" if error_codes else ""
+        if error_codes:
+            mapped = normalize_native_error_issue(
+                error_codes[0],
+                f"持久文本范围索引记录的{label} gate 未通过；错误码：{', '.join(error_codes)}",
+            )
+            errors.append(WorkflowGateIssue(code=mapped.code, message=mapped.message))
+            continue
         errors.append(
             WorkflowGateIssue(
                 code=f"text_index_{source_branch}_gate_failed",
-                message=f"持久文本范围索引记录的{label} gate 未通过{detail}，请重新生成当前文本范围索引并按报告修正规则",
+                message=f"持久文本范围索引记录的{label} gate 未通过。下一步：请重新生成当前文本范围索引并按报告修正规则。",
             )
         )
     return errors
