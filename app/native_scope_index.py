@@ -409,6 +409,18 @@ def build_native_note_tag_candidates_payload(game_data: GameData, text_rules: Te
     }
 
 
+def build_native_note_tag_validation_payload(
+    *,
+    game_data: GameData,
+    text_rules: TextRules,
+    rules: JsonArray,
+) -> JsonObject:
+    """构造 Rust Note 标签规则验证载荷。"""
+    payload = build_native_note_tag_candidates_payload(game_data, text_rules)
+    payload["note_tag_rule_validation"] = {"rules": list(rules)}
+    return payload
+
+
 def build_native_event_command_candidates_payload(
     *,
     event_command_data_files: dict[str, JsonValue],
@@ -674,6 +686,7 @@ __all__ = [
     "build_native_nonstandard_data_candidates_payload",
     "build_native_nonstandard_data_leaves_payload",
     "build_native_note_tag_candidates_payload",
+    "build_native_note_tag_validation_payload",
     "build_native_placeholder_candidates_payload",
     "build_native_plugin_config_candidates_payload",
     "build_native_plugin_source_candidates_payload",

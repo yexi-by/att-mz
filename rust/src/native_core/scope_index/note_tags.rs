@@ -1,8 +1,10 @@
 //! Note 标签候选扫描。
 
 use rayon::prelude::*;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::RuleCandidateTextRules;
@@ -51,6 +53,38 @@ pub(super) struct NoteTagRuleCandidateScan {
     pub(super) candidate_value_count: usize,
     pub(super) value_hit_count: usize,
     pub(super) translatable_value_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct NoteTagRuleInput {
+    pub(super) file_name: String,
+    #[serde(default)]
+    pub(super) tag_names: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct NoteTagRuleValidationInput {
+    #[serde(default)]
+    pub(super) rules: Vec<NoteTagRuleInput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct NoteTagRuleValidationOutput {
+    pub(super) status: &'static str,
+    pub(super) scope_hash: String,
+    pub(super) candidate_count: usize,
+    pub(super) covered_count: usize,
+    pub(super) translatable_hit_count: usize,
+    pub(super) errors: Vec<NoteTagRuleValidationErrorOutput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct NoteTagRuleValidationErrorOutput {
+    pub(super) code: &'static str,
+    pub(super) file_name: String,
+    pub(super) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tag_name: Option<String>,
 }
 
 struct NoteTagCandidateAccumulator {
@@ -194,11 +228,174 @@ pub(super) fn scan_note_tag_rule_candidates_from_refs(
     })
 }
 
+pub(super) fn validate_note_tag_rules(
+    scan: &NoteTagRuleCandidateScan,
+    input: &NoteTagRuleValidationInput,
+) -> Result<NoteTagRuleValidationOutput, String> {
+    let mut errors = Vec::new();
+    let mut covered_candidate_keys: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut translatable_hit_count = 0;
+    for rule in &input.rules {
+        if !rule.file_name.ends_with(".json") {
+            errors.push(NoteTagRuleValidationErrorOutput {
+                code: "note_tag_contract_changed",
+                file_name: rule.file_name.clone(),
+                message: format!(
+                    "Note 标签规则文件模式必须指向 data JSON 文件: {}",
+                    rule.file_name
+                ),
+                tag_name: None,
+            });
+            continue;
+        }
+        if !scan
+            .source_details
+            .iter()
+            .any(|source| note_file_pattern_matches(&source.file_name, &rule.file_name))
+        {
+            errors.push(NoteTagRuleValidationErrorOutput {
+                code: "note_tag_source_changed",
+                file_name: rule.file_name.clone(),
+                message: format!(
+                    "Note 标签规则文件模式没有匹配当前 data 文件: {}",
+                    rule.file_name
+                ),
+                tag_name: None,
+            });
+            continue;
+        }
+        for tag_name in &rule.tag_names {
+            let matching_hits = scan
+                .hit_details
+                .iter()
+                .filter(|hit| {
+                    hit.tag_name == *tag_name
+                        && note_file_pattern_matches(&hit.file_name, &rule.file_name)
+                })
+                .collect::<Vec<_>>();
+            if matching_hits.is_empty() {
+                errors.push(NoteTagRuleValidationErrorOutput {
+                    code: "note_tag_rule_unmatched",
+                    file_name: rule.file_name.clone(),
+                    message: format!(
+                        "Note 标签规则没有命中当前游戏 Note 标签: {}/{}",
+                        rule.file_name, tag_name
+                    ),
+                    tag_name: Some(tag_name.clone()),
+                });
+                continue;
+            }
+            if has_duplicate_location(&matching_hits) {
+                errors.push(NoteTagRuleValidationErrorOutput {
+                    code: "note_tag_contract_changed",
+                    file_name: rule.file_name.clone(),
+                    message: format!(
+                        "Note 标签规则命中的标签重复，无法生成唯一定位路径: {}/{}",
+                        rule.file_name, tag_name
+                    ),
+                    tag_name: Some(tag_name.clone()),
+                });
+                continue;
+            }
+            let translatable_hits = matching_hits
+                .iter()
+                .filter(|hit| hit.translatable)
+                .collect::<Vec<_>>();
+            if translatable_hits.is_empty() {
+                errors.push(NoteTagRuleValidationErrorOutput {
+                    code: "note_tag_rule_unmatched",
+                    file_name: rule.file_name.clone(),
+                    message: format!(
+                        "Note 标签规则没有命中玩家可见可翻译文本: {}/{}",
+                        rule.file_name, tag_name
+                    ),
+                    tag_name: Some(tag_name.clone()),
+                });
+                continue;
+            }
+            translatable_hit_count += translatable_hits.len();
+            for hit in translatable_hits {
+                covered_candidate_keys
+                    .insert((candidate_file_pattern(&hit.file_name), tag_name.clone()));
+            }
+        }
+    }
+    let candidate_count = scan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.translatable_hit_count > 0)
+        .count();
+    let covered_count = scan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.translatable_hit_count > 0)
+        .filter(|candidate| {
+            covered_candidate_keys
+                .contains(&(candidate.file_name.clone(), candidate.tag_name.clone()))
+        })
+        .count();
+    Ok(NoteTagRuleValidationOutput {
+        status: if errors.is_empty() { "pass" } else { "fail" },
+        scope_hash: note_tag_rule_scope_hash(&scan.candidates)?,
+        candidate_count,
+        covered_count,
+        translatable_hit_count,
+        errors,
+    })
+}
+
 fn candidate_file_pattern(file_name: &str) -> String {
     if MAP_FILE_RE.is_match(file_name) {
         return "Map*.json".to_string();
     }
     file_name.to_string()
+}
+
+fn note_tag_rule_scope_hash(candidates: &[NoteTagCandidateOutput]) -> Result<String, String> {
+    let text = serde_json::to_string(candidates)
+        .map_err(|error| format!("Note 标签 scope hash 序列化失败: {error}"))?;
+    let digest = Sha256::digest(text.as_bytes());
+    Ok(format!("{digest:x}"))
+}
+
+fn note_file_pattern_matches(file_name: &str, file_pattern: &str) -> bool {
+    if file_pattern == "*" || file_pattern == file_name {
+        return true;
+    }
+    if !file_pattern.contains('*') {
+        return false;
+    }
+    let mut remain = file_name;
+    let mut first_segment = true;
+    for segment in file_pattern.split('*') {
+        if segment.is_empty() {
+            first_segment = false;
+            continue;
+        }
+        if first_segment {
+            let Some(stripped) = remain.strip_prefix(segment) else {
+                return false;
+            };
+            remain = stripped;
+        } else {
+            let Some(index) = remain.find(segment) else {
+                return false;
+            };
+            remain = &remain[index + segment.len()..];
+        }
+        first_segment = false;
+    }
+    file_pattern.ends_with('*') || remain.is_empty()
+}
+
+fn has_duplicate_location(hits: &[&NoteTagHitOutput]) -> bool {
+    let mut seen_paths = BTreeSet::new();
+    for hit in hits {
+        if !seen_paths.insert(hit.location_path.as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn push_sample(samples: &mut Vec<String>, value: &str) {
@@ -210,7 +407,10 @@ fn push_sample(samples: &mut Vec<String>, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::scan_note_tag_rule_candidates;
+    use super::{
+        NoteTagRuleInput, NoteTagRuleValidationInput, NoteTagRuleValidationOutput,
+        scan_note_tag_rule_candidates, validate_note_tag_rules,
+    };
     use crate::native_core::scope_index::RuleCandidateTextRules;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -262,5 +462,60 @@ mod tests {
                     && hit.original_text == "薬草"
                     && hit.translatable)
         );
+    }
+
+    fn validate_note_tag_rules_fixture() -> NoteTagRuleValidationOutput {
+        let mut data_files = BTreeMap::new();
+        data_files.insert(
+            "Items.json".to_string(),
+            json!([null, {"id": 1, "note": "<Flavor:薬草>"}]),
+        );
+        let scan = scan_note_tag_rule_candidates(&data_files, text_rules()).expect("扫描应成功");
+        validate_note_tag_rules(
+            &scan,
+            &NoteTagRuleValidationInput {
+                rules: vec![NoteTagRuleInput {
+                    file_name: "Items.json".to_string(),
+                    tag_names: vec!["Flavor".to_string()],
+                }],
+            },
+        )
+        .expect("规则验证应成功")
+    }
+
+    fn validate_note_tag_rules_with_missing_tag_fixture() -> NoteTagRuleValidationOutput {
+        let mut data_files = BTreeMap::new();
+        data_files.insert(
+            "Items.json".to_string(),
+            json!([null, {"id": 1, "note": "<Flavor:薬草>"}]),
+        );
+        let scan = scan_note_tag_rule_candidates(&data_files, text_rules()).expect("扫描应成功");
+        validate_note_tag_rules(
+            &scan,
+            &NoteTagRuleValidationInput {
+                rules: vec![NoteTagRuleInput {
+                    file_name: "Items.json".to_string(),
+                    tag_names: vec!["MissingTag".to_string()],
+                }],
+            },
+        )
+        .expect("规则验证应成功")
+    }
+
+    #[test]
+    fn note_tag_validation_outputs_rule_coverage_and_scope_hash() {
+        let output = validate_note_tag_rules_fixture();
+
+        assert_eq!(output.status, "pass");
+        assert_eq!(output.covered_count, output.candidate_count);
+        assert!(!output.scope_hash.is_empty());
+    }
+
+    #[test]
+    fn note_tag_validation_reports_unmatched_rule_code() {
+        let output = validate_note_tag_rules_with_missing_tag_fixture();
+
+        assert_eq!(output.status, "fail");
+        assert_eq!(output.errors[0].code, "note_tag_rule_unmatched");
     }
 }

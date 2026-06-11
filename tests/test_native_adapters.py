@@ -171,6 +171,15 @@ class _FakeScopeIndexModule:
         self._rule_candidates_payload = dict(rule_candidates_payload)
         if include_contract:
             _ = self._rule_candidates_payload.setdefault("schema_version", 1)
+            _ = self._rule_candidates_payload.setdefault(
+                "contract_versions",
+                {
+                    "rust_scope_facts": native_scope_index.RUST_SCOPE_FACTS_CONTRACT_VERSION,
+                    "parser": native_scope_index.PARSER_CONTRACT_VERSION,
+                    "source_branch": native_scope_index.SOURCE_BRANCH_CONTRACT_VERSION,
+                    "text_fact_schema": CURRENT_TEXT_FACT_CONTRACT_VERSION,
+                },
+            )
             _ = self._rule_candidates_payload.setdefault("timings_ms", {})
             _ = self._rule_candidates_payload.setdefault("counters", {"candidate_count": 0})
         self._schema_fingerprint = schema_fingerprint or current_schema_fingerprint()

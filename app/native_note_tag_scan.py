@@ -6,16 +6,10 @@ from typing import cast
 
 from app.native_scope_index import (
     build_native_note_tag_candidates_payload,
+    build_native_note_tag_validation_payload,
     scan_native_rule_candidates,
 )
-from app.note_tag_text.parser import iter_note_tag_matches
 from app.note_tag_text.importer import NoteTagRuleImportFile, normalize_tag_names
-from app.note_tag_text.sources import (
-    MAP_NOTE_FILE_PATTERN,
-    collect_note_tag_sources,
-    matched_note_file_names,
-    note_file_pattern_matches,
-)
 from app.rmmz.schema import GameData, NoteTagTextRuleRecord
 from app.rmmz.text_rules import (
     JsonArray,
@@ -25,7 +19,6 @@ from app.rmmz.text_rules import (
     ensure_json_object,
     ensure_json_string_list,
 )
-from app.rmmz.text_protocol import normalize_visible_text_for_extraction
 
 
 def build_note_tag_rule_records_from_native_candidates(
@@ -35,7 +28,6 @@ def build_note_tag_rule_records_from_native_candidates(
     text_rules: TextRules,
 ) -> list[NoteTagTextRuleRecord]:
     """使用 native Note 标签候选摘要校验并构造规则记录。"""
-    candidate_details = collect_native_note_tag_candidate_details(game_data=game_data, text_rules=text_rules)
     records: list[NoteTagTextRuleRecord] = []
     for file_name, tag_names in import_file.items():
         normalized_file_name = file_name.strip()
@@ -43,30 +35,17 @@ def build_note_tag_rule_records_from_native_candidates(
             raise ValueError("Note 标签规则不能包含空文件名")
         if not normalized_file_name.endswith(".json"):
             raise ValueError(f"Note 标签规则文件模式必须指向 data JSON 文件: {normalized_file_name}")
-        matched_file_names = matched_note_file_names(game_data=game_data, file_pattern=normalized_file_name)
-        if not matched_file_names:
-            raise ValueError(f"Note 标签规则文件模式没有匹配当前 data 文件: {normalized_file_name}")
         normalized_tag_names = normalize_tag_names(tag_names)
         if not normalized_tag_names:
             raise ValueError(f"Note 标签规则不能为空: {normalized_file_name}")
-        for tag_name in normalized_tag_names:
-            if _requires_precise_map_source_validation(
-                file_name=normalized_file_name,
-                matched_file_names=matched_file_names,
-            ):
-                _validate_note_tag_precise_source_hit(
-                    game_data=game_data,
-                    file_name=normalized_file_name,
-                    tag_name=tag_name,
-                    text_rules=text_rules,
-                )
-            else:
-                _validate_note_tag_candidate_hit(
-                    candidate_details=candidate_details,
-                    file_name=normalized_file_name,
-                    tag_name=tag_name,
-                )
         records.append(NoteTagTextRuleRecord(file_name=normalized_file_name, tag_names=normalized_tag_names))
+    validation = collect_native_note_tag_rule_validation(
+        game_data=game_data,
+        text_rules=text_rules,
+        rule_records=records,
+    )
+    if validation["status"] != "pass":
+        raise ValueError(_format_note_tag_validation_errors(validation))
     return records
 
 
@@ -184,90 +163,42 @@ def collect_native_note_tag_extraction_details(
     return source_details, hit_details
 
 
-def _validate_note_tag_candidate_hit(
-    *,
-    candidate_details: JsonArray,
-    file_name: str,
-    tag_name: str,
-) -> None:
-    """用 native 候选摘要校验单个 Note 标签规则至少命中可翻译值。"""
-    value_hit_count = 0
-    translatable_hit_count = 0
-    for index, candidate_value in enumerate(candidate_details):
-        candidate = ensure_json_object(candidate_value, f"note_tag_candidates[{index}]")
-        candidate_tag_name = candidate.get("tag_name")
-        if candidate_tag_name != tag_name:
-            continue
-        candidate_file_name = candidate.get("file_name")
-        if not isinstance(candidate_file_name, str):
-            raise TypeError(f"note_tag_candidates[{index}].file_name 必须是字符串")
-        if not _candidate_file_matches_rule(
-            candidate_file_name=candidate_file_name,
-            file_name=file_name,
-        ):
-            continue
-        value_hit_count += _read_int(candidate, "value_hit_count", f"note_tag_candidates[{index}]")
-        translatable_hit_count += _read_int(
-            candidate,
-            "translatable_hit_count",
-            f"note_tag_candidates[{index}]",
-        )
-
-    if value_hit_count == 0:
-        raise ValueError(f"Note 标签规则没有命中当前游戏 Note 标签: {file_name}/{tag_name}")
-    if translatable_hit_count == 0:
-        raise ValueError(f"Note 标签规则没有命中玩家可见可翻译文本: {file_name}/{tag_name}")
-
-
-def _validate_note_tag_precise_source_hit(
+def collect_native_note_tag_rule_validation(
     *,
     game_data: GameData,
-    file_name: str,
-    tag_name: str,
     text_rules: TextRules,
-) -> None:
-    """对精确地图规则保留单文件语义，避免消费 `Map*.json` 聚合候选时误放行。"""
-    hit_count = 0
-    translatable_hit_count = 0
-    for source in collect_note_tag_sources(game_data=game_data, file_pattern=file_name):
-        matches = [
-            match
-            for match in iter_note_tag_matches(source.note_text)
-            if match.tag_name == tag_name and match.value_span is not None
-        ]
-        if len(matches) > 1:
-            raise ValueError(f"{source.location_prefix}/note/{tag_name} 标签重复，无法生成唯一定位路径")
-        if not matches:
-            continue
-        hit_count += 1
-        normalized_value = normalize_visible_text_for_extraction(
-            matches[0].value,
-            plain_text_normalizer=text_rules.normalize_extraction_text,
-        )
-        if normalized_value and text_rules.should_translate_source_text(normalized_value):
-            translatable_hit_count += 1
-
-    if hit_count == 0:
-        raise ValueError(f"Note 标签规则没有命中当前游戏 Note 标签: {file_name}/{tag_name}")
-    if translatable_hit_count == 0:
-        raise ValueError(f"Note 标签规则没有命中玩家可见可翻译文本: {file_name}/{tag_name}")
-
-
-def _requires_precise_map_source_validation(*, file_name: str, matched_file_names: list[str]) -> bool:
-    """判断规则是否需要避开 native `Map*.json` 聚合摘要。"""
-    if file_name == MAP_NOTE_FILE_PATTERN:
-        return False
-    return any(
-        note_file_pattern_matches(file_name=matched_file_name, file_pattern=MAP_NOTE_FILE_PATTERN)
-        for matched_file_name in matched_file_names
+    rule_records: list[NoteTagTextRuleRecord],
+) -> JsonObject:
+    """调用 native Note 标签规则验证入口并返回覆盖事实。"""
+    payload = build_native_note_tag_validation_payload(
+        game_data=game_data,
+        text_rules=text_rules,
+        rules=_note_tag_rule_records_to_native_rules(rule_records),
     )
-
-
-def _candidate_file_matches_rule(*, candidate_file_name: str, file_name: str) -> bool:
-    """判断 native 候选文件模式是否覆盖当前规则文件模式。"""
-    if candidate_file_name == file_name:
-        return True
-    return note_file_pattern_matches(file_name=candidate_file_name, file_pattern=file_name)
+    result = scan_native_rule_candidates(payload)
+    summary_value = result.scan_summary.get("note_tag_rule_validation")
+    if summary_value is None:
+        raise RuntimeError("native_note_tag_rule_validation 缺失，请重新构建 Rust 原生扩展")
+    summary = ensure_json_object(summary_value, "native_note_tag_rule_validation")
+    errors = ensure_json_array(summary["errors"], "native_note_tag_rule_validation.errors")
+    return {
+        "status": _read_string(summary, "status", "native_note_tag_rule_validation"),
+        "scope_hash": _read_string(summary, "scope_hash", "native_note_tag_rule_validation"),
+        "candidate_count": _read_int(summary, "candidate_count", "native_note_tag_rule_validation"),
+        "covered_count": _read_int(summary, "covered_count", "native_note_tag_rule_validation"),
+        "translatable_hit_count": _read_int(
+            summary,
+            "translatable_hit_count",
+            "native_note_tag_rule_validation",
+        ),
+        "errors": [
+            _normalize_native_note_tag_validation_error(
+                ensure_json_object(error, f"native_note_tag_rule_validation.errors[{index}]"),
+                f"native_note_tag_rule_validation.errors[{index}]",
+            )
+            for index, error in enumerate(errors)
+        ],
+    }
 
 
 def _normalize_native_note_tag_candidate_detail(candidate: JsonObject, label: str) -> JsonObject:
@@ -334,6 +265,60 @@ def _normalize_native_note_tag_source_detail(source_detail: JsonObject, label: s
     }
 
 
+def _normalize_native_note_tag_validation_error(error: JsonObject, label: str) -> JsonObject:
+    """收窄 native Note 标签规则验证错误字段。"""
+    code = _read_string(error, "code", label)
+    file_name = _read_string(error, "file_name", label)
+    message = _read_string(error, "message", label)
+    tag_name = error.get("tag_name")
+    if tag_name is not None and not isinstance(tag_name, str):
+        raise TypeError(f"{label}.tag_name 必须是字符串或 null")
+    return {
+        "code": code,
+        "file_name": file_name,
+        "message": message,
+        "tag_name": tag_name or "",
+    }
+
+
+def _note_tag_rule_records_to_native_rules(records: list[NoteTagTextRuleRecord]) -> JsonArray:
+    """把数据库规则记录转换为 Rust Note 标签验证输入。"""
+    return [
+        {
+            "file_name": record.file_name,
+            "tag_names": list(record.tag_names),
+        }
+        for record in records
+    ]
+
+
+def _format_note_tag_validation_errors(validation: JsonObject) -> str:
+    """渲染 native Note 标签规则验证错误。"""
+    errors = ensure_json_array(validation["errors"], "note_tag_rule_validation.errors")
+    messages: list[str] = []
+    for index, raw_error in enumerate(errors):
+        error = ensure_json_object(raw_error, f"note_tag_rule_validation.errors[{index}]")
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            messages.append(message)
+            continue
+        code = error.get("code")
+        code_text = code if isinstance(code, str) and code else "unknown"
+        messages.append(f"Note 标签规则无效: {code_text}")
+    if not messages:
+        return "Note 标签规则无效"
+    suffix = f" 等 {len(messages)} 项" if len(messages) > 5 else ""
+    return "；".join(messages[:5]) + suffix
+
+
+def _read_string(candidate: JsonObject, field_name: str, label: str) -> str:
+    """读取 native 输出中的字符串字段。"""
+    value = candidate.get(field_name)
+    if not isinstance(value, str):
+        raise TypeError(f"{label}.{field_name} 必须是字符串")
+    return value
+
+
 def _read_int(candidate: JsonObject, field_name: str, label: str) -> int:
     """读取 native 候选中的非布尔整数字段。"""
     value = candidate.get(field_name)
@@ -347,5 +332,6 @@ __all__: list[str] = [
     "collect_native_note_tag_candidate_details",
     "collect_native_note_tag_extraction_details",
     "collect_native_note_tag_hit_details",
+    "collect_native_note_tag_rule_validation",
     "collect_native_note_tag_source_details",
 ]

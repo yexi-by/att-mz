@@ -82,6 +82,7 @@ struct RuleCandidatesPayload {
     structured_placeholder_texts: Vec<structured_placeholders::StructuredPlaceholderTextInput>,
     #[serde(default)]
     note_tag_data_files: BTreeMap<String, Value>,
+    note_tag_rule_validation: Option<note_tags::NoteTagRuleValidationInput>,
     #[serde(default)]
     event_command_data_files: Vec<event_commands::EventCommandDataFileInput>,
     #[serde(default)]
@@ -607,6 +608,7 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
         placeholder_texts,
         structured_placeholder_texts,
         note_tag_data_files,
+        note_tag_rule_validation,
         event_command_data_files,
         event_command_codes,
         event_command_rules,
@@ -712,6 +714,9 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
             }),
         );
     }
+    if note_tag_data_files.is_empty() && note_tag_rule_validation.is_some() {
+        return Err("Note 标签规则验证缺少 note_tag_data_files".to_string());
+    }
     if !note_tag_data_files.is_empty() {
         let text_rules = text_rules
             .clone()
@@ -720,6 +725,15 @@ fn scan_rule_candidates(payload: RuleCandidatesPayload) -> Result<String, String
             note_tags::scan_note_tag_rule_candidates(&note_tag_data_files, text_rules)?;
         let candidate_count = note_tag_scan.candidates.len();
         extra_summary_by_domain.insert("note_tags".to_string(), candidate_count);
+        if let Some(validation_input) = &note_tag_rule_validation {
+            scan_summary.insert(
+                "note_tag_rule_validation".to_string(),
+                json!(note_tags::validate_note_tag_rules(
+                    &note_tag_scan,
+                    validation_input,
+                )?),
+            );
+        }
         scan_summary.insert(
             "note_tags".to_string(),
             json!({

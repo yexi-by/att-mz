@@ -36,7 +36,7 @@ from app.rmmz.control_codes import StructuredPlaceholderRule
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.mv_namebox_native import scan_native_mv_virtual_namebox
 from app.rmmz.schema import GameData, TranslationData, TranslationItem
-from app.rmmz.text_rules import JsonArray, JsonValue, TextRules
+from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules
 from app.rule_review_decision import (
     RuleCoverageResult,
     RuleReviewDecision as CandidateReviewDecision,
@@ -55,7 +55,6 @@ from app.rule_review import (
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
     RuleReviewDomain,
     event_command_rule_scope_hash_for_codes,
-    note_tag_rule_scope_hash_for_candidates,
     placeholder_rule_scope_hash,
     plugin_rule_scope_hash,
     structured_placeholder_rule_scope_hash,
@@ -70,6 +69,17 @@ def collect_native_note_tag_candidate_details(*, game_data: GameData, text_rules
     from app.native_note_tag_scan import collect_native_note_tag_candidate_details as collect_native
 
     return collect_native(game_data=game_data, text_rules=text_rules)
+
+
+def collect_native_note_tag_rule_validation(
+    *,
+    game_data: GameData,
+    text_rules: TextRules,
+) -> JsonObject:
+    """延迟导入 native Note 标签规则验证，避免 Note 标签包初始化循环。"""
+    from app.native_note_tag_scan import collect_native_note_tag_rule_validation as collect_native
+
+    return collect_native(game_data=game_data, text_rules=text_rules, rule_records=[])
 
 
 async def collect_workflow_gate_errors(
@@ -360,8 +370,11 @@ def count_note_tag_rule_candidates(*, game_data: GameData, text_rules: TextRules
 
 def note_tag_rule_scope_hash_for_text_rules(*, game_data: GameData, text_rules: TextRules) -> str:
     """按当前文本规则计算 Note 标签空规则确认范围哈希。"""
-    candidates = collect_native_note_tag_candidate_details(game_data=game_data, text_rules=text_rules)
-    return note_tag_rule_scope_hash_for_candidates(candidates)
+    validation = collect_native_note_tag_rule_validation(game_data=game_data, text_rules=text_rules)
+    scope_hash = validation.get("scope_hash")
+    if not isinstance(scope_hash, str) or not scope_hash:
+        raise RuntimeError("native Note 标签规则验证缺少 scope_hash，请重新构建 Rust 原生扩展")
+    return scope_hash
 
 
 def mv_virtual_namebox_rule_scope_hash_for_game_data(game_data: GameData) -> str:

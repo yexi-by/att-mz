@@ -3580,7 +3580,7 @@ async def test_note_tag_scope_hash_and_count_use_native_candidate_scan(
     minimal_game_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Note 标签空规则 hash/count 只消费 native 候选摘要，不再触发 Python 候选扫描。"""
+    """Note 标签空规则 hash/count 只消费 native 事实，不再触发 Python 候选扫描。"""
     from app.application import flow_gate
 
     native_candidates: JsonArray = [
@@ -3614,6 +3614,17 @@ async def test_note_tag_scope_hash_and_count_use_native_candidate_scan(
         _ = (args, kwargs)
         return native_candidates
 
+    def fake_native_note_tag_rule_validation(*args: object, **kwargs: object) -> JsonObject:
+        _ = (args, kwargs)
+        return {
+            "status": "pass",
+            "scope_hash": "native-note-scope-hash",
+            "candidate_count": 1,
+            "covered_count": 0,
+            "translatable_hit_count": 0,
+            "errors": [],
+        }
+
     monkeypatch.setattr(
         flow_gate,
         "collect_note_tag_candidates",
@@ -3626,6 +3637,12 @@ async def test_note_tag_scope_hash_and_count_use_native_candidate_scan(
         fake_native_note_tag_candidates,
         raising=False,
     )
+    monkeypatch.setattr(
+        flow_gate,
+        "collect_native_note_tag_rule_validation",
+        fake_native_note_tag_rule_validation,
+        raising=False,
+    )
 
     game_data = await load_active_runtime_game_data(minimal_game_dir)
     text_rules = get_default_text_rules()
@@ -3634,7 +3651,7 @@ async def test_note_tag_scope_hash_and_count_use_native_candidate_scan(
     assert note_tag_rule_scope_hash_for_text_rules(
         game_data=game_data,
         text_rules=text_rules,
-    ) == note_tag_rule_scope_hash_for_candidates(native_candidates)
+    ) == "native-note-scope-hash"
 
 
 @pytest.mark.asyncio
@@ -3882,6 +3899,79 @@ async def test_plugin_source_excluded_only_rule_validates_current_selector_facts
     assert import_report.status == "ok"
     assert workflow_gate["source"] == "rust_text_index_gate_facts"
     assert plugin_source_gate["status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_note_tag_import_cold_rebuild_and_write_back_gate_use_rust_validation(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Note 标签规则导入后，冷重建和写回前检查继续消费 Rust gate facts。"""
+    items_path = minimal_game_dir / "data" / "Items.json"
+    raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
+    items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
+    item = ensure_json_object(items[1], "Items.json[1]")
+    item["note"] = "<拡張説明:薬草の詳細>"
+    _ = items_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_minimal_workflow_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+
+    import_report = await service.import_note_tag_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps({"Items.json": ["拡張説明"]}, ensure_ascii=False),
+    )
+    pending_path = tmp_path / "pending-translations.json"
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=pending_path,
+        limit=None,
+    )
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    payload = load_json_object(pending_path)
+    manual_payload: dict[str, object] = {}
+    for location_path, raw_entry in payload.items():
+        entry = ensure_json_object(coerce_json_value(raw_entry), location_path)
+        original_lines = ensure_json_array(entry["original_lines"], f"{location_path}.original_lines")
+        translation_lines: list[str] = []
+        for raw_line in original_lines:
+            if not isinstance(raw_line, str):
+                raise TypeError(f"{location_path}.original_lines 必须是字符串数组")
+            translation_lines.append(
+                _translated_test_line_preserving_protocol_candidates(raw_line, text_rules)
+            )
+        manual_entry: JsonObject = {key: value for key, value in entry.items()}
+        manual_entry["translation_lines"] = [cast(JsonValue, line) for line in translation_lines]
+        manual_payload[location_path] = manual_entry
+    manual_path = tmp_path / "manual-translations.json"
+    _ = manual_path.write_text(json.dumps(manual_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _ = await _rebuild_text_index_for_test(service)
+    manual_report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=manual_path,
+    )
+    quality_report = await service.quality_report(game_title="テストゲーム")
+    workflow_gate = ensure_json_object(quality_report.details["workflow_gate"], "workflow_gate")
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        write_summary = await handler.write_back(
+            game_title="テストゲーム",
+            callbacks=(lambda _current, _total: None, lambda _count: None),
+        )
+    finally:
+        await handler.close()
+
+    assert import_report.status == "ok"
+    assert export_report.status == "ok"
+    assert manual_report.status == "ok"
+    assert workflow_gate["source"] == "rust_text_index_gate_facts"
+    assert write_summary.data_item_count > 0
 
 
 @pytest.mark.asyncio
