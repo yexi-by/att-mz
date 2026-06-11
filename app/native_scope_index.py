@@ -29,7 +29,6 @@ from app.rmmz.text_rules import (
     ensure_json_object,
 )
 
-_PLUGIN_SOURCE_RUST_PREFILTER_PATTERN = r"[\s\S]"
 _RULE_CANDIDATES_SCHEMA_VERSION = 1
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 RUST_SCOPE_FACTS_CONTRACT_VERSION = 1
@@ -381,9 +380,7 @@ def build_native_rule_candidate_text_rules_payload(text_rules: TextRules) -> Jso
         "strip_wrapping_punctuation_pairs": [
             [left, right] for left, right in setting.strip_wrapping_punctuation_pairs
         ],
-        # source_text_required_pattern 只承诺 Python re；Rust 这里只做宽松预筛，
-        # 命令报告层再用 TextRules.should_translate_source_text 做最终过滤。
-        "source_text_required_pattern": _PLUGIN_SOURCE_RUST_PREFILTER_PATTERN,
+        "source_text_required_pattern": setting.source_text_required_pattern,
         "source_text_exclusion_profile": setting.source_text_exclusion_profile,
     }
 

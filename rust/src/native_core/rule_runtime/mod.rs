@@ -1,3 +1,4 @@
+pub(crate) mod adapters;
 pub(crate) mod api;
 pub(crate) mod engine;
 pub(crate) mod errors;

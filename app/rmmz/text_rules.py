@@ -11,9 +11,9 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import cache
+from typing import NoReturn
 
 from app.config.schemas import TextRulesSetting
-from app.regex_contract import validate_text_rules_regex_contract
 from app.rmmz.control_codes import (
     ALL_PLACEHOLDER_PATTERN,
     ControlSequenceSpan,
@@ -45,10 +45,6 @@ class TextRules:
     custom_placeholder_rules: tuple[CustomPlaceholderRule, ...]
     structured_placeholder_rules: tuple[StructuredPlaceholderRule, ...]
     placeholder_token_pattern: re.Pattern[str]
-    source_text_required_pattern: re.Pattern[str]
-    source_residual_segment_pattern: re.Pattern[str]
-    line_width_count_pattern: re.Pattern[str]
-    residual_escape_sequence_pattern: re.Pattern[str]
 
     @classmethod
     def from_setting(
@@ -57,21 +53,12 @@ class TextRules:
         custom_placeholder_rules: tuple[CustomPlaceholderRule, ...] = (),
         structured_placeholder_rules: tuple[StructuredPlaceholderRule, ...] = (),
     ) -> "TextRules":
-        """根据配置构建并预编译全部正则规则。"""
-        validate_text_rules_regex_contract(
-            setting=setting,
-            custom_placeholder_rules=custom_placeholder_rules,
-            structured_placeholder_rules=structured_placeholder_rules,
-        )
+        """根据配置构建文本规则服务。"""
         return cls(
             setting=setting,
             custom_placeholder_rules=custom_placeholder_rules,
             structured_placeholder_rules=structured_placeholder_rules,
             placeholder_token_pattern=ALL_PLACEHOLDER_PATTERN,
-            source_text_required_pattern=re.compile(setting.source_text_required_pattern),
-            source_residual_segment_pattern=re.compile(setting.source_residual_segment_pattern),
-            line_width_count_pattern=re.compile(setting.line_width_count_pattern),
-            residual_escape_sequence_pattern=re.compile(setting.residual_escape_sequence_pattern),
         )
 
     def normalize_extraction_text(self, text: str) -> str:
@@ -137,30 +124,23 @@ class TextRules:
 
     def count_line_width_chars(self, text: str) -> int:
         """按配置统计长文本切行时计入长度的字符数量。"""
-        return len(self.line_width_count_pattern.findall(text))
+        _ = text
+        _raise_runtime_config_regex_required("长文本宽度统计")
 
     def should_translate_source_text(self, text: str) -> bool:
         """判断原文是否包含需要交给模型处理的源语言字符。"""
-        normalized_text = self.normalize_extraction_text(text)
-        if not normalized_text:
-            return False
-        if (
-            self.setting.source_text_exclusion_profile == "english_protocol_noise"
-            and self._is_english_protocol_noise_text(normalized_text)
-        ):
-            return False
-        detection_text = self.strip_rm_control_sequences(normalized_text)
-        if not detection_text:
-            return False
-        return self.source_text_required_pattern.search(detection_text) is not None
+        _ = text
+        _raise_runtime_config_regex_required("源文可翻译性判断")
 
     def should_translate_source_lines(self, lines: list[str]) -> bool:
         """判断多行原文是否至少包含一处需要翻译的源语言字符。"""
-        return any(self.should_translate_source_text(line) for line in lines)
+        _ = lines
+        _raise_runtime_config_regex_required("多行源文可翻译性判断")
 
     def is_line_width_counted_char(self, char: str) -> bool:
         """判断单个字符是否计入长文本切行长度。"""
-        return self.line_width_count_pattern.fullmatch(char) is not None
+        _ = char
+        _raise_runtime_config_regex_required("长文本宽度字符判断")
 
     def collect_placeholder_tokens(self, lines: list[str]) -> set[str]:
         """收集文本行中的翻译占位符集合。"""
@@ -302,43 +282,8 @@ class TextRules:
         original_lines: Sequence[str] | None = None,
     ) -> None:
         """检查译文中是否残留当前源语言文本。"""
-        allowed_chars = set(self.setting.source_residual_allowed_chars)
-        allowed_tail_chars = set(self.setting.source_residual_allowed_tail_chars)
-        masked_lines = self.mask_source_residual_terms(
-            translation_lines,
-            [*allowed_terms, *self.setting.allowed_source_residual_terms],
-        )
-        if self.setting.source_residual_detection_profile == "english_source_copy":
-            if original_lines is None:
-                self._check_english_residual_without_original(translation_lines=masked_lines)
-                return
-            self._check_english_source_copy_residual(
-                original_lines=original_lines,
-                translation_lines=masked_lines,
-            )
-            return
-        for index, line in enumerate(masked_lines, start=1):
-            cleaned_line = self._strip_non_content_for_residual(line)
-            segments = [match.group(0) for match in self.source_residual_segment_pattern.finditer(cleaned_line)]
-            if not segments:
-                continue
-
-            has_non_source_content = self._has_non_source_content(cleaned_line)
-            real_residual_segments: list[str] = []
-            for segment in segments:
-                filtered_segment = [char for char in segment if char not in allowed_chars]
-                if not filtered_segment:
-                    if not has_non_source_content:
-                        real_residual_segments.append(segment)
-                    continue
-                if has_non_source_content and all(char in allowed_tail_chars for char in filtered_segment):
-                    continue
-                real_residual_segments.append(segment)
-
-            if real_residual_segments:
-                raise ValueError(
-                    f"发现{self.setting.source_residual_label}残留(第 {index} 行): {real_residual_segments}"
-                )
+        _ = (translation_lines, allowed_terms, original_lines)
+        _raise_runtime_config_regex_required("源文残留检查")
 
     def _check_english_source_copy_residual(
         self,
@@ -387,21 +332,8 @@ class TextRules:
 
     def _collect_english_residual_tokens(self, text: str) -> list["_ResidualToken"]:
         """按残留正则收集拉丁 token，不对 token 语义作任何词表判断。"""
-        tokens: list[_ResidualToken] = []
-        for match in self.source_residual_segment_pattern.finditer(text):
-            value = match.group(0)
-            if not _has_ascii_letter(value):
-                continue
-            normalized = value.casefold() if self.setting.source_residual_terms_ignore_case else value
-            tokens.append(
-                _ResidualToken(
-                    text=value,
-                    normalized=normalized,
-                    start_index=match.start(),
-                    end_index=match.end(),
-                )
-            )
-        return tokens
+        _ = text
+        _raise_runtime_config_regex_required("英文残留 token 收集")
 
     def _find_english_long_residual_segments(
         self,
@@ -465,14 +397,13 @@ class TextRules:
 
     def _strip_non_content_for_residual(self, text: str) -> str:
         """在残留校验前剥离控制符和占位符噪音。"""
-        cleaned_text = self.strip_rm_control_sequences(text)
-        cleaned_text = self.placeholder_token_pattern.sub("", cleaned_text)
-        return self.residual_escape_sequence_pattern.sub(" ", cleaned_text)
+        _ = text
+        _raise_runtime_config_regex_required("源文残留噪音剥离")
 
     def _has_non_source_content(self, text: str) -> bool:
         """判断残留检查文本中是否存在源语言片段之外的正文内容。"""
-        text_without_source = self.source_residual_segment_pattern.sub("", text)
-        return any(char.isalnum() for char in text_without_source)
+        _ = text
+        _raise_runtime_config_regex_required("源文残留正文判断")
 
     def mask_source_residual_terms(
         self,
@@ -663,11 +594,6 @@ def _ranges_overlap(left: _ProtectedRange, right: _ProtectedRange) -> bool:
     return left.start < right.end and left.end > right.start
 
 
-def _has_ascii_letter(text: str) -> bool:
-    """判断文本中是否包含 ASCII 拉丁字母。"""
-    return any(char.isascii() and char.isalpha() for char in text)
-
-
 def _ascii_letter_count(text: str) -> int:
     """统计 ASCII 拉丁字母数量。"""
     return sum(1 for char in text if char.isascii() and char.isalpha())
@@ -709,6 +635,10 @@ def _contains_token_sequence(source_tokens: list[str], candidate_tokens: list[st
         if source_tokens[start:start + candidate_length] == candidate_tokens:
             return True
     return False
+
+
+def _raise_runtime_config_regex_required(operation: str) -> NoReturn:
+    raise RuntimeError(f"{operation}需要配置正则语义；TextRules 不再执行配置正则语义，请改用 Rust rule_runtime")
 
 
 __all__: list[str] = [

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::adapters::config_patterns::validate_runtime_config_patterns;
 use super::errors::RuleRuntimeIssue;
 use super::model::{RULE_RUNTIME_CONTRACT_VERSION, RULE_STORE_SCHEMA_VERSION};
 
@@ -41,6 +42,18 @@ struct RuleImportReport {
 pub(crate) fn prepare_rule_import_impl(payload_json: &str) -> Result<String, String> {
     let payload: PrepareRuleImportPayload = serde_json::from_str(payload_json)
         .map_err(|error| format!("规则导入 prepare 输入 JSON 无效: {error}"))?;
+    let config_issues = validate_runtime_config_patterns(&payload.settings_runtime_patterns);
+    if !config_issues.is_empty() {
+        return serialize_report(RuleImportReport {
+            status: "error".to_string(),
+            rule_runtime_contract_version: RULE_RUNTIME_CONTRACT_VERSION,
+            rule_store_schema_version: RULE_STORE_SCHEMA_VERSION,
+            errors: config_issues,
+            warnings: Vec::new(),
+            plan_token: None,
+            summary: serde_json::json!({"mode": payload.mode}),
+        });
+    }
     if !is_current_rule_domain(&payload.domain) {
         return invalid_domain_report(&payload.domain);
     }

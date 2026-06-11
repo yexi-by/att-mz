@@ -21,7 +21,6 @@ from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.language_profiles import apply_language_profile_to_raw_config
 from app.native_quality import configure_native_runtime_threads
 from app.observability.logging import logger
-from app.regex_contract import validate_text_rules_regex_contract
 from app.runtime_paths import resolve_app_path
 
 DEFAULT_SETTING_FILE_NAME = "setting.toml"
@@ -88,7 +87,6 @@ def load_setting(
     raw_config_snapshot = copy.deepcopy(raw_config)
 
     setting = Setting.model_validate(raw_config)
-    validate_text_rules_regex_contract(setting=setting.text_rules)
     configure_native_runtime_threads(setting.runtime.rust_threads)
     logger.info(
         _build_setting_summary(

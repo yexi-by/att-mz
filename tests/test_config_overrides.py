@@ -376,32 +376,34 @@ def test_load_setting_rejects_invalid_runtime_rust_threads_environment_override(
         _ = load_setting(setting_path=setting_path)
 
 
-def test_load_setting_rejects_rust_unsupported_text_rule_regex(
+def test_load_setting_preserves_pcre2_text_rule_regex_for_runtime_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """会进入 Rust 原生质检的配置正则必须在加载配置时提前失败。"""
+    """配置加载只保留文本规则正则，PCRE2 编译由规则运行时统一执行。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
 
-    with pytest.raises(ValueError, match="text_rules.line_width_count_pattern.*Rust regex"):
-        _ = load_setting(
-            setting_path=ROOT / "setting.example.toml",
-            overrides=SettingOverrides(line_width_count_pattern=r"(?<=a)b"),
-        )
+    setting = load_setting(
+        setting_path=ROOT / "setting.example.toml",
+        overrides=SettingOverrides(line_width_count_pattern=r"(?<=a)b"),
+    )
+
+    assert setting.text_rules.line_width_count_pattern == r"(?<=a)b"
 
 
-def test_load_setting_rejects_python_invalid_text_rule_regex(
+def test_load_setting_preserves_invalid_text_rule_regex_for_runtime_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """配置正则的 Python re 语法也必须在加载配置时提前失败。"""
+    """配置加载阶段不再保留第二套 Python re 校验事实源。"""
     monkeypatch.delenv(LLM_BASE_URL_ENV_NAME, raising=False)
     monkeypatch.delenv(LLM_API_KEY_ENV_NAME, raising=False)
 
-    with pytest.raises(ValueError, match="text_rules.line_width_count_pattern.*Python re 无法编译"):
-        _ = load_setting(
-            setting_path=ROOT / "setting.example.toml",
-            overrides=SettingOverrides(line_width_count_pattern="["),
-        )
+    setting = load_setting(
+        setting_path=ROOT / "setting.example.toml",
+        overrides=SettingOverrides(line_width_count_pattern="["),
+    )
+
+    assert setting.text_rules.line_width_count_pattern == "["
 
 
 def test_english_language_profile_selects_public_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
