@@ -16,7 +16,7 @@ from app.event_command_text import (
     load_event_command_rule_import_file,
     resolve_event_command_codes,
 )
-from app.native_scope_index import NativeRuleCandidatesResult
+from app.native_scope_index import NativeContractVersions, NativeRuleCandidatesResult
 from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationData, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
@@ -89,6 +89,12 @@ async def test_event_command_json_export_uses_native_samples(
         captured_payloads.append(payload)
         return NativeRuleCandidatesResult(
             schema_version=1,
+            contract_versions=NativeContractVersions(
+                rust_scope_facts=1,
+                parser=1,
+                source_branch=1,
+                text_fact_schema=1,
+            ),
             candidates=cast(JsonArray, []),
             candidate_summary=[],
             scan_summary=cast(

@@ -6,6 +6,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::path_templates::{
+    PathTemplateError, json_path_parts_to_parent_slash_path, json_path_parts_to_slash_path,
+    jsonpath_matches_template, parse_json_path, parse_json_path_message,
+};
 use super::plugin_source::{
     CompiledRuleCandidateTextRules, ENGLISH_ASSET_EXTENSION_RE, ENGLISH_ASSET_PATH_RE,
     NUMBER_LIKE_RE, compile_rule_candidate_text_rules, normalize_extraction_text,
@@ -79,6 +83,8 @@ pub(super) struct NonstandardDataRuleCoverageInput {
 struct NonstandardDataRuleCoverageRuleInput {
     file: String,
     #[serde(default)]
+    file_hash: Option<String>,
+    #[serde(default)]
     paths: Vec<String>,
     #[serde(default)]
     excluded_paths: Vec<String>,
@@ -90,6 +96,8 @@ struct NonstandardDataRuleCoverageRuleInput {
 struct NonstandardDataRuleCoverageFileInput {
     file: String,
     #[serde(default)]
+    file_hash: Option<String>,
+    #[serde(default)]
     leaves: Vec<NonstandardDataRuleCoverageLeafInput>,
 }
 
@@ -97,6 +105,8 @@ struct NonstandardDataRuleCoverageFileInput {
 struct NonstandardDataRuleCoverageLeafInput {
     path: String,
     value_type: String,
+    #[serde(default)]
+    value: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,11 +115,50 @@ struct NonstandardDataRuleCoverageCandidateInput {
     json_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum JsonPathPart {
-    Key(String),
-    Index(usize),
-    Wildcard,
+#[derive(Debug, Serialize)]
+struct NonstandardDataRuleHitDetailOutput {
+    file: String,
+    json_path: String,
+    location_path: String,
+    original_text: String,
+    path_template: String,
+    role: &'static str,
+    rule_index: usize,
+    translation_prefix: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NonstandardDataPathHitCountOutput {
+    candidate_hit_count: usize,
+    path_template: String,
+    role: &'static str,
+    string_hit_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct NonstandardDataRuleSummaryOutput {
+    excluded_path_hit_counts: Vec<NonstandardDataPathHitCountOutput>,
+    file: String,
+    rule_index: usize,
+    skipped: bool,
+    path_hit_counts: Vec<NonstandardDataPathHitCountOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct NonstandardDataStaleReasonOutput {
+    code: &'static str,
+    file: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_template: Option<String>,
+}
+
+#[derive(Debug)]
+struct NonstandardDataCoverageHits {
+    candidate_hits: BTreeSet<(String, String)>,
+    details: Vec<NonstandardDataRuleHitDetailOutput>,
+    path_hit_counts: Vec<NonstandardDataPathHitCountOutput>,
+    stale_reasons: Vec<NonstandardDataStaleReasonOutput>,
 }
 
 struct NonstandardDataFileScan {
@@ -121,10 +170,10 @@ struct NonstandardDataFileScan {
 pub(super) fn scan_nonstandard_data_rule_coverage(
     input: NonstandardDataRuleCoverageInput,
 ) -> Result<Value, String> {
-    let leaves_by_file = input
+    let files_by_name = input
         .files
         .into_iter()
-        .map(|file| (file.file, file.leaves))
+        .map(|file| (file.file.clone(), file))
         .collect::<BTreeMap<_, _>>();
     let candidate_paths = input
         .candidates
@@ -136,20 +185,48 @@ pub(super) fn scan_nonstandard_data_rule_coverage(
     let mut excluded_candidate_paths: BTreeSet<(String, String)> = BTreeSet::new();
     let mut skipped_files: BTreeSet<String> = BTreeSet::new();
     let mut rule_details = Vec::new();
+    let mut hit_details = Vec::new();
+    let mut rule_summaries = Vec::new();
+    let mut stale_reasons = Vec::new();
+    let mut translation_prefixes = BTreeSet::new();
 
-    for rule in input.rules {
+    for (rule_index, rule) in input.rules.into_iter().enumerate() {
         if !seen_files.insert(rule.file.clone()) {
             return Err(format!(
                 "非标准 data 文件规则不能重复声明 file: {}",
                 rule.file
             ));
         }
-        let Some(file_leaves) = leaves_by_file.get(&rule.file) else {
-            return Err(format!(
-                "非标准 data 文件规则指向不存在的文件: {}",
-                rule.file
-            ));
+        let Some(file_input) = files_by_name.get(&rule.file) else {
+            stale_reasons.push(NonstandardDataStaleReasonOutput {
+                code: "file_missing",
+                file: rule.file.clone(),
+                message: format!("非标准 data 文件规则已过期: 文件不存在: {}", rule.file),
+                path_template: None,
+            });
+            rule_summaries.push(NonstandardDataRuleSummaryOutput {
+                excluded_path_hit_counts: Vec::new(),
+                file: rule.file.clone(),
+                rule_index,
+                skipped: rule.skipped,
+                path_hit_counts: Vec::new(),
+            });
+            continue;
         };
+        let file_leaves = &file_input.leaves;
+        if let Some(rule_file_hash) = &rule.file_hash
+            && file_input.file_hash.as_ref() != Some(rule_file_hash)
+        {
+            stale_reasons.push(NonstandardDataStaleReasonOutput {
+                code: "file_hash_mismatch",
+                file: rule.file.clone(),
+                message: format!(
+                    "非标准 data 文件规则已过期: 文件 hash 不匹配: {}",
+                    rule.file
+                ),
+                path_template: None,
+            });
+        }
         if rule.skipped {
             skipped_files.insert(rule.file.clone());
             rule_details.push(json!({
@@ -158,18 +235,36 @@ pub(super) fn scan_nonstandard_data_rule_coverage(
                 "translated_candidate_count": 0,
                 "excluded_candidate_count": 0
             }));
+            rule_summaries.push(NonstandardDataRuleSummaryOutput {
+                excluded_path_hit_counts: Vec::new(),
+                file: rule.file,
+                rule_index,
+                skipped: true,
+                path_hit_counts: Vec::new(),
+            });
             continue;
         }
 
-        let translated_hits =
-            collect_rule_hits(&rule.file, &rule.paths, file_leaves, &candidate_paths, true)?;
-        let excluded_hits = collect_rule_hits(
+        let translated = collect_rule_hits(
+            &rule.file,
+            &rule.paths,
+            file_leaves,
+            &candidate_paths,
+            true,
+            rule_index,
+            "translated",
+        )?;
+        let excluded = collect_rule_hits(
             &rule.file,
             &rule.excluded_paths,
             file_leaves,
             &candidate_paths,
             true,
+            rule_index,
+            "excluded",
         )?;
+        let translated_hits = translated.candidate_hits;
+        let excluded_hits = excluded.candidate_hits;
         let overlap = translated_hits
             .intersection(&excluded_hits)
             .cloned()
@@ -182,6 +277,20 @@ pub(super) fn scan_nonstandard_data_rule_coverage(
         }
         translated_candidate_paths.extend(translated_hits.iter().cloned());
         excluded_candidate_paths.extend(excluded_hits.iter().cloned());
+        for detail in translated.details {
+            translation_prefixes.insert(detail.translation_prefix.clone());
+            hit_details.push(detail);
+        }
+        hit_details.extend(excluded.details);
+        stale_reasons.extend(translated.stale_reasons);
+        stale_reasons.extend(excluded.stale_reasons);
+        rule_summaries.push(NonstandardDataRuleSummaryOutput {
+            excluded_path_hit_counts: excluded.path_hit_counts,
+            file: rule.file.clone(),
+            rule_index,
+            skipped: false,
+            path_hit_counts: translated.path_hit_counts,
+        });
         rule_details.push(json!({
             "file": rule.file,
             "skipped": false,
@@ -213,7 +322,11 @@ pub(super) fn scan_nonstandard_data_rule_coverage(
         "rules": rule_details,
         "translated_candidates": path_pairs_to_json_array(&translated_candidate_paths),
         "excluded_candidates": path_pairs_to_json_array(&excluded_candidate_paths),
+        "hit_details": hit_details,
+        "rule_summaries": rule_summaries,
         "skipped_files": skipped_files.into_iter().collect::<Vec<_>>(),
+        "stale_reasons": stale_reasons,
+        "translation_prefixes": translation_prefixes.into_iter().collect::<Vec<_>>(),
         "unreviewed_candidates": path_pairs_to_json_array(&unreviewed_candidate_paths),
         "reviewed_candidate_count": reviewed_paths.len()
     }))
@@ -467,13 +580,13 @@ fn expand_rule_to_leaf_output_paths(
     path_template: &str,
     leaves: &[NonstandardDataLeafOutput],
 ) -> Result<Vec<String>, String> {
-    let template_parts = parse_json_path(path_template)?;
+    let template_parts = parse_json_path_message(path_template)?;
     let mut matched_paths = Vec::new();
     for leaf in leaves {
         if leaf.value_type != "string" {
             continue;
         }
-        if jsonpath_matches_template(&template_parts, &parse_json_path(&leaf.path)?) {
+        if jsonpath_matches_template(&template_parts, &parse_json_path_message(&leaf.path)?) {
             matched_paths.push(leaf.path.clone());
         }
     }
@@ -492,133 +605,143 @@ fn collect_rule_hits(
     leaves: &[NonstandardDataRuleCoverageLeafInput],
     candidate_paths: &BTreeSet<(String, String)>,
     require_candidate_hit: bool,
-) -> Result<BTreeSet<(String, String)>, String> {
-    let mut hits = BTreeSet::new();
+    rule_index: usize,
+    role: &'static str,
+) -> Result<NonstandardDataCoverageHits, String> {
+    let mut candidate_hits = BTreeSet::new();
+    let mut details = Vec::new();
+    let mut path_hit_counts = Vec::new();
+    let mut stale_reasons = Vec::new();
     for path_template in path_templates {
-        let matched_leaf_paths = expand_rule_to_leaf_paths(path_template, leaves)?;
-        if matched_leaf_paths.is_empty() {
-            return Err(format!(
-                "非标准 data 文件 {file_name} 的路径没有命中字符串叶子: {path_template}"
-            ));
+        let matched_leaves = match expand_rule_to_leaf_paths(path_template, leaves) {
+            Ok(matched_leaves) => matched_leaves,
+            Err(error) => {
+                stale_reasons.push(path_template_error_stale_reason(
+                    file_name,
+                    path_template,
+                    error,
+                ));
+                continue;
+            }
+        };
+        let string_hit_count = matched_leaves.len();
+        if matched_leaves.is_empty() {
+            stale_reasons.push(NonstandardDataStaleReasonOutput {
+                code: "path_template_no_string_leaf",
+                file: file_name.to_string(),
+                message: format!(
+                    "非标准 data 文件 {file_name} 的路径没有命中字符串叶子: {path_template}"
+                ),
+                path_template: Some(path_template.clone()),
+            });
+            path_hit_counts.push(NonstandardDataPathHitCountOutput {
+                candidate_hit_count: 0,
+                path_template: path_template.clone(),
+                role,
+                string_hit_count,
+            });
+            continue;
         }
-        let candidate_hits = matched_leaf_paths
-            .into_iter()
-            .filter(|leaf_path| {
-                candidate_paths.contains(&(file_name.to_string(), leaf_path.clone()))
-            })
-            .map(|leaf_path| (file_name.to_string(), leaf_path))
-            .collect::<BTreeSet<_>>();
-        if require_candidate_hit && candidate_hits.is_empty() {
-            return Err(format!(
-                "非标准 data 文件 {file_name} 的路径没有命中源语言自然文本候选: {path_template}"
-            ));
+        let mut template_candidate_hit_count = 0;
+        for leaf in matched_leaves {
+            if !candidate_paths.contains(&(file_name.to_string(), leaf.path.clone())) {
+                continue;
+            }
+            template_candidate_hit_count += 1;
+            candidate_hits.insert((file_name.to_string(), leaf.path.clone()));
+            if let Some(original_text) = leaf.value.as_str() {
+                details.push(nonstandard_data_hit_detail(
+                    file_name,
+                    path_template,
+                    leaf,
+                    original_text,
+                    rule_index,
+                    role,
+                )?);
+            }
         }
-        hits.extend(candidate_hits);
+        if require_candidate_hit && template_candidate_hit_count == 0 {
+            stale_reasons.push(NonstandardDataStaleReasonOutput {
+                code: "path_template_no_candidate",
+                file: file_name.to_string(),
+                message: format!(
+                    "非标准 data 文件 {file_name} 的路径没有命中源语言自然文本候选: {path_template}"
+                ),
+                path_template: Some(path_template.clone()),
+            });
+        }
+        path_hit_counts.push(NonstandardDataPathHitCountOutput {
+            candidate_hit_count: template_candidate_hit_count,
+            path_template: path_template.clone(),
+            role,
+            string_hit_count,
+        });
     }
-    Ok(hits)
+    Ok(NonstandardDataCoverageHits {
+        candidate_hits,
+        details,
+        path_hit_counts,
+        stale_reasons,
+    })
 }
 
-fn expand_rule_to_leaf_paths(
+fn expand_rule_to_leaf_paths<'a>(
     path_template: &str,
-    leaves: &[NonstandardDataRuleCoverageLeafInput],
-) -> Result<Vec<String>, String> {
+    leaves: &'a [NonstandardDataRuleCoverageLeafInput],
+) -> Result<Vec<&'a NonstandardDataRuleCoverageLeafInput>, PathTemplateError> {
     let template_parts = parse_json_path(path_template)?;
-    let mut matched_paths = Vec::new();
+    let mut matched_leaves = Vec::new();
     for leaf in leaves {
         if leaf.value_type != "string" {
             continue;
         }
         if jsonpath_matches_template(&template_parts, &parse_json_path(&leaf.path)?) {
-            matched_paths.push(leaf.path.clone());
+            matched_leaves.push(leaf);
         }
     }
-    matched_paths.sort();
-    Ok(matched_paths)
+    matched_leaves.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(matched_leaves)
 }
 
-fn jsonpath_matches_template(
-    template_parts: &[JsonPathPart],
-    actual_parts: &[JsonPathPart],
-) -> bool {
-    if template_parts.len() != actual_parts.len() {
-        return false;
-    }
-    template_parts.iter().zip(actual_parts).all(
-        |(template_part, actual_part)| match template_part {
-            JsonPathPart::Wildcard => matches!(actual_part, JsonPathPart::Index(_)),
-            _ => template_part == actual_part,
-        },
-    )
+fn nonstandard_data_hit_detail(
+    file_name: &str,
+    path_template: &str,
+    leaf: &NonstandardDataRuleCoverageLeafInput,
+    raw_text: &str,
+    rule_index: usize,
+    role: &'static str,
+) -> Result<NonstandardDataRuleHitDetailOutput, String> {
+    let parts = parse_json_path_message(&leaf.path)?;
+    let slash_path = json_path_parts_to_slash_path(&parts)?;
+    let parent_slash_path = json_path_parts_to_parent_slash_path(&parts)?;
+    let translation_prefix = if parent_slash_path.is_empty() {
+        file_name.to_string()
+    } else {
+        format!("{file_name}/{parent_slash_path}")
+    };
+    Ok(NonstandardDataRuleHitDetailOutput {
+        file: file_name.to_string(),
+        json_path: leaf.path.clone(),
+        location_path: format!("{file_name}/{slash_path}"),
+        original_text: normalize_visible_text_for_extraction(raw_text),
+        path_template: path_template.to_string(),
+        role,
+        rule_index,
+        translation_prefix,
+    })
 }
 
-fn parse_json_path(path: &str) -> Result<Vec<JsonPathPart>, String> {
-    let chars = path.chars().collect::<Vec<_>>();
-    if chars.first() != Some(&'$') {
-        return Err(format!("JSONPath 超出当前规则范围: {path}"));
+fn path_template_error_stale_reason(
+    file_name: &str,
+    path_template: &str,
+    error: PathTemplateError,
+) -> NonstandardDataStaleReasonOutput {
+    NonstandardDataStaleReasonOutput {
+        code: error.code,
+        file: file_name.to_string(),
+        message: error.message,
+        path_template: Some(path_template.to_string()),
     }
-    let mut index = 1;
-    let mut parts = Vec::new();
-    while index < chars.len() {
-        if chars[index] != '[' {
-            return Err(format!("JSONPath 超出当前规则范围: {path}"));
-        }
-        index += 1;
-        if index >= chars.len() {
-            return Err(format!("JSONPath 超出当前规则范围: {path}"));
-        }
-        if chars[index] == '\'' {
-            index += 1;
-            let mut key = String::new();
-            while index < chars.len() {
-                let current = chars[index];
-                if current == '\\' {
-                    index += 1;
-                    if index >= chars.len() {
-                        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-                    }
-                    key.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-                if current == '\'' {
-                    index += 1;
-                    if index >= chars.len() || chars[index] != ']' {
-                        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-                    }
-                    index += 1;
-                    parts.push(JsonPathPart::Key(key));
-                    break;
-                }
-                key.push(current);
-                index += 1;
-            }
-            if !matches!(parts.last(), Some(JsonPathPart::Key(_))) {
-                return Err(format!("JSONPath 超出当前规则范围: {path}"));
-            }
-            continue;
-        }
-        let start_index = index;
-        while index < chars.len() && chars[index] != ']' {
-            index += 1;
-        }
-        if index >= chars.len() {
-            return Err(format!("JSONPath 超出当前规则范围: {path}"));
-        }
-        let segment = chars[start_index..index].iter().collect::<String>();
-        index += 1;
-        if segment == "*" {
-            parts.push(JsonPathPart::Wildcard);
-            continue;
-        }
-        let parsed_index = segment
-            .parse::<usize>()
-            .map_err(|_error| format!("JSONPath 超出当前规则范围: {path}"))?;
-        parts.push(JsonPathPart::Index(parsed_index));
-    }
-    if parts.is_empty() {
-        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-    }
-    Ok(parts)
 }
 
 fn path_pairs_to_json_array(path_pairs: &BTreeSet<(String, String)>) -> Vec<Value> {
@@ -842,6 +965,9 @@ mod tests {
         scan_nonstandard_data_rule_coverage,
     };
     use crate::native_core::scope_index::RuleCandidateTextRules;
+    use crate::native_core::scope_index::path_templates::{
+        PATH_TEMPLATE_INVALID_CODE, parse_json_path,
+    };
     use serde_json::{Value, json};
 
     fn text_rules() -> RuleCandidateTextRules {
@@ -948,6 +1074,62 @@ mod tests {
             output["unreviewed_candidates"],
             json!([{"file": "UnknownPluginData.json", "json_path": "$['title']"}])
         );
+    }
+
+    #[test]
+    fn nonstandard_data_outputs_rule_hit_details_and_translation_prefixes() {
+        let input: NonstandardDataRuleCoverageInput = serde_json::from_value(json!({
+            "rules": [
+                {
+                    "file": "Custom.json",
+                    "paths": ["$['items'][*]['name']"],
+                    "excluded_paths": []
+                }
+            ],
+            "files": [
+                {
+                    "file": "Custom.json",
+                    "leaves": [
+                        {
+                            "path": "$['items'][0]['name']",
+                            "value_type": "string",
+                            "value": "古い名前"
+                        }
+                    ]
+                }
+            ],
+            "candidates": [
+                {"file": "Custom.json", "json_path": "$['items'][0]['name']"}
+            ]
+        }))
+        .expect("coverage 输入应可解析");
+
+        let output = scan_nonstandard_data_rule_coverage(input).expect("覆盖检查应成功");
+
+        assert_eq!(
+            output["hit_details"][0]["path_template"],
+            json!("$['items'][*]['name']")
+        );
+        assert_eq!(
+            output["hit_details"][0]["json_path"],
+            json!("$['items'][0]['name']")
+        );
+        assert_eq!(
+            output["hit_details"][0]["location_path"],
+            json!("Custom.json/items/0/name")
+        );
+        assert_eq!(output["hit_details"][0]["original_text"], json!("古い名前"));
+        assert_eq!(
+            output["translation_prefixes"],
+            json!(["Custom.json/items/0"])
+        );
+    }
+
+    #[test]
+    fn invalid_path_template_returns_stable_error_code() {
+        let error = parse_json_path("$.Name").expect_err("点号 JSONPath 必须报错");
+
+        assert_eq!(error.code, PATH_TEMPLATE_INVALID_CODE);
     }
 
     #[test]

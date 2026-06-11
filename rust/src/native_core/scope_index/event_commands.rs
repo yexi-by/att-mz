@@ -6,6 +6,9 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::RuleCandidateOutput;
+use super::path_templates::{
+    JsonPathPart, jsonpath_matches_template, parse_json_path_message as parse_json_path,
+};
 use crate::native_core::write_back_plan::normalize_visible_text_for_extraction;
 use crate::native_core::write_protocol::decode_json_container_text;
 
@@ -82,13 +85,6 @@ struct EventCommandSnapshot {
 struct EventCommandLeaf {
     path: String,
     text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum JsonPathPart {
-    Key(String),
-    Index(usize),
-    Wildcard,
 }
 
 #[derive(Debug)]
@@ -706,91 +702,6 @@ fn jsonpath_to_event_command_location_path(
         }
     }
     Ok(location_path)
-}
-
-fn jsonpath_matches_template(
-    template_parts: &[JsonPathPart],
-    actual_parts: &[JsonPathPart],
-) -> bool {
-    if template_parts.len() != actual_parts.len() {
-        return false;
-    }
-    template_parts.iter().zip(actual_parts).all(
-        |(template_part, actual_part)| match template_part {
-            JsonPathPart::Wildcard => matches!(actual_part, JsonPathPart::Index(_)),
-            _ => template_part == actual_part,
-        },
-    )
-}
-
-fn parse_json_path(path: &str) -> Result<Vec<JsonPathPart>, String> {
-    let chars = path.chars().collect::<Vec<_>>();
-    if chars.first() != Some(&'$') {
-        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-    }
-    let mut index = 1;
-    let mut parts = Vec::new();
-    while index < chars.len() {
-        if chars[index] != '[' {
-            return Err(format!("JSONPath 超出当前规则范围: {path}"));
-        }
-        index += 1;
-        if index >= chars.len() {
-            return Err(format!("JSONPath 超出当前规则范围: {path}"));
-        }
-        if chars[index] == '\'' {
-            index += 1;
-            let mut key = String::new();
-            while index < chars.len() {
-                let current = chars[index];
-                if current == '\\' {
-                    index += 1;
-                    if index >= chars.len() {
-                        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-                    }
-                    key.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-                if current == '\'' {
-                    index += 1;
-                    if index >= chars.len() || chars[index] != ']' {
-                        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-                    }
-                    index += 1;
-                    parts.push(JsonPathPart::Key(key));
-                    break;
-                }
-                key.push(current);
-                index += 1;
-            }
-            if !matches!(parts.last(), Some(JsonPathPart::Key(_))) {
-                return Err(format!("JSONPath 超出当前规则范围: {path}"));
-            }
-            continue;
-        }
-        let start_index = index;
-        while index < chars.len() && chars[index] != ']' {
-            index += 1;
-        }
-        if index >= chars.len() {
-            return Err(format!("JSONPath 超出当前规则范围: {path}"));
-        }
-        let segment = chars[start_index..index].iter().collect::<String>();
-        index += 1;
-        if segment == "*" {
-            parts.push(JsonPathPart::Wildcard);
-            continue;
-        }
-        let parsed_index = segment
-            .parse::<usize>()
-            .map_err(|_error| format!("JSONPath 超出当前规则范围: {path}"))?;
-        parts.push(JsonPathPart::Index(parsed_index));
-    }
-    if parts.is_empty() {
-        return Err(format!("JSONPath 超出当前规则范围: {path}"));
-    }
-    Ok(parts)
 }
 
 fn canonical_json_text(value: &Value) -> Result<String, String> {

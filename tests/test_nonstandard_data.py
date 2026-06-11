@@ -30,6 +30,7 @@ from app.rmmz.json_types import coerce_json_value, ensure_json_array, ensure_jso
 from app.rmmz.loader import load_translation_source_game_data, resolve_game_layout
 from app.rmmz.schema import NonstandardDataTextRuleRecord
 from app.rmmz.text_rules import JsonObject, TextRules
+from app.text_scope.rule_hits import collect_nonstandard_data_rule_hits
 from app.utils.config_loader_utils import load_setting
 from tests._native_write_plan_helper import write_data_text
 from tests.conftest import EXAMPLE_SETTING_PATH, write_json
@@ -588,6 +589,65 @@ async def test_nonstandard_data_text_scope_uses_native_leaves_for_imported_rules
     )
     assert entry.original_lines == ["これは無視される"]
     assert entry.enters_translation is True
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_data_rule_hits_use_native_details_without_python_expansion(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非标准 data text-scope 命中必须消费 native hit_details。"""
+    _write_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    _ = await service.import_nonstandard_data_rules(
+        game_title="テストゲーム",
+        rules_text=json.dumps(
+            [
+                {
+                    "file": "UnknownPluginData.json",
+                    "paths": ["$[*]['name']"],
+                    "excluded_paths": [],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+    game_data = await load_translation_source_game_data(minimal_game_dir)
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    async with await registry.open_game("テストゲーム") as session:
+        records = await session.read_nonstandard_data_text_rules()
+
+    def forbidden_collect_rule_hits(*args: object, **kwargs: object) -> object:
+        _ = (args, kwargs)
+        raise AssertionError("非标准 data text-scope 命中不应调用 Python collect_rule_hits")
+
+    monkeypatch.setattr(
+        "app.nonstandard_data.extraction.NonstandardDataTextExtraction.collect_rule_hits",
+        forbidden_collect_rule_hits,
+        raising=False,
+    )
+
+    hits = collect_nonstandard_data_rule_hits(
+        game_data=game_data,
+        nonstandard_data_rules=records,
+        text_rules=text_rules,
+    )
+
+    assert [
+        (hit.location_path, hit.source_type, hit.rule_source, hit.original_text)
+        for hit in hits
+    ] == [
+        (
+            "nonstandard-data/UnknownPluginData.json/$[0]['name']",
+            "nonstandard_data",
+            "非标准 data 文件文本规则",
+            "これは無視される",
+        )
+    ]
 
 
 @pytest.mark.asyncio

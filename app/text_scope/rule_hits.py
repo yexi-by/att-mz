@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from app.event_command_text.importer import command_matches_filters
 from app.note_tag_text.sources import note_file_pattern_matches
-from app.nonstandard_data import NonstandardDataTextExtraction, NonstandardDataTextExtractionContext
+from app.nonstandard_data import (
+    NonstandardDataTextExtractionContext,
+    build_nonstandard_data_text_extraction_context,
+    collect_nonstandard_data_rule_hit_details,
+    nonstandard_data_location_path,
+)
 from app.json_path_protocol import jsonpath_to_event_command_location_path, resolve_event_command_leaves
 from app.plugin_text.common import expand_rule_to_leaf_paths, jsonpath_to_location_path, resolve_plugin_leaves
 from app.rmmz.commands import iter_all_commands
@@ -180,18 +185,44 @@ def collect_nonstandard_data_rule_hits(
     nonstandard_data_context: NonstandardDataTextExtractionContext | None = None,
 ) -> list[TextScopeRuleHit]:
     """展开非标准 data 文件规则命中的全部字符串叶子。"""
-    extractor = NonstandardDataTextExtraction(
+    context = nonstandard_data_context or build_nonstandard_data_text_extraction_context(
         game_data=game_data,
         rule_records=nonstandard_data_rules,
-        text_rules=text_rules,
-        context=nonstandard_data_context,
     )
-    return [
-        TextScopeRuleHit(
-            location_path=location_path,
-            source_type="nonstandard_data",
-            rule_source="非标准 data 文件文本规则",
-            original_text=original_text,
+    native_hit_details = collect_nonstandard_data_rule_hit_details(
+        context=context,
+        rule_records=nonstandard_data_rules,
+        text_rules=text_rules,
+    )
+    hits: list[TextScopeRuleHit] = []
+    seen_paths: set[str] = set()
+    for index, raw_hit in enumerate(native_hit_details):
+        label = f"nonstandard_data_hit_details[{index}]"
+        hit = ensure_json_object(raw_hit, label)
+        file_name = _read_nonstandard_data_hit_string(hit, "file", label)
+        json_path = _read_nonstandard_data_hit_string(hit, "json_path", label)
+        original_text = _read_nonstandard_data_hit_string(hit, "original_text", label)
+        location_path = nonstandard_data_location_path(
+            file_name=file_name,
+            json_path=json_path,
         )
-        for location_path, original_text in extractor.collect_rule_hits()
-    ]
+        if location_path in seen_paths:
+            continue
+        seen_paths.add(location_path)
+        hits.append(
+            TextScopeRuleHit(
+                location_path=location_path,
+                source_type="nonstandard_data",
+                rule_source="非标准 data 文件文本规则",
+                original_text=original_text,
+            )
+        )
+    return hits
+
+
+def _read_nonstandard_data_hit_string(hit: JsonObject, field_name: str, label: str) -> str:
+    """读取 native 非标准 data 逐命中明细中的字符串字段。"""
+    value = hit.get(field_name)
+    if not isinstance(value, str):
+        raise TypeError(f"{label}.{field_name} 必须是字符串")
+    return value

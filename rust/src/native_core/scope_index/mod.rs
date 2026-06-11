@@ -15,6 +15,7 @@ mod event_commands;
 mod mv_virtual_namebox;
 mod nonstandard_data;
 mod note_tags;
+mod path_templates;
 mod placeholders;
 mod plugin_config;
 mod plugin_source;

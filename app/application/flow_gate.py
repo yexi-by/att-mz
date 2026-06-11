@@ -19,10 +19,11 @@ from app.native_structured_placeholder_scan import (
     count_uncovered_structured_placeholder_candidate_details,
 )
 from app.nonstandard_data import (
+    StaleNonstandardDataRulesError,
     nonstandard_data_rule_records_to_import_file,
     validate_nonstandard_data_rules,
 )
-from app.nonstandard_data.scanner import build_nonstandard_data_file_hash, build_nonstandard_data_scan
+from app.nonstandard_data.scanner import build_nonstandard_data_scan
 from app.persistence import TargetGameSession
 from app.plugin_text import collect_plugin_json_string_leaf_candidates, extract_plugin_name
 from app.plugin_source_text import (
@@ -643,23 +644,6 @@ async def _nonstandard_data_rule_gate_errors(
     if not scan.high_risk and not records:
         return []
 
-    current_hash_by_file = {
-        nonstandard_file.file_name: build_nonstandard_data_file_hash(nonstandard_file.raw_text)
-        for nonstandard_file in scan.files
-    }
-    stale_files = [
-        record.file_name
-        for record in records
-        if current_hash_by_file.get(record.file_name) != record.file_hash
-    ]
-    if stale_files:
-        return [
-            WorkflowGateIssue(
-                code="stale_nonstandard_data_rules",
-                message=f"存在 {len(stale_files)} 个过期非标准 data 文件文本规则，请重新导出并导入规则",
-            )
-        ]
-
     if scan.high_risk and not records:
         return [
             WorkflowGateIssue(
@@ -673,7 +657,18 @@ async def _nonstandard_data_rule_gate_errors(
 
     try:
         import_file = nonstandard_data_rule_records_to_import_file(records)
-        validation = validate_nonstandard_data_rules(scan=scan, import_file=import_file)
+        validation = validate_nonstandard_data_rules(
+            scan=scan,
+            import_file=import_file,
+            rule_records=records,
+        )
+    except StaleNonstandardDataRulesError as error:
+        return [
+            WorkflowGateIssue(
+                code="stale_nonstandard_data_rules",
+                message=f"存在过期非标准 data 文件文本规则，请重新导出并导入规则: {error}",
+            )
+        ]
     except Exception as error:
         return [
             WorkflowGateIssue(
