@@ -314,11 +314,11 @@ async def test_quality_report_write_probe_and_write_back_share_rust_gate_error(
     assert "游戏控制符可能被改坏" in gate_message
     assert "占位符" in gate_message
 @pytest.mark.asyncio
-async def test_validate_source_residual_rules_rejects_rust_unsupported_structural_regex(
+async def test_validate_source_residual_rules_reports_invalid_pcre2_structural_regex(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """源文残留结构规则导入前必须通过 Rust regex 预检。"""
+    """源文残留结构规则导入前必须通过 PCRE2 runtime 预检。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
     service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
@@ -327,7 +327,7 @@ async def test_validate_source_residual_rules_rejects_rust_unsupported_structura
             "position_rules": {},
             "structural_rules": [
                 {
-                    "pattern": r"(?<=<label>)(?P<visible>[^<]+)(?=</label>)",
+                    "pattern": r"(?<visible>",
                     "allowed_terms": ["label"],
                     "check_group": "visible",
                     "reason": "protocol_label",
@@ -343,8 +343,8 @@ async def test_validate_source_residual_rules_rejects_rust_unsupported_structura
     )
 
     assert report.status == "error"
-    assert "source_residual_rules_invalid" in {error.code for error in report.errors}
-    assert "Rust regex" in report.errors[0].message
+    assert "pcre2_compile_error" in {error.code for error in report.errors}
+    assert "PCRE2" in report.errors[0].message
 @pytest.mark.asyncio
 async def test_quality_report_cold_rebuilds_missing_text_index(
     minimal_game_dir: Path,

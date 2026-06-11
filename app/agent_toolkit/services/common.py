@@ -19,6 +19,7 @@ from app.agent_toolkit.reports import AgentIssue, AgentReport, issue
 from app.application.font_replacement import resolve_replacement_font_path
 from app.config import (
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
+    Setting,
     SettingOverrides,
     TextRulesSetting,
     load_custom_placeholder_rules_import_payload,
@@ -41,6 +42,7 @@ from app.native_quality import (
     collect_native_write_protocol_details,
     native_thread_count,
 )
+from app.native_rule_runtime import prepare_rule_import
 from app.native_placeholder_scan import (
     collect_native_placeholder_candidate_scan,
     count_uncovered_placeholder_candidate_details,
@@ -170,6 +172,17 @@ from app.text_fact_identity import TranslationFactIdentity, translation_item_fac
 
 type LlmCheckFunc = Callable[[LLMHandler, str], Awaitable[None]]
 type QualityProgressCallbacks = tuple[Callable[[int, int], None], Callable[[int], None], Callable[[str], None]]
+
+
+def build_rule_runtime_settings_patterns(setting: Setting) -> JsonObject:
+    """把配置里的用户可写正则集中传给 rule_runtime。"""
+    text_rules = setting.text_rules
+    return {
+        "source_text_required_pattern": text_rules.source_text_required_pattern,
+        "source_residual_segment_pattern": text_rules.source_residual_segment_pattern,
+        "line_width_count_pattern": text_rules.line_width_count_pattern,
+        "residual_escape_sequence_pattern": text_rules.residual_escape_sequence_pattern,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1313,7 +1326,10 @@ def _nonstandard_data_skipped_warnings(
     ]
 
 
-def _validate_source_residual_rule_records(records: Sequence[SourceResidualRuleRecord]) -> list[AgentIssue]:
+def _validate_source_residual_rule_records(
+    records: Sequence[SourceResidualRuleRecord],
+    setting: Setting,
+) -> list[AgentIssue]:
     """校验数据库中的源文残留例外规则仍可执行。"""
     try:
         _ = SourceResidualRuleSet.from_records(records)
@@ -1321,7 +1337,45 @@ def _validate_source_residual_rule_records(records: Sequence[SourceResidualRuleR
         return rule_contract_issues_to_agent_issues(error)
     except ValueError as error:
         return [issue("source_residual_rules_invalid", f"源文残留例外规则已损坏: {error}")]
+    result = prepare_rule_import(
+        {
+            "mode": "validate",
+            "domain": "source_residual",
+            "rules_payload": _source_residual_records_to_runtime_payload(records),
+            "game_context": {},
+            "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+        }
+    )
+    if result.errors:
+        messages = "；".join(item.message for item in result.errors)
+        return [issue("source_residual_rules_invalid", f"源文残留例外规则已损坏: {messages}")]
     return []
+
+
+def _source_residual_records_to_runtime_payload(records: Sequence[SourceResidualRuleRecord]) -> JsonObject:
+    """把旧表过渡记录转换为当前 source_residual rule_runtime payload。"""
+    position_rules: JsonObject = {}
+    structural_rules: JsonArray = []
+    for record in records:
+        if record.rule_type == "position":
+            position_rules[record.location_path] = {
+                "allowed_terms": [term for term in record.allowed_terms],
+                "reason": record.reason,
+            }
+            continue
+        if record.rule_type == "structural":
+            structural_rules.append(
+                {
+                    "pattern": record.pattern_text,
+                    "allowed_terms": [term for term in record.allowed_terms],
+                    "check_group": record.check_group,
+                    "reason": record.reason,
+                }
+            )
+    return {
+        "position_rules": position_rules,
+        "structural_rules": structural_rules,
+    }
 
 
 def rule_contract_issues_to_agent_issues(error: RegexContractValidationError) -> list[AgentIssue]:
@@ -3317,6 +3371,7 @@ __all__: list[str] = [
     'note_file_pattern_matches',
     'current_timestamp_text',
     'SourceResidualRuleSet',
+    'build_rule_runtime_settings_patterns',
     'build_source_residual_rule_records_from_import',
     'check_source_residual_for_item',
     'parse_source_residual_rule_import_text',

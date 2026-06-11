@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::adapters::config_patterns::validate_runtime_config_patterns;
 use super::adapters::placeholders::normalize_placeholder_rules;
+use super::adapters::source_residual::normalize_source_residual_rules;
 use super::adapters::structured_placeholders::normalize_structured_placeholder_rules;
 use super::errors::RuleRuntimeIssue;
 use super::model::NormalizedRuleInput;
@@ -170,6 +171,9 @@ fn normalize_domain_rules(
     }
     if payload.domain == "structured_placeholders" {
         return normalize_structured_placeholder_rules(&payload.rules_payload);
+    }
+    if payload.domain == "source_residual" {
+        return normalize_source_residual_rules(&payload.rules_payload);
     }
     Ok(Vec::new())
 }

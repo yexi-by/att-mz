@@ -1147,7 +1147,7 @@ class QualityAgentMixin:
             if item.fact_id in pending_fact_ids
         ]
         advance_progress(1)
-        source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules)
+        source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules, setting)
         if source_residual_rule_errors:
             set_progress(8, 8)
             set_status("源文残留规则检查没通过，停止导出质量修复表")
@@ -1531,7 +1531,7 @@ class QualityAgentMixin:
         advance_progress(1)
         for _item in quality_error_items:
             advance_progress(1)
-        source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules)
+        source_residual_rule_errors = _validate_source_residual_rule_records(source_residual_rules, setting)
         if source_residual_rule_errors:
             set_progress(total_progress_steps, total_progress_steps)
             set_status("源文残留例外规则检查没通过，质量报告已停止")

@@ -6,9 +6,11 @@ from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
+    JsonArray,
     JsonObject,
     NoteTagTextRuleRecord,
     Path,
+    SourceResidualRuleRecord,
     TextRules,
     TranslationItem,
     _format_mv_namebox_rule_error,
@@ -24,6 +26,7 @@ from .common import (
     build_native_plugin_rule_validation_context_from_import,
     build_event_command_rule_records_from_import_shape,
     build_plugin_rule_validation_report_from_native_context,
+    build_rule_runtime_settings_patterns,
     export_note_tag_candidates_file,
     issue,
     load_setting,
@@ -47,9 +50,17 @@ from app.application.flow_gate import (
     ensure_empty_rule_confirmed,
     note_tag_rule_scope_hash_for_text_rules,
 )
+from app.config import Setting
 from app.native_note_tag_scan import (
     build_note_tag_rule_records_from_native_candidates,
     collect_native_note_tag_hit_details,
+)
+from app.native_rule_runtime import (
+    RuleImportCommitResult,
+    RuleImportPrepareResult,
+    RuleRuntimeIssue,
+    commit_rule_import,
+    prepare_rule_import,
 )
 from app.note_tag_text.sources import matched_note_file_names
 from app.persistence import RuleImportUnitOfWork, TargetGameSession
@@ -72,6 +83,7 @@ from app.rule_review import (
     NOTE_TAG_TEXT_RULE_DOMAIN,
 )
 from app.plugin_source_text import build_native_plugin_source_scan
+from app.source_residual import parse_source_residual_rule_import_payload
 
 
 def _note_tag_rule_prefixes(
@@ -110,6 +122,116 @@ def _plugin_source_rule_prefixes(rule_records: list[PluginSourceTextRuleRecord])
 def _plugin_source_file_prefixes(game_data: GameData) -> list[str]:
     """返回当前启用插件源码文件对应的已保存译文路径前缀。"""
     return sorted({f"js/plugins/{file_name}/" for file_name in game_data.plugin_source_files})
+
+
+def _source_residual_rule_runtime_payload(
+    *,
+    mode: str,
+    rules_payload: JsonObject,
+    setting: Setting,
+    db_path: Path | None,
+) -> JsonObject:
+    """构造源文残留规则运行时载荷。"""
+    payload: JsonObject = {
+        "mode": mode,
+        "domain": "source_residual",
+        "rules_payload": rules_payload,
+        "game_context": {},
+        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
+    }
+    if db_path is not None:
+        payload["db_path"] = str(db_path)
+    return payload
+
+
+def _source_residual_prepare_report(
+    *,
+    result: RuleImportPrepareResult,
+    records: list[SourceResidualRuleRecord],
+) -> AgentReport:
+    """把源文残留 rule_runtime prepare 结果转换成 Agent 报告。"""
+    warnings = _rule_runtime_issues_to_agent_issues(result.warnings)
+    if not records and not result.errors:
+        warnings.append(issue("source_residual_rules_empty", "源文残留例外规则为空"))
+    summary = _source_residual_rule_counts(records)
+    summary["mode"] = _source_residual_summary_string(result.summary, "mode", "validate")
+    summary["rule_runtime"] = _source_residual_rule_runtime_summary(result.summary)
+    return AgentReport.from_parts(
+        errors=_rule_runtime_issues_to_agent_issues(result.errors),
+        warnings=warnings,
+        summary=summary,
+        details={"rules": _source_residual_rule_details(records)},
+    )
+
+
+def _source_residual_commit_report(
+    *,
+    result: RuleImportCommitResult,
+    prepare_result: RuleImportPrepareResult,
+    records: list[SourceResidualRuleRecord],
+) -> AgentReport:
+    """把源文残留 rule_runtime commit 结果转换成导入报告。"""
+    warnings = [
+        *_rule_runtime_issues_to_agent_issues(prepare_result.warnings),
+        *_rule_runtime_issues_to_agent_issues(result.warnings),
+    ]
+    if not records and not result.errors:
+        warnings.append(issue("source_residual_rules_empty", "已导入空源文残留例外规则"))
+    summary = _source_residual_rule_counts(records if not result.errors else [])
+    summary["mode"] = "import"
+    summary["rule_runtime"] = _source_residual_rule_runtime_summary(prepare_result.summary)
+    return AgentReport.from_parts(
+        errors=_rule_runtime_issues_to_agent_issues(result.errors),
+        warnings=warnings,
+        summary=summary,
+        details={"rules": _source_residual_rule_details(records if not result.errors else [])},
+    )
+
+
+def _source_residual_rule_counts(records: list[SourceResidualRuleRecord]) -> JsonObject:
+    """统计源文残留规则报告字段。"""
+    return {
+        "rule_count": len(records),
+        "position_rule_count": sum(1 for record in records if record.rule_type == "position"),
+        "structural_rule_count": sum(1 for record in records if record.rule_type == "structural"),
+        "term_count": sum(len(record.allowed_terms) for record in records),
+    }
+
+
+def _source_residual_rule_details(records: list[SourceResidualRuleRecord]) -> JsonArray:
+    """渲染源文残留规则报告明细。"""
+    details: JsonArray = []
+    for record in records:
+        details.append(
+            {
+                "rule_id": record.rule_id,
+                "rule_type": record.rule_type,
+                "location_path": record.location_path,
+                "pattern": record.pattern_text,
+                "allowed_terms": list(record.allowed_terms),
+                "check_group": record.check_group,
+                "reason": record.reason,
+            }
+        )
+    return details
+
+
+def _source_residual_rule_runtime_summary(summary: JsonObject) -> JsonObject:
+    value = summary.get("rule_runtime", {})
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _source_residual_summary_string(summary: JsonObject, key: str, default: str) -> str:
+    value = summary.get(key)
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _rule_runtime_issues_to_agent_issues(items: list[RuleRuntimeIssue]) -> list[AgentIssue]:
+    return [issue(item.code, item.message) for item in items]
 
 
 async def _resolve_rule_hit_metrics(
@@ -587,52 +709,51 @@ class RuleValidationAgentMixin:
 
     async def validate_source_residual_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
         """校验源文残留例外规则 JSON 文本并报告命中情况。"""
-        errors: list[AgentIssue] = []
-        warnings: list[AgentIssue] = []
-        details: JsonObject = {"rules": []}
         try:
-            records = await self._build_source_residual_rule_records(
-                game_title=game_title,
-                rules_text=rules_text,
-            )
-            details["rules"] = [
-                {
-                    "rule_id": record.rule_id,
-                    "rule_type": record.rule_type,
-                    "location_path": record.location_path,
-                    "pattern": record.pattern_text,
-                    "allowed_terms": list(record.allowed_terms),
-                    "check_group": record.check_group,
-                    "reason": record.reason,
-                }
-                for record in records
-            ]
-            if not records:
-                warnings.append(issue("source_residual_rules_empty", "源文残留例外规则为空"))
-        except Exception as error:
-            errors.append(issue("source_residual_rules_invalid", f"源文残留例外规则不可导入: {type(error).__name__}: {error}"))
-            records = []
-        return AgentReport.from_parts(
-            errors=errors,
-            warnings=warnings,
-            summary={
-                "rule_count": len(records),
-                "position_rule_count": sum(1 for record in records if record.rule_type == "position"),
-                "structural_rule_count": sum(1 for record in records if record.rule_type == "structural"),
-                "term_count": sum(len(record.allowed_terms) for record in records),
-            },
-            details=details,
-        )
-
-    async def import_source_residual_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
-        """校验并导入当前游戏的源文残留例外规则。"""
-        try:
+            rules_payload = parse_source_residual_rule_import_payload(rules_text)
             records = await self._build_source_residual_rule_records(
                 game_title=game_title,
                 rules_text=rules_text,
             )
             async with await self.game_registry.open_game(game_title) as session:
-                await session.replace_source_residual_rules(records)
+                setting = load_setting(self.setting_path, source_language=session.source_language)
+                db_path = session.db_path
+        except Exception as error:
+            return AgentReport.from_parts(
+                errors=[issue("source_residual_rules_invalid", f"源文残留例外规则不可导入: {type(error).__name__}: {error}")],
+                warnings=[],
+                summary={"rule_count": 0, "position_rule_count": 0, "structural_rule_count": 0, "term_count": 0},
+                details={"rules": []},
+            )
+        prepare_result = prepare_rule_import(
+            _source_residual_rule_runtime_payload(
+                mode="validate",
+                rules_payload=rules_payload,
+                setting=setting,
+                db_path=db_path,
+            )
+        )
+        return _source_residual_prepare_report(result=prepare_result, records=records)
+
+    async def import_source_residual_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:
+        """校验并导入当前游戏的源文残留例外规则。"""
+        try:
+            rules_payload = parse_source_residual_rule_import_payload(rules_text)
+            records = await self._build_source_residual_rule_records(
+                game_title=game_title,
+                rules_text=rules_text,
+            )
+            async with await self.game_registry.open_game(game_title) as session:
+                setting = load_setting(self.setting_path, source_language=session.source_language)
+                db_path = session.db_path
+                prepare_result = prepare_rule_import(
+                    _source_residual_rule_runtime_payload(
+                        mode="import",
+                        rules_payload=rules_payload,
+                        setting=setting,
+                        db_path=db_path,
+                    )
+                )
         except Exception as error:
             return AgentReport.from_parts(
                 errors=[issue("source_residual_rules_invalid", f"源文残留例外规则不可导入: {type(error).__name__}: {error}")],
@@ -640,29 +761,31 @@ class RuleValidationAgentMixin:
                 summary={"rule_count": 0, "position_rule_count": 0, "structural_rule_count": 0, "term_count": 0},
                 details={},
             )
-        return AgentReport.from_parts(
-            errors=[],
-            warnings=[] if records else [issue("source_residual_rules_empty", "已导入空源文残留例外规则")],
-            summary={
-                "rule_count": len(records),
-                "position_rule_count": sum(1 for record in records if record.rule_type == "position"),
-                "structural_rule_count": sum(1 for record in records if record.rule_type == "structural"),
-                "term_count": sum(len(record.allowed_terms) for record in records),
-            },
-            details={
-                "rules": [
-                    {
-                        "rule_id": record.rule_id,
-                        "rule_type": record.rule_type,
-                        "location_path": record.location_path,
-                        "pattern": record.pattern_text,
-                        "allowed_terms": list(record.allowed_terms),
-                        "check_group": record.check_group,
-                        "reason": record.reason,
-                    }
-                    for record in records
-                ]
-            },
+        if prepare_result.errors:
+            return _source_residual_prepare_report(result=prepare_result, records=records)
+        if prepare_result.plan_token is None:
+            raise RuntimeError("源文残留例外规则导入缺少 rule_runtime plan token")
+
+        commit_result = commit_rule_import(
+            {
+                "db_path": str(db_path),
+                "domain": "source_residual",
+                "plan_token": prepare_result.plan_token,
+                "backup_path": None,
+            }
+        )
+        if commit_result.errors:
+            return _source_residual_commit_report(
+                result=commit_result,
+                prepare_result=prepare_result,
+                records=records,
+            )
+        async with await self.game_registry.open_game(game_title) as session:
+            await session.replace_source_residual_rules(records)
+        return _source_residual_commit_report(
+            result=commit_result,
+            prepare_result=prepare_result,
+            records=records,
         )
 
     async def validate_plugin_rules(self: AgentServiceContext, *, game_title: str, rules_text: str) -> AgentReport:

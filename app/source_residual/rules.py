@@ -13,7 +13,7 @@ import aiofiles
 from pydantic import Field, TypeAdapter, field_validator
 
 from app.external_input import ExternalInputModel, ExternalStr
-from app.regex_contract import validate_source_residual_regex_contract
+from app.rmmz.json_types import JsonObject, ensure_json_object
 from app.rmmz.schema import SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import TextRules, coerce_json_value
 
@@ -48,14 +48,10 @@ class StructuralSourceResidualRuleSpec(ExternalInputModel):
     @field_validator("pattern")
     @classmethod
     def _validate_pattern(cls, value: str) -> str:
-        """校验结构性正则必须非空且可编译。"""
+        """校验结构性 PCRE2 pattern 必须非空。"""
         normalized_pattern = value.strip()
         if not normalized_pattern:
             raise ValueError("pattern 不能为空")
-        try:
-            _ = re.compile(normalized_pattern)
-        except re.error as error:
-            raise ValueError(f"pattern 不是合法正则: {normalized_pattern}") from error
         return normalized_pattern
 
     @field_validator("allowed_terms")
@@ -112,11 +108,9 @@ class SourceResidualRuleSet:
                 structural_records.append(_validate_structural_record(record))
                 continue
             raise ValueError(f"源文残留例外规则类型无效: {record.rule_id}: {record.rule_type}")
-        structural_record_tuple = tuple(structural_records)
-        validate_source_residual_regex_contract(structural_record_tuple)
         return cls(
             records_by_path={record.location_path: record for record in position_records},
-            structural_records=structural_record_tuple,
+            structural_records=tuple(structural_records),
         )
 
     def allowed_terms_for_path(self, location_path: str) -> list[str]:
@@ -150,6 +144,15 @@ def parse_source_residual_rule_import_text(raw_text: str) -> SourceResidualRuleI
     decoded_raw = cast(object, json.loads(raw_text))
     decoded = coerce_json_value(decoded_raw)
     return _SOURCE_RESIDUAL_RULE_IMPORT_ADAPTER.validate_python(decoded)
+
+
+def parse_source_residual_rule_import_payload(raw_text: str) -> JsonObject:
+    """解析外部源文残留例外规则并返回 rule_runtime 原始载荷。"""
+    import_file = parse_source_residual_rule_import_text(raw_text)
+    return ensure_json_object(
+        coerce_json_value(import_file.model_dump(mode="json")),
+        "source_residual_rule_import",
+    )
 
 
 def build_source_residual_rule_records_from_import(
@@ -242,9 +245,6 @@ def _build_structural_records(
     """构建结构性协议词规则记录。"""
     records: list[SourceResidualRuleRecord] = []
     for index, spec in enumerate(import_file.structural_rules):
-        pattern = re.compile(spec.pattern)
-        if spec.check_group not in pattern.groupindex:
-            raise ValueError(f"结构性源文保留规则缺少命名分组: {spec.check_group}")
         records.append(
             SourceResidualRuleRecord(
                 rule_id=f"structural:{index}",
@@ -255,7 +255,6 @@ def _build_structural_records(
                 reason=spec.reason,
             )
         )
-    validate_source_residual_regex_contract(tuple(records))
     return records
 
 
@@ -372,17 +371,11 @@ def _find_term_ranges_outside_group(
 
 
 def _validate_structural_record(record: SourceResidualRuleRecord) -> SourceResidualRuleRecord:
-    """校验数据库里的结构性源文保留规则仍可执行。"""
+    """校验数据库里的结构性源文保留规则具备当前字段。"""
     if not record.pattern_text:
         raise ValueError("结构性源文保留规则缺少 pattern_text")
     if not record.check_group:
         raise ValueError("结构性源文保留规则缺少 check_group")
-    try:
-        pattern = re.compile(record.pattern_text)
-    except re.error as error:
-        raise ValueError(f"结构性源文保留规则正则损坏: {record.pattern_text}") from error
-    if record.check_group not in pattern.groupindex:
-        raise ValueError(f"结构性源文保留规则缺少命名分组: {record.check_group}")
     return record
 
 
@@ -474,5 +467,6 @@ __all__: list[str] = [
     "build_source_residual_rule_records_from_import",
     "check_source_residual_for_item",
     "load_source_residual_rule_import_file",
+    "parse_source_residual_rule_import_payload",
     "parse_source_residual_rule_import_text",
 ]

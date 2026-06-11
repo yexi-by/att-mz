@@ -74,6 +74,39 @@ impl Pcre2Pattern {
         Ok(Some(Pcre2Captures { named }))
     }
 
+    pub(crate) fn captures_iter(
+        &self,
+        text: &str,
+    ) -> Result<Vec<Pcre2CaptureMatch>, Pcre2EngineError> {
+        let mut matches = Vec::new();
+        for captures in self.regex.captures_iter(text.as_bytes()) {
+            let captures = captures.map_err(Pcre2EngineError::matching)?;
+            let Some(full_match) = captures.get(0) else {
+                continue;
+            };
+            let mut named_spans = BTreeMap::new();
+            for name in self.regex.capture_names().iter().flatten() {
+                if let Some(matched) = captures.name(name) {
+                    named_spans.insert(
+                        name.clone(),
+                        Pcre2Span {
+                            start: matched.start(),
+                            end: matched.end(),
+                        },
+                    );
+                }
+            }
+            matches.push(Pcre2CaptureMatch {
+                full_span: Pcre2Span {
+                    start: full_match.start(),
+                    end: full_match.end(),
+                },
+                named_spans,
+            });
+        }
+        Ok(matches)
+    }
+
     pub(crate) fn capture_names(&self) -> Vec<String> {
         self.regex
             .capture_names()
@@ -81,6 +114,24 @@ impl Pcre2Pattern {
             .flatten()
             .cloned()
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pcre2Span {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pcre2CaptureMatch {
+    pub(crate) full_span: Pcre2Span,
+    named_spans: BTreeMap<String, Pcre2Span>,
+}
+
+impl Pcre2CaptureMatch {
+    pub(crate) fn named_span(&self, name: &str) -> Option<&Pcre2Span> {
+        self.named_spans.get(name)
     }
 }
 
@@ -150,6 +201,23 @@ mod tests {
             .expect("inline ignore-case flag should compile");
 
         assert!(pattern.is_match("ABC").expect("matching should not fail"));
+    }
+
+    #[test]
+    fn pcre2_engine_reports_named_capture_spans() {
+        let config = Pcre2EngineConfig::for_test();
+        let pattern = Pcre2Engine::compile("<name>(?<visible>[^<]+)</name>", &config)
+            .expect("PCRE2 pattern should compile");
+
+        let matches = pattern
+            .captures_iter("<name>Alice</name><name>Bob</name>")
+            .expect("matching should not fail");
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].full_span.start, 0);
+        assert_eq!(matches[0].full_span.end, 18);
+        assert_eq!(matches[0].named_span("visible").unwrap().start, 6);
+        assert_eq!(matches[0].named_span("visible").unwrap().end, 11);
     }
 
     #[test]

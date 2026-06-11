@@ -15,6 +15,7 @@ from .common import (
     _build_unprotected_control_warnings,
     _joined_text_boundary_markers_from_details,
     aiofiles,
+    build_rule_runtime_settings_patterns,
     issue,
     json,
     load_custom_placeholder_rules_import_payload,
@@ -95,22 +96,11 @@ def _placeholder_rule_runtime_payload(
         "domain": domain,
         "rules_payload": rules_payload,
         "game_context": {},
-        "settings_runtime_patterns": _settings_runtime_patterns(setting),
+        "settings_runtime_patterns": build_rule_runtime_settings_patterns(setting),
     }
     if db_path is not None:
         payload["db_path"] = str(db_path)
     return payload
-
-
-def _settings_runtime_patterns(setting: Setting) -> JsonObject:
-    """把配置里的用户可写正则集中传给 rule_runtime。"""
-    text_rules = setting.text_rules
-    return {
-        "source_text_required_pattern": text_rules.source_text_required_pattern,
-        "source_residual_segment_pattern": text_rules.source_residual_segment_pattern,
-        "line_width_count_pattern": text_rules.line_width_count_pattern,
-        "residual_escape_sequence_pattern": text_rules.residual_escape_sequence_pattern,
-    }
 
 
 def _placeholder_rule_runtime_prepare_report(

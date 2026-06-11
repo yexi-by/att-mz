@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeSourceResidualRule, NativeTranslationItem};
 use super::super::placeholders::{build_placeholders, mask_translation_controls};
+use super::super::rule_runtime::engine::{Pcre2Engine, Pcre2EngineConfig, Pcre2Pattern};
 use super::super::rules::PLACEHOLDER_RE;
 
 #[derive(Debug, Clone)]
@@ -19,7 +20,7 @@ pub(super) struct IndexedResidualRules {
 
 #[derive(Debug, Clone)]
 struct CompiledStructuralResidualRule {
-    pattern: Regex,
+    pattern: Pcre2Pattern,
     allowed_terms: Vec<String>,
     check_group: String,
 }
@@ -39,15 +40,20 @@ pub(super) fn index_residual_rules(
                         record.rule_id
                     ));
                 }
-                let pattern = Regex::new(&record.pattern_text).map_err(|error| {
+                let pattern = Pcre2Engine::compile(
+                    &record.pattern_text,
+                    &Pcre2EngineConfig::default_runtime(),
+                )
+                .map_err(|error| {
                     format!(
-                        "结构性源文保留规则正则损坏: {}: {error}",
-                        record.pattern_text
+                        "结构性源文保留规则 PCRE2 pattern 损坏: {}: {}",
+                        record.pattern_text, error.message
                     )
                 })?;
                 if !pattern
                     .capture_names()
-                    .any(|name| name == Some(record.check_group.as_str()))
+                    .iter()
+                    .any(|name| name == &record.check_group)
                 {
                     return Err(format!(
                         "结构性源文保留规则缺少命名分组: {}",
@@ -180,19 +186,19 @@ fn mask_one_structural_rule_in_line(
     ignore_case: bool,
 ) -> String {
     let mut mask_ranges = Vec::new();
-    for captures in rule.pattern.captures_iter(line) {
-        let Some(full_match) = captures.get(0) else {
+    let Ok(captures) = rule.pattern.captures_iter(line) else {
+        return line.to_string();
+    };
+    for capture_match in captures {
+        let Some(group_span) = capture_match.named_span(&rule.check_group) else {
             continue;
         };
-        let Some(group_match) = captures.name(&rule.check_group) else {
-            continue;
-        };
-        if group_match.as_str().trim().is_empty() {
+        if line[group_span.start..group_span.end].trim().is_empty() {
             continue;
         }
         let outside_ranges = [
-            (full_match.start(), group_match.start()),
-            (group_match.end(), full_match.end()),
+            (capture_match.full_span.start, group_span.start),
+            (group_span.end, capture_match.full_span.end),
         ];
         for term in &rule.allowed_terms {
             mask_ranges.extend(find_term_ranges_outside_group(
