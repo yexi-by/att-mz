@@ -231,7 +231,7 @@ def test_shared_current_schema_resource_creates_declared_static_table_set() -> N
         translation_item_declared_indexes = read_sqlite_declared_index_columns(connection, "translation_items")
 
     assert {row[0] for row in table_rows} - {"sqlite_sequence"} == set(EXPECTED_STATIC_TABLE_NAMES)
-    assert CURRENT_SCHEMA_VERSION == 19
+    assert CURRENT_SCHEMA_VERSION == 20
     assert version_row == (CURRENT_SCHEMA_VERSION,)
     assert len(current_schema_fingerprint()) == 64
     assert translation_item_columns == (
@@ -900,7 +900,7 @@ async def test_text_fact_records_replace_read_and_require_scope(
     registry = GameRegistry(tmp_path / "db")
     record = await registry.register_game(minimal_game_dir, source_language="en")
     assert CURRENT_TEXT_FACT_CONTRACT_VERSION == 2
-    assert CURRENT_SCHEMA_VERSION == 19
+    assert CURRENT_SCHEMA_VERSION == 20
     scope = make_text_fact_scope()
     namebox_fact = TextFactRecord(
         fact_id="fact-namebox",

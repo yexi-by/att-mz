@@ -1,4 +1,4 @@
--- ATT-MZ SQLite schema v17. Shared by Python persistence and Rust native storage.
+-- ATT-MZ SQLite schema v20. Shared by Python persistence and Rust native storage.
 -- Keep schema_version value in app.persistence.sql.CURRENT_SCHEMA_VERSION.
 
 --sql
@@ -246,6 +246,45 @@
 ;
 
 --sql
+    CREATE TABLE IF NOT EXISTS [rule_sets] (
+        domain TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        rule_count INTEGER NOT NULL,
+        context_hash TEXT NOT NULL,
+        rules_hash TEXT NOT NULL,
+        rule_runtime_contract_version INTEGER NOT NULL,
+        rule_store_schema_version INTEGER NOT NULL,
+        imported_at TEXT NOT NULL
+    )
+;
+
+--sql
+    CREATE TABLE IF NOT EXISTS [rules] (
+        rule_id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        rule_order INTEGER NOT NULL,
+        matcher_kind TEXT NOT NULL,
+        matcher_value TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        source_kind TEXT NOT NULL,
+        rule_hash TEXT NOT NULL,
+        UNIQUE(domain, rule_order, rule_id)
+    )
+;
+
+--sql
+    CREATE TABLE IF NOT EXISTS [rule_domain_states] (
+        domain TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        scope_hash TEXT NOT NULL,
+        confirmed_at TEXT NOT NULL,
+        rule_runtime_contract_version INTEGER NOT NULL,
+        rule_store_schema_version INTEGER NOT NULL
+    )
+;
+
+--sql
     CREATE TABLE IF NOT EXISTS [font_replacement_records] (
         file_name             TEXT NOT NULL,
         value_path            TEXT NOT NULL,
@@ -471,5 +510,5 @@
 ;
 
 INSERT OR REPLACE INTO [schema_version] (schema_key, version)
-VALUES ('current', 19)
+VALUES ('current', 20)
 ;
