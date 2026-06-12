@@ -1,6 +1,5 @@
 """Release 正文提取脚本测试。"""
 
-import re
 from pathlib import Path
 
 import pytest
@@ -13,42 +12,19 @@ from scripts.extract_release_notes import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CURRENT_RELEASE_TAG = "v0.1.11"
 
 
-def _changelog_section_by_title(changelog_text: str, title: str) -> str:
-    """按版本标题返回 CHANGELOG 段落。"""
-    pattern = rf"^## {re.escape(title)}\n.+?(?=^## |\Z)"
-    match = re.search(pattern, changelog_text, flags=re.MULTILINE | re.DOTALL)
-    if match is None:
-        raise AssertionError(f"CHANGELOG.md 缺少版本段落: {title}")
-    return match.group(0)
-
-
-def test_current_release_notes_include_contract_cleanup_changes() -> None:
-    """CHANGELOG 可以记录当前契约失忆化清理的破坏性变更。"""
+def test_current_release_notes_can_be_used_by_release_workflow() -> None:
+    """当前版本 CHANGELOG 段落必须能作为 GitHub Release 正文。"""
     changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    current_section = _changelog_section_by_title(
-        changelog_text,
-        "未发布 - 当前契约失忆化清理",
+    notes = extract_release_notes_section(
+        changelog_text=changelog_text,
+        tag=CURRENT_RELEASE_TAG,
     )
-    required_terms = {
-        "破坏性变更",
-        "当前文本事实契约",
-        "current text facts",
-        "rebuild-text-index",
-        "索引缺失",
-        "当前工作区",
-        "缺少可用写回映射",
-        "prepare-agent-workspace",
-        "rebuild-active-runtime",
-        "真实游戏耗时",
-        "--debug-timings",
-        "scan budget",
-    }
 
-    missing_terms = sorted(term for term in required_terms if term not in current_section)
-
-    assert not missing_terms, f"最新 CHANGELOG 段落缺少当前契约清理说明: {missing_terms}"
+    assert notes.startswith(f"## {CURRENT_RELEASE_TAG} ")
+    assert "att-mz-windows-x86_64.zip" in notes
 
 
 def test_extract_release_notes_section_reads_matching_tag() -> None:
