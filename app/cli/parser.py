@@ -383,6 +383,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(import_manual_parser)
     _ = import_manual_parser.add_argument("--input", required=True, help="已填写的译文表文件")
     _ = import_manual_parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="只校验手动译文表，不保存任何译文",
+    )
+    _ = import_manual_parser.add_argument(
         "--import-valid",
         action="store_true",
         help="手动译文表有无效条目时，仍保存通过校验的有效条目",

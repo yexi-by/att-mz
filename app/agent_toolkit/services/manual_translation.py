@@ -224,6 +224,7 @@ class ManualTranslationAgentMixin:
         game_title: str,
         input_path: Path,
         import_valid: bool = False,
+        check_only: bool = False,
         report_invalid_path: Path | None = None,
     ) -> AgentReport:
         """导入 Agent 手动填写的译文，并按项目规则校验后保存。"""
@@ -257,9 +258,13 @@ class ManualTranslationAgentMixin:
             summary: JsonObject = {
                 "input": str(input_path),
                 "imported_count": imported_count,
+                "would_import_count": imported_count if check_only else 0,
+                "mode": "check_only" if check_only else "import",
                 "scope_mode": scope_mode,
                 "import_valid": import_valid,
             }
+            if check_only:
+                summary["imported_count"] = 0
             if error_count is not None:
                 summary["error_count"] = error_count
             if invalid_count is not None:
@@ -437,6 +442,29 @@ class ManualTranslationAgentMixin:
                 invalid_items=invalid_items,
                 errors=errors,
             )
+            if check_only:
+                if plan.errors:
+                    return AgentReport.from_parts(
+                        errors=plan.errors,
+                        warnings=rebuild_warnings,
+                        summary=import_summary(
+                            imported_count=len(plan.valid_items),
+                            error_count=len(plan.errors),
+                            invalid_count=len(plan.invalid_items),
+                        ),
+                        details={"invalid_items": plan.invalid_items},
+                    )
+                return AgentReport.from_parts(
+                    errors=[],
+                    warnings=(
+                        rebuild_warnings
+                        if plan.valid_items
+                        else [*rebuild_warnings, issue("manual_translation_empty", "手动填写译文表没有可导入条目")]
+                    ),
+                    summary=import_summary(imported_count=len(plan.valid_items)),
+                    details={},
+                )
+
             if plan.errors and not import_valid:
                 return AgentReport.from_parts(
                     errors=plan.errors,

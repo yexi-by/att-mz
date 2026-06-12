@@ -76,3 +76,42 @@ async def test_manual_import_rejects_latest_quality_error_outside_current_scope(
     async with await registry.open_game("テストゲーム") as session:
         remaining_paths = {item.location_path for item in await session.read_translated_items()}
     assert stale_path not in remaining_paths
+
+
+@pytest.mark.asyncio
+async def test_manual_import_check_only_validates_without_saving(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """手动译文保存前校验通过时也不得写入数据库。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    service = AgentToolkitService(game_registry=registry, setting_path=EXAMPLE_SETTING_PATH)
+    rebuild_report = await service.rebuild_text_index(game_title="テストゲーム")
+    assert rebuild_report.status == "ok"
+
+    export_path = tmp_path / "pending.json"
+    export_report = await service.export_pending_translations(
+        game_title="テストゲーム",
+        output_path=export_path,
+        limit=1,
+    )
+    assert export_report.status in {"ok", "warning"}
+    payload = json.loads(export_path.read_text(encoding="utf-8"))
+    location_path = next(iter(payload))
+    payload[location_path]["translation_lines"] = ["保存前校验译文"]
+    _ = export_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = await service.import_manual_translations(
+        game_title="テストゲーム",
+        input_path=export_path,
+        check_only=True,
+    )
+
+    assert report.status == "ok"
+    assert report.summary["mode"] == "check_only"
+    assert report.summary["imported_count"] == 0
+    assert report.summary["would_import_count"] == 1
+    async with await registry.open_game("テストゲーム") as session:
+        saved_items = await session.read_translated_items()
+    assert saved_items == []
