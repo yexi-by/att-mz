@@ -50,6 +50,7 @@ from app.event_command_text.native_validation import (
     NativeEventCommandRuleValidationContext,
     build_native_event_command_rule_validation_context,
 )
+from app.agent_toolkit.import_impact import rule_import_impact
 from app.application.flow_gate import (
     ensure_empty_rule_confirmed,
     note_tag_rule_scope_hash_for_text_rules,
@@ -180,11 +181,20 @@ def _source_residual_commit_report(
     summary = _source_residual_rule_counts(records if not result.errors else [])
     summary["mode"] = "import"
     summary["rule_runtime"] = _source_residual_rule_runtime_summary(prepare_result.summary)
+    details: JsonObject = {"rules": _source_residual_rule_details(records if not result.errors else [])}
+    if not result.errors:
+        impact = rule_import_impact(
+            deleted_translation_count=0,
+            deleted_translation_backup_path=None,
+            review_recheck_domains=("source_residual",),
+        )
+        summary.update(impact.summary_fields())
+        details["import_impact"] = impact.detail_fields()
     return AgentReport.from_parts(
         errors=_rule_runtime_issues_to_agent_issues(result.errors),
         warnings=warnings,
         summary=summary,
-        details={"rules": _source_residual_rule_details(records if not result.errors else [])},
+        details=details,
     )
 
 
@@ -479,16 +489,23 @@ class RuleValidationAgentMixin:
                 details={},
             )
         warnings = [] if records else [issue("mv_virtual_namebox_rules_empty", "已导入空 MV 虚拟名字框规则")]
+        impact = rule_import_impact(
+            deleted_translation_count=0,
+            deleted_translation_backup_path=None,
+            review_recheck_domains=("mv_virtual_namebox",),
+        )
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
             summary={
                 "rule_count": len(records),
                 "matched_candidate_count": len(match_details),
+                **impact.summary_fields(),
             },
             details={
                 "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
                 "matched_candidates": match_details,
+                "import_impact": impact.detail_fields(),
             },
         )
 
@@ -735,6 +752,12 @@ class RuleValidationAgentMixin:
                 "path": deleted_translation_backup_path,
                 "restore_step": "先重新导入正确规则，再运行 import-manual-translations 并把 input 指向该备份文件。",
             }
+        impact = rule_import_impact(
+            deleted_translation_count=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
+            review_recheck_domains=("note_tag",),
+        )
+        details["import_impact"] = impact.detail_fields()
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
@@ -743,6 +766,7 @@ class RuleValidationAgentMixin:
                 "tag_count": sum(len(record.tag_names) for record in records),
                 "deleted_translation_items": deleted_translation_items,
                 "deleted_translation_backup_path": deleted_translation_backup_path or "",
+                **impact.summary_fields(),
             },
             details=details,
         )
@@ -1106,6 +1130,11 @@ class RuleValidationAgentMixin:
                     f"本次导入插件源码规则已清理 {deleted_translation_items} 条不再属于当前规则范围的已保存译文；已先备份到 {deleted_translation_backup_path}",
                 )
             )
+        impact = rule_import_impact(
+            deleted_translation_count=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
+            review_recheck_domains=("plugin_source",),
+        )
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
@@ -1120,9 +1149,11 @@ class RuleValidationAgentMixin:
                 "unreviewed_selector_count": unreviewed_count,
                 "deleted_translation_items": deleted_translation_items,
                 "deleted_translation_backup_path": deleted_translation_backup_path or "",
+                **impact.summary_fields(),
             },
             details={
                 "rules": plugin_source_rule_records_to_import_json(records),
+                "import_impact": impact.detail_fields(),
             },
         )
 

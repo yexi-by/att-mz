@@ -13,6 +13,7 @@ from .common import (
     build_rule_runtime_settings_patterns,
 )
 from .rule_import_runtime import commit_prepared_rule_import
+from app.agent_toolkit.import_impact import rule_import_impact
 from app.native_rule_runtime import prepare_rule_import
 from app.nonstandard_data import (
     build_nonstandard_data_rule_records_from_validation,
@@ -303,6 +304,13 @@ class NonstandardDataAgentMixin:
                     f"已确认跳过 {len(validation.skipped_files)} 个非标准 data 文件，后续报告仍会提示这些文件可能残留源文",
                 )
             )
+        impact = rule_import_impact(
+            deleted_translation_count=0,
+            deleted_translation_backup_path=None,
+            review_recheck_domains=("nonstandard_data",),
+        )
+        details = dict(validation.details)
+        details["import_impact"] = impact.detail_fields()
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
@@ -316,8 +324,9 @@ class NonstandardDataAgentMixin:
                 "candidate_count": len(scan.candidates),
                 "reviewed_candidate_count": validation.reviewed_candidate_count,
                 "unreviewed_candidate_count": len(validation.unreviewed_candidate_paths),
+                **impact.summary_fields(),
             },
-            details=validation.details,
+            details=details,
         )
 
 

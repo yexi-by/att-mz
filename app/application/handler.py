@@ -32,6 +32,7 @@ from app.application.flow_gate import (
     event_command_rule_scope_hash_for_command_codes,
     format_workflow_gate_error,
 )
+from app.agent_toolkit.import_impact import rule_import_impact, terminology_import_impact
 from app.agent_toolkit.services.rule_identity import (
     RuleFactProbe,
     resolve_current_rule_fact_hits,
@@ -347,6 +348,14 @@ def _agent_report_summary_int(summary: JsonObject, key: str) -> int:
     return raw_value
 
 
+def _agent_report_summary_bool(summary: JsonObject, key: str) -> bool:
+    """从 Agent 报告摘要中读取布尔字段。"""
+    raw_value = summary.get(key)
+    if not isinstance(raw_value, bool):
+        raise ApplicationBusinessError(f"Agent 报告缺少有效布尔字段: {key}")
+    return raw_value
+
+
 def _agent_report_summary_optional_path(summary: JsonObject, key: str) -> str | None:
     """从 Agent 报告摘要中读取可选路径字段。"""
     raw_value = summary.get(key)
@@ -657,10 +666,17 @@ class TranslationHandler:
         logger.success(f"[tag.success]插件规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 插件 [tag.count]{len(rule_records)}[/tag.count] 个，规则 [tag.count]{imported_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
             logger.warning(f"[tag.warning]已备份被清理的插件译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
+        impact = rule_import_impact(
+            deleted_translation_count=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
+        )
         return PluginRuleImportSummary(
             imported_plugin_count=len(rule_records),
             imported_rule_count=imported_rule_count,
             deleted_translation_items=deleted_translation_items,
+            impact_requires_doctor=impact.requires_doctor,
+            impact_requires_text_index_rebuild=impact.requires_text_index_rebuild,
+            impact_write_back_probe_affected=impact.write_back_probe_affected,
             deleted_translation_backup_path=deleted_translation_backup_path,
         )
 
@@ -872,10 +888,17 @@ class TranslationHandler:
         logger.success(f"[tag.success]事件指令规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 规则组 [tag.count]{len(rule_records)}[/tag.count] 个，路径规则 [tag.count]{imported_path_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
             logger.warning(f"[tag.warning]已备份被清理的事件指令译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
+        impact = rule_import_impact(
+            deleted_translation_count=deleted_translation_items,
+            deleted_translation_backup_path=deleted_translation_backup_path,
+        )
         return EventCommandRuleImportSummary(
             imported_rule_group_count=len(rule_records),
             imported_path_rule_count=imported_path_rule_count,
             deleted_translation_items=deleted_translation_items,
+            impact_requires_doctor=impact.requires_doctor,
+            impact_requires_text_index_rebuild=impact.requires_text_index_rebuild,
+            impact_write_back_probe_affected=impact.write_back_probe_affected,
             deleted_translation_backup_path=deleted_translation_backup_path,
         )
 
@@ -907,6 +930,15 @@ class TranslationHandler:
             report.summary,
             "deleted_translation_backup_path",
         )
+        impact_requires_doctor = _agent_report_summary_bool(report.summary, "impact_requires_doctor")
+        impact_requires_text_index_rebuild = _agent_report_summary_bool(
+            report.summary,
+            "impact_requires_text_index_rebuild",
+        )
+        impact_write_back_probe_affected = _agent_report_summary_bool(
+            report.summary,
+            "impact_write_back_probe_affected",
+        )
         logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{imported_file_count}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
             logger.warning(f"[tag.warning]已备份被清理的 Note 标签译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
@@ -914,6 +946,9 @@ class TranslationHandler:
             imported_file_count=imported_file_count,
             imported_tag_count=imported_tag_count,
             deleted_translation_items=deleted_translation_items,
+            impact_requires_doctor=impact_requires_doctor,
+            impact_requires_text_index_rebuild=impact_requires_text_index_rebuild,
+            impact_write_back_probe_affected=impact_write_back_probe_affected,
             deleted_translation_backup_path=deleted_translation_backup_path,
         )
 
@@ -1850,10 +1885,14 @@ class TranslationHandler:
         filled_count = registry.filled_entry_count()
         glossary_term_count = glossary.term_count()
         logger.success(f"[tag.success]术语表导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 字段条目 [tag.count]{imported_count}[/tag.count] 条，已填写 [tag.count]{filled_count}[/tag.count] 条，正文术语 [tag.count]{glossary_term_count}[/tag.count] 条")
+        impact = terminology_import_impact()
         return TerminologyImportSummary(
             imported_entry_count=imported_count,
             filled_entry_count=filled_count,
             glossary_term_count=glossary_term_count,
+            impact_requires_doctor=impact.requires_doctor,
+            impact_requires_text_index_rebuild=impact.requires_text_index_rebuild,
+            impact_write_back_probe_affected=impact.write_back_probe_affected,
         )
 
     async def write_terminology(

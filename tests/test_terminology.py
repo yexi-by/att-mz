@@ -360,6 +360,10 @@ async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_te
         await handler.close()
 
     assert import_summary.glossary_term_count == 1
+    assert import_summary.imported_entry_count > 0
+    assert import_summary.impact_requires_doctor is True
+    assert import_summary.impact_requires_text_index_rebuild is False
+    assert import_summary.impact_write_back_probe_affected is True
     async with await registry.open_game("テストゲーム") as session:
         stored_registry = await session.read_terminology_registry()
         stored_glossary = await session.read_terminology_glossary()

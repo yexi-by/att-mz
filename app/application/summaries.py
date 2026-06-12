@@ -12,6 +12,9 @@ class PluginRuleImportSummary:
     imported_plugin_count: int
     imported_rule_count: int
     deleted_translation_items: int
+    impact_requires_doctor: bool
+    impact_requires_text_index_rebuild: bool
+    impact_write_back_probe_affected: bool
     deleted_translation_backup_path: str | None = None
 
 
@@ -39,6 +42,9 @@ class EventCommandRuleImportSummary:
     imported_rule_group_count: int
     imported_path_rule_count: int
     deleted_translation_items: int
+    impact_requires_doctor: bool
+    impact_requires_text_index_rebuild: bool
+    impact_write_back_probe_affected: bool
     deleted_translation_backup_path: str | None = None
 
 
@@ -58,6 +64,9 @@ class NoteTagRuleImportSummary:
     imported_file_count: int
     imported_tag_count: int
     deleted_translation_items: int
+    impact_requires_doctor: bool
+    impact_requires_text_index_rebuild: bool
+    impact_write_back_probe_affected: bool
     deleted_translation_backup_path: str | None = None
 
 
@@ -68,6 +77,9 @@ class TerminologyImportSummary:
     imported_entry_count: int
     filled_entry_count: int
     glossary_term_count: int
+    impact_requires_doctor: bool
+    impact_requires_text_index_rebuild: bool
+    impact_write_back_probe_affected: bool
 
 
 @dataclass(slots=True)

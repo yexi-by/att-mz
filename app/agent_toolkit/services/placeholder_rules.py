@@ -44,6 +44,7 @@ from app.agent_toolkit.services.rule_import_runtime import (
     commit_prepared_rule_import,
     write_prepared_cleanup_backup,
 )
+from app.agent_toolkit.import_impact import rule_import_impact
 from app.agent_toolkit.reports import AgentIssue
 from app.native_placeholder_scan import (
     collect_native_placeholder_candidate_details_from_entries,
@@ -285,6 +286,10 @@ def _placeholder_import_report(
 ) -> AgentReport:
     """汇总普通/结构化占位符规则导入结果。"""
     rule_runtime_summary = _rule_runtime_summary(prepare_result.summary)
+    impact = rule_import_impact(
+        deleted_translation_count=deleted_translation_count,
+        deleted_translation_backup_path=deleted_translation_backup_path,
+    )
     summary: JsonObject = {
         "game": game_title,
         "mode": "import",
@@ -296,6 +301,7 @@ def _placeholder_import_report(
         "deleted_translation_items": deleted_translation_count,
         "cleanup_count": deleted_translation_count,
         "deleted_translation_backup_path": deleted_translation_backup_path,
+        **impact.summary_fields(),
     }
     diagnostics = _rule_runtime_diagnostics(prepare_result)
     if diagnostics:
@@ -318,6 +324,7 @@ def _placeholder_import_report(
         "validation": validation_report.details,
         "coverage": _coverage_report_details(coverage),
         "cleanup_plan": cleanup_plan,
+        "import_impact": impact.detail_fields(),
     }
     _merge_rule_runtime_details(details, prepare_result)
     if commit_result.details:
