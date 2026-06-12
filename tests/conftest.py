@@ -71,7 +71,7 @@ def copy_test_game_template(template_root: Path, target_root: Path) -> Path:
     """复制 worker 级游戏模板，保证每个测试拿到可独立修改的目录。"""
     if target_root.exists():
         raise RuntimeError(f"测试游戏目录已存在，不能覆盖: {target_root}")
-    _ = shutil.copytree(template_root, target_root)
+    _ = shutil.copytree(template_root, target_root, copy_function=shutil.copyfile)
     return target_root
 
 

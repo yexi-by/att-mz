@@ -13,8 +13,9 @@
 ## File Structure
 
 - Modify `tests/conftest.py`: add worker-local Loguru setup, extract minimal game builders, add session-scoped per-worker templates, and keep existing function-scoped fixture names returning isolated copies.
+- Modify `app/rmmz/source_snapshot.py`: keep source snapshot behavior identical while copying file contents without preserving metadata that the current contract never reads.
 - May modify `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `AGENTS.md`, and `docs/wiki/development/release-and-tests.md`: only if real local or GitHub evidence selects a different final pytest worker/distribution command.
-- Do not modify production code.
+- Do not add production-only shortcuts, test-only branches, skip logic, or alternate facts. The only allowed production change in this plan is content-only file copying for source snapshots, because snapshot validity is already defined by file existence, byte size, and SHA-256 content hash.
 - Do not add new test files for this test-infrastructure change.
 - Do not stage or commit the existing unrelated `rust/src/native_core/scope_index/storage.rs` change.
 
@@ -109,7 +110,7 @@ def copy_test_game_template(template_root: Path, target_root: Path) -> Path:
     """复制 worker 级游戏模板，保证每个测试拿到可独立修改的目录。"""
     if target_root.exists():
         raise RuntimeError(f"测试游戏目录已存在，不能覆盖: {target_root}")
-    _ = shutil.copytree(template_root, target_root)
+    _ = shutil.copytree(template_root, target_root, copy_function=shutil.copyfile)
     return target_root
 ```
 
@@ -241,7 +242,64 @@ Expected staged file:
 tests/conftest.py
 ```
 
-### Task 3: Re-select the Full Pytest Command
+### Task 3: Use Content-Only Source Snapshot Copies
+
+**Files:**
+- Modify: `app/rmmz/source_snapshot.py`
+
+- [ ] **Step 1: Change snapshot copies to content-only copies**
+
+In `create_source_snapshot_for_clean_game`, change the three snapshot copy calls so they avoid metadata preservation:
+
+```python
+_ = shutil.copytree(layout.data_dir, layout.data_origin_dir, copy_function=shutil.copyfile)
+```
+
+```python
+_ = shutil.copyfile(layout.plugins_path, layout.plugins_origin_path)
+```
+
+```python
+_ = shutil.copyfile(source_path, snapshot_path)
+```
+
+Expected:
+
+- Source snapshot files still contain identical bytes.
+- `collect_source_snapshot_records` still records byte size and SHA-256 from the copied files.
+- Production code still rejects dirty game directories with pre-existing snapshot files.
+
+- [ ] **Step 2: Run source snapshot contract tests**
+
+Run:
+
+```powershell
+uv run pytest tests/test_rmmz_source_snapshot.py tests/test_game_reset.py -q -n 3
+```
+
+Expected:
+
+- All selected tests pass.
+- Existing clean-directory and manifest behavior remains unchanged.
+
+- [ ] **Step 3: Commit content-only snapshot copy**
+
+Run:
+
+```powershell
+git add app/rmmz/source_snapshot.py docs/superpowers/plans/2026-06-12-pytest-fixture-snapshots.md
+git diff --cached --name-only
+git commit -m "perf: 简化可信源快照复制"
+```
+
+Expected staged files:
+
+```text
+app/rmmz/source_snapshot.py
+docs/superpowers/plans/2026-06-12-pytest-fixture-snapshots.md
+```
+
+### Task 4: Re-select the Full Pytest Command
 
 **Files:**
 - May modify: `.github/workflows/ci.yml`
@@ -311,7 +369,7 @@ Expected:
 
 - Only the four command/documentation files are staged.
 
-### Task 4: Local and GitHub Verification
+### Task 5: Local and GitHub Verification
 
 **Files:**
 - No source file changes unless verification selects a different full pytest command.
@@ -378,7 +436,7 @@ Expected:
 
 ## Final Verification Checklist
 
-- [ ] No production code changed.
+- [ ] Production behavior remains equivalent: source snapshot validity still uses file existence, byte size, and SHA-256 content hash.
 - [ ] No new test files were added for test infrastructure.
 - [ ] `uv run basedpyright` passes with 0 errors and 0 warnings.
 - [ ] Full local pytest passes with the final command and is 60 seconds or less.
