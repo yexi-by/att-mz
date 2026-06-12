@@ -63,6 +63,6 @@
 ## 测试覆盖
 
 - `cargo test --manifest-path rust/Cargo.toml` 覆盖 Rust Scope/Index、Rule Runtime、质量检查、规则错误、写回计划模式、线程配置和结构性边界。
-- `tests/test_agent_toolkit_quality_report.py` 间接覆盖 Python 调用原生质量检查。
+- Python 侧只保留公开入口和原生适配层可观察契约，不再用 Agent 工具箱大集成 pytest 间接固定原生质量检查内部路径。
 - `tests/test_native_scope_index.py`、`tests/test_native_rule_runtime.py` 和 `tests/test_native_adapters.py` 覆盖 Python 原生适配层错误状态、字段类型、索引契约和规则运行时契约。
 - `tests/test_rmmz_write_plan.py`、`tests/test_write_back_transactions.py` 和 `tests/test_rmmz_font_transaction.py` 间接覆盖写文件前检查、写入协议和字体扫描协作。

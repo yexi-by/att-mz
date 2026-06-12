@@ -141,7 +141,7 @@
 | parser/dispatch 命令集合 | `tests/test_cli_json_output.py` |
 | 配置覆盖链路 | `tests/test_config_overrides.py` |
 | 输出与 diagnostics | `tests/test_cli_json_output.py`、`tests/test_observability.py` |
-| 工作区与规则导入 | `tests/test_agent_toolkit_workspace.py`、`tests/test_agent_toolkit_rule_import.py` |
+| 工作区公开主链路 | `tests/test_cli_public_contract.py` |
 | 文本索引当前契约 | `tests/test_text_index.py` |
-| 写回、字体和当前运行审计 | `tests/test_write_back_transactions.py`、`tests/test_font_replacement_transactions.py`、`tests/test_agent_toolkit_feedback.py` |
+| 写回与字体 | `tests/test_write_back_transactions.py`、`tests/test_font_replacement_transactions.py` |
 | 发行包布局、Skill 映射与发布说明 | 通过生成检查、脚本检查和人工审查确认，不再由 pytest 固定 |

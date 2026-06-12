@@ -46,6 +46,6 @@
 
 ## 测试覆盖
 
-- `tests/test_agent_toolkit_workspace.py`、`tests/test_agent_toolkit_rule_import.py`、`tests/test_agent_toolkit_quality_report.py`、`tests/test_agent_toolkit_manual_import.py` 和 `tests/test_agent_toolkit_feedback.py` 分别覆盖工作区、规则导入、质量报告、人工译文表和反馈反查。
-- `tests/test_agent_toolkit_diagnostics.py`、`tests/test_agent_toolkit_coverage.py`、`tests/test_agent_toolkit_workflow_gate.py` 和 `tests/test_agent_toolkit_translation_limits.py` 覆盖诊断、范围覆盖、流程检查和翻译停止条件。
+- `tests/test_cli_public_contract.py` 覆盖工作区公开 CLI 主链路：注册游戏、准备工作区、校验工作区和按 manifest 清理工作区。
+- 规则匹配、范围覆盖、流程检查、质量检查和翻译停止条件不再由 Agent 工具箱 Python 大集成 pytest 固定；核心规则归 Rust/native owner 测试，Python 只保留公开入口和可观察报告契约。
 - Skill 与 CLI 协议一致性通过 canonical 协议生成检查和人工审查确认，不再由 pytest 固定。

@@ -49,7 +49,6 @@ pythonVersion = "3.14"
 stubPath = "typings"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/test_agent_toolkit_*.py" = ["F403", "F405"]
 "tests/test_rmmz_*.py" = ["F403", "F405"]
 
 [tool.pytest.ini_options]
