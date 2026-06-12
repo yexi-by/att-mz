@@ -27,20 +27,16 @@ def create_source_snapshot_for_clean_game(layout: GameLayout) -> None:
     validate_clean_source_snapshot_target(layout)
     try:
         validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
-        _ = shutil.copytree(
-            layout.data_dir,
-            layout.data_origin_dir,
-            copy_function=shutil.copyfile,
-        )
+        _ = shutil.copytree(layout.data_dir, layout.data_origin_dir)
         validate_data_directory_integrity(data_dir=layout.data_origin_dir, role="原始 data 备份")
 
         layout.plugins_origin_path.parent.mkdir(parents=True, exist_ok=True)
-        _ = shutil.copyfile(layout.plugins_path, layout.plugins_origin_path)
+        _ = shutil.copy2(layout.plugins_path, layout.plugins_origin_path)
         active_plugin_source_dir = layout.js_dir / "plugins"
         layout.plugin_source_origin_dir.mkdir(parents=True, exist_ok=True)
         for source_path in _iter_direct_plugin_source_files(active_plugin_source_dir):
             snapshot_path = layout.plugin_source_origin_dir / source_path.name
-            _ = shutil.copyfile(source_path, snapshot_path)
+            _ = shutil.copy2(source_path, snapshot_path)
         validate_source_snapshot_files(layout)
     except Exception:
         remove_source_snapshot_artifacts(layout)
