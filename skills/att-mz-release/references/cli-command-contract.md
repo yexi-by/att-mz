@@ -49,7 +49,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 源语言探测 | `probe-source-language --path <游戏目录> --output <探测报告>` | 只按玩家可见文本判断；结果不确定或与用户认知冲突时，展示样本让用户确认。 |
 | 注册日文游戏 | `add-game --path <游戏目录> --source-language ja` | `summary.game_title` 是后续 `--game` 值；目录已有可信源快照时换干净原始目录。 |
 | 注册英文游戏 | `add-game --path <游戏目录> --source-language en` | 同上；`add-game` 不读取探测报告，也不会替用户决定源语言。 |
-| 游戏状态检查 | `doctor --game <游戏标题> --no-check-llm` | 当前游戏源语言只看 `summary.source_language`；缺规则时只能继续准备工作区，不启动翻译或写回。 |
+| 游戏状态和下一步裁决 | `doctor --game <游戏标题> --no-check-llm` | 当前游戏源语言只看 `summary.source_language`。读取 `summary.flow_decision`、`summary.flow_reason`、`summary.flow_next_command`；`flow_can_continue=false` 时先处理阻断项，不启动翻译或写回。doctor 会默认执行写回级只读检查。 |
 | 查看注册列表 | `list` | 不符合当前 schema 的游戏进入 warning；需要继续使用被跳过游戏时，按 warning 重新注册或修复。 |
 | 危险回溯预演 | `reset-game --game <游戏标题> --dry-run` | 只转述恢复和删除计划，不修改文件。 |
 | 危险回溯执行 | `reset-game --game <游戏标题> --confirm-game-title <游戏标题>` | 只能在用户明确要求注销、重置或恢复注册前状态时使用；禁止手动删库绕过恢复。 |
@@ -66,12 +66,12 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 ### 2. 规则导入
 
-所有规则都遵循同一顺序：先导出或读取候选，再编辑规则文件，再运行对应 validate，最后 import。空规则只有在已审查当前候选并能说明空结果理由时才加 `--confirm-empty`。导入后若出现 `deleted_translations_backed_up` warning，表示已保存译文因规则变化被清理；确认导错时，先导入正确规则，再用备份文件运行 `import-manual-translations` 恢复。
+所有规则都遵循同一顺序：先导出或读取候选，再编辑规则文件，再运行对应 validate，最后 import。空规则只有在已审查当前候选并能说明空结果理由时才加 `--confirm-empty`。导入后读取 `summary.impact_requires_text_index_rebuild`、`summary.impact_requires_doctor`、`summary.impact_write_back_probe_affected` 和 `details.import_impact`；需要重建索引就先运行 `rebuild-text-index`，需要 doctor 就重新运行 doctor。若出现 `deleted_translations_backed_up` warning，表示已保存译文因规则变化被清理；确认导错时，先导入正确规则，再用备份文件运行 `import-manual-translations` 恢复。
 
 | 领域 | 命令组 | 关键判断 |
 | --- | --- | --- |
 | MV 虚拟名字框 | `export-mv-virtual-namebox-candidates`、`validate-mv-virtual-namebox-rules`、`import-mv-virtual-namebox-rules` | 仅 MV 游戏运行；MZ 游戏跳过。新增命中样本必须经主代理确认。 |
-| 术语 | `export-terminology`、`import-terminology` | 字段译名表和正文术语表是不同文件；主代理亲自审查后导入。 |
+| 术语 | `export-terminology`、`import-terminology` | 字段译名表和正文术语表是不同文件；主代理亲自审查后导入。术语导入不要求重建文本索引，但要求重新 doctor 和写回级检查。 |
 | 插件参数 | `validate-plugin-rules`、`import-plugin-rules` | 插件哈希或当前配置不一致时重新准备工作区，不猜路径。 |
 | 事件指令 | `validate-event-command-rules`、`import-event-command-rules` | 事件编码覆盖要从导出、validate 到 import 保持一致。 |
 | Note 标签 | `export-note-tag-candidates`、`validate-note-tag-rules`、`import-note-tag-rules` | 文件键是 `fnmatch`；空规则必须说明理由。 |
@@ -87,14 +87,15 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | --- | --- | --- |
 | 建立 warm index | `rebuild-text-index --game <游戏标题>` | `summary.index_status=rebuilt`，索引数量可解释；大型游戏规则导入、源文件变化或规则变化后先运行。 |
 | 小批量试跑 | `translate --game <游戏标题> --max-items 3` | 只用于观察模型、规则和控制符风险；不以 0 失败作为指标。正常结束，`summary.pending_count` 是本轮数量，`summary.total_pending_count` 是总剩余，`summary.text_index_status` 可解释索引来源。小批量阶段禁止导出修复表、手填译文或重置译文。 |
-| 持续正文翻译 | `translate --game <游戏标题>` | 剩余量下降且没有规则性事故就继续，主要靠全量多轮重试收敛；同类失败多轮不下降或剩余量已很小时，才转修规则、换模型或手动处理。 |
+| 持续正文翻译 | `translate --game <游戏标题>` | 每轮后运行 doctor 读取 `flow_decision`。`ready_to_translate` 继续，`should_stop_retrying` 先按质量错误补规则或导出修复表，`ready_for_manual_fix` 进入精确修复，`ready_to_write_back` 才进入写回确认。 |
 | 查看进度 | `translation-status --game <游戏标题>` | 数量能解释；需按当前范围刷新时加 `--refresh-scope`。 |
 | 查看文本范围 | `text-scope --game <游戏标题>` | `status` 为 `ok`；加 `--include-write-probe` 只标记索引可写状态，不执行写回级检查。 |
 | 覆盖审计 | `audit-coverage --game <游戏标题>` | `status` 为 `ok`；发现规则命中、译文或范围缺口时先补规则、补译文或精确重置。 |
-| 普通质量报告 | `quality-report --game <游戏标题>` | `status` 不是 `error`；有 error 禁止写回。需要 Rust 写回级检查时加 `--include-write-probe`。 |
+| 普通质量报告 | `quality-report --game <游戏标题>` | `status` 不是 `error`；有 error 禁止写回。需要 Rust 写回级只读检查时加 `--include-write-probe`；doctor 已默认执行这项检查。 |
 | 导出质量修复表 | `export-quality-fix-template --game <游戏标题> --output <文件>` | 只改中文译文行后导入；`--include-write-probe` 只标记请求和索引可写状态。 |
 | 导出待补译表 | `export-pending-translations --game <游戏标题> --output <文件>` | 可加 `--limit N`；抽样仍适合模型时回到 `translate`。 |
-| 导入手动译文 | `import-manual-translations --game <游戏标题> --input <文件>` | `status` 为 `ok`；质量错误时只修中文译文行后重跑。 |
+| 保存前校验手动译文 | `import-manual-translations --game <游戏标题> --input <文件> --check-only` | 只验证整包译文，不保存；通过后再去掉 `--check-only` 正式导入。 |
+| 导入手动译文 | `import-manual-translations --game <游戏标题> --input <文件>` | `status` 为 `ok`；质量错误时只修中文译文行后先跑 `--check-only`。 |
 | 精确重置 | `reset-translations --game <游戏标题> --input <文件>` | `summary.mode=input` 且数量可解释；输入路径不属于当前范围时整体失败，不部分删除。 |
 | 完整重译 | `reset-translations --game <游戏标题> --all` | 只能在用户明确选择完整重译时使用。 |
 | 跳过写回流水线 | `run-all --game <游戏标题> --skip-write-back` | 规则或质量错误未清前不写回。 |
