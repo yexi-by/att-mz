@@ -86,7 +86,7 @@ uv run python scripts/benchmark_small_tasks.py `
 
 - `uv run basedpyright` 是 Python 静态类型交付红线。
 - 设置 `ATT_MZ_RUST_THREADS=1` 后执行 `uv run pytest -q -n 6 --durations=30 --durations-min=0.5` 是当前 Python 业务测试交付红线；测试子集不能替代全量 pytest。
-- 常规 CI 在 pull request 和普通 push 阶段执行 Python 静态类型检查和全量 pytest，发布工作流在构建发行包前再次执行同一全量 pytest 门禁。
+- 普通 push 和 pull request 不再自动执行常规 CI；发布工作流在构建发行包前执行 Python 静态类型检查和全量 pytest 门禁。
 - 改到 Rust 或 PyO3 相关代码时执行 `cargo fmt --manifest-path rust/Cargo.toml -- --check`、`cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings` 和 `cargo test --manifest-path rust/Cargo.toml`。
 - 改到 Skill、README、提示词或工作区协议时，运行对应生成检查、静态检查或人工审查差异；不再用 pytest 固定这些文档和协议。
 - 改到写文件、插件源码扫描、当前运行审计、小任务链路或性能脚本时，使用真实 CLI 性能证据和阶段耗时验证；不再用 benchmark pytest 代替真实性能门禁。
