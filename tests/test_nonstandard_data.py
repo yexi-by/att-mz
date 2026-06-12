@@ -473,9 +473,11 @@ async def test_nonstandard_data_workflow_gate_blocks_until_rules_imported(
 async def test_nonstandard_data_import_cold_rebuild_translate_and_write_back_share_rust_facts(
     minimal_game_dir: Path,
     tmp_path: Path,
+    app_home_with_example_setting: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """非标准 data 规则导入后，翻译和写回共享冷重建保存的 Rust gate facts。"""
+    _ = app_home_with_example_setting
     _write_high_risk_nonstandard_data(minimal_game_dir)
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
