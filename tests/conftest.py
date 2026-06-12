@@ -1,7 +1,9 @@
 """测试夹具：构造最小可用的 RPG Maker MV/MZ 游戏目录。"""
 
 import json
+import shutil
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -10,6 +12,28 @@ from app.rmmz.text_rules import JsonValue
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """让每个 pytest worker 写独立日志文件，避免 xdist 并发争用项目日志。"""
+    from app.observability import setup_logger
+
+    log_path = _pytest_worker_log_path(config)
+    setup_logger(use_console=False, file_path=log_path, enqueue_file_log=False)
+
+
+def _pytest_worker_log_path(config: pytest.Config) -> Path:
+    """返回当前 pytest 进程专属日志文件路径。"""
+    worker_input_object = getattr(config, "workerinput", None)
+    worker_id = "master"
+    if isinstance(worker_input_object, dict):
+        worker_input = cast(dict[object, object], worker_input_object)
+        raw_worker_id = worker_input.get("workerid")
+        if isinstance(raw_worker_id, str) and raw_worker_id:
+            worker_id = raw_worker_id
+    log_dir = Path.cwd() / ".pytest_cache" / "att-mz-worker-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{worker_id}.log"
 
 
 @pytest.fixture
@@ -41,6 +65,14 @@ def _example_setting_text_with_absolute_prompt_files() -> str:
 def write_json(path: Path, value: JsonValue) -> None:
     """以 UTF-8 写入 JSON 文件，保持 fixture 内容易读。"""
     _ = path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def copy_test_game_template(template_root: Path, target_root: Path) -> Path:
+    """复制 worker 级游戏模板，保证每个测试拿到可独立修改的目录。"""
+    if target_root.exists():
+        raise RuntimeError(f"测试游戏目录已存在，不能覆盖: {target_root}")
+    _ = shutil.copytree(template_root, target_root)
+    return target_root
 
 
 def write_plugin_source_stubs(js_dir: Path, plugin_names: list[str]) -> None:
@@ -90,10 +122,8 @@ def write_complete_standard_data_files(data_dir: Path, *, map_ids: list[int]) ->
         write_json(path, value)
 
 
-@pytest.fixture
-def minimal_game_dir(tmp_path: Path) -> Path:
+def build_minimal_game_dir(game_root: Path) -> Path:
     """创建只包含核心流程所需文件的最小 MZ 游戏目录。"""
-    game_root = tmp_path / "mini-game"
     data_dir = game_root / "data"
     js_dir = game_root / "js"
     data_dir.mkdir(parents=True)
@@ -347,10 +377,20 @@ def minimal_game_dir(tmp_path: Path) -> Path:
     return game_root
 
 
+@pytest.fixture(scope="session")
+def minimal_game_dir_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """为当前 pytest worker 创建可复制的最小 MZ 游戏模板。"""
+    return build_minimal_game_dir(tmp_path_factory.mktemp("game-templates") / "mini-game")
+
+
 @pytest.fixture
-def minimal_mv_game_dir(tmp_path: Path) -> Path:
+def minimal_game_dir(tmp_path: Path, minimal_game_dir_template: Path) -> Path:
+    """返回当前测试独占的最小 MZ 游戏目录。"""
+    return copy_test_game_template(minimal_game_dir_template, tmp_path / "mini-game")
+
+
+def build_minimal_mv_game_dir(game_root: Path) -> Path:
     """创建外层目录含可执行文件、真实数据位于 www 的最小 MV 游戏目录。"""
-    game_root = tmp_path / "mini-mv-game"
     content_root = game_root / "www"
     data_dir = content_root / "data"
     js_dir = content_root / "js"
@@ -471,10 +511,20 @@ def minimal_mv_game_dir(tmp_path: Path) -> Path:
     return game_root
 
 
+@pytest.fixture(scope="session")
+def minimal_mv_game_dir_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """为当前 pytest worker 创建可复制的最小 MV 游戏模板。"""
+    return build_minimal_mv_game_dir(tmp_path_factory.mktemp("game-templates") / "mini-mv-game")
+
+
 @pytest.fixture
-def minimal_english_game_dir(tmp_path: Path) -> Path:
+def minimal_mv_game_dir(tmp_path: Path, minimal_mv_game_dir_template: Path) -> Path:
+    """返回当前测试独占的最小 MV 游戏目录。"""
+    return copy_test_game_template(minimal_mv_game_dir_template, tmp_path / "mini-mv-game")
+
+
+def build_minimal_english_game_dir(game_root: Path) -> Path:
     """创建只含英文玩家可见文本的最小 MZ 游戏目录。"""
-    game_root = tmp_path / "english-mini-game"
     data_dir = game_root / "data"
     js_dir = game_root / "js"
     data_dir.mkdir(parents=True)
@@ -627,3 +677,20 @@ def minimal_english_game_dir(tmp_path: Path) -> Path:
     _ = (js_dir / "plugins.js").write_text(plugins_text, encoding="utf-8")
     write_plugin_source_stubs(js_dir, ["VisiblePlugin"])
     return game_root
+
+
+@pytest.fixture(scope="session")
+def minimal_english_game_dir_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """为当前 pytest worker 创建可复制的英文 MZ 游戏模板。"""
+    return build_minimal_english_game_dir(
+        tmp_path_factory.mktemp("game-templates") / "english-mini-game"
+    )
+
+
+@pytest.fixture
+def minimal_english_game_dir(tmp_path: Path, minimal_english_game_dir_template: Path) -> Path:
+    """返回当前测试独占的英文 MZ 游戏目录。"""
+    return copy_test_game_template(
+        minimal_english_game_dir_template,
+        tmp_path / "english-mini-game",
+    )
