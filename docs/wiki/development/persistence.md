@@ -2,18 +2,18 @@
 
 ## 职责
 
-`app.persistence` 管理多游戏数据库路径、连接、schema、游戏注册和所有业务记录读写。`GameRegistry` 是游戏注册入口，`TargetGameSession` 是当前游戏数据库会话入口。会话能力按记录域拆分为译文、规则、术语、运行状态和字体记录。更多表级说明见 [数据库文档](../database.md)。
+`app.persistence` 管理多游戏数据库路径、连接、schema、游戏注册和所有业务记录读写。`GameRegistry` 是游戏注册入口，`TargetGameSession` 是当前游戏数据库会话入口。会话能力按记录域拆分为译文、统一规则、当前文本索引、当前文本事实、术语、运行状态和字体记录。更多表级说明见 [数据库文档](../database.md)。
 
 ## 输入
 
 - 游戏标题、游戏根目录、源语言和目标语言。
-- 应用层传入的译文记录、规则记录、术语记录、运行记录和字体处理记录。
+- 应用层或 Rust 原生主路径传入的译文记录、统一规则记录、当前文本索引、当前文本事实、术语记录、运行记录和字体处理记录。
 - SQLite 查询结果行。
 
 ## 输出
 
 - 每个游戏独立的 SQLite 数据库。
-- Pydantic 记录模型，例如游戏注册信息、译文记录、规则记录、术语记录和运行记录。
+- Pydantic 记录模型，例如游戏注册信息、译文记录、规则记录、当前文本索引记录、当前文本事实记录、术语记录和运行记录。
 - 可供应用层继续处理的强类型记录列表。
 
 ## 失败策略
@@ -36,6 +36,8 @@
 - `app.persistence.sql`
 - `app.persistence.translation_records`
 - `app.persistence.rule_records`
+- `app.persistence.text_index_records`
+- `app.persistence.text_fact_records`
 - `app.persistence.terminology_records`
 - `app.persistence.run_records`
 - `app.persistence.font_records`

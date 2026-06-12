@@ -8,13 +8,13 @@
 
 - CLI 已解析参数和配置覆盖。
 - `TargetGameSession` 提供的游戏数据库会话。
-- 当前 RPG Maker 游戏文件、外部规则文件、术语表文件和已保存译文记录。
+- 当前 RPG Maker 游戏文件、外部规则文件、术语表文件、当前文本索引、当前文本事实和已保存译文记录。
 
 ## 输出
 
 - 应用层摘要模型，例如翻译运行摘要、写入摘要和字体替换摘要。
 - 写入后的 RPG Maker 数据文件、插件配置和字体引用调整。
-- 数据库中的译文记录、运行记录、规则记录和字体处理记录。
+- 数据库中的译文记录、运行记录、统一规则记录、当前文本索引、当前文本事实和字体处理记录。
 
 ## 失败策略
 
@@ -24,8 +24,8 @@
 
 ## 协作模块
 
-- 文本提取和写入交给 `app.rmmz`、`app.plugin_text`、`app.event_command_text` 和 `app.note_tag_text`。
-- 当前文本范围和写入可行性由 `app.text_scope` 统一判断。
+- 文本提取、当前索引和写入交给 `app.rmmz`、`app.text_index`、`app.text_fact_*`、`app.plugin_text`、`app.event_command_text` 和 `app.note_tag_text`。
+- 当前文本范围、当前文本事实身份和写入可行性由 Rust Scope/Index Engine 与写回计划共同判断。
 - 正文翻译由 `app.translation` 调度，质量检查由 Python 校验和 Rust 原生核心共同完成。
 - 数据库读写全部通过 `app.persistence` 的门面和会话方法完成。
 
@@ -33,7 +33,8 @@
 
 - `app.application.handler.TranslationHandler`
 - `app.application.file_writer`
-- `app.application.font_replacement.service`
+- `app.application.font_replacement`
+- `app.application.write_plan_applier`
 - `app.application.use_cases.translation_run`
 - `app.application.summaries`
 

@@ -6,4 +6,4 @@
 | --- | --- |
 | [CLI 维护事实地图](cli.md) | CLI 外部协议、分发入口、业务门面、输出形态和测试护栏。 |
 | [数据库 Wiki](database.md) | 当前 SQLite 表结构和维护约定。 |
-| [开发文档地图](development/README.md) | 源码模块协作、测试和发布前验收入口。 |
+| [开发文档地图](development/README.md) | 源码模块协作、当前文本索引、Rust 原生主路径、测试和发布前验收入口。 |
