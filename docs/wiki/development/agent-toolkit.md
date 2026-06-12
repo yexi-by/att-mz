@@ -48,4 +48,4 @@
 
 - `tests/test_agent_toolkit_workspace.py`、`tests/test_agent_toolkit_rule_import.py`、`tests/test_agent_toolkit_quality_report.py`、`tests/test_agent_toolkit_manual_import.py` 和 `tests/test_agent_toolkit_feedback.py` 分别覆盖工作区、规则导入、质量报告、人工译文表和反馈反查。
 - `tests/test_agent_toolkit_diagnostics.py`、`tests/test_agent_toolkit_coverage.py`、`tests/test_agent_toolkit_workflow_gate.py` 和 `tests/test_agent_toolkit_translation_limits.py` 覆盖诊断、范围覆盖、流程检查和翻译停止条件。
-- `tests/test_skill_protocol.py` 覆盖 Skill 与 CLI 协议之间的关键一致性。
+- Skill 与 CLI 协议一致性通过 canonical 协议生成检查和人工审查确认，不再由 pytest 固定。
