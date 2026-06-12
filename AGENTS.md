@@ -76,7 +76,7 @@
 
 ## 7. 验证与交付
 
-- 涉及 Python/Rust 源码、测试、schema、构建流程、发行流程或可执行契约的项目交付前，必须执行 `uv run basedpyright` 和全量 Python 业务测试，保持 0 warning、0 error、0 failed。当前全量 pytest 推荐命令为先设置 `$env:ATT_MZ_RUST_THREADS = "1"`，再执行 `uv run pytest -q -n 8 --durations=30 --durations-min=0.5`；若实测调整 worker 数，交付说明必须写明最终 worker 数、总耗时和最慢测试列表。
+- 涉及 Python/Rust 源码、测试、schema、构建流程、发行流程或可执行契约的项目交付前，必须执行 `uv run basedpyright` 和全量 Python 业务测试，保持 0 warning、0 error、0 failed。当前全量 pytest 推荐命令为先设置 `$env:ATT_MZ_RUST_THREADS = "1"`，再执行 `uv run pytest -q -n 12 --dist=load --durations=30 --durations-min=0.5`；若实测调整 worker 数，交付说明必须写明最终 worker 数、总耗时和最慢测试列表。
 - pytest 只保护 `app/` 当前生产契约、Rust/native 边界和公开 CLI 行为；不得用 pytest 固定发行包布局、Skill 协议、发布说明、README、docs 生成物或测试基础设施。
 - 测试子集、`-k` 排除、跳过慢测试或单独 release path 子集不得替代全量 Python 业务测试交付红线；只有纯文档、Skill 文案、README 或发布说明等不触及源码和可执行契约的改动，才按下方纯文档规则缩小验证范围。
 - 修改 Rust 原生扩展、构建流程或发行流程时，还必须执行 Rust 格式检查、clippy 和 Rust 测试。
