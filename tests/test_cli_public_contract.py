@@ -72,3 +72,43 @@ def test_public_cli_register_prepare_and_validate_workspace(
     assert "terminology_empty_translation" in error_codes
     assert (workspace / "manifest.json").is_file()
     assert (workspace / "terminology" / "field-terms.json").is_file()
+
+
+def test_public_cli_cleanup_workspace_keeps_unlisted_files(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """公开 CLI 清理工作区时只删除 manifest 列出的文件。"""
+    workspace = tmp_path / "agent-workspace"
+    generated_file = workspace / "generated.json"
+    unlisted_file = workspace / "notes.txt"
+    workspace.mkdir()
+    generated_file.write_text("{}", encoding="utf-8")
+    unlisted_file.write_text("keep", encoding="utf-8")
+    manifest = {
+        "files": [
+            str(generated_file),
+            str(workspace / "missing.json"),
+            str(tmp_path / "outside.json"),
+        ]
+    }
+    (workspace / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    cleanup_report = _run_cli(
+        ["cleanup-agent-workspace", "--workspace", str(workspace)],
+        capsys,
+        expected_statuses={"warning"},
+    )
+
+    assert cleanup_report["status"] == "warning"
+    summary = cleanup_report.get("summary")
+    assert isinstance(summary, dict)
+    assert summary["deleted_count"] == 2
+    assert summary["unlisted_file_count"] == 1
+    warnings = cleanup_report.get("warnings")
+    assert isinstance(warnings, list)
+    warning_codes = {warning.get("code") for warning in warnings if isinstance(warning, dict)}
+    assert "workspace_unlisted_files_ignored" in warning_codes
+    assert not generated_file.exists()
+    assert not (workspace / "manifest.json").exists()
+    assert unlisted_file.read_text(encoding="utf-8") == "keep"
