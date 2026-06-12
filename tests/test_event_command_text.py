@@ -16,13 +16,10 @@ from app.event_command_text import (
     resolve_event_command_codes,
 )
 from app.event_command_text.native_validation import build_native_event_command_rule_validation_context
-from app.native_scope_index import NativeContractVersions, NativeRuleCandidatesResult
 from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationItem
 from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import (
-    JsonArray,
-    JsonObject,
     JsonValue,
     coerce_json_value,
     ensure_json_array,
@@ -93,71 +90,6 @@ async def test_event_command_json_export_uses_configured_command_codes(
         ("TestPlugin", "Show"),
         ("ComplexPlugin", "ShowWindow"),
     }
-
-
-@pytest.mark.asyncio
-async def test_event_command_json_export_uses_native_samples(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """事件指令导出消费 Rust samples_by_code，不再执行 Python 全量指令遍历。"""
-    game_data = await load_active_runtime_game_data(minimal_game_dir)
-    output_path = tmp_path / "event-commands-native.json"
-    captured_payloads: list[JsonObject] = []
-
-    def fake_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
-        captured_payloads.append(payload)
-        return NativeRuleCandidatesResult(
-            schema_version=1,
-            contract_versions=NativeContractVersions(
-                rust_scope_facts=1,
-                parser=1,
-                source_branch=1,
-                text_fact_schema=1,
-            ),
-            candidates=cast(JsonArray, []),
-            candidate_summary=[],
-            scan_summary=cast(
-                JsonObject,
-                {
-                    "event_commands": {
-                        "sample_count": 1,
-                        "samples_by_code": {
-                            "357": [["NativePlugin", "ShowNative"]],
-                        },
-                    }
-                },
-            ),
-            timings_ms={},
-            counters={"candidate_count": 0},
-        )
-
-    def forbidden_iter_all_commands(_game_data: GameData) -> None:
-        raise AssertionError("export_event_commands_json_file 必须改用 Rust samples_by_code")
-
-    monkeypatch.setattr("app.event_command_text.exporter.scan_native_rule_candidates", fake_scan_native_rule_candidates)
-    monkeypatch.setattr("app.event_command_text.exporter.iter_all_commands", forbidden_iter_all_commands, raising=False)
-
-    command_count = await export_event_commands_json_file(
-        game_data=game_data,
-        output_path=output_path,
-        command_codes=frozenset({357}),
-    )
-
-    assert command_count == 1
-    json_value_adapter: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
-    exported_value = json_value_adapter.validate_json(output_path.read_text(encoding="utf-8"))
-    assert exported_value == {"357": [["NativePlugin", "ShowNative"]]}
-
-    assert len(captured_payloads) == 1
-    payload = captured_payloads[0]
-    assert payload["event_command_codes"] == [357]
-    data_files = ensure_json_array(payload["event_command_data_files"], "event_command_data_files")
-    data_file_names = {str(ensure_json_object(item, f"event_command_data_files[{index}]")["file_name"]) for index, item in enumerate(data_files)}
-    assert "CommonEvents.json" in data_file_names
-    assert "Troops.json" in data_file_names
-    assert any(file_name.startswith("Map") for file_name in data_file_names)
 
 
 @pytest.mark.asyncio

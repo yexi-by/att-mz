@@ -45,6 +45,6 @@
 ## 测试覆盖
 
 - `tests/test_translation_cache_context.py` 覆盖上下文和去重复用逻辑。
-- `tests/test_translation_line_alignment.py` 覆盖译文结构、长行切分和模型响应校验。
+- 译文结构、长行切分和模型响应校验不再由 Python 矩阵 pytest 固定；当前结构边界由 Rust/native owner 测试和公开翻译报告契约覆盖。
 - `tests/test_llm_retry.py` 覆盖可恢复请求重试。
 - `tests/test_terminology.py` 覆盖术语提取、文件格式、导入和写入。

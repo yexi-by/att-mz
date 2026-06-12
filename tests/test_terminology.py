@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, cast
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -366,61 +366,6 @@ async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_te
     assert stored_registry is not None
     assert stored_registry.speaker_names["/cソフィア"] == "/c索菲亚"
     assert stored_glossary == cleaned_glossary
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("app_home_with_example_setting")
-async def test_import_terminology_validates_shape_without_export_context_generation(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """术语导入只需要当前字段表形状，不能生成导出用上下文。"""
-    registry = GameRegistry(tmp_path / "db")
-    _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_translation_source_game_data(minimal_game_dir)
-    summary = await export_terminology_artifacts(
-        game_data=game_data,
-        output_dir=tmp_path / "terminology",
-    )
-    exported_registry = await load_terminology_registry(field_terms_path=summary.field_terms_path)
-    filled_category_map: dict[TerminologyCategory, dict[str, str]] = {
-        category: {
-            source_text: "爱丽丝" if source_text == "アリス" else f"{source_text}译"
-            for source_text in entries
-        }
-        for category, entries in exported_registry.as_category_map().items()
-    }
-    filled_registry = TerminologyRegistry.from_category_map(filled_category_map)
-    _ = summary.field_terms_path.write_text(
-        f"{filled_registry.model_dump_json(indent=2)}\n",
-        encoding="utf-8",
-    )
-    _ = summary.glossary_path.write_text(
-        f"{TerminologyGlossary(terms={'アリス': '爱丽丝'}).model_dump_json(indent=2)}\n",
-        encoding="utf-8",
-    )
-
-    def forbidden_context_generation(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("import-terminology must not build export terminology contexts")
-
-    monkeypatch.setattr(
-        "app.application.handler.TerminologyExtraction.extract_registry_and_contexts",
-        forbidden_context_generation,
-    )
-    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
-    try:
-        import_summary = await handler.import_terminology(
-            game_title="テストゲーム",
-            input_path=summary.field_terms_path,
-            glossary_input_path=summary.glossary_path,
-        )
-    finally:
-        await handler.close()
-
-    assert import_summary.imported_entry_count == filled_registry.total_entry_count()
-    assert import_summary.filled_entry_count == filled_registry.filled_entry_count()
 
 
 def test_terminology_bundle_allows_glossary_to_omit_field_only_terms() -> None:

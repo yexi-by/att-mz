@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-import app.config as config
 from app.config.custom_placeholder_rules import (
     load_custom_placeholder_rules_file,
     load_custom_placeholder_rules_import_text,
@@ -990,12 +989,6 @@ def test_custom_placeholder_rules_load_from_explicit_json_file(tmp_path: Path) -
 
     item.build_placeholders(rules)
     assert item.original_lines_with_placeholders == ["[CUSTOM_NAME_1]"]
-
-
-def test_custom_placeholder_rules_do_not_expose_app_home_loader() -> None:
-    """配置公共门面不暴露应用运行目录隐式规则入口。"""
-    assert not hasattr(config, "load_custom_placeholder_rules")
-    assert not hasattr(config, "resolve_custom_placeholder_rules_path")
 
 
 def test_custom_placeholder_rules_load_from_cli_json_string() -> None:

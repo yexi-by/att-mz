@@ -40,7 +40,7 @@
 
 ## 测试覆盖
 
-- `tests/test_rmmz_write_plan.py`、`tests/test_write_back_transactions.py`、`tests/test_rmmz_post_write_audit.py` 和 `tests/test_rmmz_file_transaction.py` 覆盖提取后的写回计划、事务、写后审计和文件替换边界。
+- `tests/test_write_back_transactions.py` 和 `tests/test_rmmz_post_write_audit.py` 覆盖提取后的核心写回事务和写后审计；文件替换、非标准 data 与 MV 名字框内部写回归 Rust/native owner 测试。
 - `tests/test_font_replacement_transactions.py` 和 `tests/test_rmmz_font_transaction.py` 覆盖字体替换和字体记录事务边界。
-- `tests/test_translation_cache_context.py` 与 `tests/test_translation_line_alignment.py` 覆盖翻译批次和文本结构。
+- `tests/test_translation_cache_context.py` 覆盖翻译批次上下文；文本结构、行宽和写入协议由 Rust/native owner 测试覆盖。
 - `tests/test_terminology.py` 覆盖术语表导出、导入和写入。

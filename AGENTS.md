@@ -52,6 +52,7 @@
 
 - Rust 测核心逻辑：规则匹配、selector、hash、stale 判断、候选扫描、占位符覆盖、SQLite 写入、native schema 和错误码。
 - Python 测流程契约：CLI 参数链路、配置覆盖、JSON 报告、用户文案、错误映射、数据库读写结果和跨模块集成。
+- Python pytest 必须保持薄契约定位：CLI 参数链路、配置覆盖、JSON 报告、用户文案、错误映射、数据库读写结果和 write-back 文件副作用；严禁用 Python 大集成测试兜 Rust 内部逻辑、测试基础设施、benchmark runner、历史 canary 或实现路径哨兵。
 - 跨层契约单独固定：native 输入输出 schema、错误码、report 字段、SQLite schema version、thread 配置和 CLI JSON 兼容面。
 - 严禁用 Python 大集成测试兜 Rust 内部逻辑；Rust 接管同一变更内必须补 Rust 单测，同时删除或瘦身对应 Python 测试，只保留关键流程步骤。
 - 新增或修改测试不得依赖开发机私有 `setting.toml` 或默认配置路径；涉及配置加载、应用目录或 CLI 的测试必须显式传入 `setting.example.toml`、测试专用临时配置，或通过 `ATT_MZ_HOME` 创建临时应用目录。
@@ -75,10 +76,12 @@
 
 ## 7. 验证与交付
 
-- 涉及 Python/Rust 源码、测试、schema、构建流程、发行流程或可执行契约的项目交付前，必须执行 `uv run basedpyright` 和 `uv run pytest`，保持 0 warning、0 error。
+- 涉及 Python/Rust 源码、测试、schema、构建流程、发行流程或可执行契约的项目交付前，必须执行 `uv run basedpyright` 和全量 Python 业务测试，保持 0 warning、0 error、0 failed。当前全量 pytest 推荐命令为先设置 `$env:ATT_MZ_RUST_THREADS = "1"`，再执行 `uv run pytest -q -n 12 --dist=load --durations=30 --durations-min=0.5`；若实测调整 worker 数，交付说明必须写明最终 worker 数、总耗时和最慢测试列表。
+- pytest 只保护 `app/` 当前生产契约、Rust/native 边界和公开 CLI 行为；不得用 pytest 固定发行包布局、Skill 协议、发布说明、README、docs 生成物或测试基础设施。
+- 测试子集、`-k` 排除、跳过慢测试或单独 release path 子集不得替代全量 Python 业务测试交付红线；只有纯文档、Skill 文案、README 或发布说明等不触及源码和可执行契约的改动，才按下方纯文档规则缩小验证范围。
 - 修改 Rust 原生扩展、构建流程或发行流程时，还必须执行 Rust 格式检查、clippy 和 Rust 测试。
 - 不涉及源码、测试、schema、构建流程、发行流程或可执行契约的纯文档、Skill 文案、README 或发布说明改动，不得默认运行全量 `uv run pytest`，只执行与改动直接相关的生成物检查、静态检查或针对性验证；若同时触及可执行契约，必须按源码验证规则执行。
 - 触及 CLI 参数、配置字段、环境变量、JSON schema、SQLite schema、外部规则、写回逻辑、prompt 组装或发行脚本时，必须补充对应测试。
 - 修改性能敏感路径时，交付说明必须列出真实 CLI 性能结果、内部阶段耗时、瓶颈归因和剩余风险。
-- 涉及 docs、Skill、README 或发布说明的改动，只允许用测试固定机器可观察边界，例如文件存在、入口指向、打包映射和禁止出现的敏感实现细节。
+- 涉及 docs、Skill、README 或发布说明的改动，不得新增 pytest；只执行对应生成检查、静态检查、格式检查或人工可审查的文本差异。
 - 必须执行但无法执行的验证，必须说明具体原因、影响范围和剩余风险；严禁把未验证内容写成已通过。

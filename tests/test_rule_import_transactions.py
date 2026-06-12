@@ -5,12 +5,11 @@ from typing import cast
 
 import pytest
 
-from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
-
 from tests.native_rule_seed import (
     seed_native_placeholder_rules,
     seed_native_plugin_source_text_rules,
 )
+from tests.rmmz_writeback_contract_fixtures import write_current_translation_items_for_test
 
 from app.agent_toolkit import AgentToolkitService
 from app.config.schemas import TextRulesSetting

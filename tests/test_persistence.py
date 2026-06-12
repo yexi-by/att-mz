@@ -46,7 +46,7 @@ from app.plugin_source_text.native_scan import (
     PLUGIN_SOURCE_RUNTIME_SCAN_RUST_CONTRACT_VERSION,
 )
 from app.plugin_source_text.runtime_audit import PLUGIN_SOURCE_RUNTIME_AUDIT_CONTRACT_VERSION
-from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN, rule_runtime_domain_for_review_domain
+from app.rule_review import PLUGIN_TEXT_RULE_DOMAIN
 from app.rmmz.schema import (
     EventCommandParameterFilter,
     EventCommandTextRuleRecord,
@@ -74,30 +74,6 @@ def read_sqlite_table_names(db_path: Path) -> set[str]:
             connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
         )
     return {row[0] for row in table_rows}
-
-
-@pytest.mark.asyncio
-async def test_current_schema_does_not_create_old_domain_rule_tables(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-) -> None:
-    registry = GameRegistry(tmp_path / "db")
-    record = await registry.register_game(minimal_game_dir, source_language="ja")
-
-    async with await registry.open_game(record.game_title) as session:
-        rows = await session.connection.execute_fetchall(
-            "SELECT name FROM sqlite_master WHERE type='table'",
-        )
-
-    table_names = {cast(str, row[0]) for row in rows}
-    assert "plugin_text_rules" not in table_names
-    assert "plugin_source_text_rules" not in table_names
-    assert "nonstandard_data_text_rules" not in table_names
-    assert "event_command_text_rule_groups" not in table_names
-    assert "placeholder_rules" not in table_names
-    assert "structured_placeholder_rules" not in table_names
-    assert "source_residual_rules" not in table_names
-    assert "mv_virtual_namebox_rules" not in table_names
 
 
 def make_text_fact_scope(
@@ -765,44 +741,6 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
         )
         llm_failures = await session.read_llm_failures(run_record.run_id)
         assert llm_failures[0].category == "rate_limit"
-
-
-@pytest.mark.asyncio
-async def test_rule_review_state_rejects_legacy_state_without_reviewed_candidates(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-) -> None:
-    """旧 rule_domain_states 状态缺少候选审查事实时必须要求重新导入。"""
-    registry = GameRegistry(tmp_path / "db")
-    record = await registry.register_game(minimal_game_dir, source_language="ja")
-
-    async with await registry.open_game(record.game_title) as session:
-        runtime_domain = rule_runtime_domain_for_review_domain(PLUGIN_TEXT_RULE_DOMAIN)
-        _ = await session.connection.execute(
-            """
-            INSERT INTO rule_domain_states(
-                domain,
-                state_json,
-                scope_hash,
-                confirmed_at,
-                rule_runtime_contract_version,
-                rule_store_schema_version
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            """,
-            (
-                runtime_domain,
-                json.dumps({"confirmed_empty": True}, ensure_ascii=False),
-                "legacy-scope",
-                "2026-06-12T00:00:00Z",
-                1,
-                1,
-            ),
-        )
-        await session.connection.commit()
-
-        with pytest.raises(RuntimeError, match="reviewed_candidates"):
-            _ = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
 
 
 @pytest.mark.asyncio

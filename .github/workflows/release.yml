@@ -74,15 +74,11 @@ jobs:
         shell: pwsh
         run: uv run basedpyright
 
-      - name: Release path tests
+      - name: Full Python tests
         shell: pwsh
-        run: >
-          uv run pytest
-          tests/test_release_notes.py
-          tests/test_release_package_layout.py
-          tests/test_agent_toolkit_rule_import.py::test_plugin_source_import_cold_rebuild_quality_and_write_back_share_rust_facts
-          tests/test_agent_toolkit_rule_import.py::test_note_tag_import_cold_rebuild_and_write_back_gate_use_rust_validation
-          tests/test_nonstandard_data.py::test_nonstandard_data_import_cold_rebuild_translate_and_write_back_share_rust_facts
+        env:
+          ATT_MZ_RUST_THREADS: "1"
+        run: uv run pytest -q -n 12 --dist=load --durations=30 --durations-min=0.5
 
       - name: Rust fmt
         shell: pwsh

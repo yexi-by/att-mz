@@ -18,7 +18,7 @@
 3. 在 `app/cli/commands/` 只做适配：读取参数、调用 `TranslationHandler` 或 `AgentToolkitService`、选择报告输出模式、返回退出码。
 4. 如果新增或改变 summary/details、退出码、`--output` 行为、诊断字段或写文件行为，同步测试。
 5. 如果用户执行方式改变，同步 README、开发版 Skill、发行版 Skill 和发行包映射；如果只是内部维护定位，不写进 Skill。
-6. 如果命令影响发行包，检查 `.github/workflows/release.yml`、发行包布局测试和发行版 Skill。
+6. 如果命令影响发行包，检查 `.github/workflows/release.yml`、发行包构建脚本、发行包映射和发行版 Skill；发行布局不再由 pytest 固定。
 
 ## 全局参数与配置
 
@@ -138,10 +138,10 @@
 
 | 领域 | 测试入口 |
 | --- | --- |
-| parser/dispatch/Skill 命令集合 | `tests/test_skill_protocol.py`、`tests/test_cli_json_output.py` |
+| parser/dispatch 命令集合 | `tests/test_cli_json_output.py` |
 | 配置覆盖链路 | `tests/test_config_overrides.py` |
 | 输出与 diagnostics | `tests/test_cli_json_output.py`、`tests/test_observability.py` |
-| 工作区与规则导入 | `tests/test_agent_toolkit_workspace.py`、`tests/test_agent_toolkit_rule_import.py` |
-| 文本索引和性能边界 | `tests/test_text_index.py`、`tests/test_scan_budget.py` |
-| 写回、字体和当前运行审计 | `tests/test_write_back_transactions.py`、`tests/test_font_replacement_transactions.py`、`tests/test_agent_toolkit_feedback.py` |
-| 发行包布局与 Skill 映射 | `tests/test_release_package_layout.py`、`tests/test_release_notes.py` |
+| 工作区公开主链路 | `tests/test_cli_public_contract.py` |
+| 文本索引当前契约 | `tests/test_persistence.py`、公开 CLI 主链路和 Rust/native owner 测试 |
+| 写回与字体 | `tests/test_write_back_transactions.py`、`tests/test_font_replacement_transactions.py` |
+| 发行包布局、Skill 映射与发布说明 | 通过生成检查、脚本检查和人工审查确认，不再由 pytest 固定 |
