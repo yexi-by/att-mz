@@ -3897,8 +3897,10 @@ async def test_plugin_source_excluded_only_rule_validates_current_selector_facts
 async def test_plugin_source_import_cold_rebuild_quality_and_write_back_share_rust_facts(
     minimal_game_dir: Path,
     tmp_path: Path,
+    app_home_with_example_setting: Path,
 ) -> None:
     """插件源码规则导入、冷重建、质量报告和写回共享 Rust gate facts。"""
+    _ = app_home_with_example_setting
     plugins_path = minimal_game_dir / "js" / "plugins.js"
     plugins_text = plugins_path.read_text(encoding="utf-8")
     plugins_json_text = plugins_text.removeprefix("var $plugins = ").rstrip(";\r\n ")
@@ -3998,8 +4000,10 @@ async def test_plugin_source_import_cold_rebuild_quality_and_write_back_share_ru
 async def test_note_tag_import_cold_rebuild_and_write_back_gate_use_rust_validation(
     minimal_game_dir: Path,
     tmp_path: Path,
+    app_home_with_example_setting: Path,
 ) -> None:
     """Note 标签规则导入后，冷重建和写回前检查继续消费 Rust gate facts。"""
+    _ = app_home_with_example_setting
     items_path = minimal_game_dir / "data" / "Items.json"
     raw_items = cast(object, json.loads(items_path.read_text(encoding="utf-8")))
     items = ensure_json_array(coerce_json_value(raw_items), "Items.json")
