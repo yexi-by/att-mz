@@ -2,13 +2,14 @@
 
 from app.agent_toolkit.flow_decision import build_flow_decision
 from app.agent_toolkit.reports import AgentReport, issue
+from app.rmmz.text_rules import JsonObject
 
 
 def _report(
     *,
     errors: list[str] | None = None,
-    summary: dict[str, object] | None = None,
-    details: dict[str, object] | None = None,
+    summary: JsonObject | None = None,
+    details: JsonObject | None = None,
 ) -> AgentReport:
     """构造最小 Agent 报告。"""
     return AgentReport.from_parts(
@@ -85,6 +86,32 @@ def test_should_stop_retrying_when_recent_runs_no_longer_improve() -> None:
     assert decision.can_continue is False
     assert decision.blocking_category == "translation_retry"
     assert decision.next_command == "quality-report --game <游戏标题> --include-write-probe"
+
+
+def test_quality_errors_do_not_enter_manual_fix_while_pending_can_continue() -> None:
+    """还有 pending 且未证明重试低收益时，质量错误不能提前推到手动修复。"""
+    decision = build_flow_decision(
+        base_error_codes=set(),
+        base_warning_codes=set(),
+        quality_report=_report(
+            errors=["translation_quality_errors"],
+            summary={
+                "pending_count": 120,
+                "quality_error_count": 8,
+                "write_back_probe_executed": True,
+                "write_back_probe_mode": "rust_write_gate",
+            },
+        ),
+        translation_status=_report(summary={"pending_count": 120, "quality_error_count": 8}),
+        recent_runs=[
+            {"run_id": "run2", "pending_count": 120, "success_count": 60, "quality_error_count": 8},
+            {"run_id": "run1", "pending_count": 180, "success_count": 70, "quality_error_count": 4},
+        ],
+    )
+
+    assert decision.result == "ready_to_translate"
+    assert decision.stage == "full_translation"
+    assert decision.next_command == "translate --game <游戏标题>"
 
 
 def test_ready_to_write_back_when_quality_and_probe_are_clean() -> None:

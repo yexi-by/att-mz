@@ -2,11 +2,13 @@
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from app.agent_toolkit import AgentToolkitService
 from app.persistence import GameRegistry
+from app.rmmz.text_rules import coerce_json_value, ensure_json_object
 from app.rmmz.schema import TranslationErrorItem
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,9 +99,11 @@ async def test_manual_import_check_only_validates_without_saving(
         limit=1,
     )
     assert export_report.status in {"ok", "warning"}
-    payload = json.loads(export_path.read_text(encoding="utf-8"))
+    raw_payload = cast(object, json.loads(export_path.read_text(encoding="utf-8")))
+    payload = ensure_json_object(coerce_json_value(raw_payload), "pending-translations")
     location_path = next(iter(payload))
-    payload[location_path]["translation_lines"] = ["保存前校验译文"]
+    entry = ensure_json_object(payload[location_path], location_path)
+    entry["translation_lines"] = ["保存前校验译文"]
     _ = export_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     report = await service.import_manual_translations(

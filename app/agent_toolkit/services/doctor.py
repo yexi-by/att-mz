@@ -24,6 +24,8 @@ from .common import (
 )
 from app.agent_toolkit.flow_decision import build_flow_decision
 from app.persistence import TargetGameSession
+from app.rmmz.json_types import coerce_json_value, ensure_json_object
+from app.rmmz.schema import TranslationRunRecord
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
@@ -129,16 +131,14 @@ class DoctorAgentMixin:
                 recent_runs=recent_run_payloads,
             )
             summary.update(decision.summary_fields())
-            details["flow_decision"] = decision.detail_fields()
-            details["flow_reports"] = {
-                "quality": quality_report.model_dump(mode="json") if quality_report is not None else None,
-                "translation_status": (
-                    translation_status_report.model_dump(mode="json")
-                    if translation_status_report is not None
-                    else None
-                ),
-                "recent_runs": recent_run_payloads,
+            recent_runs_json: list[JsonValue] = [payload for payload in recent_run_payloads]
+            flow_reports: JsonObject = {
+                "quality": _report_payload(quality_report),
+                "translation_status": _report_payload(translation_status_report),
+                "recent_runs": recent_runs_json,
             }
+            details["flow_decision"] = decision.detail_fields()
+            details["flow_reports"] = flow_reports
             if not decision.can_continue and not errors:
                 errors.append(issue("flow_blocked", decision.reason))
 
@@ -507,30 +507,23 @@ def _append_rule_review_decision_warning(
         warnings.append(issue(decision.code, decision.message))
 
 
-def _recent_run_payloads(records: object) -> list[dict[str, JsonValue]]:
+def _report_payload(report: AgentReport | None) -> JsonObject | None:
+    """把 Agent 报告转成项目 JSON 对象。"""
+    if report is None:
+        return None
+    return ensure_json_object(coerce_json_value(report.model_dump(mode="json")), "agent-report")
+
+
+def _recent_run_payloads(records: list[TranslationRunRecord]) -> list[dict[str, JsonValue]]:
     """把最近运行记录转成流程裁决只读输入。"""
-    if not isinstance(records, list):
-        return []
     payloads: list[dict[str, JsonValue]] = []
     for record in records:
-        run_id = getattr(record, "run_id", "")
-        pending_count = getattr(record, "pending_count", 0)
-        success_count = getattr(record, "success_count", 0)
-        quality_error_count = getattr(record, "quality_error_count", 0)
-        if not isinstance(run_id, str):
-            run_id = ""
-        if not isinstance(pending_count, int) or isinstance(pending_count, bool):
-            pending_count = 0
-        if not isinstance(success_count, int) or isinstance(success_count, bool):
-            success_count = 0
-        if not isinstance(quality_error_count, int) or isinstance(quality_error_count, bool):
-            quality_error_count = 0
         payloads.append(
             {
-                "run_id": run_id,
-                "pending_count": pending_count,
-                "success_count": success_count,
-                "quality_error_count": quality_error_count,
+                "run_id": record.run_id,
+                "pending_count": record.pending_count,
+                "success_count": record.success_count,
+                "quality_error_count": record.quality_error_count,
             }
         )
     return payloads

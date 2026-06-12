@@ -49,7 +49,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 源语言探测 | `probe-source-language --path <游戏目录> --output <探测报告>` | 只按玩家可见文本判断；结果不确定或与用户认知冲突时，展示样本让用户确认。 |
 | 注册日文游戏 | `add-game --path <游戏目录> --source-language ja` | `summary.game_title` 是后续 `--game` 值；目录已有可信源快照时换干净原始目录。 |
 | 注册英文游戏 | `add-game --path <游戏目录> --source-language en` | 同上；`add-game` 不读取探测报告，也不会替用户决定源语言。 |
-| 游戏状态和下一步裁决 | `doctor --game <游戏标题> --no-check-llm` | 当前游戏源语言只看 `summary.source_language`。读取 `summary.flow_decision`、`summary.flow_reason`、`summary.flow_next_command`；`flow_can_continue=false` 时先处理阻断项，不启动翻译或写回。doctor 会默认执行写回级只读检查。 |
+| 游戏状态和下一步裁决 | `doctor --game <游戏标题> --no-check-llm` | 当前游戏源语言只看 `summary.source_language`。读取 `summary.flow_decision`、`summary.flow_reason`、`summary.flow_next_command`；`flow_can_continue=false` 时先处理阻断项，不启动翻译或写回。基础检查通过时，doctor 会执行写回级只读检查。 |
 | 查看注册列表 | `list` | 不符合当前 schema 的游戏进入 warning；需要继续使用被跳过游戏时，按 warning 重新注册或修复。 |
 | 危险回溯预演 | `reset-game --game <游戏标题> --dry-run` | 只转述恢复和删除计划，不修改文件。 |
 | 危险回溯执行 | `reset-game --game <游戏标题> --confirm-game-title <游戏标题>` | 只能在用户明确要求注销、重置或恢复注册前状态时使用；禁止手动删库绕过恢复。 |
@@ -91,7 +91,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 | 查看进度 | `translation-status --game <游戏标题>` | 数量能解释；需按当前范围刷新时加 `--refresh-scope`。 |
 | 查看文本范围 | `text-scope --game <游戏标题>` | `status` 为 `ok`；加 `--include-write-probe` 只标记索引可写状态，不执行写回级检查。 |
 | 覆盖审计 | `audit-coverage --game <游戏标题>` | `status` 为 `ok`；发现规则命中、译文或范围缺口时先补规则、补译文或精确重置。 |
-| 普通质量报告 | `quality-report --game <游戏标题>` | `status` 不是 `error`；有 error 禁止写回。需要 Rust 写回级只读检查时加 `--include-write-probe`；doctor 已默认执行这项检查。 |
+| 普通质量报告 | `quality-report --game <游戏标题>` | `status` 不是 `error`；有 error 禁止写回。需要 Rust 写回级只读检查时加 `--include-write-probe`；基础检查通过的 doctor 已执行这项检查。 |
 | 导出质量修复表 | `export-quality-fix-template --game <游戏标题> --output <文件>` | 只改中文译文行后导入；`--include-write-probe` 只标记请求和索引可写状态。 |
 | 导出待补译表 | `export-pending-translations --game <游戏标题> --output <文件>` | 可加 `--limit N`；抽样仍适合模型时回到 `translate`。 |
 | 保存前校验手动译文 | `import-manual-translations --game <游戏标题> --input <文件> --check-only` | 只验证整包译文，不保存；通过后再去掉 `--check-only` 正式导入。 |

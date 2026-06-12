@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -117,11 +117,11 @@ def build_flow_decision(
     base_warning_codes: set[str],
     quality_report: AgentReport | None,
     translation_status: AgentReport | None,
-    recent_runs: list[Mapping[str, JsonValue]],
+    recent_runs: Sequence[Mapping[str, JsonValue]],
 ) -> FlowDecision:
     """从已有报告归并出一个 Agent 可执行的流程裁决。"""
     _ = base_warning_codes
-    quality_codes = {error.code for error in quality_report.errors} if quality_report is not None else set()
+    quality_codes: set[str] = {error.code for error in quality_report.errors} if quality_report is not None else set()
     quality_summary = quality_report.summary if quality_report is not None else {}
     status_summary = translation_status.summary if translation_status is not None else {}
     write_probe_executed = _bool(quality_summary.get("write_back_probe_executed"))
@@ -190,17 +190,6 @@ def build_flow_decision(
             write_back_probe_executed=write_probe_executed,
             write_back_probe_mode=write_probe_mode,
         )
-    if quality_error_count > 0 or quality_codes & QUALITY_ERROR_CODES:
-        return FlowDecision(
-            result="ready_for_manual_fix",
-            stage="manual_fix",
-            can_continue=True,
-            blocking_category="translation_quality",
-            reason="剩余质量问题适合导出修复表或待补译表精确处理",
-            next_command="export-quality-fix-template --game <游戏标题> --output <输出文件>",
-            write_back_probe_executed=write_probe_executed,
-            write_back_probe_mode=write_probe_mode,
-        )
     if pending_count > 0:
         return FlowDecision(
             result="ready_to_translate",
@@ -209,6 +198,17 @@ def build_flow_decision(
             blocking_category="none",
             reason=f"当前还有 {pending_count} 条文本没成功保存译文，可以继续正文翻译",
             next_command="translate --game <游戏标题>",
+            write_back_probe_executed=write_probe_executed,
+            write_back_probe_mode=write_probe_mode,
+        )
+    if quality_error_count > 0 or quality_codes & QUALITY_ERROR_CODES:
+        return FlowDecision(
+            result="ready_for_manual_fix",
+            stage="manual_fix",
+            can_continue=True,
+            blocking_category="translation_quality",
+            reason="剩余质量问题适合导出修复表或待补译表精确处理",
+            next_command="export-quality-fix-template --game <游戏标题> --output <输出文件>",
             write_back_probe_executed=write_probe_executed,
             write_back_probe_mode=write_probe_mode,
         )
@@ -245,7 +245,7 @@ def _blocked(
     )
 
 
-def _should_stop_retrying(*, recent_runs: list[Mapping[str, JsonValue]], quality_error_count: int) -> bool:
+def _should_stop_retrying(*, recent_runs: Sequence[Mapping[str, JsonValue]], quality_error_count: int) -> bool:
     """根据最近几轮变化判断继续重试是否已经低收益。"""
     if len(recent_runs) < 3 or quality_error_count <= 0:
         return False
