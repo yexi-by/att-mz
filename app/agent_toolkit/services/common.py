@@ -1478,10 +1478,28 @@ async def collect_saved_rule_runtime_errors(
     structured_placeholder_rules = await session.read_structured_placeholder_rules()
     mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
     return [
-        *validate_placeholder_rule_records(placeholder_rules, setting),
-        *validate_structured_placeholder_rule_records(structured_placeholder_rules, setting),
-        *validate_mv_virtual_namebox_rule_records(mv_virtual_namebox_rules, setting),
+        *saved_rule_contract_issues_to_agent_issues(
+            validate_placeholder_rule_records(placeholder_rules, setting),
+            invalid_code="placeholder_rules_invalid",
+        ),
+        *saved_rule_contract_issues_to_agent_issues(
+            validate_structured_placeholder_rule_records(structured_placeholder_rules, setting),
+            invalid_code="structured_placeholder_rules_invalid",
+        ),
+        *saved_rule_contract_issues_to_agent_issues(
+            validate_mv_virtual_namebox_rule_records(mv_virtual_namebox_rules, setting),
+            invalid_code="mv_virtual_namebox_rules_invalid",
+        ),
     ]
+
+
+def saved_rule_contract_issues_to_agent_issues(
+    items: Sequence[AgentIssue],
+    *,
+    invalid_code: str,
+) -> list[AgentIssue]:
+    """把已保存规则运行时错误归到对应规则域，便于 Agent 直接修规则。"""
+    return [issue(invalid_code, item.message) for item in items]
 
 
 def rule_contract_issues_to_agent_issues(items: Sequence[RuleRuntimeIssue]) -> list[AgentIssue]:
