@@ -142,6 +142,6 @@
 | 配置覆盖链路 | `tests/test_config_overrides.py` |
 | 输出与 diagnostics | `tests/test_cli_json_output.py`、`tests/test_observability.py` |
 | 工作区公开主链路 | `tests/test_cli_public_contract.py` |
-| 文本索引当前契约 | `tests/test_text_index.py` |
+| 文本索引当前契约 | `tests/test_persistence.py`、公开 CLI 主链路和 Rust/native owner 测试 |
 | 写回与字体 | `tests/test_write_back_transactions.py`、`tests/test_font_replacement_transactions.py` |
 | 发行包布局、Skill 映射与发布说明 | 通过生成检查、脚本检查和人工审查确认，不再由 pytest 固定 |
