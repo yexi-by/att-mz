@@ -78,7 +78,7 @@ jobs:
         shell: pwsh
         env:
           ATT_MZ_RUST_THREADS: "1"
-        run: uv run pytest -q -n 12 --durations=30 --durations-min=0.5
+        run: uv run pytest -q -n 6 --durations=30 --durations-min=0.5
 
       - name: Rust fmt
         shell: pwsh
