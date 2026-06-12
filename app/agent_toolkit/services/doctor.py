@@ -22,6 +22,7 @@ from .common import (
     resolve_setting_path,
     sys,
 )
+from app.agent_toolkit.flow_decision import build_flow_decision
 from app.persistence import TargetGameSession
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
@@ -104,6 +105,42 @@ class DoctorAgentMixin:
                 summary=summary,
                 details=details,
             )
+            quality_report: AgentReport | None = None
+            translation_status_report: AgentReport | None = None
+            recent_run_payloads: list[dict[str, JsonValue]] = []
+            if not errors:
+                quality_report = await self.quality_report(
+                    game_title=game_title,
+                    include_write_probe=True,
+                )
+                translation_status_report = await self.translation_status(
+                    game_title=game_title,
+                    refresh_scope=True,
+                )
+                async with await self.game_registry.open_game(game_title) as session:
+                    recent_run_payloads = _recent_run_payloads(
+                        await session.read_recent_translation_runs(limit=5)
+                    )
+            decision = build_flow_decision(
+                base_error_codes={item.code for item in errors},
+                base_warning_codes={item.code for item in warnings},
+                quality_report=quality_report,
+                translation_status=translation_status_report,
+                recent_runs=recent_run_payloads,
+            )
+            summary.update(decision.summary_fields())
+            details["flow_decision"] = decision.detail_fields()
+            details["flow_reports"] = {
+                "quality": quality_report.model_dump(mode="json") if quality_report is not None else None,
+                "translation_status": (
+                    translation_status_report.model_dump(mode="json")
+                    if translation_status_report is not None
+                    else None
+                ),
+                "recent_runs": recent_run_payloads,
+            }
+            if not decision.can_continue and not errors:
+                errors.append(issue("flow_blocked", decision.reason))
 
         return AgentReport.from_parts(
             errors=errors,
@@ -468,3 +505,32 @@ def _append_rule_review_decision_warning(
     """把非 ok 的规则审查决策追加到 doctor 告警。"""
     if decision is not None and decision.severity != "ok" and decision.code:
         warnings.append(issue(decision.code, decision.message))
+
+
+def _recent_run_payloads(records: object) -> list[dict[str, JsonValue]]:
+    """把最近运行记录转成流程裁决只读输入。"""
+    if not isinstance(records, list):
+        return []
+    payloads: list[dict[str, JsonValue]] = []
+    for record in records:
+        run_id = getattr(record, "run_id", "")
+        pending_count = getattr(record, "pending_count", 0)
+        success_count = getattr(record, "success_count", 0)
+        quality_error_count = getattr(record, "quality_error_count", 0)
+        if not isinstance(run_id, str):
+            run_id = ""
+        if not isinstance(pending_count, int) or isinstance(pending_count, bool):
+            pending_count = 0
+        if not isinstance(success_count, int) or isinstance(success_count, bool):
+            success_count = 0
+        if not isinstance(quality_error_count, int) or isinstance(quality_error_count, bool):
+            quality_error_count = 0
+        payloads.append(
+            {
+                "run_id": run_id,
+                "pending_count": pending_count,
+                "success_count": success_count,
+                "quality_error_count": quality_error_count,
+            }
+        )
+    return payloads

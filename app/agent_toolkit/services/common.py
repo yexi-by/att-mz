@@ -277,6 +277,27 @@ class AgentServiceContext(Protocol):
         """重建当前游戏的持久文本范围索引。"""
         ...
 
+    async def quality_report(
+        self,
+        *,
+        game_title: str,
+        setting_overrides: SettingOverrides | None = None,
+        callbacks: QualityProgressCallbacks | None = None,
+        include_write_probe: bool = False,
+    ) -> AgentReport:
+        """生成目标游戏当前翻译状态和质量风险报告。"""
+        ...
+
+    async def translation_status(
+        self,
+        *,
+        game_title: str,
+        refresh_scope: bool = False,
+        callbacks: QualityProgressCallbacks | None = None,
+    ) -> AgentReport:
+        """读取最新正文翻译运行状态。"""
+        ...
+
     async def _build_source_residual_rule_records(
         self,
         *,
