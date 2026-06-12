@@ -39,15 +39,32 @@ type FlowBlockingCategory = Literal[
 
 RULE_ERROR_CODES = {
     "plugin_rules",
+    "plugin_rules_invalid",
     "event_command_rules",
+    "event_command_rules_invalid",
     "note_tag_rules",
+    "note_tag_rules_invalid",
     "placeholder_rules",
     "structured_placeholder_rules",
     "mv_virtual_namebox_rules",
+    "plugin_source_rules_invalid",
     "plugin_source_review_incomplete",
+    "source_residual_rules_invalid",
+    "nonstandard_data_rules_invalid",
     "placeholder_rules_invalid",
     "structured_placeholder_rules_invalid",
     "mv_virtual_namebox_rules_invalid",
+}
+RULE_ERROR_COMMANDS = {
+    "placeholder_rules_invalid": "validate-placeholder-rules --game <游戏标题> --input <规则文件>",
+    "structured_placeholder_rules_invalid": "validate-structured-placeholder-rules --game <游戏标题> --input <规则文件>",
+    "mv_virtual_namebox_rules_invalid": "validate-mv-virtual-namebox-rules --game <游戏标题> --input <规则文件>",
+    "plugin_rules_invalid": "validate-plugin-rules --game <游戏标题> --input <规则文件>",
+    "event_command_rules_invalid": "validate-event-command-rules --game <游戏标题> --input <规则文件>",
+    "note_tag_rules_invalid": "validate-note-tag-rules --game <游戏标题> --input <规则文件>",
+    "plugin_source_rules_invalid": "validate-plugin-source-rules --game <游戏标题> --input <规则文件>",
+    "source_residual_rules_invalid": "validate-source-residual-rules --game <游戏标题> --input <规则文件>",
+    "nonstandard_data_rules_invalid": "validate-nonstandard-data-rules --game <游戏标题> --input <规则文件>",
 }
 TERMINOLOGY_ERROR_CODES = {
     "terminology_missing",
@@ -128,6 +145,18 @@ def build_flow_decision(
     write_probe_mode = _str(quality_summary.get("write_back_probe_mode"))
 
     if base_error_codes:
+        base_rule_errors = base_error_codes & RULE_ERROR_CODES
+        if base_rule_errors:
+            return FlowDecision(
+                result="blocked",
+                stage="prepare_rules",
+                can_continue=False,
+                blocking_category="rules",
+                reason="已保存规则不符合当前规则契约",
+                next_command=_rule_error_next_command(base_rule_errors),
+                write_back_probe_executed=write_probe_executed,
+                write_back_probe_mode=write_probe_mode,
+            )
         return FlowDecision(
             result="blocked",
             stage="environment",
@@ -243,6 +272,15 @@ def _blocked(
         write_back_probe_executed=write_probe_executed,
         write_back_probe_mode=write_probe_mode,
     )
+
+
+def _rule_error_next_command(error_codes: set[str]) -> str:
+    """根据规则错误码给出最接近的重新校验命令。"""
+    for code in sorted(error_codes):
+        command = RULE_ERROR_COMMANDS.get(code)
+        if command is not None:
+            return command
+    return "doctor --game <游戏标题> --no-check-llm"
 
 
 def _should_stop_retrying(*, recent_runs: Sequence[Mapping[str, JsonValue]], quality_error_count: int) -> bool:

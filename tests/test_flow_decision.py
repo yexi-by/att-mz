@@ -54,6 +54,22 @@ def test_ready_to_translate_when_only_current_pending_remains() -> None:
     assert decision.next_command == "translate --game <游戏标题>"
 
 
+def test_saved_rule_errors_are_rule_blockers_not_environment() -> None:
+    """已保存规则损坏属于规则阻断，不能被泛化成环境错误。"""
+    decision = build_flow_decision(
+        base_error_codes={"placeholder_rules_invalid"},
+        base_warning_codes=set(),
+        quality_report=None,
+        translation_status=None,
+        recent_runs=[],
+    )
+
+    assert decision.result == "blocked"
+    assert decision.stage == "prepare_rules"
+    assert decision.blocking_category == "rules"
+    assert decision.next_command == "validate-placeholder-rules --game <游戏标题> --input <规则文件>"
+
+
 def test_should_stop_retrying_when_recent_runs_no_longer_improve() -> None:
     """连续多轮下降很小时，裁决应要求先诊断而不是继续重试。"""
     decision = build_flow_decision(
