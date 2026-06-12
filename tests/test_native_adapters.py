@@ -23,7 +23,7 @@ class _FakeWritePlanModule:
 
     def __init__(self, payload: dict[str, object]) -> None:
         """保存待返回的 JSON 对象。"""
-        self._payload = payload
+        self._payload: dict[str, object] = payload
 
     def build_write_back_plan(
         self,
@@ -48,8 +48,8 @@ class _FakeScopeIndexModule:
         schema_fingerprint: str = "invalid-schema-fingerprint",
     ) -> None:
         """保存待返回的 JSON 对象。"""
-        self._payload = payload or {}
-        self._schema_fingerprint = schema_fingerprint
+        self._payload: dict[str, object] = payload or {}
+        self._schema_fingerprint: str = schema_fingerprint
 
     def scan_rule_candidates(self, payload_json: str) -> str:
         """返回测试预置的规则候选扫描结果。"""
@@ -80,8 +80,8 @@ class _FakeQualityModule:
         protocol_counts: dict[str, object],
     ) -> None:
         """保存待返回的计数对象。"""
-        self._quality_counts = quality_counts
-        self._protocol_counts = protocol_counts
+        self._quality_counts: dict[str, object] = quality_counts
+        self._protocol_counts: dict[str, object] = protocol_counts
         self.configured_values: list[int | None] = []
 
     def scan_quality_counts(self, payload_json: str) -> str:
@@ -156,7 +156,7 @@ def test_native_write_plan_rejects_target_path_outside_content_root(
     monkeypatch.setattr(
         native_write_plan,
         "_load_native_module",
-        lambda: cast(native_write_plan.NativeWritePlanModule, _FakeWritePlanModule(payload)),
+        lambda: cast(native_write_plan.NativeWritePlanModule, cast(object, _FakeWritePlanModule(payload))),
     )
 
     with pytest.raises(RuntimeError, match="目标路径不在游戏内容目录内"):
@@ -175,7 +175,7 @@ def test_native_rule_candidates_requires_scan_summary(monkeypatch: MonkeyPatch) 
     monkeypatch.setattr(
         native_scope_index,
         "_load_native_scope_index_module",
-        lambda: cast(native_scope_index.NativeScopeIndexModule, fake_module),
+        lambda: cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module)),
     )
 
     with pytest.raises(KeyError):
@@ -188,7 +188,7 @@ def test_native_schema_fingerprint_rejects_mismatched_schema(monkeypatch: Monkey
     monkeypatch.setattr(
         native_scope_index,
         "_load_native_scope_index_module",
-        lambda: cast(native_scope_index.NativeScopeIndexModule, fake_module),
+        lambda: cast(native_scope_index.NativeScopeIndexModule, cast(object, fake_module)),
     )
 
     with pytest.raises(RuntimeError, match="rebuild-text-index"):
@@ -211,7 +211,7 @@ def test_native_runtime_thread_config_maps_auto_and_positive_values(
     monkeypatch.setattr(
         native_quality,
         "_load_native_module",
-        lambda: cast(native_quality.NativeModule, fake_module),
+        lambda: cast(native_quality.NativeModule, cast(object, fake_module)),
     )
 
     native_quality.configure_native_runtime_threads("auto")
@@ -247,7 +247,7 @@ def test_native_quality_counts_reject_bad_count_types(monkeypatch: MonkeyPatch) 
     monkeypatch.setattr(
         native_quality,
         "_load_native_module",
-        lambda: cast(native_quality.NativeModule, fake_module),
+        lambda: cast(native_quality.NativeModule, cast(object, fake_module)),
     )
 
     with pytest.raises(TypeError, match="source_residual_count 必须是非负整数"):

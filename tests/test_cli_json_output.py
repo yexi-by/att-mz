@@ -132,7 +132,7 @@ def test_report_output_can_leave_data_output_file_untouched(
     """业务数据导出命令打印报告时不得覆盖自己的输出文件。"""
     output_path = tmp_path / "pending-translations.json"
     data_json = '{"entry": {"translation_lines": []}}\n'
-    output_path.write_text(data_json, encoding="utf-8")
+    _ = output_path.write_text(data_json, encoding="utf-8")
     report = AgentReport(status="ok", summary={"exported_item_count": 1})
 
     write_report_outputs(

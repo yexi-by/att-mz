@@ -6,8 +6,8 @@ from typing import cast
 
 import pytest
 
-from tests.agent_toolkit_contract_fixtures import write_current_translation_items_for_test
 from tests.current_text_fact_scope import rebuild_current_text_fact_scope_for_test
+from tests.rmmz_writeback_contract_fixtures import write_current_translation_items_for_test
 
 from tests.native_rule_seed import (
     seed_native_empty_rule_review_state,

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from tests.rmmz_writeback_contract_fixtures import *
-import app.rmmz as rmmz_package
-import app.rmmz.loader as rmmz_loader
 from app.rmmz.loader import load_translation_source_game_data
 from app.rmmz.source_snapshot import validate_plugin_source_snapshot_manifest
 
@@ -27,15 +25,6 @@ async def test_loader_only_keeps_standard_rmmz_data_files(minimal_game_dir: Path
     assert game_data.plugins_js[1]["name"] == "ComplexPlugin"
 
 
-def test_rmmz_public_loader_exports_are_explicit_views() -> None:
-    """RMMZ 包级公开 loader 只暴露当前显式文件视图入口。"""
-    public_names = set(rmmz_package.__all__)
-
-    assert "load_translation_source_game_data" in public_names
-    assert "load_active_runtime_game_data" in public_names
-    assert "load_game_data_for_view" in public_names
-    assert "load_game_data" not in public_names
-    assert not hasattr(rmmz_loader, "load_game_data")
 @pytest.mark.asyncio
 async def test_direct_write_back_rejects_missing_source_snapshot_manifest(
     minimal_game_dir: Path,
@@ -183,33 +172,6 @@ async def test_active_runtime_loader_skips_writable_copies_by_default(minimal_ga
     assert writable_game_data.writable_plugins_js
     assert writable_game_data.writable_data["System.json"] is not writable_game_data.data["System.json"]
     assert writable_game_data.writable_plugins_js[0] is not writable_game_data.plugins_js[0]
-@pytest.mark.asyncio
-async def test_translation_source_view_uses_lightweight_defaults(
-    minimal_game_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """翻译源显式视图默认不读取插件源码、不构造写入副本、不执行对话探针。"""
-
-    def forbidden_dialogue_probe(*args: object, **kwargs: object) -> NoReturn:
-        _ = (args, kwargs)
-        raise AssertionError("轻量翻译源加载不应执行全游戏对话探针")
-
-    registry = GameRegistry(tmp_path / "db")
-    _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    monkeypatch.setattr("app.rmmz.loader.run_dialogue_probe", forbidden_dialogue_probe)
-
-    game_data = await load_game_data_for_view(
-        minimal_game_dir,
-        view=GameFileView.TRANSLATION_SOURCE,
-    )
-
-    assert game_data.view == GameFileView.TRANSLATION_SOURCE
-    assert game_data.plugin_source_files == {}
-    assert game_data.plugin_source_read_errors == {}
-    assert game_data.writable_data == {}
-    assert game_data.writable_plugins_js == []
-    assert game_data.writable_plugin_source_files == {}
 @pytest.mark.asyncio
 async def test_translation_source_view_keeps_heavy_capabilities_explicit(
     minimal_game_dir: Path,

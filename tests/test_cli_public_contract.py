@@ -40,6 +40,19 @@ def _run_cli(
     return report
 
 
+def _collect_report_codes(items: object) -> set[str]:
+    """提取 JSON 报告中的字符串 code 集合。"""
+    assert isinstance(items, list)
+    codes: set[str] = set()
+    for item in cast(list[object], items):
+        if isinstance(item, dict):
+            record = cast(dict[str, object], item)
+            code = record.get("code")
+            if isinstance(code, str):
+                codes.add(code)
+    return codes
+
+
 @pytest.mark.usefixtures("app_home_with_example_setting")
 def test_public_cli_register_prepare_and_validate_workspace(
     minimal_game_dir: Path,
@@ -66,9 +79,7 @@ def test_public_cli_register_prepare_and_validate_workspace(
 
     assert add_report["status"] == "ok"
     assert prepare_report["status"] == "ok"
-    errors = validate_report.get("errors")
-    assert isinstance(errors, list)
-    error_codes = {error.get("code") for error in errors if isinstance(error, dict)}
+    error_codes = _collect_report_codes(validate_report.get("errors"))
     assert "terminology_empty_translation" in error_codes
     assert (workspace / "manifest.json").is_file()
     assert (workspace / "terminology" / "field-terms.json").is_file()
@@ -83,8 +94,8 @@ def test_public_cli_cleanup_workspace_keeps_unlisted_files(
     generated_file = workspace / "generated.json"
     unlisted_file = workspace / "notes.txt"
     workspace.mkdir()
-    generated_file.write_text("{}", encoding="utf-8")
-    unlisted_file.write_text("keep", encoding="utf-8")
+    _ = generated_file.write_text("{}", encoding="utf-8")
+    _ = unlisted_file.write_text("keep", encoding="utf-8")
     manifest = {
         "files": [
             str(generated_file),
@@ -92,7 +103,7 @@ def test_public_cli_cleanup_workspace_keeps_unlisted_files(
             str(tmp_path / "outside.json"),
         ]
     }
-    (workspace / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _ = (workspace / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     cleanup_report = _run_cli(
         ["cleanup-agent-workspace", "--workspace", str(workspace)],
@@ -105,9 +116,7 @@ def test_public_cli_cleanup_workspace_keeps_unlisted_files(
     assert isinstance(summary, dict)
     assert summary["deleted_count"] == 2
     assert summary["unlisted_file_count"] == 1
-    warnings = cleanup_report.get("warnings")
-    assert isinstance(warnings, list)
-    warning_codes = {warning.get("code") for warning in warnings if isinstance(warning, dict)}
+    warning_codes = _collect_report_codes(cleanup_report.get("warnings"))
     assert "workspace_unlisted_files_ignored" in warning_codes
     assert not generated_file.exists()
     assert not (workspace / "manifest.json").exists()

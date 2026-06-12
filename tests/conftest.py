@@ -1,25 +1,49 @@
 """测试夹具：构造最小可用的 RPG Maker MV/MZ 游戏目录。"""
 
+import asyncio
 import json
+import logging
+import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from app.language import SourceLanguage
 from app.runtime_paths import APP_HOME_ENV_NAME
 from app.rmmz.text_rules import JsonValue
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+PRE_REGISTERED_MINIMAL_GAME_FILE_PREFIXES: tuple[str, ...] = (
+    "tests/test_manual_translation_scope.py::",
+    "tests/test_quality_gate_result.py::",
+)
+PRE_REGISTERED_MINIMAL_GAME_NODEID_PREFIXES: tuple[str, ...] = (
+)
+PRE_REGISTERED_MINIMAL_GAME_NODEIDS: frozenset[str] = frozenset(
+    {}
+)
+CLEAN_MINIMAL_GAME_NODEIDS: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredGameTemplate:
+    """由真实注册入口生成的测试游戏模板。"""
+
+    game_root: Path
+    db_path: Path
 
 
 def pytest_configure(config: pytest.Config) -> None:
     """让每个 pytest worker 写独立日志文件，避免 xdist 并发争用项目日志。"""
     from app.observability import setup_logger
 
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
     log_path = _pytest_worker_log_path(config)
-    setup_logger(use_console=False, file_path=log_path, enqueue_file_log=False)
+    setup_logger(use_console=False, file_level="ERROR", file_path=log_path, enqueue_file_log=False)
 
 
 def _pytest_worker_log_path(config: pytest.Config) -> Path:
@@ -33,7 +57,7 @@ def _pytest_worker_log_path(config: pytest.Config) -> Path:
             worker_id = raw_worker_id
     log_dir = Path.cwd() / ".pytest_cache" / "att-mz-worker-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / f"{worker_id}.log"
+    return log_dir / f"{worker_id}-{os.getpid()}.log"
 
 
 @pytest.fixture
@@ -73,6 +97,32 @@ def copy_test_game_template(template_root: Path, target_root: Path) -> Path:
         raise RuntimeError(f"测试游戏目录已存在，不能覆盖: {target_root}")
     _ = shutil.copytree(template_root, target_root, copy_function=shutil.copyfile)
     return target_root
+
+
+def copy_registered_test_game_template(
+    template: RegisteredGameTemplate,
+    *,
+    target_root: Path,
+    db_dir: Path,
+) -> Path:
+    """复制已注册游戏模板，并提供同路径测试会使用的数据库目录。"""
+    game_root = copy_test_game_template(template.game_root, target_root)
+    db_dir.mkdir(parents=True, exist_ok=True)
+    _ = shutil.copyfile(template.db_path, db_dir / template.db_path.name)
+    return game_root
+
+
+async def _register_game_template(
+    *,
+    game_root: Path,
+    db_dir: Path,
+    source_language: SourceLanguage,
+) -> Path:
+    """通过真实注册入口生成 worker 级已注册游戏数据库。"""
+    from app.persistence import GameRegistry
+
+    record = await GameRegistry(db_dir).register_game(game_root, source_language=source_language)
+    return record.db_path
 
 
 def write_plugin_source_stubs(js_dir: Path, plugin_names: list[str]) -> None:
@@ -384,9 +434,78 @@ def minimal_game_dir_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture
-def minimal_game_dir(tmp_path: Path, minimal_game_dir_template: Path) -> Path:
+def minimal_game_dir(
+    tmp_path: Path,
+    minimal_game_dir_template: Path,
+    request: pytest.FixtureRequest,
+) -> Path:
     """返回当前测试独占的最小 MZ 游戏目录。"""
+    if _should_use_registered_minimal_game(_fixture_request_nodeid(request)):
+        registered_template = cast(
+            RegisteredGameTemplate,
+            request.getfixturevalue("registered_minimal_game_dir_template"),
+        )
+        return copy_registered_test_game_template(
+            registered_template,
+            target_root=tmp_path / "mini-game",
+            db_dir=tmp_path / "db",
+        )
     return copy_test_game_template(minimal_game_dir_template, tmp_path / "mini-game")
+
+
+def _fixture_request_nodeid(request: pytest.FixtureRequest) -> str:
+    """从 pytest fixture 请求中读取当前测试 nodeid。"""
+    raw_node = getattr(request, "node", None)
+    raw_nodeid = getattr(raw_node, "nodeid", "")
+    if isinstance(raw_nodeid, str):
+        return raw_nodeid
+    return ""
+
+
+def _should_use_registered_minimal_game(nodeid: str) -> bool:
+    """判断当前测试是否可以复用真实注册生成的游戏数据库模板。"""
+    normalized_nodeid = nodeid.replace("\\", "/")
+    if normalized_nodeid in CLEAN_MINIMAL_GAME_NODEIDS:
+        return False
+    if normalized_nodeid in PRE_REGISTERED_MINIMAL_GAME_NODEIDS:
+        return True
+    if any(
+        normalized_nodeid.startswith(file_prefix)
+        for file_prefix in PRE_REGISTERED_MINIMAL_GAME_NODEID_PREFIXES
+    ):
+        return True
+    return any(
+        normalized_nodeid.startswith(file_prefix)
+        for file_prefix in PRE_REGISTERED_MINIMAL_GAME_FILE_PREFIXES
+    )
+
+
+@pytest.fixture(scope="session")
+def registered_minimal_game_dir_template(tmp_path_factory: pytest.TempPathFactory) -> RegisteredGameTemplate:
+    """为当前 pytest worker 创建可复制的已注册 MZ 游戏模板。"""
+    game_root = build_minimal_game_dir(tmp_path_factory.mktemp("registered-game-templates") / "mini-game")
+    db_dir = tmp_path_factory.mktemp("registered-game-dbs")
+    db_path = asyncio.run(
+        _register_game_template(
+            game_root=game_root,
+            db_dir=db_dir,
+            source_language="ja",
+        )
+    )
+    return RegisteredGameTemplate(game_root=game_root, db_path=db_path)
+
+
+@pytest.fixture
+def registered_minimal_game_dir(
+    tmp_path: Path,
+    registered_minimal_game_dir_template: RegisteredGameTemplate,
+) -> Path:
+    """返回当前测试独占且已带注册数据库的最小 MZ 游戏目录。"""
+    return copy_registered_test_game_template(
+        registered_minimal_game_dir_template,
+        target_root=tmp_path / "mini-game",
+        db_dir=tmp_path / "db",
+    )
 
 
 def build_minimal_mv_game_dir(game_root: Path) -> Path:
