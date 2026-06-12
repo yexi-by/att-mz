@@ -14,6 +14,7 @@ from app.cli.reports import (
     build_run_all_summary_report,
     build_terminology_write_summary_report,
     build_write_back_summary_report,
+    print_report,
 )
 from app.cli.runtime import (
     HandlerSession,
@@ -40,7 +41,7 @@ async def run_write_back_command(args: argparse.Namespace) -> int:
             confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
         )
     report = build_write_back_summary_report(summary)
-    print(report.to_json_text())
+    print_report(report)
     return 0
 
 
@@ -57,7 +58,7 @@ async def run_rebuild_active_runtime_command(args: argparse.Namespace) -> int:
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
     report = build_write_back_summary_report(summary)
-    print(report.to_json_text())
+    print_report(report)
     return 0
 
 
@@ -71,7 +72,7 @@ async def run_restore_font_command(args: argparse.Namespace) -> int:
             setting_overrides=setting_overrides,
         )
     report = build_font_restore_summary_report(summary)
-    print(report.to_json_text())
+    print_report(report)
     return 0
 
 
@@ -88,7 +89,7 @@ async def run_write_terminology_command(args: argparse.Namespace) -> int:
                 confirm_font_overwrite=read_bool_arg(args, "confirm_font_overwrite"),
             )
     report = build_terminology_write_summary_report(summary)
-    print(report.to_json_text())
+    print_report(report)
     return 0
 
 
@@ -125,5 +126,5 @@ async def run_all_command(args: argparse.Namespace) -> int:
         text_summary=text_summary,
         write_back_summary=write_back_summary,
     )
-    print(report.to_json_text())
+    print_report(report)
     return 0

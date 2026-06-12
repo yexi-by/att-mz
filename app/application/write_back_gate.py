@@ -12,7 +12,8 @@ from app.native_quality import collect_native_quality_counts, count_native_write
 from app.persistence import TargetGameSession
 from app.rmmz.schema import GameData, TranslationItem
 from app.rmmz.text_rules import TextRules
-from app.text_scope import TextScopeResult, TextScopeService
+from app.text_fact_identity import TranslationFactIdentity, translation_item_fact_identity
+from app.text_scope import TextScopeResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,57 +64,67 @@ async def collect_write_back_quality_errors(
 ) -> list[WriteBackQualityIssue]:
     """收集当前已保存译文是否允许写入游戏文件的质量错误。"""
     if scope is None:
-        scope = await TextScopeService().build(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-            translated_items=translated_items,
-            include_write_probe=True,
-        )
+        raise RuntimeError("collect_write_back_quality_errors 缺少当前文本范围，不能继续；请重新生成当前文本索引，并从当前入口传入文本范围")
     errors: list[WriteBackQualityIssue] = []
-    translated_paths = {item.location_path for item in translated_items}
-    active_paths = scope.active_paths
+    active_items = scope.active_items()
+    active_items_by_identity = _translation_items_by_required_identity(
+        active_items,
+        label="当前文本范围",
+    )
+    translated_items_by_identity = _translation_items_by_required_identity(
+        translated_items,
+        label="已保存译文",
+    )
     writable_paths = scope.writable_paths
-    pending_paths = writable_paths - translated_paths
-    stale_paths = translated_paths - writable_paths
+    active_identities = set(active_items_by_identity)
+    writable_identities: set[TranslationFactIdentity] = set()
+    for item in active_items:
+        if item.location_path in writable_paths:
+            writable_identities.add(translation_item_fact_identity(item, label="当前文本范围"))
+    translated_identities = set(translated_items_by_identity)
+    pending_identities = writable_identities - translated_identities
+    stale_identities = translated_identities - writable_identities
+    pending_fact_ids = {fact_id for fact_id, _raw_hash, _translatable_hash in pending_identities}
     active_translated_items = [
         item
         for item in translated_items
-        if item.location_path in active_paths
+        if translation_item_fact_identity(item, label="已保存译文") in active_identities
     ]
 
-    if require_complete_translation and pending_paths:
+    if require_complete_translation and pending_identities:
         errors.append(
             WriteBackQualityIssue(
                 code="coverage_missing_translation",
-                message=f"还有 {len(pending_paths)} 条文本没有成功保存译文",
+                message=f"还有 {len(pending_identities)} 条文本没有成功保存译文",
             )
         )
-    if stale_paths:
+    if stale_identities:
         errors.append(
             WriteBackQualityIssue(
                 code="stale_saved_translations",
-                message=f"发现 {len(stale_paths)} 条已保存译文不在当前可写文本范围内",
+                message=f"发现 {len(stale_identities)} 条已保存译文不在当前可写文本范围内",
             )
         )
 
     latest_run = await session.read_latest_translation_run()
-    if latest_run is not None:
-        quality_errors = await session.read_translation_quality_errors(latest_run.run_id)
-        active_quality_errors = [
-            item
-            for item in quality_errors
-            if item.location_path in pending_paths
-        ]
+    if require_complete_translation and latest_run is not None:
+        active_quality_errors = (
+            await session.read_translation_quality_errors_by_fact_ids(
+                latest_run.run_id,
+                pending_fact_ids,
+            )
+            if pending_fact_ids
+            else []
+        )
         llm_failures = await session.read_llm_failures(latest_run.run_id)
-        if require_complete_translation and active_quality_errors:
+        if active_quality_errors:
             errors.append(
                 WriteBackQualityIssue(
                     code="translation_quality_errors",
                     message=f"最新翻译运行有 {len(active_quality_errors)} 条模型翻了但项目检查没通过的译文",
                 )
             )
-        if require_complete_translation and llm_failures and pending_paths:
+        if llm_failures and pending_fact_ids:
             errors.append(
                 WriteBackQualityIssue(
                     code="llm_failures",
@@ -171,6 +182,21 @@ async def collect_write_back_quality_errors(
                 )
             )
     return errors
+
+
+def _translation_items_by_required_identity(
+    items: list[TranslationItem],
+    *,
+    label: str,
+) -> dict[TranslationFactIdentity, TranslationItem]:
+    """按完整当前文本事实 identity 索引译文条目；缺失或重复说明当前事实身份不可判定。"""
+    items_by_identity: dict[TranslationFactIdentity, TranslationItem] = {}
+    for item in items:
+        identity = translation_item_fact_identity(item, label=label)
+        if identity in items_by_identity:
+            raise ValueError(f"{label}包含重复当前文本事实身份，无法判断已翻译事实身份: {identity[0]}")
+        items_by_identity[identity] = item
+    return items_by_identity
 
 
 __all__: list[str] = [

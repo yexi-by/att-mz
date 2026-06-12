@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.language import SourceLanguage, TargetLanguage
 from app.rule_review import RuleReviewDomain
-from app.rmmz.schema import EngineKind
+from app.rmmz.schema import EngineKind, ItemType
+from app.rmmz.text_rules import JsonObject
 
 
 @dataclass(slots=True)
@@ -44,10 +46,162 @@ class GameRecord:
 
 
 @dataclass(slots=True)
+class RegistryDatabaseIssue:
+    """注册表扫描中单个不可用数据库的问题。"""
+
+    db_path: Path
+    message: str
+
+
+@dataclass(slots=True)
 class RuleReviewStateRecord:
-    """数据库中保存的外部规则空结果审查状态。"""
+    """数据库中保存的当前规则 domain 确认状态。"""
 
     rule_domain: RuleReviewDomain
     scope_hash: str
-    reviewed_empty: bool
+    reviewed_candidates: bool
+    confirmed_empty: bool
     updated_at: str
+
+
+@dataclass(slots=True)
+class TextIndexMetadata:
+    """当前翻译源视图索引的全局元信息。"""
+
+    source_snapshot_fingerprint: str
+    rules_fingerprint: str
+    item_count: int
+    workflow_gate_facts: dict[str, JsonObject]
+    rust_contract_version: int
+    parser_contract_version: int
+    source_branch_contract_version: int
+    text_fact_schema_version: int
+    created_at: str
+    workflow_gate_scope_hashes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TextIndexItemRecord:
+    """当前翻译源视图中的单个文本范围索引项。"""
+
+    location_path: str
+    item_type: ItemType
+    role: str | None
+    original_lines: list[str]
+    source_line_paths: list[str]
+    source_type: str
+    source_file: str
+    writable: bool
+    source_snapshot_fingerprint: str
+    rules_fingerprint: str
+    locator_json: str
+
+
+@dataclass(slots=True)
+class TextIndexScopeSummaryRecord:
+    """当前文本范围索引的静态范围摘要。"""
+
+    total_count: int
+    active_count: int
+    writable_count: int
+    unwritable_count: int
+    stale_rule_count: int
+    native_thread_count: int
+
+
+@dataclass(slots=True)
+class TextIndexDomainSummaryRecord:
+    """当前文本范围索引按来源域汇总的静态事实。"""
+
+    domain: str
+    item_count: int
+    active_count: int
+    writable_count: int
+    unwritable_count: int
+    inactive_rule_hit_count: int
+
+
+@dataclass(slots=True)
+class TextIndexRuleHitSummaryRecord:
+    """当前文本范围索引按规则命中汇总的静态事实。"""
+
+    domain: str
+    rule_key: str
+    hit_count: int
+    extractable_count: int
+    writable_count: int
+    unwritable_count: int
+
+
+@dataclass(slots=True)
+class TextIndexInvalidationRecord:
+    """文本范围索引失效原因记录。"""
+
+    reason_key: str
+    detail: str
+    created_at: str
+
+
+@dataclass(slots=True)
+class TextFactRecord:
+    """当前文本事实契约 的单条文本事实。"""
+
+    fact_id: str
+    schema_version: int
+    domain: str
+    location_path: str
+    source_file: str
+    source_type: str
+    item_type: str
+    role: str
+    selector: str
+    raw_text: str
+    visible_text: str
+    translatable_text: str
+    raw_hash: str
+    visible_hash: str
+    translatable_hash: str
+    scope_key: str
+
+
+@dataclass(slots=True)
+class TextFactRenderPartRecord:
+    """当前文本事实契约 的写回渲染片段。"""
+
+    fact_id: str
+    part_order: int
+    part_kind: str
+    raw_text: str
+    semantic_text: str
+    template_key: str
+
+
+@dataclass(slots=True)
+class TextFactDomainPayloadRecord:
+    """当前文本事实契约 的领域小扩展 JSON。"""
+
+    fact_id: str
+    payload_json: str
+
+
+@dataclass(slots=True)
+class TextFactScopeRecord:
+    """当前文本事实契约 的当前索引 scope 元数据。"""
+
+    scope_key: str
+    schema_version: int
+    scope_hash: str
+    source_snapshot_hash: str
+    rule_hash: str
+    text_rules_hash: str
+    created_at: str
+
+
+@dataclass(slots=True)
+class TextFactReadFilter:
+    """读取 当前文本事实时使用的最小筛选条件。"""
+
+    domain: str | None = None
+    source_file: str | None = None
+    location_paths: Sequence[str] = ()
+    scope_key: str | None = None

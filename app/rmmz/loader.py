@@ -16,6 +16,7 @@ import aiofiles
 import demjson3
 from pydantic import TypeAdapter
 
+from app.external_input import normalize_external_int, normalize_external_str
 from app.rmmz.game_data import BaseItem, CommonEvent, MapData, System, Troop
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.schema import (
@@ -52,92 +53,110 @@ ENGINE_VERSION_PATTERN: re.Pattern[str] = re.compile(
 )
 
 
-async def load_game_data(
-    game_path: str | Path,
-    *,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
-) -> GameData:
-    """加载游戏数据；业务服务层必须使用显式视图入口。"""
-    return await _load_game_data(
-        game_path,
-        use_origin_backups=True,
-        require_origin_backups=False,
-        include_plugin_source_files=include_plugin_source_files,
-        include_writable_copies=include_writable_copies,
-    )
-
-
 async def load_game_data_for_view(
     game_path: str | Path,
     *,
-    source_view: GameFileView,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
+    view: GameFileView,
+    include_plugin_source_files: bool = False,
+    include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """按指定文件视图加载游戏数据。"""
     return await _load_game_data(
         game_path,
-        use_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
-        require_origin_backups=source_view == GameFileView.TRANSLATION_SOURCE,
+        view=view,
+        use_origin_backups=view == GameFileView.TRANSLATION_SOURCE,
+        require_origin_backups=view == GameFileView.TRANSLATION_SOURCE,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
 async def load_active_game_data(
     game_path: str | Path,
     *,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
+    include_plugin_source_files: bool = False,
+    include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
-    """从 RPG Maker 游戏根目录加载当前激活文件，不读取完整原始备份。"""
+    """从 RPG Maker 游戏根目录加载当前运行文件。"""
     return await load_game_data_for_view(
         game_path,
-        source_view=GameFileView.ACTIVE_RUNTIME,
+        view=GameFileView.ACTIVE_RUNTIME,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
 async def load_active_runtime_game_data(
     game_path: str | Path,
     *,
-    include_plugin_source_files: bool = True,
+    include_plugin_source_files: bool = False,
     include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """从 RPG Maker 游戏根目录加载当前运行视图文件。"""
     return await load_game_data_for_view(
         game_path,
-        source_view=GameFileView.ACTIVE_RUNTIME,
+        view=GameFileView.ACTIVE_RUNTIME,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
 
 
 async def load_translation_source_game_data(
     game_path: str | Path,
     *,
-    include_plugin_source_files: bool = True,
-    include_writable_copies: bool = True,
+    include_plugin_source_files: bool = False,
+    include_writable_copies: bool = False,
+    run_dialogue_probe_check: bool = False,
 ) -> GameData:
     """从 RPG Maker 游戏根目录加载翻译源视图文件。"""
     return await _load_game_data(
         game_path,
+        view=GameFileView.TRANSLATION_SOURCE,
         use_origin_backups=True,
         require_origin_backups=True,
         include_plugin_source_files=include_plugin_source_files,
         include_writable_copies=include_writable_copies,
+        run_dialogue_probe_check=run_dialogue_probe_check,
     )
+
+
+async def load_plugin_source_files_for_view(
+    game_path: str | Path,
+    *,
+    source_view: GameFileView,
+) -> tuple[GameLayout, list[dict[str, JsonValue]], dict[str, str], dict[str, str]]:
+    """轻量读取插件配置和插件源码文件，不加载标准 data JSON。"""
+    layout = resolve_game_layout(game_path)
+    use_origin_backups = source_view == GameFileView.TRANSLATION_SOURCE
+    plugins_path = resolve_plugins_source_file(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+        require_origin_backups=use_origin_backups,
+    )
+    plugins_content = await _read_text_file(plugins_path)
+    plugin_source_files, plugin_source_read_errors = await _read_plugin_source_files(
+        layout=layout,
+        use_origin_backups=use_origin_backups,
+        require_origin_backups=use_origin_backups,
+    )
+    return layout, _parse_plugins_js_text(plugins_content), plugin_source_files, plugin_source_read_errors
 
 
 async def _load_game_data(
     game_path: str | Path,
     *,
+    view: GameFileView,
     use_origin_backups: bool,
     require_origin_backups: bool,
     include_plugin_source_files: bool,
     include_writable_copies: bool,
+    run_dialogue_probe_check: bool,
 ) -> GameData:
     """按指定来源策略加载标准数据文件并构造 `GameData`。"""
     layout = resolve_game_layout(game_path)
@@ -215,9 +234,11 @@ async def _load_game_data(
     if system is None or common_events is None or troops is None:
         raise ValueError("游戏缺少 System.json、CommonEvents.json 或 Troops.json，禁止启动")
 
-    run_dialogue_probe(map_data=map_data, common_events=common_events, troops=troops)
+    if run_dialogue_probe_check:
+        run_dialogue_probe(map_data=map_data, common_events=common_events, troops=troops)
 
     return GameData(
+        view=view,
         layout=layout,
         data=data,
         writable_data=copy.deepcopy(data) if include_writable_copies else {},
@@ -292,8 +313,11 @@ def read_game_title_from_system(system_path: Path) -> str | None:
     raw_text = system_path.read_text(encoding="utf-8")
     system_data = _decode_json_value(content=raw_text, source=system_path)
     system_object = ensure_json_object(system_data, f"{system_path} 顶层")
-    title = system_object.get("gameTitle")
-    if not isinstance(title, str) or not title.strip():
+    raw_title = system_object.get("gameTitle")
+    if raw_title is None:
+        return None
+    title = normalize_external_str(raw_title, "System.json.gameTitle").strip()
+    if not title:
         return None
     return title.strip()
 
@@ -389,11 +413,11 @@ def resolve_game_source_paths(game_root: Path) -> tuple[Path, Path, bool]:
 
 
 def resolve_data_source_file(*, active_file_path: Path, origin_data_dir: Path, use_origin_backup: bool = True) -> Path:
-    """解析单个 data 文件来源；存在完整原始备份时不回退激活文件。"""
+    """解析单个 data 文件来源；读取当前翻译来源快照时不回退运行文件。"""
     if not use_origin_backup:
         return active_file_path
     if origin_data_dir.exists() and not origin_data_dir.is_dir():
-        raise NotADirectoryError(f"原始 data 备份不是目录: {origin_data_dir}")
+        raise NotADirectoryError(f"当前翻译来源快照 data 目录不是目录: {origin_data_dir}")
     if origin_data_dir.is_dir():
         return origin_data_dir / active_file_path.name
     return active_file_path
@@ -410,12 +434,15 @@ def resolve_data_source_dir(
         validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
         return layout.data_dir
     if layout.data_origin_dir.exists() and not layout.data_origin_dir.is_dir():
-        raise NotADirectoryError(f"原始 data 备份不是目录: {layout.data_origin_dir}")
+        raise NotADirectoryError(f"当前翻译来源快照 data 目录不是目录: {layout.data_origin_dir}")
     if layout.data_origin_dir.is_dir():
-        validate_data_directory_integrity(data_dir=layout.data_origin_dir, role="原始 data 备份")
+        validate_data_directory_integrity(
+            data_dir=layout.data_origin_dir,
+            role="当前翻译来源快照 data 目录",
+        )
         return layout.data_origin_dir
     if require_origin_backups:
-        raise FileNotFoundError(f"缺少原始 data 备份，不能读取翻译源视图: {layout.data_origin_dir}")
+        raise FileNotFoundError(f"缺少当前翻译来源快照 data 目录: {layout.data_origin_dir}")
     validate_data_directory_integrity(data_dir=layout.data_dir, role="激活数据目录")
     return layout.data_dir
 
@@ -432,7 +459,7 @@ def resolve_plugins_source_file(
             raise FileNotFoundError(f"激活插件配置文件不存在: {layout.plugins_path}")
         return layout.plugins_path
     if not layout.plugins_origin_path.is_file() and require_origin_backups:
-        raise FileNotFoundError(f"缺少原始插件配置备份，不能读取翻译源视图: {layout.plugins_origin_path}")
+        raise FileNotFoundError(f"缺少当前翻译来源快照插件配置: {layout.plugins_origin_path}")
     if not layout.plugins_origin_path.is_file():
         return layout.plugins_path
     return layout.plugins_origin_path
@@ -451,7 +478,7 @@ def validate_data_directory_integrity(*, data_dir: Path, role: str) -> None:
     if missing_fixed_files:
         raise FileNotFoundError(
             f"{role}缺少 RPG Maker 标准 data 文件: {', '.join(missing_fixed_files)}。"
-            + "data_origin 必须是完整原始 data 备份，请使用干净游戏目录重新注册。"
+            + "当前翻译来源快照必须完整，请使用干净游戏目录重新注册。"
         )
     missing_map_files = collect_missing_map_files_from_map_infos(data_dir=data_dir)
     if missing_map_files:
@@ -476,11 +503,10 @@ def collect_missing_map_files_from_map_infos(*, data_dir: Path) -> list[str]:
         if not isinstance(item, dict):
             raise TypeError(f"{MAP_INFOS_FILE_NAME}[{index}] 必须是对象或 null")
         raw_id = item.get("id")
-        if isinstance(raw_id, bool) or not isinstance(raw_id, int):
-            raise TypeError(f"{MAP_INFOS_FILE_NAME}[{index}].id 必须是整数")
-        if raw_id <= 0:
+        map_id = normalize_external_int(raw_id, f"{MAP_INFOS_FILE_NAME}[{index}].id")
+        if map_id <= 0:
             continue
-        expected_map_names.add(f"Map{raw_id:03d}.json")
+        expected_map_names.add(f"Map{map_id:03d}.json")
     return sorted(
         map_name
         for map_name in expected_map_names
@@ -495,21 +521,28 @@ class GameDataManager:
         """初始化空的游戏数据内存记录。"""
         self.items: dict[str, GameData] = {}
 
-    async def load_game_data(self, game_path: str | Path) -> None:
-        """读取指定游戏目录，并以游戏标题为键写入内存记录。"""
+    async def load_translation_source_game_data(self, game_path: str | Path) -> None:
+        """读取指定游戏的当前翻译来源视图，并以游戏标题为键写入内存记录。"""
         resolved_game_path = resolve_game_directory(game_path)
         game_title = read_game_title(resolved_game_path)
         layout = resolve_game_layout(resolved_game_path)
-        source_data_dir = resolve_data_source_dir(layout=layout, use_origin_backups=True)
+        source_data_dir = resolve_data_source_dir(
+            layout=layout,
+            use_origin_backups=True,
+            require_origin_backups=True,
+        )
         source_plugins_path = layout.source_plugins_path
         has_origin_backup = layout.has_origin_backup
         game_data = await load_game_data_for_view(
             resolved_game_path,
-            source_view=GameFileView.TRANSLATION_SOURCE,
+            view=GameFileView.TRANSLATION_SOURCE,
+            include_plugin_source_files=True,
+            include_writable_copies=True,
+            run_dialogue_probe_check=True,
         )
 
         if has_origin_backup:
-            logger.warning(f"[tag.warning]检测到该游戏已经执行过激活版回写，后续会优先读取完整原始 data 备份[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count] 数据来源 [tag.path]{source_data_dir}[/tag.path] 插件来源 [tag.path]{source_plugins_path}[/tag.path]")
+            logger.warning(f"[tag.warning]检测到当前翻译来源快照，后续翻译源读取将使用该快照[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count] 数据来源 [tag.path]{source_data_dir}[/tag.path] 插件来源 [tag.path]{source_plugins_path}[/tag.path]")
 
         self.items[game_title] = game_data
 
@@ -531,7 +564,7 @@ async def _read_plugin_source_files(
         return await _read_direct_plugin_source_files(layout.js_dir / "plugins")
     if not layout.plugin_source_origin_dir.is_dir():
         if require_origin_backups:
-            raise NotADirectoryError(f"缺少原始插件源码备份目录，不能读取翻译源视图: {layout.plugin_source_origin_dir}")
+            raise NotADirectoryError(f"缺少当前翻译来源快照插件源码目录: {layout.plugin_source_origin_dir}")
         return await _read_direct_plugin_source_files(layout.js_dir / "plugins")
     return await _read_direct_plugin_source_files(layout.plugin_source_origin_dir)
 
@@ -615,8 +648,8 @@ __all__: list[str] = [
     "GameDataManager",
     "load_active_runtime_game_data",
     "load_active_game_data",
-    "load_game_data",
     "load_game_data_for_view",
+    "load_plugin_source_files_for_view",
     "load_translation_source_game_data",
     "read_game_title",
     "read_game_title_from_package",

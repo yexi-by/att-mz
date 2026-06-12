@@ -8,7 +8,14 @@ from typing import Literal
 from app.rmmz.schema import ItemType, TranslationData, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject
 
-type TextSourceType = Literal["standard_data", "plugin_parameter", "plugin_source", "event_command", "note_tag"]
+type TextSourceType = Literal[
+    "standard_data",
+    "plugin_parameter",
+    "plugin_source",
+    "event_command",
+    "note_tag",
+    "nonstandard_data",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,16 +49,6 @@ class TextScopeEntry:
             "translated": self.translated,
             "cannot_process_reason": self.cannot_process_reason,
         }
-
-
-@dataclass(frozen=True, slots=True)
-class TextScopeRuleHit:
-    """外部规则命中的字符串叶子。"""
-
-    location_path: str
-    source_type: TextSourceType
-    rule_source: str
-    original_text: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -52,7 +52,7 @@ class PreparedBenchmark:
 
 
 class BenchmarkPreparationError(RuntimeError):
-    """性能测试准备阶段失败，携带临时目录清理状态。"""
+    """性能测试准备阶段失败，携带临时工作目录清理状态。"""
 
     def __init__(
         self,
@@ -74,7 +74,7 @@ def parse_args(argv: Sequence[str] | None = None) -> BenchmarkOptions:
     _ = parser.add_argument(
         "--sample",
         required=True,
-        help="性能样本游戏目录；脚本会复制到临时目录后运行",
+        help="性能样本游戏目录；脚本会复制到临时工作目录后运行",
     )
     _ = parser.add_argument(
         "--game",
@@ -150,7 +150,7 @@ def prepare_benchmark(options: BenchmarkOptions) -> PreparedBenchmark:
     try:
         app_home.mkdir(parents=True)
         shutil.copytree(options.sample_path, game_path)
-        prepare_app_home_assets(app_home)
+        prepare_app_home_assets(app_home, rust_threads=options.rust_threads)
         db_path.parent.mkdir(parents=True)
         shutil.copy2(options.source_db_path, db_path)
         update_database_metadata(
@@ -176,7 +176,7 @@ def build_preparation_error(
     error: Exception,
     context: str,
 ) -> BenchmarkPreparationError:
-    """生成带临时目录清理结果的准备阶段错误。"""
+    """生成带临时工作目录清理结果的准备阶段错误。"""
     cleanup_error: str | None = None
     temp_preserved = keep_temp
     if not keep_temp:
@@ -184,9 +184,9 @@ def build_preparation_error(
         temp_preserved = cleanup_error is not None
     message = f"{context}: {type(error).__name__}: {error}"
     if cleanup_error is not None:
-        message = f"{message}\n清理临时目录失败: {cleanup_error}"
+        message = f"{message}\n清理临时工作目录失败: {cleanup_error}"
     elif temp_preserved:
-        message = f"{message}\n临时目录已保留: {prepared.temp_root}"
+        message = f"{message}\n临时工作目录已保留: {prepared.temp_root}"
     return BenchmarkPreparationError(
         message,
         prepared=prepared,
@@ -195,17 +195,58 @@ def build_preparation_error(
     )
 
 
-def prepare_app_home_assets(app_home: Path) -> None:
+def prepare_app_home_assets(app_home: Path, rust_threads: int | None = None) -> None:
     """复制运行命令需要的配置和随包资源。"""
     setting_source = ROOT / "setting.toml"
     if not setting_source.is_file():
         setting_source = ROOT / "setting.example.toml"
     ensure_file(setting_source, "配置文件")
-    shutil.copy2(setting_source, app_home / "setting.toml")
+    setting_target = app_home / "setting.toml"
+    shutil.copy2(setting_source, setting_target)
+    write_runtime_threads_setting(setting_target, rust_threads=rust_threads)
     for directory_name in ("fonts", "prompts"):
         source_dir = ROOT / directory_name
         if source_dir.is_dir():
             shutil.copytree(source_dir, app_home / directory_name)
+
+
+def write_runtime_threads_setting(setting_path: Path, rust_threads: int | None) -> None:
+    """把本次性能命令的 Rust 线程数写入临时配置文件。"""
+    value = '"auto"' if rust_threads is None else str(rust_threads)
+    lines = setting_path.read_text(encoding="utf-8-sig").splitlines()
+    output_lines: list[str] = []
+    in_runtime_section = False
+    runtime_section_seen = False
+    rust_threads_written = False
+
+    for line in lines:
+        stripped_line = line.strip()
+        is_section_header = stripped_line.startswith("[") and stripped_line.endswith("]")
+        if is_section_header:
+            if in_runtime_section and not rust_threads_written:
+                output_lines.append(f"rust_threads = {value}")
+                rust_threads_written = True
+            in_runtime_section = stripped_line == "[runtime]"
+            runtime_section_seen = runtime_section_seen or in_runtime_section
+            output_lines.append(line)
+            continue
+
+        if in_runtime_section and stripped_line.startswith("rust_threads"):
+            if not rust_threads_written:
+                output_lines.append(f"rust_threads = {value}")
+                rust_threads_written = True
+            continue
+        output_lines.append(line)
+
+    if in_runtime_section and not rust_threads_written:
+        output_lines.append(f"rust_threads = {value}")
+    if not runtime_section_seen:
+        if output_lines and output_lines[-1] != "":
+            output_lines.append("")
+        output_lines.append("[runtime]")
+        output_lines.append(f"rust_threads = {value}")
+
+    setting_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
 def update_database_metadata(
@@ -260,11 +301,13 @@ def run_benchmark(options: BenchmarkOptions, prepared: PreparedBenchmark) -> dic
             )
         report = extract_last_json_object(completed.stdout)
         summary = ensure_object(report.get("summary"), "summary")
+        diagnostics = load_diagnostics_from_summary(summary)
         run_result = build_run_result(
             index=index,
             elapsed_ms=elapsed_ms,
             return_code=completed.returncode,
             summary=summary,
+            diagnostics=diagnostics,
         )
         run_result["active_data_reset_from_origin_count"] = active_data_reset_count
         runs.append(run_result)
@@ -323,6 +366,9 @@ def rebuild_active_runtime_command(game_title: str) -> list[str]:
         "run",
         "python",
         "main.py",
+        "--debug",
+        "--debug-timings",
+        "--no-debug-logging",
         "rebuild-active-runtime",
         "--game",
         game_title,
@@ -336,15 +382,27 @@ def build_run_result(
     elapsed_ms: int,
     return_code: int,
     summary: dict[str, object],
+    diagnostics: dict[str, object],
 ) -> dict[str, object]:
     """从 CLI JSON 摘要提取性能分段。"""
+    timings = ensure_object(diagnostics.get("timings"), "diagnostics.timings")
     return {
         "run_index": index,
         "elapsed_ms": elapsed_ms,
         "return_code": return_code,
-        "rust_plan_ms": ensure_int(summary.get("rust_plan_ms"), "rust_plan_ms"),
-        "file_replacement_ms": ensure_int(summary.get("file_replacement_ms"), "file_replacement_ms"),
-        "post_write_audit_ms": ensure_int(summary.get("post_write_audit_ms"), "post_write_audit_ms"),
+        "diagnostics_file": str(ensure_str_path_from_summary(summary)),
+        "rust_plan_ms": ensure_int(
+            timings.get("rebuild_active_runtime.rust_plan.total"),
+            "diagnostics.timings.rebuild_active_runtime.rust_plan.total",
+        ),
+        "file_replacement_ms": ensure_int(
+            timings.get("rebuild_active_runtime.file_replacement"),
+            "diagnostics.timings.rebuild_active_runtime.file_replacement",
+        ),
+        "post_write_audit_ms": ensure_int(
+            timings.get("rebuild_active_runtime.post_write_audit"),
+            "diagnostics.timings.rebuild_active_runtime.post_write_audit",
+        ),
         "planned_file_count": ensure_int(summary.get("planned_file_count"), "planned_file_count"),
         "skipped_file_count": ensure_int(summary.get("skipped_file_count"), "skipped_file_count"),
         "plugin_source_ast_source_scan_file_count": ensure_int(
@@ -366,6 +424,25 @@ def build_run_result(
             "terminology_written_count",
         ),
     }
+
+
+def load_diagnostics_from_summary(summary: dict[str, object]) -> dict[str, object]:
+    """从 stdout summary.diagnostics.file 读取完整诊断 JSON。"""
+    diagnostics_path = ensure_str_path_from_summary(summary)
+    try:
+        payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeError(f"diagnostics 文件不可读取: {diagnostics_path}") from error
+    return ensure_object(payload, "diagnostics")
+
+
+def ensure_str_path_from_summary(summary: dict[str, object]) -> Path:
+    """从 stdout summary 中读取 diagnostics 文件路径。"""
+    diagnostics_summary = ensure_object(summary.get("diagnostics"), "summary.diagnostics")
+    path_value = diagnostics_summary.get("file")
+    if not isinstance(path_value, str) or not path_value.strip():
+        raise TypeError("summary.diagnostics.file 必须是非空字符串")
+    return Path(path_value)
 
 
 def collect_game_sample_stats(game_path: Path) -> dict[str, int]:
@@ -558,10 +635,8 @@ def optional_positive_int(value: int | None, label: str) -> int | None:
 
 def build_cli_env(*, app_home: Path, rust_threads: int | None) -> dict[str, str]:
     """构造性能命令环境变量。"""
-    env = {**os.environ, "ATT_MZ_HOME": str(app_home)}
-    if rust_threads is not None:
-        env["ATT_MZ_RUST_THREADS"] = str(rust_threads)
-    return env
+    _ = rust_threads
+    return {**os.environ, "ATT_MZ_HOME": str(app_home)}
 
 
 def main() -> int:
@@ -600,7 +675,7 @@ def build_unprepared_error_result(
     options: BenchmarkOptions,
     error: Exception,
 ) -> dict[str, object]:
-    """准备出临时目录前失败时返回结构化性能失败结果。"""
+    """准备出临时工作目录前失败时返回结构化性能失败结果。"""
     return {
         "status": "error",
         "game": options.game_title,
@@ -639,7 +714,7 @@ def build_error_result(
 
 
 def remove_tree_with_retries(path: Path) -> str | None:
-    """删除临时目录，处理 Windows 文件句柄短暂占用。"""
+    """删除临时工作目录，处理 Windows 文件句柄短暂占用。"""
     last_error: OSError | None = None
     for _attempt in range(20):
         try:

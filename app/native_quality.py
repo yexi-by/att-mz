@@ -9,14 +9,19 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
+from app.native_contract import NATIVE_CONTRACT_VERSION, ensure_native_contract_version
 from app.rmmz.schema import COMMON_EVENTS_FILE_NAME, MAP_PATTERN, PLUGINS_FILE_NAME, TROOPS_FILE_NAME, SourceResidualRuleRecord, TranslationItem
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 
 
 class NativeModule(Protocol):
     """PyO3 扩展暴露给 Python 的最小接口。"""
+
+    def native_contract_version(self) -> int:
+        """返回 Rust/Python JSON 契约版本。"""
+        raise NotImplementedError
 
     def collect_note_tag_sources(self, payload_json: str) -> str:
         """运行 Rust 多线程 Note 标签来源扫描。"""
@@ -44,6 +49,10 @@ class NativeModule(Protocol):
 
     def native_thread_count(self) -> int:
         """返回 Rust 当前使用的线程数。"""
+        raise NotImplementedError
+
+    def configure_runtime_threads(self, rust_threads: int | None) -> None:
+        """配置 Rust 当前使用的线程数。"""
         raise NotImplementedError
 
 
@@ -155,6 +164,17 @@ def native_thread_count() -> int:
     return count
 
 
+def configure_native_runtime_threads(rust_threads: int | Literal["auto"]) -> None:
+    """把配置文件中的 Rust 线程数显式传给原生核心。"""
+    native_module = _load_native_module()
+    if rust_threads == "auto":
+        native_module.configure_runtime_threads(None)
+        return
+    if rust_threads <= 0:
+        raise ValueError("runtime.rust_threads 必须是正整数或 auto")
+    native_module.configure_runtime_threads(rust_threads)
+
+
 def collect_native_write_protocol_details(
     *,
     game_data: JsonObject,
@@ -241,6 +261,7 @@ def _load_native_module() -> NativeModule:
         native_module = import_module("app._native")
     except ImportError as error:
         raise RuntimeError("Rust 原生扩展不可用，请先执行 uv run maturin develop") from error
+    ensure_native_contract_version(cast(object, native_module))
     return cast(NativeModule, cast(object, native_module))
 
 
@@ -448,6 +469,9 @@ def build_native_text_rules_payload(text_rules: TextRules) -> JsonObject:
         "source_residual_label": setting.source_residual_label,
         "allowed_source_residual_terms": [term for term in setting.allowed_source_residual_terms],
         "source_residual_terms_ignore_case": setting.source_residual_terms_ignore_case,
+        "source_residual_detection_profile": setting.source_residual_detection_profile,
+        "english_source_copy_min_words": setting.english_source_copy_min_words,
+        "english_source_copy_min_letters": setting.english_source_copy_min_letters,
         "line_width_count_pattern": setting.line_width_count_pattern,
         "residual_escape_sequence_pattern": setting.residual_escape_sequence_pattern,
         "long_text_line_width_limit": setting.long_text_line_width_limit,
@@ -455,10 +479,12 @@ def build_native_text_rules_payload(text_rules: TextRules) -> JsonObject:
 
 
 __all__ = [
+    "NATIVE_CONTRACT_VERSION",
     "NativeQualityDetails",
     "NativeQualityCounts",
     "collect_native_font_replacements",
     "collect_native_note_tag_sources",
+    "configure_native_runtime_threads",
     "collect_native_quality_counts",
     "collect_native_quality_details",
     "collect_native_write_protocol_details",

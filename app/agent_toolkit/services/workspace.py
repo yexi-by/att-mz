@@ -7,42 +7,49 @@ from .common import (
     AgentReport,
     AgentServiceContext,
     GameData,
+    GameRegistry,
     JsonArray,
     JsonObject,
+    JsonValue,
     Path,
     QualityProgressCallbacks,
     STRUCTURED_PLACEHOLDER_RULES_FILE_NAME,
-    TargetGameSession,
     TERMINOLOGY_SUBTASK_GROUPS,
+    TargetGameSession,
     TerminologyExtraction,
     TerminologyGlossary,
     TerminologyRegistry,
     CustomPlaceholderRule,
     StructuredPlaceholderRule,
     TextRules,
-    TranslationData,
     _agent_workflow_manifest,
-    _build_placeholder_coverage_report_with_context,
-    _build_structured_placeholder_coverage_report_with_context,
-    _build_custom_placeholder_rule_draft,
+    _build_custom_placeholder_rule_draft_from_details,
     _collect_terminology_duplicate_translation_samples,
     _collect_plugin_json_string_leaf_candidate_details,
     _event_command_rule_records_to_import_json,
     _is_path_inside,
     _merge_terminology_registry,
+    _format_mv_namebox_rule_error,
+    _mv_namebox_match_key,
+    _mv_namebox_match_keys,
+    _note_tag_rule_hits_from_native_details,
     _note_tag_rule_records_to_import_json,
+    _nonstandard_data_skipped_warnings,
     _placeholder_rule_records_to_import_json,
     _plugin_rule_records_to_import_json,
+    _plugin_source_rule_hits_from_scan,
+    _RuleHitMetric,
     _structured_placeholder_rule_records_to_import_json,
-    _validate_event_command_rules_with_context,
-    _validate_mv_virtual_namebox_rules_with_context,
-    _validate_note_tag_rules_with_context,
+    _validate_event_command_rule_records_with_context,
+    _validate_note_tag_rule_records_with_context,
     _validate_placeholder_rules_with_context,
     _validate_plugin_source_rules_with_context,
-    _validate_plugin_rules_with_context,
     _validate_structured_placeholder_rules_with_context,
     _validate_terminology_registry,
     _validate_terminology_registry_shape,
+    build_event_command_rule_records_from_import_shape,
+    build_native_plugin_rule_validation_context_from_import,
+    build_plugin_rule_validation_report_from_native_context,
     _noop_quality_progress_callbacks,
     _write_json_object,
     _write_json_value,
@@ -58,54 +65,455 @@ from .common import (
     export_terminology_artifacts,
     issue,
     json,
-    load_custom_placeholder_rules_text,
+    load_custom_placeholder_rules_import_text,
+    load_structured_placeholder_rules_import_text,
     load_setting,
     load_terminology_glossary,
     load_terminology_registry,
-    placeholder_candidates_to_details,
+    parse_event_command_rule_import_text,
+    parse_note_tag_rule_import_text,
+    parse_plugin_rule_import_text,
     resolve_event_command_codes,
-    scan_placeholder_candidates,
     shutil,
     write_field_terms_json,
     write_glossary_json,
 )
-from app.config.schemas import TextRulesSetting
+from app.config.schemas import Setting, TextRulesSetting
+from app.nonstandard_data import (
+    nonstandard_data_rule_records_to_import_json,
+    parse_nonstandard_data_rule_import_text,
+    validate_nonstandard_data_rules,
+)
+from app.nonstandard_data.scanner import build_nonstandard_data_scan, export_nonstandard_data_workspace
+from app.native_placeholder_scan import (
+    collect_native_placeholder_candidate_scan_from_entries,
+    count_uncovered_placeholder_candidate_details,
+)
+from app.native_structured_placeholder_scan import (
+    collect_native_structured_placeholder_candidate_scan_from_entries,
+    count_uncovered_structured_placeholder_candidate_details,
+)
+from app.native_note_tag_scan import (
+    build_note_tag_rule_records_from_native_candidates,
+    collect_native_note_tag_hit_details,
+)
+from app.note_tag_text.sources import matched_note_file_names
+from app.event_command_text.native_validation import (
+    NativeEventCommandRuleValidationContext,
+    build_native_event_command_rule_validation_context,
+)
+from app.plugin_text import NativePluginRuleValidationContext
 from app.plugin_source_text import (
     PluginSourceScan,
-    build_plugin_source_scan,
+    build_plugin_source_rule_records_from_import,
     collect_plugin_source_review_coverage,
+    parse_plugin_source_rule_import_text,
     plugin_source_rule_records_to_import_json,
 )
-from app.rule_review import (
-    EVENT_COMMAND_TEXT_RULE_DOMAIN,
-    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-    NOTE_TAG_TEXT_RULE_DOMAIN,
-    PLACEHOLDER_RULE_DOMAIN,
-    PLUGIN_TEXT_RULE_DOMAIN,
-    PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
-    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    RuleReviewDomain,
-    mv_virtual_namebox_rule_scope_hash,
-    plugin_rule_scope_hash,
-    plugin_source_rule_scope_hash,
-)
-from app.application.flow_gate import (
-    event_command_rule_scope_hash_for_setting,
-    event_command_rule_scope_hash_for_command_codes,
-    normal_placeholder_scope_hash,
-    note_tag_rule_scope_hash_for_text_rules,
-    structured_placeholder_scope_hash,
+from app.plugin_source_text.native_scan import (
+    build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs as _build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs,
+    build_native_plugin_source_risk_report_from_inputs as _build_native_plugin_source_risk_report_from_inputs,
+    build_native_plugin_source_scan as _build_native_plugin_source_scan,
+    native_plugin_source_risk_report_from_scan as _native_plugin_source_risk_report_from_scan,
 )
 from app.rmmz.mv_namebox import (
     MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
     MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME,
-    mv_virtual_namebox_candidate_details,
-    mv_virtual_namebox_candidates_payload,
     mv_virtual_namebox_rule_records_to_import_json,
+    parse_mv_virtual_namebox_rule_import_text,
+)
+from app.rmmz.mv_namebox_native import (
+    native_mv_virtual_namebox_candidates_payload,
+    scan_native_mv_virtual_namebox,
 )
 from app.rmmz.game_file_view import GameFileView, parse_game_file_view
-from app.rmmz.schema import MvVirtualNameboxRuleRecord
+from app.rmmz.loader import load_plugin_source_files_for_view
+from app.rmmz.schema import MvVirtualNameboxRuleRecord, NoteTagTextRuleRecord
+from app.rmmz.source_snapshot import validate_plugin_source_snapshot_manifest
+from app.rule_review import (
+    MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+)
+from app.rule_review_decision import RuleCoverageResult
 from app.terminology import collect_terminology_bundle_errors
+from app.text_index import (
+    collect_text_index_external_rule_gate_errors,
+    detect_text_index_invalidations,
+    rebuild_text_index_native_storage,
+)
+from app.text_facts import (
+    read_current_text_fact_placeholder_entries,
+    read_current_text_fact_scope,
+)
+from app.persistence.records import TextFactScopeRecord
+from app.persistence.sql import CURRENT_TEXT_FACT_CONTRACT_VERSION
+from .rule_identity import (
+    RuleFactProbe,
+    resolve_current_rule_fact_hits,
+    resolve_current_rule_translation_items,
+)
+from app.text_fact_identity import require_translation_fact_identities
+
+SOURCE_SNAPSHOT_MISSING_MESSAGE = (
+    "尚未创建翻译源快照，请使用干净原始游戏目录重新执行 add-game；"
+    "如果只是文本范围索引缺失或过期，再运行 rebuild-text-index"
+)
+
+
+def _plugin_source_native_scan_warnings(risk_report: JsonObject) -> list[AgentIssue]:
+    """把 Rust 候选扫描跳过的非法插件源码文件转换成 Agent 告警。"""
+    syntax_errors = ensure_json_array(risk_report["syntax_errors"], "plugin-source-risk-report.syntax_errors")
+    if not syntax_errors:
+        return []
+    active_count = 0
+    for index, raw_error in enumerate(syntax_errors):
+        error = ensure_json_object(raw_error, f"plugin-source-risk-report.syntax_errors[{index}]")
+        if error.get("active") is True:
+            active_count += 1
+    return [
+        issue(
+            "plugin_source_syntax_warning",
+            (
+                f"发现 {len(syntax_errors)} 个插件源码文件不是合法 JS，已跳过这些文件的插件源码文本扫描；"
+                f"其余可解析插件源码仍应继续按 AST 地图归类，其中启用插件 {active_count} 个，"
+                "这只是告警，不代表插件源码支线失败，详情见 plugin-source-risk-report.json"
+            ),
+        )
+    ]
+
+
+def _json_bool(payload: JsonObject, key: str, label: str) -> bool:
+    """读取 JSON 布尔字段。"""
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise TypeError(f"{label}.{key} 必须是布尔值")
+    return value
+
+
+async def _resolve_workspace_rule_hit_metrics(
+    *,
+    session: TargetGameSession,
+    domain: str,
+    grouped_hits: list[list[_RuleHitMetric]],
+) -> list[list[_RuleHitMetric]]:
+    """把 workspace 规则命中解析到当前文本事实 fact_id。"""
+    probes = [
+        RuleFactProbe(
+            domain=domain,
+            location_path=hit.location_path,
+            translatable_text=hit.sample_text,
+        )
+        for record_hits in grouped_hits
+        for hit in record_hits
+    ]
+    rule_fact_hits = await resolve_current_rule_fact_hits(session, probes)
+    resolved_by_probe = {
+        (hit.location_path, hit.sample_text): hit
+        for hit in rule_fact_hits
+    }
+    resolved_groups: list[list[_RuleHitMetric]] = []
+    for record_hits in grouped_hits:
+        resolved_record_hits: list[_RuleHitMetric] = []
+        for hit in record_hits:
+            resolved_hit = resolved_by_probe.get((hit.location_path, hit.sample_text))
+            if resolved_hit is None:
+                resolved_record_hits.append(
+                    _RuleHitMetric(location_path=hit.location_path, sample_text=hit.sample_text)
+                )
+                continue
+            resolved_record_hits.append(
+                _RuleHitMetric(
+                    location_path=hit.location_path,
+                    sample_text=hit.sample_text,
+                    fact_id=resolved_hit.fact_id,
+                    source_fact_raw_hash=resolved_hit.source_fact_raw_hash,
+                    source_fact_translatable_hash=resolved_hit.source_fact_translatable_hash,
+                )
+            )
+        resolved_groups.append(resolved_record_hits)
+    return resolved_groups
+
+
+async def _resolve_workspace_plugin_source_hit_metrics(
+    *,
+    session: TargetGameSession,
+    grouped_hits: dict[str, list[_RuleHitMetric]],
+) -> dict[str, list[_RuleHitMetric]]:
+    """把 workspace 插件源码命中解析到当前文本事实 fact_id。"""
+    resolved_groups = await _resolve_workspace_rule_hit_metrics(
+        session=session,
+        domain="plugin_source",
+        grouped_hits=list(grouped_hits.values()),
+    )
+    return {
+        file_name: resolved_hits
+        for file_name, resolved_hits in zip(grouped_hits, resolved_groups, strict=True)
+    }
+
+
+async def _resolve_workspace_plugin_rule_validation_context(
+    *,
+    session: TargetGameSession,
+    context: NativePluginRuleValidationContext,
+) -> NativePluginRuleValidationContext:
+    """把 workspace 插件参数命中回填当前文本事实 fact_id。"""
+    resolved_items = await resolve_current_rule_translation_items(
+        session,
+        domain="plugin_config",
+        items=context.extracted_items,
+    )
+    resolved_by_item_id = {
+        id(original_item): resolved_item
+        for original_item, resolved_item in zip(context.extracted_items, resolved_items, strict=True)
+    }
+    return NativePluginRuleValidationContext(
+        records=context.records,
+        extracted_items=resolved_items,
+        record_items_by_index={
+            plugin_index: [
+                resolved_by_item_id.get(id(item), item)
+                for item in record_items
+            ]
+            for plugin_index, record_items in context.record_items_by_index.items()
+        },
+        translation_prefixes=context.translation_prefixes,
+    )
+
+
+async def _resolve_workspace_event_command_rule_validation_context(
+    *,
+    session: TargetGameSession,
+    context: NativeEventCommandRuleValidationContext,
+) -> NativeEventCommandRuleValidationContext:
+    """把 workspace 事件指令命中回填当前文本事实 fact_id。"""
+    resolved_items = await resolve_current_rule_translation_items(
+        session,
+        domain="event_command",
+        items=context.extracted_items,
+    )
+    resolved_by_item_id = {
+        id(original_item): resolved_item
+        for original_item, resolved_item in zip(context.extracted_items, resolved_items, strict=True)
+    }
+    return NativeEventCommandRuleValidationContext(
+        extracted_items=resolved_items,
+        record_items_by_index=[
+            [
+                resolved_by_item_id.get(id(item), item)
+                for item in record_items
+            ]
+            for record_items in context.record_items_by_index
+        ],
+        translation_prefixes=context.translation_prefixes,
+        translation_prefixes_by_index=context.translation_prefixes_by_index,
+    )
+
+
+async def _write_compact_json_value(path: Path, payload: JsonValue) -> None:
+    """写入大型工作区 JSON，避免 pretty 输出主导本地 CLI 耗时。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    async with aiofiles.open(path, "w", encoding="utf-8") as file:
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        _ = await file.write(f"{text}\n")
+
+
+def _sampled_coverage_report_details(
+    coverage: RuleCoverageResult,
+    *,
+    summary_extra: JsonObject | None = None,
+) -> JsonObject:
+    """工作区验收报告只输出覆盖样本；完整候选已在工作区候选文件中。"""
+    summary: JsonObject = {
+        **coverage.summary(detail_mode="sampled"),
+        **(summary_extra or {}),
+    }
+    return {
+        "summary": summary,
+        "details": coverage.sampled_details(),
+    }
+
+
+async def _read_workspace_placeholder_entries_from_text_index(
+    *,
+    session: TargetGameSession,
+    setting: Setting,
+    text_rules: TextRules,
+) -> tuple[list[tuple[str, list[str]]], str]:
+    """工作区命令从持久文本索引读取占位符扫描所需的轻量正文。"""
+    text_index_invalidations = await detect_text_index_invalidations(
+        session=session,
+        text_rules=text_rules,
+    )
+    if text_index_invalidations:
+        text_index_status = (
+            "cold_rebuilt"
+            if any(item.reason_key == "text_index_missing" for item in text_index_invalidations)
+            else "stale_rebuilt"
+        )
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+    else:
+        text_index_status = "used"
+    return await read_current_text_fact_placeholder_entries(session), text_index_status
+
+
+def _text_fact_scope_metadata(scope: TextFactScopeRecord) -> JsonObject:
+    """生成工作区 JSON 里固定当前文本事实范围的最小元数据。"""
+    return {
+        "scope_key": scope.scope_key,
+        "scope_hash": scope.scope_hash,
+        "text_fact_schema_version": scope.schema_version,
+    }
+
+
+def _normal_placeholder_coverage_result_from_entries(
+    *,
+    entries: list[tuple[str, list[str]]],
+    text_rules: TextRules,
+    rule_count: int,
+) -> RuleCoverageResult:
+    """用轻量索引正文构建普通占位符覆盖结果。"""
+    scan = collect_native_placeholder_candidate_scan_from_entries(
+        entries=entries,
+        text_rules=text_rules,
+    )
+    candidate_details = scan.candidate_details
+    uncovered_count = count_uncovered_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 普通占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
+    return RuleCoverageResult(
+        rule_domain=PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=scan.scope_hash,
+        rule_count=rule_count,
+        candidate_count=len(candidate_details),
+        covered_count=len(candidate_details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
+
+
+def _structured_placeholder_coverage_result_from_entries(
+    *,
+    entries: list[tuple[str, list[str]]],
+    text_rules: TextRules,
+    rule_count: int,
+) -> RuleCoverageResult:
+    """用轻量索引正文构建结构化占位符覆盖结果。"""
+    scan = collect_native_structured_placeholder_candidate_scan_from_entries(
+        entries=entries,
+        text_rules=text_rules,
+    )
+    candidate_details = scan.candidate_details
+    uncovered_count = count_uncovered_structured_placeholder_candidate_details(candidate_details)
+    if not scan.scope_hash:
+        raise RuntimeError("native 结构化占位符规则扫描缺少 scope_hash，请重新构建 Rust 原生扩展")
+    return RuleCoverageResult(
+        rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+        scope_hash=scan.scope_hash,
+        rule_count=rule_count,
+        candidate_count=len(candidate_details),
+        covered_count=len(candidate_details) - uncovered_count,
+        uncovered_count=uncovered_count,
+        candidates=candidate_details,
+    )
+
+
+def _workspace_preview_sample_texts(
+    entries: list[tuple[str, list[str]]],
+    *,
+    limit: int = 100,
+) -> list[str]:
+    """从轻量索引正文提取有限预览样本，避免还原完整 TranslationData。"""
+    samples: list[str] = []
+    seen: set[str] = set()
+    for _location_path, original_lines in entries:
+        for text in original_lines:
+            stripped_text = text.strip()
+            if not stripped_text or stripped_text in seen:
+                continue
+            seen.add(stripped_text)
+            samples.append(stripped_text)
+            if len(samples) >= limit:
+                return samples
+    return samples
+
+
+def _workspace_note_tag_rule_prefixes(
+    *,
+    game_data: GameData,
+    records: list[NoteTagTextRuleRecord],
+) -> list[str]:
+    """返回 workspace Note 标签规则影响的已保存译文路径前缀。"""
+    return sorted(
+        {
+            f"{file_name}/"
+            for record in records
+            for file_name in matched_note_file_names(game_data=game_data, file_pattern=record.file_name)
+        }
+    )
+
+
+def _workspace_plugin_source_file_prefixes(game_data: GameData) -> list[str]:
+    """返回 workspace 当前插件源码文件对应的已保存译文路径前缀。"""
+    return sorted({f"js/plugins/{file_name}/" for file_name in game_data.plugin_source_files})
+
+
+def _workspace_placeholder_preview_sample_texts(
+    entries: list[tuple[str, list[str]]],
+    *,
+    text_rules: TextRules,
+    limit: int = 100,
+) -> list[str]:
+    """从轻量索引正文提取普通占位符规则预览样本。"""
+    def likely_placeholder_text(text: str) -> bool:
+        return (
+            "\\" in text
+            or "<" in text
+            or text_rules.has_custom_placeholder_rule_match(text)
+            or text_rules.has_structured_placeholder_rule_match(text)
+        )
+
+    return _workspace_preview_sample_texts(
+        [
+            (
+                location_path,
+                [text for text in original_lines if likely_placeholder_text(text)],
+            )
+            for location_path, original_lines in entries
+        ],
+        limit=limit,
+    )
+
+
+def _workspace_structured_placeholder_preview_sample_texts(
+    entries: list[tuple[str, list[str]]],
+    *,
+    structured_rules: tuple[StructuredPlaceholderRule, ...],
+    limit: int = 100,
+) -> list[str]:
+    """从轻量索引正文提取结构化占位符规则预览样本。"""
+    text_rules = TextRules.from_setting(
+        TextRulesSetting(),
+        structured_placeholder_rules=structured_rules,
+    )
+
+    def matches_structured_rule(text: str) -> bool:
+        return text_rules.has_structured_placeholder_rule_match(text)
+
+    return _workspace_preview_sample_texts(
+        [
+            (
+                location_path,
+                [text for text in original_lines if matches_structured_rule(text)],
+            )
+            for location_path, original_lines in entries
+        ],
+        limit=limit,
+    )
 
 
 class WorkspaceAgentMixin:
@@ -122,28 +530,39 @@ class WorkspaceAgentMixin:
         resolved_view = parse_game_file_view(str(source_view))
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data_for_view(
-                session,
+            layout, plugins_js, plugin_source_files, plugin_source_read_errors = await load_plugin_source_files_for_view(
+                session.game_path,
                 source_view=resolved_view,
-                include_writable_copies=False,
             )
+            if resolved_view == GameFileView.TRANSLATION_SOURCE:
+                snapshot_records = await session.read_source_snapshot_records()
+                if not snapshot_records:
+                    raise RuntimeError(SOURCE_SNAPSHOT_MISSING_MESSAGE)
+                validate_plugin_source_snapshot_manifest(layout=layout, records=snapshot_records)
             text_rules = TextRules.from_setting(setting.text_rules)
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-        risk_report = scan.risk_report_json()
+        risk_report = _build_native_plugin_source_risk_report_from_inputs(
+            plugins_js=plugins_js,
+            plugin_source_files=plugin_source_files,
+            plugin_source_read_errors=plugin_source_read_errors,
+            text_rules=text_rules,
+        )
         risk_report["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        await _write_json_object(output_path, risk_report)
+        await _write_compact_json_value(output_path, risk_report)
+        risk = ensure_json_object(risk_report["risk"], "plugin-source-risk-report.risk")
+        candidate_count = _summary_int(risk_report, "candidate_count")
         warnings: list[AgentIssue] = []
-        if not scan.candidates:
+        if candidate_count == 0:
             warnings.append(issue("plugin_source_text_empty", "没有扫描到插件源码硬编码文本候选"))
+        warnings.extend(_plugin_source_native_scan_warnings(risk_report))
         return AgentReport.from_parts(
             errors=[],
             warnings=warnings,
             summary={
                 "source_view": resolved_view.value,
-                "candidate_count": len(scan.candidates),
+                "candidate_count": candidate_count,
                 "output": str(output_path),
-                **scan.risk.to_json_object(),
+                **risk,
             },
             details={
                 **risk_report,
@@ -162,28 +581,37 @@ class WorkspaceAgentMixin:
         resolved_view = parse_game_file_view(str(source_view))
         async with await self.game_registry.open_game(game_title) as session:
             setting = load_setting(self.setting_path, source_language=session.source_language)
-            game_data = await self._load_game_data_for_view(
-                session,
+            layout, plugins_js, plugin_source_files, plugin_source_read_errors = await load_plugin_source_files_for_view(
+                session.game_path,
                 source_view=resolved_view,
-                include_writable_copies=False,
             )
+            if resolved_view == GameFileView.TRANSLATION_SOURCE:
+                snapshot_records = await session.read_source_snapshot_records()
+                if not snapshot_records:
+                    raise RuntimeError(SOURCE_SNAPSHOT_MISSING_MESSAGE)
+                validate_plugin_source_snapshot_manifest(layout=layout, records=snapshot_records)
             text_rules = TextRules.from_setting(setting.text_rules)
-        scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
-        payload = scan.to_json_object()
+        payload, details = _build_native_plugin_source_ast_map_payload_and_risk_report_from_inputs(
+            plugins_js=plugins_js,
+            plugin_source_files=plugin_source_files,
+            plugin_source_read_errors=plugin_source_read_errors,
+            text_rules=text_rules,
+        )
         payload["source_view"] = resolved_view.value
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        await _write_json_object(output_path, payload)
-        details = scan.risk_report_json()
+        await _write_compact_json_value(output_path, payload)
         details["source_view"] = resolved_view.value
         details["output"] = str(output_path)
+        risk = ensure_json_object(payload["risk"], "plugin-source-ast-map.risk")
+        candidate_count = _summary_int(payload, "candidate_count")
         return AgentReport.from_parts(
             errors=[],
-            warnings=[],
+            warnings=_plugin_source_native_scan_warnings(details),
             summary={
                 "source_view": resolved_view.value,
                 "output": str(output_path),
-                "candidate_count": len(scan.candidates),
-                **scan.risk.to_json_object(),
+                "candidate_count": candidate_count,
+                **risk,
             },
             details=details,
         )
@@ -202,6 +630,7 @@ class WorkspaceAgentMixin:
             setting = load_setting(self.setting_path, source_language=session.source_language)
             game_data = await self._load_translation_source_game_data(
                 session,
+                include_plugin_source_files=True,
                 include_writable_copies=False,
             )
             terminology_registry = await session.read_terminology_registry()
@@ -213,6 +642,7 @@ class WorkspaceAgentMixin:
             note_tag_rules = await session.read_note_tag_text_rules()
             event_rules = await session.read_event_command_text_rules()
             plugin_source_rules = await session.read_plugin_source_text_rules()
+            nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             placeholder_records = await session.read_placeholder_rules()
             structured_placeholder_records = await session.read_structured_placeholder_rules()
@@ -223,17 +653,48 @@ class WorkspaceAgentMixin:
                 custom_placeholder_rules=custom_rules,
                 structured_placeholder_rules=structured_rules,
             )
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
+            plugin_source_scan = _build_native_plugin_source_scan(
                 game_data=game_data,
                 text_rules=text_rules,
+                rule_records=plugin_source_rules,
             )
-            plugin_source_scan = build_plugin_source_scan(game_data=game_data, text_rules=text_rules)
+            plugin_source_risk_report = _native_plugin_source_risk_report_from_scan(plugin_source_scan)
+            plugin_source_risk = ensure_json_object(
+                plugin_source_risk_report["risk"],
+                "plugin-source-risk-report.risk",
+            )
+            placeholder_entries, text_index_status = await _read_workspace_placeholder_entries_from_text_index(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
+            )
+            text_fact_scope = await read_current_text_fact_scope(session)
+            text_index_metadata = await session.read_text_index_metadata()
+            mv_virtual_namebox_review_required = game_data.layout.engine_kind == "mv"
+            if text_index_metadata is not None:
+                external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+                    session=session,
+                    metadata=text_index_metadata,
+                )
+                mv_virtual_namebox_review_required = any(
+                    error.code.startswith(MV_VIRTUAL_NAMEBOX_RULE_DOMAIN)
+                    for error in external_rule_gate_errors
+                )
+            translation_scope_mode = "text_index"
             plugin_source_review = collect_plugin_source_review_coverage(
                 scan=plugin_source_scan,
                 rule_records=plugin_source_rules,
             )
-            plugin_source_extension_active = plugin_source_scan.risk.high_risk or bool(plugin_source_rules)
+            plugin_source_extension_active = (
+                _json_bool(plugin_source_risk, "high_risk", "plugin-source-risk-report.risk")
+                or bool(plugin_source_rules)
+            )
+            nonstandard_data_scan = await build_nonstandard_data_scan(
+                layout=game_data.layout,
+                source_view=GameFileView.TRANSLATION_SOURCE,
+                text_rules=text_rules,
+            )
+            nonstandard_data_extension_active = nonstandard_data_scan.high_risk or bool(nonstandard_data_rules)
         terminology_summary = await export_terminology_artifacts(
             game_data=game_data,
             output_dir=target_dir / "terminology",
@@ -262,7 +723,6 @@ class WorkspaceAgentMixin:
         plugin_rules_path = target_dir / "plugin-rules.json"
         await _write_json_value(plugin_rules_path, _plugin_rule_records_to_import_json(plugin_rules))
         plugin_source_risk_path = target_dir / "plugin-source-risk-report.json"
-        plugin_source_risk_report = plugin_source_scan.risk_report_json()
         plugin_source_risk_report["source_view"] = GameFileView.TRANSLATION_SOURCE.value
         await _write_json_object(plugin_source_risk_path, plugin_source_risk_report)
         plugin_source_rules_path: Path | None = None
@@ -272,6 +732,29 @@ class WorkspaceAgentMixin:
                 plugin_source_rules_path,
                 plugin_source_rule_records_to_import_json(plugin_source_rules),
             )
+        nonstandard_data_dir = target_dir / "nonstandard-data"
+        nonstandard_data_export_details: JsonObject | None = None
+        if nonstandard_data_extension_active:
+            nonstandard_data_export_details = await export_nonstandard_data_workspace(
+                scan=nonstandard_data_scan,
+                output_dir=nonstandard_data_dir,
+            )
+        nonstandard_data_risk_path = target_dir / "nonstandard-data-risk-report.json"
+        await _write_json_object(
+            nonstandard_data_risk_path,
+            {
+                "source_view": GameFileView.TRANSLATION_SOURCE.value,
+                "summary": nonstandard_data_scan.summary_json(),
+                "files": [file_scan.to_json_object() for file_scan in nonstandard_data_scan.file_scans],
+            },
+        )
+        nonstandard_data_rules_path: Path | None = None
+        if nonstandard_data_extension_active:
+            nonstandard_data_rules_path = target_dir / "nonstandard-data-rules.json"
+            await _write_json_value(
+                nonstandard_data_rules_path,
+                nonstandard_data_rule_records_to_import_json(nonstandard_data_rules),
+            )
         note_tag_candidates_path = target_dir / "note-tag-candidates.json"
         note_tag_report = await export_note_tag_candidates_file(
             game_data=game_data,
@@ -280,12 +763,12 @@ class WorkspaceAgentMixin:
         )
         note_tag_rules_path = target_dir / "note-tag-rules.json"
         await _write_json_object(note_tag_rules_path, _note_tag_rule_records_to_import_json(note_tag_rules))
-        default_command_codes = (
+        configured_command_codes = (
             None
             if command_codes is not None
             else setting.event_command_text.default_codes_for_engine(game_data.layout.engine_kind)
         )
-        effective_codes = resolve_event_command_codes(command_codes=command_codes, default_command_codes=default_command_codes)
+        effective_codes = resolve_event_command_codes(command_codes=command_codes, configured_command_codes=configured_command_codes)
         event_commands_path = target_dir / "event-commands.json"
         event_command_count = await export_event_commands_json_file(
             game_data=game_data,
@@ -294,17 +777,21 @@ class WorkspaceAgentMixin:
         )
         event_rules_path = target_dir / "event-command-rules.json"
         await _write_json_object(event_rules_path, _event_command_rule_records_to_import_json(event_rules))
-        placeholder_candidates = scan_placeholder_candidates(translation_data_map, text_rules)
+        placeholder_candidate_details = collect_native_placeholder_candidate_scan_from_entries(
+            entries=placeholder_entries,
+            text_rules=text_rules,
+        ).candidate_details
         placeholder_report = AgentReport.from_parts(
             errors=[],
             warnings=[],
-            summary={},
-            details={"candidates": placeholder_candidates_to_details(placeholder_candidates)},
+            summary=_text_fact_scope_metadata(text_fact_scope),
+            details={"candidates": placeholder_candidate_details},
         )
         placeholder_path = target_dir / "placeholder-candidates.json"
-        async with aiofiles.open(placeholder_path, "w", encoding="utf-8") as file:
-            _ = await file.write(f"{placeholder_report.to_json_text()}\n")
-        placeholder_rule_drafts = _build_custom_placeholder_rule_draft(placeholder_candidates)
+        placeholder_payload = placeholder_report.model_dump(mode="json")
+        placeholder_payload.update(_text_fact_scope_metadata(text_fact_scope))
+        await _write_compact_json_value(placeholder_path, placeholder_payload)
+        placeholder_rule_drafts = _build_custom_placeholder_rule_draft_from_details(placeholder_candidate_details)
         placeholder_rules_path = target_dir / "placeholder-rules.json"
         placeholder_rule_payload: JsonObject = (
             _placeholder_rule_records_to_import_json(placeholder_records)
@@ -320,11 +807,16 @@ class WorkspaceAgentMixin:
         mv_virtual_namebox_candidates_path: Path | None = None
         mv_virtual_namebox_rules_path: Path | None = None
         mv_virtual_namebox_candidate_count = 0
-        if game_data.layout.engine_kind == "mv":
+        mv_virtual_namebox_workspace_active = (
+            game_data.layout.engine_kind == "mv"
+            and mv_virtual_namebox_review_required
+        )
+        if mv_virtual_namebox_workspace_active:
             mv_virtual_namebox_candidates_path = target_dir / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
-            mv_candidates_payload = mv_virtual_namebox_candidates_payload(game_data)
+            mv_candidates_payload = native_mv_virtual_namebox_candidates_payload(game_data)
+            mv_candidates_payload["text_fact_scope"] = _text_fact_scope_metadata(text_fact_scope)
             mv_virtual_namebox_candidate_count = _summary_int(mv_candidates_payload, "candidate_count")
-            await _write_json_object(mv_virtual_namebox_candidates_path, mv_candidates_payload)
+            await _write_compact_json_value(mv_virtual_namebox_candidates_path, mv_candidates_payload)
             mv_virtual_namebox_rules_path = target_dir / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
             await _write_json_object(
                 mv_virtual_namebox_rules_path,
@@ -336,6 +828,8 @@ class WorkspaceAgentMixin:
             "engine_version": game_data.layout.engine_version,
             "source_language": session.source_language,
             "target_language": session.target_language,
+            "translation_scope_mode": translation_scope_mode,
+            "text_index_status": text_index_status,
             "content_root": str(game_data.layout.content_root),
             "data_dir": str(game_data.layout.data_dir),
             "event_command_codes": list(sorted(effective_codes)),
@@ -348,9 +842,24 @@ class WorkspaceAgentMixin:
             "plugin_count": len(game_data.plugins_js),
             "plugin_json_string_leaf_candidate_count": len(plugin_json_string_leaf_candidates),
             "plugin_rule_count": sum(len(rule.path_templates) for rule in plugin_rules),
-            "plugin_source_candidate_count": len(plugin_source_scan.candidates),
-            "plugin_source_high_risk": plugin_source_scan.risk.high_risk,
+            "plugin_source_candidate_count": _summary_int(plugin_source_risk_report, "candidate_count"),
+            "plugin_source_high_risk": _json_bool(
+                plugin_source_risk,
+                "high_risk",
+                "plugin-source-risk-report.risk",
+            ),
+            "plugin_source_syntax_error_file_count": len(
+                ensure_json_array(
+                    plugin_source_risk_report["syntax_errors"],
+                    "plugin-source-risk-report.syntax_errors",
+                )
+            ),
             "stale_plugin_rule_count": stale_plugin_rule_count,
+            "nonstandard_data_file_count": len(nonstandard_data_scan.files),
+            "nonstandard_data_candidate_count": len(nonstandard_data_scan.candidates),
+            "nonstandard_data_high_risk": nonstandard_data_scan.high_risk,
+            "nonstandard_data_path_rule_count": sum(len(rule.path_templates) for rule in nonstandard_data_rules),
+            "nonstandard_data_skipped_file_count": sum(1 for rule in nonstandard_data_rules if rule.skipped),
             "note_tag_candidate_count": note_tag_report.candidate_tag_count,
             "note_tag_rule_count": sum(len(rule.tag_names) for rule in note_tag_rules),
             "event_command_count": event_command_count,
@@ -360,6 +869,8 @@ class WorkspaceAgentMixin:
             "structured_placeholder_rule_count": len(structured_placeholder_records),
             "mv_virtual_namebox_candidate_count": mv_virtual_namebox_candidate_count,
             "mv_virtual_namebox_rule_count": len(mv_virtual_namebox_rules),
+            "mv_virtual_namebox_workspace_active": mv_virtual_namebox_workspace_active,
+            **_text_fact_scope_metadata(text_fact_scope),
         }
         if plugin_source_extension_active:
             generated_summary.update(
@@ -382,6 +893,7 @@ class WorkspaceAgentMixin:
             str(plugin_json_string_leaf_candidates_path),
             str(plugin_rules_path),
             str(plugin_source_risk_path),
+            str(nonstandard_data_risk_path),
             str(note_tag_candidates_path),
             str(note_tag_rules_path),
             str(event_commands_path),
@@ -392,6 +904,10 @@ class WorkspaceAgentMixin:
         ]
         if plugin_source_rules_path is not None:
             manifest_files.append(str(plugin_source_rules_path))
+        if nonstandard_data_rules_path is not None:
+            manifest_files.append(str(nonstandard_data_rules_path))
+        if nonstandard_data_export_details is not None:
+            manifest_files.append(str(nonstandard_data_dir))
         if mv_virtual_namebox_candidates_path is not None:
             manifest_files.append(str(mv_virtual_namebox_candidates_path))
         if mv_virtual_namebox_rules_path is not None:
@@ -411,17 +927,24 @@ class WorkspaceAgentMixin:
             },
             "workflow": _agent_workflow_manifest(
                 engine_kind=game_data.layout.engine_kind,
+                include_mv_virtual_namebox_round=mv_virtual_namebox_workspace_active,
                 terminology_subtask_summary=terminology_subtask_summary,
             ),
         }
         manifest_path = target_dir / "manifest.json"
         async with aiofiles.open(manifest_path, "w", encoding="utf-8") as file:
             _ = await file.write(f"{json.dumps(manifest, ensure_ascii=False, indent=2)}\n")
+        details: JsonObject = {"manifest": manifest}
+        if nonstandard_data_export_details is not None:
+            details["nonstandard_data_export"] = nonstandard_data_export_details
         return AgentReport.from_parts(
             errors=[],
-            warnings=[],
+            warnings=[
+                *_nonstandard_data_skipped_warnings(nonstandard_data_rules),
+                *_plugin_source_native_scan_warnings(plugin_source_risk_report),
+            ],
             summary={**generated_summary, "workspace": str(target_dir), "manifest": str(manifest_path)},
-            details={"manifest": manifest},
+            details=details,
         )
 
     async def validate_agent_workspace(
@@ -433,7 +956,7 @@ class WorkspaceAgentMixin:
     ) -> AgentReport:
         """检查 Agent 临时工作区里的可导入文件。"""
         set_progress, advance_progress, set_status = callbacks or _noop_quality_progress_callbacks()
-        set_progress(0, 12)
+        set_progress(0, 13)
         set_status("读取工作区清单")
         errors: list[AgentIssue] = []
         warnings: list[AgentIssue] = []
@@ -442,20 +965,52 @@ class WorkspaceAgentMixin:
         glossary_path = workspace / "terminology" / "glossary.json"
         plugin_rules_path = workspace / "plugin-rules.json"
         plugin_source_rules_path = workspace / "plugin-source-rules.json"
+        nonstandard_data_risk_path = workspace / "nonstandard-data-risk-report.json"
+        nonstandard_data_rules_path = workspace / "nonstandard-data-rules.json"
         note_tag_rules_path = workspace / "note-tag-rules.json"
         event_rules_path = workspace / "event-command-rules.json"
+        mv_virtual_namebox_candidates_path = workspace / MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME
         mv_virtual_namebox_rules_path = workspace / MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME
         placeholder_rules_path = workspace / "placeholder-rules.json"
         structured_placeholder_rules_path = workspace / STRUCTURED_PLACEHOLDER_RULES_FILE_NAME
-        event_command_codes, event_command_codes_issue = await _read_workspace_event_command_codes(workspace)
+        workspace_manifest, manifest_issue = await _read_workspace_manifest(workspace)
+        if manifest_issue is not None:
+            errors.append(manifest_issue)
+        manifest_generated = _workspace_manifest_generated(workspace_manifest)
+        _event_command_codes, event_command_codes_issue = _workspace_event_command_codes_from_manifest(workspace_manifest)
         if event_command_codes_issue is not None:
             errors.append(event_command_codes_issue)
+        plugin_source_rules_in_manifest = _workspace_manifest_includes_path(
+            workspace_manifest,
+            plugin_source_rules_path,
+        )
+        nonstandard_data_rules_in_manifest = _workspace_manifest_includes_path(
+            workspace_manifest,
+            nonstandard_data_rules_path,
+        )
+        mv_virtual_namebox_rules_in_manifest = _workspace_manifest_includes_path(
+            workspace_manifest,
+            mv_virtual_namebox_rules_path,
+        )
         advance_progress(1)
         async with await self.game_registry.open_game(game_title) as session:
-            set_status("加载翻译源视图")
             setting = load_setting(self.setting_path, source_language=session.source_language)
+            stored_plugin_source_rules = await session.read_plugin_source_text_rules()
+            stored_nonstandard_data_rules = await session.read_nonstandard_data_text_rules()
+            plugin_source_scan_required = (
+                plugin_source_rules_in_manifest
+                or bool(stored_plugin_source_rules)
+                or _manifest_bool(manifest_generated, "plugin_source_high_risk")
+            )
+            nonstandard_data_scan_required = (
+                nonstandard_data_rules_in_manifest
+                or bool(stored_nonstandard_data_rules)
+                or _manifest_bool(manifest_generated, "nonstandard_data_high_risk")
+            )
+            set_status("加载翻译源视图")
             game_data = await self._load_translation_source_game_data(
                 session,
+                include_plugin_source_files=plugin_source_scan_required,
                 include_writable_copies=False,
             )
             advance_progress(1)
@@ -472,52 +1027,50 @@ class WorkspaceAgentMixin:
                 structured_placeholder_rules=structured_rules,
             )
             advance_progress(1)
-            set_status("抽取当前文本范围")
-            translation_data_map = await self._extract_active_translation_data_map(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            advance_progress(1)
-            set_status("扫描插件源码")
-            plugin_source_scan = build_plugin_source_scan(
-                game_data=game_data,
-                text_rules=text_rules,
-            )
-            plugin_source_required = plugin_source_scan.risk.high_risk
-            advance_progress(1)
-            set_status("读取已保存译文和空规则复核状态")
-            stored_plugin_source_rules = await session.read_plugin_source_text_rules()
-            plugin_source_started = bool(stored_plugin_source_rules)
-            translated_paths = await session.read_translation_location_paths()
-            empty_rule_issues = await _read_empty_rule_review_issues(
-                session=session,
-                game_data=game_data,
-                event_command_scope_hash=(
-                    event_command_rule_scope_hash_for_setting(
-                        game_data=game_data,
-                        setting=setting,
-                    )
-                    if event_command_codes is None
-                    else event_command_rule_scope_hash_for_command_codes(
-                        game_data=game_data,
-                        command_codes=event_command_codes,
-                    )
-                ),
-                note_tag_scope_hash=note_tag_rule_scope_hash_for_text_rules(
+            plugin_source_scan: PluginSourceScan | None = None
+            plugin_source_required = _manifest_bool(manifest_generated, "plugin_source_high_risk")
+            if plugin_source_scan_required:
+                set_status("扫描插件源码")
+                plugin_source_scan = _build_native_plugin_source_scan(
                     game_data=game_data,
                     text_rules=text_rules,
-                ),
-                plugin_source_scope_hash=plugin_source_rule_scope_hash(game_data),
-                placeholder_scope_hash=normal_placeholder_scope_hash(
-                    translation_data_map=translation_data_map,
-                    text_rules=text_rules,
-                ),
-                structured_placeholder_scope_hash_value=structured_placeholder_scope_hash(
-                    translation_data_map=translation_data_map,
-                    structured_rules=text_rules.structured_placeholder_rules,
-                ),
+                    rule_records=stored_plugin_source_rules,
+                )
+                plugin_source_required = plugin_source_scan.risk.high_risk
+            set_status("读取文本范围索引")
+            placeholder_entries, _text_index_status = await _read_workspace_placeholder_entries_from_text_index(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
             )
+            current_text_fact_scope = await read_current_text_fact_scope(session)
+            errors.extend(
+                _validate_workspace_scope_metadata(
+                    payload=manifest_generated,
+                    current_scope=current_text_fact_scope,
+                    missing_code="workspace_scope_missing",
+                    stale_code="workspace_scope_stale",
+                    label="manifest.generated",
+                )
+            )
+            advance_progress(1)
+            nonstandard_data_scan = None
+            nonstandard_data_scan_error: Exception | None = None
+            if nonstandard_data_scan_required:
+                set_status("扫描非标准 data 文件")
+                try:
+                    nonstandard_data_scan = await build_nonstandard_data_scan(
+                        layout=game_data.layout,
+                        source_view=GameFileView.TRANSLATION_SOURCE,
+                        text_rules=text_rules,
+                    )
+                except Exception as error:
+                    nonstandard_data_scan_error = error
+            advance_progress(1)
+            set_status("读取已保存译文和支线状态")
+            plugin_source_started = bool(stored_plugin_source_rules)
+            nonstandard_data_started = bool(stored_nonstandard_data_rules)
+            empty_rule_issues = _workspace_empty_rule_warnings(game_data=game_data)
             advance_progress(1)
         set_status("校验术语文件")
         if field_terms_path.exists():
@@ -572,11 +1125,12 @@ class WorkspaceAgentMixin:
         set_status("校验插件规则")
         if plugin_rules_path.exists():
             async with aiofiles.open(plugin_rules_path, "r", encoding="utf-8") as file:
-                plugin_report = _validate_workspace_plugin_rules(
+                plugin_report = await _validate_workspace_plugin_rules(
                     rules_text=await file.read(),
+                    game_registry=self.game_registry,
+                    game_title=game_title,
                     game_data=game_data,
                     text_rules=text_rules,
-                    translated_paths=translated_paths,
                 )
             errors.extend(plugin_report.errors)
             warnings.extend(plugin_report.warnings)
@@ -584,67 +1138,120 @@ class WorkspaceAgentMixin:
             if _summary_int(plugin_report.summary, "rule_count") == 0:
                 plugin_empty_issue = empty_rule_issues["plugin_rules"]
                 if plugin_empty_issue is not None:
-                    errors.append(plugin_empty_issue)
+                    warnings.append(plugin_empty_issue)
         else:
             errors.append(issue("plugin_rules_missing", "工作区缺少 plugin-rules.json"))
-        if plugin_source_rules_path.exists():
-            async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
-                plugin_source_report = _validate_workspace_plugin_source_rules(
-                    rules_text=await file.read(),
-                    game_data=game_data,
-                    text_rules=text_rules,
-                    scan=plugin_source_scan,
-                    translated_paths=translated_paths,
-                )
-            errors.extend(plugin_source_report.errors)
-            plugin_source_warnings = plugin_source_report.warnings
-            plugin_source_reviewed_count = _summary_int(plugin_source_report.summary, "reviewed_selector_count")
-            promoted_plugin_source_warnings: list[AgentIssue] = []
-            kept_plugin_source_warnings: list[AgentIssue] = []
-            for warning in plugin_source_warnings:
-                if warning.code == "plugin_source_review_incomplete" and (
-                    plugin_source_required or plugin_source_reviewed_count > 0
-                ):
-                    promoted_plugin_source_warnings.append(warning)
-                else:
-                    kept_plugin_source_warnings.append(warning)
-            plugin_source_warnings = kept_plugin_source_warnings
-            errors.extend(promoted_plugin_source_warnings)
-            if not plugin_source_required and plugin_source_reviewed_count == 0:
-                plugin_source_warnings = [
-                    warning
-                    for warning in plugin_source_warnings
-                    if warning.code != "plugin_source_rules_empty"
-                ]
-            warnings.extend(plugin_source_warnings)
-            details["plugin_source_rules"] = plugin_source_report.details
-            if plugin_source_reviewed_count == 0:
-                if plugin_source_required:
-                    errors.append(
-                        issue(
-                            "plugin_source_rules_empty_high_risk",
-                            "插件源码风险较高，但工作区没有保存任何已审查的插件源码 selector；请先完成插件源码 AST 审查",
-                        )
+        if plugin_source_rules_in_manifest:
+            if not plugin_source_rules_path.is_file():
+                errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
+            elif plugin_source_scan is None:
+                raise RuntimeError("插件源码规则文件存在，但工作区验收没有执行插件源码扫描")
+            else:
+                async with aiofiles.open(plugin_source_rules_path, "r", encoding="utf-8") as file:
+                    plugin_source_report = await _validate_workspace_plugin_source_rules(
+                        rules_text=await file.read(),
+                        game_registry=self.game_registry,
+                        game_title=game_title,
+                        game_data=game_data,
+                        text_rules=text_rules,
+                        scan=plugin_source_scan,
                     )
-                elif plugin_source_started:
-                    errors.append(
-                        issue(
-                            "plugin_source_rules_empty_started",
-                            "插件源码支线已有审查结果，但工作区没有保存任何插件源码 selector；请补全翻译或排除 selector",
+                errors.extend(plugin_source_report.errors)
+                plugin_source_warnings = plugin_source_report.warnings
+                plugin_source_reviewed_count = _summary_int(plugin_source_report.summary, "reviewed_selector_count")
+                promoted_plugin_source_warnings: list[AgentIssue] = []
+                kept_plugin_source_warnings: list[AgentIssue] = []
+                for warning in plugin_source_warnings:
+                    if warning.code == "plugin_source_review_incomplete" and (
+                        plugin_source_required or plugin_source_reviewed_count > 0
+                    ):
+                        promoted_plugin_source_warnings.append(warning)
+                    else:
+                        kept_plugin_source_warnings.append(warning)
+                plugin_source_warnings = kept_plugin_source_warnings
+                errors.extend(promoted_plugin_source_warnings)
+                if not plugin_source_required and plugin_source_reviewed_count == 0:
+                    plugin_source_warnings = [
+                        warning
+                        for warning in plugin_source_warnings
+                        if warning.code != "plugin_source_rules_empty"
+                    ]
+                warnings.extend(plugin_source_warnings)
+                details["plugin_source_rules"] = plugin_source_report.details
+                if plugin_source_reviewed_count == 0:
+                    if plugin_source_required:
+                        errors.append(
+                            issue(
+                                "plugin_source_rules_empty_high_risk",
+                                "插件源码风险较高，但工作区没有保存任何已审查的插件源码 selector；请先完成插件源码 AST 审查",
+                            )
                         )
-                    )
+                    elif plugin_source_started:
+                        errors.append(
+                            issue(
+                                "plugin_source_rules_empty_started",
+                                "插件源码支线已有审查结果，但工作区没有保存任何插件源码 selector；请补全翻译或排除 selector",
+                            )
+                        )
         else:
             if plugin_source_required or plugin_source_started:
                 errors.append(issue("plugin_source_rules_missing", "工作区缺少 plugin-source-rules.json"))
         advance_progress(1)
+        set_status("校验非标准 data 文件规则")
+        if not nonstandard_data_risk_path.exists():
+            errors.append(issue("nonstandard_data_risk_report_missing", "工作区缺少 nonstandard-data-risk-report.json"))
+        if nonstandard_data_scan_error is not None:
+            errors.append(
+                issue(
+                    "nonstandard_data_scan_failed",
+                    f"非标准 data 文件文本扫描失败: {type(nonstandard_data_scan_error).__name__}: {nonstandard_data_scan_error}",
+                )
+            )
+        elif nonstandard_data_rules_in_manifest:
+            if not nonstandard_data_rules_path.is_file():
+                errors.append(issue("nonstandard_data_rules_missing", "工作区缺少 nonstandard-data-rules.json"))
+            elif nonstandard_data_scan is None:
+                raise RuntimeError("非标准 data 规则文件存在，但工作区验收没有执行非标准 data 扫描")
+            else:
+                try:
+                    async with aiofiles.open(nonstandard_data_rules_path, "r", encoding="utf-8") as file:
+                        nonstandard_data_rules_text = await file.read()
+                    nonstandard_data_import_file = parse_nonstandard_data_rule_import_text(nonstandard_data_rules_text)
+                    nonstandard_data_validation = validate_nonstandard_data_rules(
+                        scan=nonstandard_data_scan,
+                        import_file=nonstandard_data_import_file,
+                    )
+                    if nonstandard_data_validation.skipped_files:
+                        persistent_warnings = _nonstandard_data_skipped_warnings(stored_nonstandard_data_rules)
+                        if persistent_warnings:
+                            warnings.extend(persistent_warnings)
+                        else:
+                            warnings.append(
+                                issue(
+                                    "nonstandard_data_files_skipped",
+                                    f"已确认跳过 {len(nonstandard_data_validation.skipped_files)} 个非标准 data 文件，后续报告仍会提示这些文件可能残留源文",
+                                )
+                            )
+                    details["nonstandard_data_rules"] = nonstandard_data_validation.details
+                except Exception as error:
+                    errors.append(
+                        issue(
+                            "nonstandard_data_rules_invalid",
+                            f"非标准 data 文件文本规则不可导入: {type(error).__name__}: {error}",
+                        )
+                    )
+        elif nonstandard_data_scan is not None and (nonstandard_data_scan.high_risk or nonstandard_data_started):
+            errors.append(issue("nonstandard_data_rules_missing", "工作区缺少 nonstandard-data-rules.json"))
+        advance_progress(1)
         set_status("校验 Note 和事件规则")
         if note_tag_rules_path.exists():
             async with aiofiles.open(note_tag_rules_path, "r", encoding="utf-8") as file:
-                note_tag_report = _validate_workspace_note_tag_rules(
+                note_tag_report = await _validate_workspace_note_tag_rules(
                     rules_text=await file.read(),
+                    game_registry=self.game_registry,
+                    game_title=game_title,
                     game_data=game_data,
                     text_rules=text_rules,
-                    translated_paths=translated_paths,
                 )
             errors.extend(note_tag_report.errors)
             warnings.extend(note_tag_report.warnings)
@@ -652,16 +1259,17 @@ class WorkspaceAgentMixin:
             if _summary_int(note_tag_report.summary, "tag_count") == 0:
                 note_tag_empty_issue = empty_rule_issues["note_tag_rules"]
                 if note_tag_empty_issue is not None:
-                    errors.append(note_tag_empty_issue)
+                    warnings.append(note_tag_empty_issue)
         else:
             errors.append(issue("note_tag_rules_missing", "工作区缺少 note-tag-rules.json"))
         if event_rules_path.exists():
             async with aiofiles.open(event_rules_path, "r", encoding="utf-8") as file:
-                event_report = _validate_workspace_event_command_rules(
+                event_report = await _validate_workspace_event_command_rules(
                     rules_text=await file.read(),
+                    game_registry=self.game_registry,
+                    game_title=game_title,
                     game_data=game_data,
                     text_rules=text_rules,
-                    translated_paths=translated_paths,
                 )
             errors.extend(event_report.errors)
             warnings.extend(event_report.warnings)
@@ -669,18 +1277,20 @@ class WorkspaceAgentMixin:
             if _summary_int(event_report.summary, "path_rule_count") == 0:
                 event_empty_issue = empty_rule_issues["event_command_rules"]
                 if event_empty_issue is not None:
-                    errors.append(event_empty_issue)
+                    warnings.append(event_empty_issue)
         else:
             errors.append(issue("event_command_rules_missing", "工作区缺少 event-command-rules.json"))
         advance_progress(1)
         set_status("校验名字框和普通占位符规则")
-        if game_data.layout.engine_kind == "mv":
+        if game_data.layout.engine_kind == "mv" and mv_virtual_namebox_rules_in_manifest:
             if mv_virtual_namebox_rules_path.exists():
                 async with aiofiles.open(mv_virtual_namebox_rules_path, "r", encoding="utf-8") as file:
                     mv_namebox_report = _validate_workspace_mv_virtual_namebox_rules(
                         rules_text=await file.read(),
                         game_data=game_data,
                         existing_records=mv_virtual_namebox_rule_records,
+                        candidate_path=mv_virtual_namebox_candidates_path,
+                        current_scope=current_text_fact_scope,
                     )
                 errors.extend(mv_namebox_report.errors)
                 warnings.extend(mv_namebox_report.warnings)
@@ -688,17 +1298,27 @@ class WorkspaceAgentMixin:
                 if _summary_int(mv_namebox_report.summary, "rule_count") == 0:
                     mv_namebox_empty_issue = empty_rule_issues["mv_virtual_namebox_rules"]
                     if mv_namebox_empty_issue is not None:
-                        errors.append(mv_namebox_empty_issue)
+                        warnings.append(mv_namebox_empty_issue)
             else:
                 errors.append(issue("mv_virtual_namebox_rules_missing", f"MV 工作区缺少 {MV_VIRTUAL_NAMEBOX_RULES_FILE_NAME}"))
+        workspace_custom_rules = text_rules.custom_placeholder_rules
         if placeholder_rules_path.exists():
+            errors.extend(
+                _validate_workspace_json_file_scope_metadata(
+                    path=workspace / "placeholder-candidates.json",
+                    current_scope=current_text_fact_scope,
+                    missing_code="placeholder_candidates_scope_missing",
+                    stale_code="placeholder_candidates_scope_stale",
+                    label="placeholder-candidates.json",
+                )
+            )
             async with aiofiles.open(placeholder_rules_path, "r", encoding="utf-8") as file:
                 placeholder_rules_text = await file.read()
                 placeholder_report = _validate_workspace_placeholder_rules(
                     rules_text=placeholder_rules_text,
                     setting_text_rules=setting.text_rules,
                     structured_rules=text_rules.structured_placeholder_rules,
-                    translation_data_map=translation_data_map,
+                    entries=placeholder_entries,
                 )
             errors.extend(placeholder_report.errors)
             warnings.extend(placeholder_report.warnings)
@@ -706,29 +1326,30 @@ class WorkspaceAgentMixin:
             if _summary_int(placeholder_report.summary, "rule_count") == 0:
                 placeholder_empty_issue = empty_rule_issues["placeholder_rules"]
                 if placeholder_empty_issue is not None:
-                    errors.append(placeholder_empty_issue)
+                    warnings.append(placeholder_empty_issue)
             try:
-                placeholder_coverage_report = _build_workspace_placeholder_coverage_report(
-                    rules_text=placeholder_rules_text,
-                    setting_text_rules=setting.text_rules,
-                    structured_rules=text_rules.structured_placeholder_rules,
-                    translation_data_map=translation_data_map,
+                workspace_custom_rules = load_custom_placeholder_rules_import_text(placeholder_rules_text)
+                workspace_text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=workspace_custom_rules,
+                    structured_placeholder_rules=text_rules.structured_placeholder_rules,
                 )
-                errors.extend(placeholder_coverage_report.errors)
-                details["placeholder_coverage"] = {
-                    "summary": placeholder_coverage_report.summary,
-                    "details": placeholder_coverage_report.details,
-                }
-                uncovered_value = placeholder_coverage_report.summary.get("uncovered_count")
-                if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
-                    errors.append(issue("placeholder_coverage_invalid", "占位符候选扫描缺少有效的 uncovered_count"))
-                elif uncovered_value > 0:
-                    errors.append(
+                placeholder_coverage = _normal_placeholder_coverage_result_from_entries(
+                    entries=placeholder_entries,
+                    text_rules=workspace_text_rules,
+                    rule_count=len(workspace_custom_rules),
+                )
+                if placeholder_coverage.uncovered_count:
+                    warnings.append(
                         issue(
-                            "placeholder_coverage_uncovered",
-                            f"还有 {uncovered_value} 个当前正文会使用但未被规则覆盖的游戏控制符",
+                            "placeholder_uncovered",
+                            f"发现 {placeholder_coverage.uncovered_count} 个未覆盖的疑似自定义控制符",
                         )
                     )
+                details["placeholder_coverage"] = _sampled_coverage_report_details(
+                    placeholder_coverage,
+                    summary_extra={"custom_rule_count": len(workspace_custom_rules)},
+                )
             except Exception as error:
                 errors.append(
                     issue(
@@ -747,8 +1368,8 @@ class WorkspaceAgentMixin:
                     game_title=game_title,
                     rules_text=structured_placeholder_rules_text,
                     setting_text_rules=setting.text_rules,
-                    custom_rules=text_rules.custom_placeholder_rules,
-                    translation_data_map=translation_data_map,
+                    custom_rules=workspace_custom_rules,
+                    entries=placeholder_entries,
                 )
             errors.extend(structured_placeholder_report.errors)
             warnings.extend(
@@ -760,29 +1381,30 @@ class WorkspaceAgentMixin:
             if _summary_int(structured_placeholder_report.summary, "rule_count") == 0:
                 structured_placeholder_empty_issue = empty_rule_issues["structured_placeholder_rules"]
                 if structured_placeholder_empty_issue is not None:
-                    errors.append(structured_placeholder_empty_issue)
+                    warnings.append(structured_placeholder_empty_issue)
             try:
-                structured_placeholder_coverage_report = _build_workspace_structured_placeholder_coverage_report(
-                    game_title=game_title,
-                    rules_text=structured_placeholder_rules_text,
-                    translation_data_map=translation_data_map,
+                workspace_structured_rules = load_structured_placeholder_rules_import_text(structured_placeholder_rules_text)
+                workspace_structured_text_rules = TextRules.from_setting(
+                    setting.text_rules,
+                    custom_placeholder_rules=workspace_custom_rules,
+                    structured_placeholder_rules=workspace_structured_rules,
                 )
-                errors.extend(structured_placeholder_coverage_report.errors)
-                warnings.extend(structured_placeholder_coverage_report.warnings)
-                details["structured_placeholder_coverage"] = {
-                    "summary": structured_placeholder_coverage_report.summary,
-                    "details": structured_placeholder_coverage_report.details,
-                }
-                uncovered_value = structured_placeholder_coverage_report.summary.get("uncovered_count")
-                if isinstance(uncovered_value, bool) or not isinstance(uncovered_value, int):
-                    errors.append(issue("structured_placeholder_coverage_invalid", "结构化占位符候选扫描缺少有效的 uncovered_count"))
-                elif uncovered_value > 0:
-                    errors.append(
+                structured_placeholder_coverage = _structured_placeholder_coverage_result_from_entries(
+                    entries=placeholder_entries,
+                    text_rules=workspace_structured_text_rules,
+                    rule_count=len(workspace_structured_rules),
+                )
+                if structured_placeholder_coverage.uncovered_count:
+                    warnings.append(
                         issue(
-                            "structured_placeholder_coverage_uncovered",
-                            f"还有 {uncovered_value} 个当前正文会使用但未被结构化规则覆盖的协议外壳候选",
+                            "structured_placeholder_uncovered",
+                            f"发现 {structured_placeholder_coverage.uncovered_count} 个未被结构化规则覆盖的协议外壳候选",
                         )
                     )
+                details["structured_placeholder_coverage"] = _sampled_coverage_report_details(
+                    structured_placeholder_coverage,
+                    summary_extra={"game": game_title},
+                )
             except Exception as error:
                 errors.append(
                     issue(
@@ -821,6 +1443,11 @@ class WorkspaceAgentMixin:
                 summary={"workspace": str(workspace)},
                 details={},
             )
+        unlisted_paths = _collect_workspace_unlisted_paths(
+            workspace=workspace,
+            manifest_path=manifest_path,
+            manifest_files=files_value,
+        )
         for raw_path in files_value:
             if not isinstance(raw_path, str):
                 continue
@@ -836,11 +1463,26 @@ class WorkspaceAgentMixin:
         if manifest_path.exists():
             manifest_path.unlink()
             deleted_count += 1
+        warnings: list[AgentIssue] = []
+        details: JsonObject = {}
+        if unlisted_paths:
+            warnings.append(
+                issue(
+                    "workspace_unlisted_files_ignored",
+                    f"发现 {len(unlisted_paths)} 个 manifest 外文件，这些文件不会参与本轮验收；"
+                    + "请确认后手动删除或重新生成工作区",
+                )
+            )
+            details["unlisted_files"] = [str(path) for path in unlisted_paths[:50]]
         return AgentReport.from_parts(
             errors=[],
-            warnings=[],
-            summary={"workspace": str(workspace), "deleted_count": deleted_count},
-            details={},
+            warnings=warnings,
+            summary={
+                "workspace": str(workspace),
+                "deleted_count": deleted_count,
+                "unlisted_file_count": len(unlisted_paths),
+            },
+            details=details,
         )
 
 
@@ -849,95 +1491,426 @@ def _validate_workspace_mv_virtual_namebox_rules(
     rules_text: str,
     game_data: GameData,
     existing_records: list[MvVirtualNameboxRuleRecord],
+    candidate_path: Path,
+    current_scope: TextFactScopeRecord,
 ) -> AgentReport:
-    """复用工作区上下文校验 MV 虚拟名字框规则。"""
-    return _validate_mv_virtual_namebox_rules_with_context(
-        rules_text=rules_text,
-        game_data=game_data,
-        existing_records=existing_records,
-    )
+    """复用工作区候选文件校验 MV 虚拟名字框规则。"""
+    errors: list[AgentIssue] = []
+    warnings: list[AgentIssue] = []
+    details: JsonObject = {"rules": [], "matched_candidates": []}
+    try:
+        records = parse_mv_virtual_namebox_rule_import_text(rules_text)
+        if game_data.layout.engine_kind != "mv":
+            errors.append(issue("mv_virtual_namebox_rules_forbidden", "MV 虚拟名字框规则只允许 RPG Maker MV 游戏使用"))
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        if not candidate_path.exists():
+            errors.append(issue("mv_virtual_namebox_candidates_missing", f"工作区缺少 {MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}"))
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        payload = ensure_json_object(
+            coerce_json_value(cast(object, json.loads(candidate_path.read_text(encoding="utf-8")))),
+            MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME,
+        )
+        text_fact_scope_payload = payload.get("text_fact_scope")
+        scope_issues = _validate_workspace_scope_metadata(
+            payload=(
+                ensure_json_object(text_fact_scope_payload, f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}.text_fact_scope")
+                if isinstance(text_fact_scope_payload, dict)
+                else {}
+            ),
+            current_scope=current_scope,
+            missing_code="mv_virtual_namebox_candidates_scope_missing",
+            stale_code="mv_virtual_namebox_candidates_scope_stale",
+            label=f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME}.text_fact_scope",
+        )
+        if scope_issues:
+            return AgentReport.from_parts(
+                errors=scope_issues,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        exported_scope_hash = payload.get("scope_hash")
+        if not isinstance(exported_scope_hash, str) or not exported_scope_hash:
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_invalid",
+                    f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME} 缺少当前候选 scope_hash，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        exported_candidates = payload.get("candidates")
+        exported_speaker_requirements = payload.get("speaker_requirements")
+        if not isinstance(exported_candidates, list) or not isinstance(exported_speaker_requirements, list):
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_invalid",
+                    f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME} 缺少当前候选明细或说话人需求，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": 0,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        candidate_scan = scan_native_mv_virtual_namebox(game_data=game_data)
+        if exported_scope_hash != candidate_scan.scope_hash:
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_stale",
+                    "MV 虚拟名字框候选文件已不是当前游戏内容，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": candidate_scan.candidate_count,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        if (
+            len(exported_candidates) != candidate_scan.candidate_count
+            or len(exported_speaker_requirements) != len(candidate_scan.speaker_requirements)
+        ):
+            errors.append(
+                issue(
+                    "mv_virtual_namebox_candidates_invalid",
+                    f"{MV_VIRTUAL_NAMEBOX_CANDIDATES_FILE_NAME} 内容与当前 native facts 不一致，请重新准备工作区",
+                )
+            )
+            return AgentReport.from_parts(
+                errors=errors,
+                warnings=[],
+                summary={
+                    "rule_count": len(records),
+                    "candidate_count": candidate_scan.candidate_count,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details=details,
+            )
+        if not records:
+            warnings.append(issue("mv_virtual_namebox_rules_empty", "MV 虚拟名字框规则为空"))
+            return AgentReport.from_parts(
+                errors=[],
+                warnings=warnings,
+                summary={
+                    "rule_count": 0,
+                    "candidate_count": candidate_scan.candidate_count,
+                    "matched_candidate_count": 0,
+                    "newly_matched_candidate_count": 0,
+                },
+                details={
+                    "rules": [],
+                    "matched_candidates": [],
+                    "newly_matched_candidates": [],
+                    "candidate_count": candidate_scan.candidate_count,
+                },
+            )
+        native_scan = scan_native_mv_virtual_namebox(
+            game_data=game_data,
+            records=records,
+        )
+        rule_errors = native_scan.rule_errors
+        match_details = native_scan.match_details
+        errors.extend(
+            issue("mv_virtual_namebox_rules_invalid", _format_mv_namebox_rule_error(error_detail))
+            for error_detail in rule_errors
+        )
+        existing_scan = scan_native_mv_virtual_namebox(
+            game_data=game_data,
+            records=existing_records,
+        )
+        existing_match_keys = _mv_namebox_match_keys(existing_scan.match_details)
+        newly_matched_candidates: JsonArray = [
+            detail
+            for detail in match_details
+            if _mv_namebox_match_key(detail) not in existing_match_keys
+        ]
+        candidate_count = native_scan.candidate_count
+        matched_candidate_count = native_scan.matched_candidate_count
+        if matched_candidate_count == 0 and candidate_count > 0:
+            warnings.append(issue("mv_virtual_namebox_rules_no_hits", "MV 虚拟名字框规则没有命中任何候选"))
+        details = {
+            "rules": mv_virtual_namebox_rule_records_to_import_json(records)["rules"],
+            "matched_candidates": match_details,
+            "newly_matched_candidates": newly_matched_candidates,
+            "candidate_count": candidate_count,
+        }
+        return AgentReport.from_parts(
+            errors=errors,
+            warnings=warnings,
+            summary={
+                "rule_count": len(records),
+                "candidate_count": candidate_count,
+                "matched_candidate_count": matched_candidate_count,
+                "newly_matched_candidate_count": len(newly_matched_candidates),
+            },
+            details=details,
+        )
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("mv_virtual_namebox_rules_invalid", f"MV 虚拟名字框规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "rule_count": 0,
+                "candidate_count": 0,
+                "matched_candidate_count": 0,
+                "newly_matched_candidate_count": 0,
+            },
+            details=details,
+        )
 
 
-def _validate_workspace_plugin_rules(
+async def _validate_workspace_plugin_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验插件参数规则。"""
-    return _validate_plugin_rules_with_context(
-        rules_text=rules_text,
+    try:
+        import_file = parse_plugin_rule_import_text(rules_text)
+        context = build_native_plugin_rule_validation_context_from_import(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+        )
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = await session.read_translated_items_by_prefixes(context.translation_prefixes)
+            context = await _resolve_workspace_plugin_rule_validation_context(
+                session=session,
+                context=context,
+            )
+        translated_identities = require_translation_fact_identities(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("plugin_rules_invalid", f"插件规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "plugin_count": 0,
+                "rule_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return build_plugin_rule_validation_report_from_native_context(
+        context=context,
         game_data=game_data,
-        text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_identities=translated_identities,
     )
 
 
-def _validate_workspace_plugin_source_rules(
+async def _validate_workspace_plugin_source_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
     scan: PluginSourceScan,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验插件源码规则，避免重新加载游戏并重扫 AST。"""
+    try:
+        import_file = parse_plugin_source_rule_import_text(rules_text)
+        records = build_plugin_source_rule_records_from_import(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+            scan=scan,
+        )
+        hit_metrics = _plugin_source_rule_hits_from_scan(records=records, scan=scan)
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = await session.read_translated_items_by_prefixes(
+                _workspace_plugin_source_file_prefixes(game_data)
+            )
+            resolved_hit_metrics = await _resolve_workspace_plugin_source_hit_metrics(
+                session=session,
+                grouped_hits=hit_metrics,
+            )
+        translated_identities = require_translation_fact_identities(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("plugin_source_rules_invalid", f"插件源码规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "file_count": 0,
+                "selector_count": 0,
+                "excluded_selector_count": 0,
+                "reviewed_selector_count": 0,
+                "unreviewed_selector_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
     return _validate_plugin_source_rules_with_context(
         rules_text=rules_text,
         game_data=game_data,
         text_rules=text_rules,
         scan=scan,
-        translated_paths=translated_paths,
+        translated_identities=translated_identities,
+        hits_by_file=resolved_hit_metrics,
     )
 
 
-def _validate_workspace_note_tag_rules(
+async def _validate_workspace_note_tag_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验 Note 标签规则。"""
-    return _validate_note_tag_rules_with_context(
-        rules_text=rules_text,
+    try:
+        import_file = parse_note_tag_rule_import_text(rules_text)
+        records = build_note_tag_rule_records_from_native_candidates(
+            game_data=game_data,
+            import_file=import_file,
+            text_rules=text_rules,
+        )
+        hit_metrics = _note_tag_rule_hits_from_native_details(
+            records=records,
+            hit_details=collect_native_note_tag_hit_details(game_data=game_data, text_rules=text_rules),
+        )
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = await session.read_translated_items_by_prefixes(
+                _workspace_note_tag_rule_prefixes(game_data=game_data, records=records)
+            )
+            resolved_hit_metrics = await _resolve_workspace_rule_hit_metrics(
+                session=session,
+                domain="note_tag",
+                grouped_hits=hit_metrics,
+            )
+        translated_identities = require_translation_fact_identities(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("note_tag_rules_invalid", f"Note 标签规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "file_count": 0,
+                "tag_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_note_tag_rule_records_with_context(
+        records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_paths=translated_paths,
+        translated_identities=translated_identities,
+        hits_by_record=resolved_hit_metrics,
     )
 
 
-def _validate_workspace_event_command_rules(
+async def _validate_workspace_event_command_rules(
     *,
     rules_text: str,
+    game_registry: GameRegistry,
+    game_title: str,
     game_data: GameData,
     text_rules: TextRules,
-    translated_paths: set[str],
 ) -> AgentReport:
     """复用工作区上下文校验事件指令规则。"""
-    return _validate_event_command_rules_with_context(
-        rules_text=rules_text,
+    try:
+        import_file = parse_event_command_rule_import_text(rules_text)
+        records = build_event_command_rule_records_from_import_shape(import_file=import_file)
+        native_validation_context = build_native_event_command_rule_validation_context(
+            records=records,
+            game_data=game_data,
+            text_rules=text_rules,
+        )
+        extracted_paths = {item.location_path for item in native_validation_context.extracted_items}
+        async with await game_registry.open_game(game_title) as session:
+            translated_items = (
+                await session.read_translated_items_by_paths(sorted(extracted_paths))
+                if extracted_paths
+                else []
+            )
+            native_validation_context = await _resolve_workspace_event_command_rule_validation_context(
+                session=session,
+                context=native_validation_context,
+            )
+        translated_identities = require_translation_fact_identities(translated_items)
+    except Exception as error:
+        return AgentReport.from_parts(
+            errors=[issue("event_command_rules_invalid", f"事件指令规则不可导入: {type(error).__name__}: {error}")],
+            warnings=[],
+            summary={
+                "rule_group_count": 0,
+                "path_rule_count": 0,
+                "hit_count": 0,
+                "extractable_count": 0,
+                "translated_count": 0,
+                "writable_count": 0,
+                "unwritable_count": 0,
+            },
+            details={"rules": []},
+        )
+    return _validate_event_command_rule_records_with_context(
+        records=records,
         game_data=game_data,
         text_rules=text_rules,
-        translated_paths=translated_paths,
-    )
-
-
-def _build_workspace_placeholder_coverage_report(
-    *,
-    rules_text: str,
-    setting_text_rules: TextRulesSetting,
-    structured_rules: tuple[StructuredPlaceholderRule, ...],
-    translation_data_map: dict[str, TranslationData],
-) -> AgentReport:
-    """复用已抽取文本扫描普通占位符覆盖情况。"""
-    custom_rules = load_custom_placeholder_rules_text(rules_text)
-    return _build_placeholder_coverage_report_with_context(
-        setting_text_rules=setting_text_rules,
-        custom_rules=custom_rules,
-        structured_rules=structured_rules,
-        translation_data_map=translation_data_map,
+        translated_identities=translated_identities,
+        native_validation_context=native_validation_context,
     )
 
 
@@ -946,11 +1919,11 @@ def _validate_workspace_placeholder_rules(
     rules_text: str,
     setting_text_rules: TextRulesSetting,
     structured_rules: tuple[StructuredPlaceholderRule, ...],
-    translation_data_map: dict[str, TranslationData],
+    entries: list[tuple[str, list[str]]],
 ) -> AgentReport:
     """复用工作区上下文校验普通占位符规则。"""
     try:
-        custom_rules = load_custom_placeholder_rules_text(rules_text)
+        custom_rules = load_custom_placeholder_rules_import_text(rules_text)
     except Exception as error:
         return AgentReport.from_parts(
             errors=[
@@ -967,13 +1940,18 @@ def _validate_workspace_placeholder_rules(
             },
             details={},
         )
+    text_rules = TextRules.from_setting(
+        setting_text_rules,
+        custom_placeholder_rules=custom_rules,
+        structured_placeholder_rules=structured_rules,
+    )
     return _validate_placeholder_rules_with_context(
         source_label="--placeholder-rules",
         setting_text_rules=setting_text_rules,
         custom_rules=custom_rules,
         structured_rules=structured_rules,
-        sample_texts=[],
-        translation_data_map=translation_data_map,
+        sample_texts=_workspace_placeholder_preview_sample_texts(entries, text_rules=text_rules),
+        translation_data_map=None,
     )
 
 
@@ -983,30 +1961,23 @@ def _validate_workspace_structured_placeholder_rules(
     rules_text: str,
     setting_text_rules: TextRulesSetting,
     custom_rules: tuple[CustomPlaceholderRule, ...],
-    translation_data_map: dict[str, TranslationData],
+    entries: list[tuple[str, list[str]]],
 ) -> AgentReport:
     """复用工作区上下文校验结构化占位符规则。"""
+    try:
+        structured_rules = load_structured_placeholder_rules_import_text(rules_text)
+    except Exception:
+        structured_rules = ()
     return _validate_structured_placeholder_rules_with_context(
         game_title=game_title,
         rules_text=rules_text,
         setting_text_rules=setting_text_rules,
         custom_rules=custom_rules,
-        sample_texts=[],
-        translation_data_map=translation_data_map,
-    )
-
-
-def _build_workspace_structured_placeholder_coverage_report(
-    *,
-    game_title: str,
-    rules_text: str,
-    translation_data_map: dict[str, TranslationData],
-) -> AgentReport:
-    """复用已抽取正文扫描结构化占位符覆盖情况。"""
-    return _build_structured_placeholder_coverage_report_with_context(
-        game_title=game_title,
-        rules_text=rules_text,
-        translation_data_map=translation_data_map,
+        sample_texts=_workspace_structured_placeholder_preview_sample_texts(
+            entries,
+            structured_rules=structured_rules,
+        ),
+        translation_data_map=None,
     )
 
 
@@ -1018,110 +1989,187 @@ def _summary_int(summary: JsonObject, key: str) -> int:
     return raw_value
 
 
-async def _read_empty_rule_review_issues(
-    *,
-    session: TargetGameSession,
-    game_data: GameData,
-    event_command_scope_hash: str,
-    note_tag_scope_hash: str,
-    plugin_source_scope_hash: str,
-    placeholder_scope_hash: str,
-    structured_placeholder_scope_hash_value: str,
-) -> dict[str, AgentIssue | None]:
-    """读取工作区空规则文件对应的显式确认状态。"""
-    return {
-        "plugin_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-            current_scope_hash=plugin_rule_scope_hash(game_data),
-            unconfirmed_code="plugin_rules_empty_unconfirmed",
-            stale_code="plugin_rules_empty_confirmation_stale",
-            label="插件规则",
-        ),
-        "plugin_source_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=PLUGIN_SOURCE_TEXT_RULE_DOMAIN,
-            current_scope_hash=plugin_source_scope_hash,
-            unconfirmed_code="plugin_source_rules_empty_unconfirmed",
-            stale_code="plugin_source_rules_empty_confirmation_stale",
-            label="插件源码规则",
-        ),
-        "event_command_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-            current_scope_hash=event_command_scope_hash,
-            unconfirmed_code="event_command_rules_empty_unconfirmed",
-            stale_code="event_command_rules_empty_confirmation_stale",
-            label="事件指令规则",
-        ),
-        "mv_virtual_namebox_rules": (
-            await _empty_rule_review_issue(
-                session=session,
-                rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
-                current_scope_hash=mv_virtual_namebox_rule_scope_hash(
-                    mv_virtual_namebox_candidate_details(game_data)
-                ),
-                unconfirmed_code="mv_virtual_namebox_rules_empty_unconfirmed",
-                stale_code="mv_virtual_namebox_rules_empty_confirmation_stale",
-                label="MV 虚拟名字框规则",
-            )
-            if game_data.layout.engine_kind == "mv"
-            else None
-        ),
-        "note_tag_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-            current_scope_hash=note_tag_scope_hash,
-            unconfirmed_code="note_tag_rules_empty_unconfirmed",
-            stale_code="note_tag_rules_empty_confirmation_stale",
-            label="Note 标签规则",
-        ),
-        "placeholder_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=placeholder_scope_hash,
-            unconfirmed_code="placeholder_rules_empty_unconfirmed",
-            stale_code="placeholder_rules_empty_confirmation_stale",
-            label="普通占位符规则",
-        ),
-        "structured_placeholder_rules": await _empty_rule_review_issue(
-            session=session,
-            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-            current_scope_hash=structured_placeholder_scope_hash_value,
-            unconfirmed_code="structured_placeholder_rules_empty_unconfirmed",
-            stale_code="structured_placeholder_rules_empty_confirmation_stale",
-            label="结构化占位符规则",
-        ),
+def _workspace_empty_rule_warnings(*, game_data: GameData) -> dict[str, AgentIssue | None]:
+    """工作区空规则文件只提示导入阶段需要确认，不读取数据库确认状态。"""
+    warnings_by_file: dict[str, AgentIssue | None] = {
+        "plugin_rules": issue("plugin_rules_empty_needs_import_confirmation", "插件规则为空；导入时需要传 --confirm-empty 确认当前范围无需插件规则"),
+        "plugin_source_rules": issue("plugin_source_rules_empty_needs_import_confirmation", "插件源码规则为空；导入时需要传 --confirm-empty 或完成插件源码翻译/排除审查"),
+        "event_command_rules": issue("event_command_rules_empty_needs_import_confirmation", "事件指令规则为空；导入时需要传 --confirm-empty 确认当前事件指令范围无需规则"),
+        "note_tag_rules": issue("note_tag_rules_empty_needs_import_confirmation", "Note 标签规则为空；导入时需要传 --confirm-empty 确认当前 Note 候选无需规则"),
+        "placeholder_rules": issue("placeholder_rules_empty_needs_import_confirmation", "普通占位符规则为空；导入时需要传 --confirm-empty 确认当前候选风险"),
+        "structured_placeholder_rules": issue("structured_placeholder_rules_empty_needs_import_confirmation", "结构化占位符规则为空；导入时需要传 --confirm-empty 确认当前候选风险"),
     }
+    warnings_by_file["mv_virtual_namebox_rules"] = (
+        issue("mv_virtual_namebox_rules_empty_needs_import_confirmation", "MV 虚拟名字框规则为空；导入时需要传 --confirm-empty 确认当前候选无需规则")
+        if game_data.layout.engine_kind == "mv"
+        else None
+    )
+    return warnings_by_file
 
 
-async def _empty_rule_review_issue(
-    *,
-    session: TargetGameSession,
-    rule_domain: RuleReviewDomain,
-    current_scope_hash: str,
-    unconfirmed_code: str,
-    stale_code: str,
-    label: str,
-) -> AgentIssue | None:
-    """判断空规则文件是否有仍然有效的显式确认。"""
-    state = await session.read_rule_review_state(rule_domain=rule_domain)
-    if state is None or not state.reviewed_empty:
-        return issue(unconfirmed_code, f"{label}为空，必须先用对应导入命令传 --confirm-empty 保存当前范围的空结果确认")
-    if state.scope_hash != current_scope_hash:
-        return issue(stale_code, f"{label}曾确认为空，但当前游戏内容已经变化，请重新导出并检查规则")
-    return None
-
-
-async def _read_workspace_event_command_codes(workspace: Path) -> tuple[frozenset[int] | None, AgentIssue | None]:
-    """从工作区 manifest 读取本轮事件指令候选编码。"""
+async def _read_workspace_manifest(workspace: Path) -> tuple[JsonObject | None, AgentIssue | None]:
+    """读取工作区 manifest；缺失或损坏时返回单个错误。"""
     manifest_path = workspace / "manifest.json"
     if not manifest_path.exists():
         return None, issue("manifest_missing", "工作区缺少 manifest.json，无法确认工作区来源和事件指令编码")
     try:
         async with aiofiles.open(manifest_path, "r", encoding="utf-8") as file:
             raw_manifest = cast(object, json.loads(await file.read()))
-        manifest = ensure_json_object(coerce_json_value(raw_manifest), "manifest")
+        return ensure_json_object(coerce_json_value(raw_manifest), "manifest"), None
+    except Exception as error:
+        return None, issue("manifest_invalid", f"读取工作区 manifest 失败: {type(error).__name__}: {error}")
+
+
+def _workspace_manifest_includes_path(manifest: JsonObject | None, path: Path) -> bool:
+    """确认路径是否属于本轮 manifest 明确导出的工作区文件。"""
+    if manifest is None:
+        return False
+    try:
+        manifest_files = ensure_json_array(manifest.get("files"), "manifest.files")
+        resolved_path = path.resolve()
+        for raw_path in manifest_files:
+            if not isinstance(raw_path, str):
+                continue
+            if Path(raw_path).resolve() == resolved_path:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _workspace_manifest_generated(manifest: JsonObject | None) -> JsonObject:
+    """取出 manifest.generated；manifest 不可用时返回空对象。"""
+    if manifest is None:
+        return {}
+    try:
+        generated = ensure_json_object(manifest.get("generated"), "manifest.generated")
+    except Exception:
+        return {}
+    return generated
+
+
+def _validate_workspace_json_file_scope_metadata(
+    *,
+    path: Path,
+    current_scope: TextFactScopeRecord,
+    missing_code: str,
+    stale_code: str,
+    label: str,
+) -> list[AgentIssue]:
+    """读取工作区 JSON 文件并校验其中的 当前文本事实 scope 元数据。"""
+    if not path.exists():
+        return [
+            issue(
+                missing_code,
+                f"{label} 缺少当前文本事实契约范围信息，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    try:
+        payload = ensure_json_object(
+            coerce_json_value(cast(object, json.loads(path.read_text(encoding="utf-8")))),
+            label,
+        )
+    except Exception as error:
+        return [
+            issue(
+                missing_code,
+                f"{label} 无法读取当前文本事实范围信息: {type(error).__name__}: {error}；请重新运行 prepare-agent-workspace",
+            )
+        ]
+    return _validate_workspace_scope_metadata(
+        payload=payload,
+        current_scope=current_scope,
+        missing_code=missing_code,
+        stale_code=stale_code,
+        label=label,
+    )
+
+
+def _validate_workspace_scope_metadata(
+    *,
+    payload: JsonObject,
+    current_scope: TextFactScopeRecord,
+    missing_code: str,
+    stale_code: str,
+    label: str,
+) -> list[AgentIssue]:
+    """校验工作区记录的 当前文本事实 scope 是否等于当前数据库 scope。"""
+    scope_key = payload.get("scope_key")
+    scope_hash = payload.get("scope_hash")
+    schema_version = payload.get("text_fact_schema_version")
+    if (
+        not isinstance(scope_key, str)
+        or not scope_key
+        or not isinstance(scope_hash, str)
+        or not scope_hash
+        or isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+    ):
+        return [
+            issue(
+                missing_code,
+                f"{label} 缺少当前文本事实契约范围信息，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    if schema_version != CURRENT_TEXT_FACT_CONTRACT_VERSION:
+        return [
+            issue(
+                stale_code,
+                f"{label} 的 text_fact_schema_version 不是当前版本，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    if scope_key != current_scope.scope_key or scope_hash != current_scope.scope_hash:
+        return [
+            issue(
+                stale_code,
+                f"{label} 的当前文本事实范围已不是当前数据库内容，请重新运行 prepare-agent-workspace",
+            )
+        ]
+    return []
+
+
+def _collect_workspace_unlisted_paths(
+    *,
+    workspace: Path,
+    manifest_path: Path,
+    manifest_files: JsonArray,
+) -> list[Path]:
+    """列出 manifest.files 之外的工作区文件，供 cleanup 报告但不自动删除。"""
+    workspace_root = workspace.resolve()
+    manifest_resolved = manifest_path.resolve()
+    listed_paths: list[Path] = []
+    for raw_path in manifest_files:
+        if not isinstance(raw_path, str):
+            continue
+        listed_path = Path(raw_path).resolve()
+        if _is_path_inside(listed_path, workspace_root):
+            listed_paths.append(listed_path)
+
+    unlisted_paths: list[Path] = []
+    for candidate in sorted(workspace.rglob("*"), key=lambda path: path.as_posix()):
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate == manifest_resolved:
+            continue
+        if any(_path_matches_manifest_entry(resolved_candidate, listed_path) for listed_path in listed_paths):
+            continue
+        unlisted_paths.append(resolved_candidate)
+    return unlisted_paths
+
+
+def _path_matches_manifest_entry(path: Path, listed_path: Path) -> bool:
+    """判断路径是否等于 manifest 条目，或属于 manifest 条目目录内部。"""
+    if path == listed_path:
+        return True
+    return listed_path.is_dir() and _is_path_inside(path, listed_path)
+
+
+def _workspace_event_command_codes_from_manifest(
+    manifest: JsonObject | None,
+) -> tuple[frozenset[int] | None, AgentIssue | None]:
+    """从工作区 manifest 读取本轮事件指令候选编码。"""
+    if manifest is None:
+        return None, None
+    try:
         generated = ensure_json_object(manifest.get("generated"), "manifest.generated")
         raw_codes = ensure_json_array(generated.get("event_command_codes"), "manifest.generated.event_command_codes")
         codes: set[int] = set()
@@ -1133,4 +2181,10 @@ async def _read_workspace_event_command_codes(workspace: Path) -> tuple[frozense
             return None, issue("manifest_invalid", "manifest.generated.event_command_codes 不能为空")
         return frozenset(codes), None
     except Exception as error:
-        return None, issue("manifest_invalid", f"读取工作区 manifest 失败: {type(error).__name__}: {error}")
+        return None, issue("manifest_invalid", f"读取工作区事件指令编码失败: {type(error).__name__}: {error}")
+
+
+def _manifest_bool(generated: JsonObject, key: str) -> bool:
+    """读取 manifest.generated 中的布尔开关，非法值按未启用处理。"""
+    value = generated.get(key)
+    return value is True

@@ -27,14 +27,14 @@ DATE_FORMAT = "[%X]"
 FILE_LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-    "<level>{message}</level>"
+    "<level>{message}</level>\n"
 )
 LOG_MARKUP_TAG_PATTERN = re.compile(r"\[/?[A-Za-z0-9_.# =:/-]+\]")
 
 # --- 文件日志配置 ---
 ENABLE_FILE_LOG = True
 LOG_FILE_PATH = resolve_app_home_path(Path("logs") / "app.log")
-LOG_FILE_LEVEL = "DEBUG"
+LOG_FILE_LEVEL = "INFO"
 LOG_ROTATION = "10 MB"
 LOG_RETENTION = "1 week"
 LOG_COMPRESSION = "zip"
@@ -113,7 +113,7 @@ def build_file_sink_format(record: Record) -> str:
     """
     if record["exception"] is None:
         return FILE_LOG_FORMAT
-    return f"{FILE_LOG_FORMAT}\n{{exception}}"
+    return f"{FILE_LOG_FORMAT}{{exception}}\n"
 
 
 def resolve_log_file_path(file_path: str | Path | None = None) -> Path:
@@ -127,6 +127,7 @@ def setup_logger(
     level: str = LOG_LEVEL,
     *,
     use_console: bool = True,
+    file_level: str = LOG_FILE_LEVEL,
     file_path: str | Path | None = None,
     enqueue_file_log: bool = True,
 ) -> None:
@@ -138,10 +139,12 @@ def setup_logger(
     Args:
         level: 控制台 sink 的最低日志级别。
         use_console: 是否启用 stderr 日志输出，测试可关闭。
+        file_level: 文件日志最低日志级别。
         file_path: 文件日志路径，测试可传入临时路径避免污染真实日志。
         enqueue_file_log: 是否启用异步文件写入队列。
     """
     _ = logger.remove()
+    logger.enable("")
 
     if use_console:
         _ = logger.add(
@@ -157,7 +160,7 @@ def setup_logger(
         resolved_file_path.parent.mkdir(parents=True, exist_ok=True)
         _ = logger.add(
             resolved_file_path,
-            level=LOG_FILE_LEVEL,
+            level=file_level,
             format=build_file_sink_format,
             rotation=LOG_ROTATION,
             retention=LOG_RETENTION,

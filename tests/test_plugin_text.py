@@ -10,24 +10,59 @@ from pydantic import TypeAdapter, ValidationError
 from app.config.schemas import TextRulesSetting
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.plugin_text import (
-    PluginTextExtraction,
     build_plugin_hash,
+    build_native_plugin_rule_validation_context,
     build_plugin_rule_records_from_import,
     export_plugins_json_file,
     load_plugin_rule_import_file,
     parse_plugin_rule_import_text,
     resolve_plugin_leaves,
 )
-from app.rmmz import load_game_data
-from app.rmmz.schema import PluginTextRuleRecord
+from app.rmmz.loader import load_active_runtime_game_data
+from app.rmmz.schema import GameData, PluginTextRuleRecord, TranslationItem
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from tests._native_write_plan_helper import reset_writable_copies, write_plugin_text
+
+
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
+
+
+def _write_current_plugins_js(game_data: GameData) -> None:
+    """把测试中修改后的插件配置写成真实注册输入。"""
+    _ = game_data.layout.plugins_path.write_text(
+        f"var $plugins = {json.dumps(game_data.plugins_js, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+
+
+def _plugin_rule_items_for_test(
+    game_data: GameData,
+    records: list[PluginTextRuleRecord],
+    text_rules: TextRules | None = None,
+) -> list[TranslationItem]:
+    """从当前 native 插件规则命中上下文读取测试写回项。"""
+    context = build_native_plugin_rule_validation_context(
+        records=records,
+        game_data=game_data,
+        text_rules=text_rules if text_rules is not None else TextRules.from_setting(TextRulesSetting()),
+    )
+    return list(context.extracted_items)
 
 
 @pytest.mark.asyncio
 async def test_plugin_json_export_writes_raw_plugins_array(minimal_game_dir: Path, tmp_path: Path) -> None:
     """插件配置导出文件的顶层结构是原始 `$plugins` 数组。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     output_path = tmp_path / "plugins.json"
 
     await export_plugins_json_file(game_data=game_data, output_path=output_path)
@@ -43,7 +78,7 @@ async def test_plugin_json_export_writes_raw_plugins_array(minimal_game_dir: Pat
 @pytest.mark.asyncio
 async def test_plugin_rule_import_validates_external_file(minimal_game_dir: Path, tmp_path: Path) -> None:
     """外部插件规则文件使用插件索引、插件名和路径数组定位插件。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "plugin-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -74,7 +109,7 @@ async def test_plugin_rule_import_validates_external_file(minimal_game_dir: Path
 @pytest.mark.asyncio
 async def test_plugin_rule_import_ignores_duplicate_names_outside_referenced_index(minimal_game_dir: Path) -> None:
     """重复插件名不再阻断校验，规则只按显式 plugin_index 定位。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     duplicate_plugin: dict[str, JsonValue] = {
         "name": "DuplicatePlugin",
         "status": False,
@@ -111,7 +146,7 @@ async def test_plugin_rule_import_ignores_duplicate_names_outside_referenced_ind
 @pytest.mark.asyncio
 async def test_plugin_rule_import_rejects_plugin_index_name_mismatch(minimal_game_dir: Path) -> None:
     """插件索引和插件名必须同时匹配当前 plugins.js，避免规则写到错误插件。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     import_file = parse_plugin_rule_import_text(
         json.dumps(
             [
@@ -134,7 +169,7 @@ async def test_plugin_rule_import_rejects_paths_without_english_source_text(
     minimal_english_game_dir: Path,
 ) -> None:
     """英文插件规则不能把协议值当成可导入的可见文本路径。"""
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     import_file = parse_plugin_rule_import_text(
         json.dumps(
             [
@@ -157,28 +192,36 @@ async def test_plugin_rule_import_rejects_paths_without_english_source_text(
         )
 
 
-def test_plugin_rule_import_rejects_non_integer_plugin_index() -> None:
-    """插件索引只接受 JSON 整数，避免字符串或布尔值被隐式转换成下标。"""
-    invalid_payloads = [
-        [
-            {
-                "plugin_index": "0",
-                "plugin_name": "TestPlugin",
-                "paths": ["$['parameters']['Message']"],
-            }
-        ],
-        [
-            {
-                "plugin_index": True,
-                "plugin_name": "TestPlugin",
-                "paths": ["$['parameters']['Message']"],
-            }
-        ],
+def test_plugin_rule_import_accepts_integer_string_plugin_index() -> None:
+    """插件索引可以用整数字符串表达。"""
+    import_file = parse_plugin_rule_import_text(
+        json.dumps(
+            [
+                {
+                    "plugin_index": "0",
+                    "plugin_name": "TestPlugin",
+                    "paths": ["$['parameters']['Message']"],
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+
+    assert import_file[0].plugin_index == 0
+
+
+def test_plugin_rule_import_rejects_boolean_plugin_index() -> None:
+    """插件索引不能用布尔值表达。"""
+    payload = [
+        {
+            "plugin_index": True,
+            "plugin_name": "TestPlugin",
+            "paths": ["$['parameters']['Message']"],
+        }
     ]
 
-    for payload in invalid_payloads:
-        with pytest.raises(ValidationError):
-            _ = parse_plugin_rule_import_text(json.dumps(payload, ensure_ascii=False))
+    with pytest.raises(ValidationError):
+        _ = parse_plugin_rule_import_text(json.dumps(payload, ensure_ascii=False))
 
 
 def test_plugin_rule_import_rejects_name_mapping_schema() -> None:
@@ -194,7 +237,7 @@ def test_plugin_rule_import_rejects_name_mapping_schema() -> None:
 @pytest.mark.asyncio
 async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) -> None:
     """插件文本提取只使用已确认的规则路径，不扫描无关资源路径。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     leaves = resolve_plugin_leaves(game_data.plugins_js[0])
     leaf_paths = {leaf.path for leaf in leaves}
     assert "$['parameters']['Message']" in leaf_paths
@@ -214,21 +257,21 @@ async def test_plugin_text_extracts_rule_matched_leaves(minimal_game_dir: Path) 
             "$['parameters']['Count']",
         ],
     )
-    extracted = PluginTextExtraction(game_data, [rule_record]).extract_all_text()
-    items = extracted["plugins.js"].translation_items
+    items = _plugin_rule_items_for_test(game_data, [rule_record])
 
     assert {item.location_path for item in items} == {
         "plugins.js/0/Message",
         "plugins.js/0/Nested/text",
         "plugins.js/0/List/0/text",
         "plugins.js/0/List/1/text",
+        "plugins.js/0/Count",
     }
 
 
 @pytest.mark.asyncio
 async def test_plugin_text_extraction_rejects_stale_rule_hash(minimal_game_dir: Path) -> None:
     """插件配置变化后，提取阶段不能把过期规则当成空命中继续执行。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
@@ -237,13 +280,13 @@ async def test_plugin_text_extraction_rejects_stale_rule_hash(minimal_game_dir: 
     )
 
     with pytest.raises(RuntimeError, match="插件规则已过期"):
-        _ = PluginTextExtraction(game_data, [rule_record]).extract_all_text()
+        _ = _plugin_rule_items_for_test(game_data, [rule_record])
 
 
 @pytest.mark.asyncio
 async def test_plugin_text_extraction_rejects_missing_plugin_index(minimal_game_dir: Path) -> None:
     """插件下标失效时，提取阶段必须显式报错。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=len(game_data.plugins_js),
         plugin_name="RemovedPlugin",
@@ -251,8 +294,8 @@ async def test_plugin_text_extraction_rejects_missing_plugin_index(minimal_game_
         path_templates=["$['parameters']['Message']"],
     )
 
-    with pytest.raises(RuntimeError, match="超出当前 plugins.js 范围"):
-        _ = PluginTextExtraction(game_data, [rule_record]).extract_all_text()
+    with pytest.raises(ValueError, match="超出当前 plugins.js 范围"):
+        _ = _plugin_rule_items_for_test(game_data, [rule_record])
 
 
 @pytest.mark.asyncio
@@ -260,7 +303,7 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
     minimal_english_game_dir: Path,
 ) -> None:
     """英文插件规则命中的短 UI 文本不能被协议噪音过滤静默跳过。"""
-    game_data = await load_game_data(minimal_english_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_english_game_dir)
     plugin = ensure_json_object(game_data.plugins_js[0], "plugins[0]")
     parameters = ensure_json_object(plugin["parameters"], "plugins[0].parameters")
     parameters["AutoSaveLabel"] = "AutoSave"
@@ -276,8 +319,6 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
             "$['parameters']['GameOverLabel']",
             "$['parameters']['RouteLabel']",
             "$['parameters']['SaveFileLabel']",
-            "$['parameters']['Formula']",
-            "$['parameters']['Enabled']",
         ],
     )
     text_rules = TextRules.from_setting(
@@ -290,12 +331,7 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
         )
     )
 
-    extracted = PluginTextExtraction(
-        game_data,
-        plugin_rule_records=[rule_record],
-        text_rules=text_rules,
-    ).extract_all_text()
-    items = extracted["plugins.js"].translation_items
+    items = _plugin_rule_items_for_test(game_data, [rule_record], text_rules=text_rules)
 
     assert {item.location_path for item in items} == {
         "plugins.js/0/AutoSaveLabel",
@@ -308,7 +344,7 @@ async def test_plugin_text_english_ui_tokens_are_not_protocol_noise(
 @pytest.mark.asyncio
 async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_dir: Path) -> None:
     """插件文本回写能更新普通参数，也能更新 JSON 字符串里的嵌套文本。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
@@ -318,15 +354,14 @@ async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_di
             "$['parameters']['Nested']['text']",
         ],
     )
-    items = PluginTextExtraction(game_data, [rule_record]).extract_all_text()[
-        "plugins.js"
-    ].translation_items
+    items = _plugin_rule_items_for_test(game_data, [rule_record])
     for item in items:
         if item.location_path.endswith("/Message"):
             item.translation_lines = ["插件译文"]
         else:
             item.translation_lines = ["嵌套译文"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_plugin_text(game_data, items)
 
@@ -342,18 +377,17 @@ async def test_plugin_text_write_back_updates_nested_json_string(minimal_game_di
 @pytest.mark.asyncio
 async def test_plugin_text_write_back_rejects_internal_placeholder_leak(minimal_game_dir: Path) -> None:
     """插件文本写回前必须拒绝项目内部占位符。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     rule_record = PluginTextRuleRecord(
         plugin_index=0,
         plugin_name="TestPlugin",
         plugin_hash=build_plugin_hash(game_data.plugins_js[0]),
         path_templates=["$['parameters']['Message']"],
     )
-    item = PluginTextExtraction(game_data, [rule_record]).extract_all_text()[
-        "plugins.js"
-    ].translation_items[0]
+    item = _plugin_rule_items_for_test(game_data, [rule_record])[0]
     item.translation_lines = ["插件译文[RMMZ_TEXT_COLOR_0]"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError, match="译文残留项目内部占位符"):
         write_plugin_text(game_data, [item])
@@ -362,7 +396,7 @@ async def test_plugin_text_write_back_rejects_internal_placeholder_leak(minimal_
 @pytest.mark.asyncio
 async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_game_dir: Path) -> None:
     """插件 JSON 容器里的 JSON 字符串叶子按玩家可见文本提取和写回。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     parameters = game_data.plugins_js[0]["parameters"]
     assert isinstance(parameters, dict)
     source_note = "\n　" + r"\C[2]目標人物の場所\C[0]\n村の中央へ向かう。" + "　\n"
@@ -383,15 +417,15 @@ async def test_plugin_text_json_string_leaf_uses_visible_text_protocol(minimal_g
         ],
     )
 
-    item = PluginTextExtraction(game_data, [rule_record]).extract_all_text()[
-        "plugins.js"
-    ].translation_items[0]
+    item = _plugin_rule_items_for_test(game_data, [rule_record])[0]
 
     assert item.location_path == "plugins.js/0/MainEvents/0/MainEventNote"
     assert item.original_lines == [source_note.strip()]
 
     translated_note = "\n　" + r"\C[2]目标人物的位置\C[0]\n前往村子中央。" + "　\n"
     item.translation_lines = [translated_note.strip()]
+    _write_current_plugins_js(game_data)
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_plugin_text(game_data, [item])
 

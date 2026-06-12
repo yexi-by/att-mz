@@ -2,7 +2,7 @@
 
 本脚本只负责发布包装，不保存源码数据库，不复制历史日志，也不把开发态
 `skills/att-mz/SKILL.md` 放进发行包。发行包内的 `skills/att-mz/SKILL.md`
-固定来自 `skills/att-mz-release/SKILL.md`。
+固定来自生成后的 `skills/att-mz-release/SKILL.md`。
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ RELEASE_DIRECTORY_NAME = "att-mz"
 DEFAULT_ZIP_NAME = "att-mz-windows-x86_64.zip"
 RELEASE_SKILL_SOURCE = ROOT / "skills" / "att-mz-release" / "SKILL.md"
 RELEASE_SKILL_REFERENCES_SOURCE = ROOT / "skills" / "att-mz-release" / "references"
-RELEASE_README_SOURCE = ROOT / "docs" / "release-readme.md"
+RELEASE_README_SOURCE = ROOT / "README.md"
 
 
 @dataclass(frozen=True)

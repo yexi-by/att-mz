@@ -92,23 +92,6 @@ pub(super) fn current_timestamp_text() -> Result<String, String> {
         .map_err(|error| format!("系统时间早于 UNIX_EPOCH，不能生成运行映射时间戳: {error}"))
 }
 
-pub(super) fn collect_python_named_groups(pattern_text: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut rest = pattern_text;
-    while let Some(start) = rest.find("(?P<") {
-        rest = &rest[start + 4..];
-        let Some(end) = rest.find('>') else {
-            break;
-        };
-        let name = &rest[..end];
-        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
-            names.push(name.to_string());
-        }
-        rest = &rest[end + 1..];
-    }
-    names
-}
-
 pub(super) fn render_format_template(
     template: &str,
     values: &HashMap<String, String>,

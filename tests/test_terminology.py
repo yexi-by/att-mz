@@ -2,7 +2,8 @@
 
 import json
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import NoReturn, cast
 
 import pytest
 from pydantic import ValidationError
@@ -11,8 +12,10 @@ from app.application.handler import TranslationHandler, validate_terminology_reg
 from app.language_profiles import build_text_rules_setting_for_language_profile
 from app.llm import LLMHandler
 from app.persistence import GameRegistry
-from app.rmmz import DataTextExtraction, load_game_data
-from app.rmmz.schema import MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
+from app.rmmz import DataTextExtraction
+from app.rmmz.loader import load_active_runtime_game_data, load_translation_source_game_data
+from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord, TranslationData, TranslationItem
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
 from app.rmmz.text_rules import TextRules, coerce_json_value, ensure_json_array, ensure_json_object, get_default_text_rules
 from app.terminology import (
     SpeakerDialogueContext,
@@ -25,7 +28,12 @@ from app.terminology import (
     load_terminology_registry,
     validate_terminology_bundle,
 )
-from app.terminology.extraction import build_speaker_sample_file_name, is_translatable_terminology_source
+from app.terminology.extraction import (
+    TerminologyExtraction,
+    build_speaker_sample_file_name,
+    is_translatable_terminology_source,
+)
+from app.terminology.schemas import TERMINOLOGY_CATEGORIES
 from app.terminology.files import reserve_speaker_sample_file_name
 from app.translation import iter_translation_context_batches
 from tests._native_write_plan_helper import reset_writable_copies, write_terminology_text
@@ -36,13 +44,25 @@ def json_dump_text(registry: TerminologyRegistry) -> str:
     return json.dumps(registry.model_dump(mode="json"), ensure_ascii=False)
 
 
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
+
+
 def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
     """生成测试用 MV 虚拟名字框外部规则。"""
     return [
         MvVirtualNameboxRuleRecord(
             rule_order=0,
             rule_name="quote-inline",
-            pattern_text=r"^(?P<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?P<connector>[:：]?「)(?P<body>.*)$",
+            pattern_text=r"^(?<speaker>[^\\「（:：<>\r\n]{1,40})\s*(?<connector>[:：]?「)(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="translate",
@@ -51,7 +71,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=1,
             rule_name="actor-inline",
-            pattern_text=r"^(?P<speaker>\\[Nn]\[(?P<actor_id>1)\])(?P<separator>[:：])(?P<body>.*)$",
+            pattern_text=r"^(?<speaker>\\[Nn]\[(?<actor_id>1)\])(?<separator>[:：])(?<body>.*)$",
             speaker_group="speaker",
             body_group="body",
             speaker_policy="actor_name",
@@ -60,7 +80,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=2,
             rule_name="angle-standalone",
-            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            pattern_text=r"^<(?<speaker>[^\\<>\r\n]{1,80})>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",
@@ -69,7 +89,7 @@ def _mv_virtual_namebox_rule_records() -> list[MvVirtualNameboxRuleRecord]:
         MvVirtualNameboxRuleRecord(
             rule_order=3,
             rule_name="dynamic-angle",
-            pattern_text=r"^<(?P<speaker>\\[Nn]\[\d+\])>\s*$",
+            pattern_text=r"^<(?<speaker>\\[Nn]\[\d+\])>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="preserve",
@@ -84,7 +104,9 @@ async def test_export_terminology_writes_terms_and_contexts(
     tmp_path: Path,
 ) -> None:
     """导出命令生成完整术语表和只读上下文。"""
-    game_data = await load_game_data(minimal_game_dir)
+    active_game_data = await load_active_runtime_game_data(minimal_game_dir)
+    _create_test_source_snapshot(active_game_data)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -246,7 +268,7 @@ async def test_import_terminology_rejects_field_terms_without_glossary(
     """字段译名表有已填写译名时，正文术语表为空必须直接拒绝导入。"""
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -304,7 +326,7 @@ async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_te
 
     registry = GameRegistry(tmp_path / "db")
     _ = await registry.register_game(minimal_game_dir, source_language="ja")
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_translation_source_game_data(minimal_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "terminology",
@@ -346,6 +368,61 @@ async def test_import_terminology_accepts_cleaned_glossary_from_wrapped_field_te
     assert stored_glossary == cleaned_glossary
 
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("app_home_with_example_setting")
+async def test_import_terminology_validates_shape_without_export_context_generation(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """术语导入只需要当前字段表形状，不能生成导出用上下文。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    game_data = await load_translation_source_game_data(minimal_game_dir)
+    summary = await export_terminology_artifacts(
+        game_data=game_data,
+        output_dir=tmp_path / "terminology",
+    )
+    exported_registry = await load_terminology_registry(field_terms_path=summary.field_terms_path)
+    filled_category_map: dict[TerminologyCategory, dict[str, str]] = {
+        category: {
+            source_text: "爱丽丝" if source_text == "アリス" else f"{source_text}译"
+            for source_text in entries
+        }
+        for category, entries in exported_registry.as_category_map().items()
+    }
+    filled_registry = TerminologyRegistry.from_category_map(filled_category_map)
+    _ = summary.field_terms_path.write_text(
+        f"{filled_registry.model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+    _ = summary.glossary_path.write_text(
+        f"{TerminologyGlossary(terms={'アリス': '爱丽丝'}).model_dump_json(indent=2)}\n",
+        encoding="utf-8",
+    )
+
+    def forbidden_context_generation(*args: object, **kwargs: object) -> NoReturn:
+        _ = (args, kwargs)
+        raise AssertionError("import-terminology must not build export terminology contexts")
+
+    monkeypatch.setattr(
+        "app.application.handler.TerminologyExtraction.extract_registry_and_contexts",
+        forbidden_context_generation,
+    )
+    handler = TranslationHandler(game_registry=registry, llm_handler=LLMHandler())
+    try:
+        import_summary = await handler.import_terminology(
+            game_title="テストゲーム",
+            input_path=summary.field_terms_path,
+            glossary_input_path=summary.glossary_path,
+        )
+    finally:
+        await handler.close()
+
+    assert import_summary.imported_entry_count == filled_registry.total_entry_count()
+    assert import_summary.filled_entry_count == filled_registry.filled_entry_count()
+
+
 def test_terminology_bundle_allows_glossary_to_omit_field_only_terms() -> None:
     """字段写回专用条目不必原样进入正文术语表。"""
     validate_terminology_bundle(
@@ -381,7 +458,7 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     tmp_path: Path,
 ) -> None:
     """MV 不把 101.parameters[4] 当名字框，也不会为了写回补第 5 个参数。"""
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
     summary = await export_terminology_artifacts(
         game_data=game_data,
         output_dir=tmp_path / "mv-terminology",
@@ -393,6 +470,7 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     assert registry.speaker_names == {}
     assert summary.sample_file_count == 0
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError, match="MV 术语写回缺少 MV 虚拟名字框规则"):
         _ = write_terminology_text(
@@ -406,6 +484,51 @@ async def test_mv_terminology_skips_mz_name_box_parameter(
     name_command = ensure_json_object(commands[0], "CommonEvents[1].list[0]")
     parameters = ensure_json_array(name_command["parameters"], "CommonEvents[1].list[0].parameters")
     assert len(parameters) == 4
+
+
+@pytest.mark.asyncio
+async def test_mv_terminology_consumes_native_speaker_requirements(
+    minimal_mv_game_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MV 说话人术语需求来自 native speaker_requirements。"""
+    game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
+    calls: list[object] = []
+
+    def fake_scan_native_mv_virtual_namebox(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            rule_errors=[],
+            speaker_requirements=[
+                SimpleNamespace(
+                    source_text="Native案内人",
+                    requires_speaker_name=True,
+                    sample_body_lines=["native 本文"],
+                ),
+                SimpleNamespace(
+                    source_text="\\N[2]",
+                    requires_speaker_name=False,
+                    sample_body_lines=["保留项正文"],
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(
+        "app.terminology.extraction.scan_native_mv_virtual_namebox",
+        fake_scan_native_mv_virtual_namebox,
+        raising=False,
+    )
+
+    registry, contexts, _database_contexts = TerminologyExtraction(
+        game_data,
+        mv_virtual_namebox_rule_records=[],
+    ).extract_registry_and_contexts()
+
+    assert calls == [{"game_data": game_data, "records": []}]
+    assert registry.speaker_names == {"Native案内人": ""}
+    assert {context.name: context.dialogue_lines for context in contexts} == {
+        "Native案内人": ["native 本文"]
+    }
 
 
 @pytest.mark.asyncio
@@ -488,7 +611,10 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
         encoding="utf-8",
     )
 
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_mv_game_dir,
+        include_writable_copies=True,
+    )
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     summary = await export_terminology_artifacts(
         game_data=game_data,
@@ -543,6 +669,7 @@ async def test_mv_terminology_collects_401_speakers_as_virtual_name_boxes(
     assert "\\N[1]:" not in prompt_text
     assert "案内人「こんにちは」" not in prompt_text
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     written_count = write_terminology_text(
         game_data,
@@ -602,14 +729,17 @@ async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
         json.dumps(common_events, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_mv_game_dir,
+        include_writable_copies=True,
+    )
     mv_namebox_rules = _mv_virtual_namebox_rule_records()
     conflict_rules = [
         *mv_namebox_rules,
         MvVirtualNameboxRuleRecord(
             rule_order=999,
             rule_name="angle-standalone-copy",
-            pattern_text=r"^<(?P<speaker>[^\\<>\r\n]{1,80})>\s*$",
+            pattern_text=r"^<(?<speaker>[^\\<>\r\n]{1,80})>\s*$",
             speaker_group="speaker",
             body_group="",
             speaker_policy="translate",
@@ -617,6 +747,7 @@ async def test_mv_terminology_write_back_rule_conflict_reports_text_location(
         ),
     ]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError) as exc_info:
         _ = write_terminology_text(
@@ -705,6 +836,33 @@ async def test_load_terminology_registry_requires_all_file_categories(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_load_terminology_registry_normalizes_integer_translations(tmp_path: Path) -> None:
+    """外部字段译名表中的整数译名按文本字段规范化。"""
+    field_terms_path = tmp_path / "field-terms.json"
+    payload: dict[str, dict[str, object]] = {category: {} for category in TERMINOLOGY_CATEGORIES}
+    payload["speaker_names"] = {"案内人": 123}
+    _ = field_terms_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    registry = await load_terminology_registry(field_terms_path=field_terms_path)
+
+    assert registry.speaker_names == {"案内人": "123"}
+
+
+@pytest.mark.asyncio
+async def test_load_terminology_registry_rejects_boolean_translations(tmp_path: Path) -> None:
+    """外部字段译名表中的布尔译名无效。"""
+    field_terms_path = tmp_path / "field-terms.json"
+    payload: dict[str, dict[str, object]] = {category: {} for category in TERMINOLOGY_CATEGORIES}
+    payload["speaker_names"] = {"案内人": True}
+    _ = field_terms_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValidationError) as error_info:
+        _ = await load_terminology_registry(field_terms_path=field_terms_path)
+
+    assert "bool" in str(error_info.value)
+
+
+@pytest.mark.asyncio
 async def test_load_terminology_glossary_validates_shape_and_values(tmp_path: Path) -> None:
     """正文术语表只接受 terms 字段，并拒绝空译名。"""
     extra_path = tmp_path / "extra.json"
@@ -722,12 +880,38 @@ async def test_load_terminology_glossary_validates_shape_and_values(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_load_terminology_glossary_normalizes_integer_terms(tmp_path: Path) -> None:
+    """外部正文术语表中的整数术语按文本字段规范化。"""
+    glossary_path = tmp_path / "glossary.json"
+    _ = glossary_path.write_text(json.dumps({"terms": {"案内人": 123}}, ensure_ascii=False), encoding="utf-8")
+
+    glossary = await load_terminology_glossary(glossary_path=glossary_path)
+
+    assert glossary.terms == {"案内人": "123"}
+
+
+@pytest.mark.asyncio
+async def test_load_terminology_glossary_rejects_boolean_terms(tmp_path: Path) -> None:
+    """外部正文术语表中的布尔术语无效。"""
+    glossary_path = tmp_path / "glossary.json"
+    _ = glossary_path.write_text(json.dumps({"terms": {"案内人": True}}, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValidationError) as error_info:
+        _ = await load_terminology_glossary(glossary_path=glossary_path)
+
+    assert "bool" in str(error_info.value)
+
+
+@pytest.mark.asyncio
 async def test_terminology_skips_actor_name_control_variables(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
     """名字框中的角色名变量不会进入术语表、提示词和写回。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
     common_events = ensure_json_array(game_data.writable_data["CommonEvents.json"], "CommonEvents")
     event = ensure_json_object(common_events[1], "CommonEvents[1]")
     commands = ensure_json_array(event["list"], "CommonEvents[1].list")
@@ -757,6 +941,7 @@ async def test_terminology_skips_actor_name_control_variables(
     prompt_index = TerminologyPromptIndex.from_glossary(TerminologyGlossary())
     assert prompt_index.entries == []
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     written_count = write_terminology_text(
         game_data,
@@ -893,7 +1078,10 @@ async def test_translation_prompt_injects_same_database_entry_name(
     minimal_game_dir: Path,
 ) -> None:
     """翻译数据库条目正文时会注入同一条目的名称术语。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
     glossary = TerminologyGlossary(terms={"火の術": "火术"})
     data = TranslationData(
         display_name="",
@@ -926,12 +1114,47 @@ async def test_translation_prompt_injects_same_database_entry_name(
     assert "火の術 => 火术" in user_prompt
 
 
+def test_translation_prompt_injects_warm_index_actor_nickname_owner_term() -> None:
+    """warm index 还原出的 Actor 昵称 owner 术语应进入正文 prompt。"""
+    glossary = TerminologyGlossary(terms={"ニック": "昵称"})
+    data = TranslationData(
+        display_name="",
+        translation_items=[
+            TranslationItem(
+                location_path="Actors.json/1/profile",
+                item_type="short_text",
+                role=None,
+                original_lines=["プロフィール"],
+                terminology_owner_terms=["勇者", "ニック"],
+            )
+        ],
+    )
+
+    batches = list(
+        iter_translation_context_batches(
+            translation_data=data,
+            token_size=100,
+            factor=1.0,
+            max_command_items=3,
+            system_prompt="系统提示",
+            text_rules=get_default_text_rules(),
+            terminology_prompt_index=TerminologyPromptIndex.from_glossary(glossary),
+        )
+    )
+    user_prompt = batches[0].messages[1].text
+
+    assert "ニック => 昵称" in user_prompt
+
+
 @pytest.mark.asyncio
 async def test_native_terminology_write_updates_all_supported_fields(
     minimal_game_dir: Path,
 ) -> None:
     """已填写术语表可以直接写回名字框、地图名、数据库名称和系统类型。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(
+        minimal_game_dir,
+        include_writable_copies=True,
+    )
     registry = TerminologyRegistry(
         speaker_names={"村人": "村民"},
         map_display_names={"始まりの町": "起始之镇"},
@@ -942,6 +1165,7 @@ async def test_native_terminology_write_updates_all_supported_fields(
         system_elements={"炎": "火焰"},
     )
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     written_count = write_terminology_text(game_data, registry)
 

@@ -13,10 +13,61 @@ from app.cli.errors import CliArgumentParser
 def build_parser() -> argparse.ArgumentParser:
     """构建项目主命令行解析器。"""
     parser = CliArgumentParser(prog="att-mz", description="RPG Maker 翻译工具命令行入口")
-    _ = parser.add_argument(
+    debug_group = parser.add_mutually_exclusive_group()
+    _ = debug_group.add_argument(
         "--debug",
+        dest="debug",
         action="store_true",
-        help="在终端显示 DEBUG 级别日志，默认仅写入文件日志",
+        default=None,
+        help="本次进入统一 debug 模式",
+    )
+    _ = debug_group.add_argument(
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="本次关闭统一 debug 模式",
+    )
+    debug_logging_group = parser.add_mutually_exclusive_group()
+    _ = debug_logging_group.add_argument(
+        "--debug-logging",
+        dest="debug_logging",
+        action="store_true",
+        default=None,
+        help="本次强制开启 debug 日志",
+    )
+    _ = debug_logging_group.add_argument(
+        "--no-debug-logging",
+        dest="debug_logging",
+        action="store_false",
+        help="本次强制关闭 debug 日志",
+    )
+    debug_timings_group = parser.add_mutually_exclusive_group()
+    _ = debug_timings_group.add_argument(
+        "--debug-timings",
+        dest="debug_timings",
+        action="store_true",
+        default=None,
+        help="本次强制开启统一计时诊断",
+    )
+    _ = debug_timings_group.add_argument(
+        "--no-debug-timings",
+        dest="debug_timings",
+        action="store_false",
+        help="本次强制关闭统一计时诊断",
+    )
+    debug_llm_messages_group = parser.add_mutually_exclusive_group()
+    _ = debug_llm_messages_group.add_argument(
+        "--debug-llm-messages",
+        dest="debug_llm_messages",
+        action="store_true",
+        default=None,
+        help="本次强制开启 LLM 消息观测",
+    )
+    _ = debug_llm_messages_group.add_argument(
+        "--no-debug-llm-messages",
+        dest="debug_llm_messages",
+        action="store_false",
+        help="本次强制关闭 LLM 消息观测",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<命令>", required=True, parser_class=CliArgumentParser)
 
@@ -26,6 +77,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_optional_target_arguments(doctor_parser, required=False)
     _ = doctor_parser.add_argument("--no-check-llm", action="store_true", help="跳过模型连通性检查")
 
+    probe_source_language_parser = subparsers.add_parser(
+        "probe-source-language",
+        help="注册前只按玩家可见文本探测游戏源语言",
+    )
+    _ = probe_source_language_parser.add_argument("--path", required=True, help="RPG Maker 游戏根目录")
+    _ = probe_source_language_parser.add_argument("--output", help="源语言探测完整 JSON 报告输出文件")
+
     add_game_parser = subparsers.add_parser("add-game", help="注册干净原始 RPG Maker 游戏目录")
     _ = add_game_parser.add_argument("--path", required=True, help="RPG Maker 游戏根目录")
     _ = add_game_parser.add_argument(
@@ -33,6 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["ja", "en"],
         required=True,
         help="游戏原文语言，必须显式指定；ja 表示日文，en 表示英文",
+    )
+
+    reset_game_parser = subparsers.add_parser(
+        "reset-game",
+        help="危险：把已注册游戏回到注册前状态并删除游戏数据库",
+    )
+    add_optional_target_arguments(reset_game_parser)
+    _ = reset_game_parser.add_argument("--dry-run", action="store_true", help="只输出会恢复和删除的路径，不修改文件")
+    _ = reset_game_parser.add_argument(
+        "--confirm-game-title",
+        help="真正执行危险回溯时必须填入完整游戏标题；不传只会返回确认错误和计划",
     )
 
     export_plugins_parser = subparsers.add_parser(
@@ -105,6 +174,35 @@ def build_parser() -> argparse.ArgumentParser:
     _ = import_note_tag_parser.add_argument("--input", required=True, help="Note 标签规则 JSON 文件")
     _ = import_note_tag_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有 Note 标签规则候选，允许导入空规则")
 
+    scan_nonstandard_data_parser = subparsers.add_parser(
+        "scan-nonstandard-data",
+        help="扫描非标准 data 文件文本风险",
+    )
+    add_optional_target_arguments(scan_nonstandard_data_parser)
+    _ = scan_nonstandard_data_parser.add_argument("--output", help="非标准 data 文件文本风险报告 JSON 输出文件")
+
+    export_nonstandard_data_parser = subparsers.add_parser(
+        "export-nonstandard-data-json",
+        help="导出非标准 data 文件候选报告和原始 JSON 副本",
+    )
+    add_optional_target_arguments(export_nonstandard_data_parser)
+    _ = export_nonstandard_data_parser.add_argument("--output-dir", required=True, help="非标准 data 文件文本工作区输出目录")
+
+    validate_nonstandard_data_parser = subparsers.add_parser(
+        "validate-nonstandard-data-rules",
+        help="校验非标准 data 文件文本规则 JSON",
+    )
+    add_optional_target_arguments(validate_nonstandard_data_parser)
+    _ = validate_nonstandard_data_parser.add_argument("--input", required=True, help="非标准 data 文件文本规则 JSON 文件")
+    _ = validate_nonstandard_data_parser.add_argument("--output", help="写出完整 JSON 报告文件")
+
+    import_nonstandard_data_parser = subparsers.add_parser(
+        "import-nonstandard-data-rules",
+        help="把外部非标准 data 文件文本规则 JSON 导入游戏数据库",
+    )
+    add_optional_target_arguments(import_nonstandard_data_parser)
+    _ = import_nonstandard_data_parser.add_argument("--input", required=True, help="非标准 data 文件文本规则 JSON 文件")
+
     scan_placeholder_parser = subparsers.add_parser(
         "scan-placeholder-candidates",
         help="扫描疑似自定义控制符候选",
@@ -152,8 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
     _ = quality_report_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；大游戏只读报告默认不启用",
+        help="额外执行 Rust 写回级检查；大游戏普通质量报告默认不启用",
     )
+
+    rebuild_text_index_parser = subparsers.add_parser(
+        "rebuild-text-index",
+        help="重建当前游戏的持久文本范围索引",
+    )
+    add_optional_target_arguments(rebuild_text_index_parser)
+    _ = rebuild_text_index_parser.add_argument("--output", help="写出 JSON 报告文件")
 
     text_scope_parser = subparsers.add_parser(
         "text-scope",
@@ -164,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = text_scope_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；大游戏只读清单默认不启用",
+        help="在报告中标记索引可写状态；不执行额外写回级检查",
     )
 
     audit_coverage_parser = subparsers.add_parser(
@@ -176,7 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = audit_coverage_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；大游戏覆盖审计默认不启用",
+        help="在报告中标记索引可写状态；不执行额外写回级检查",
     )
 
     audit_active_runtime_parser = subparsers.add_parser(
@@ -256,7 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = export_pending_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；默认只按当前文本范围导出",
+        help="在报告中标记索引可写状态；导出本身不执行额外写回级检查",
     )
 
     export_quality_fix_parser = subparsers.add_parser(
@@ -268,7 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = export_quality_fix_parser.add_argument(
         "--include-write-probe",
         action="store_true",
-        help="额外执行写入可行性探针；默认只按质量问题导出修复表",
+        help="在报告中标记索引可写状态；修复表生成不额外执行写回级检查",
     )
 
     import_manual_parser = subparsers.add_parser(
@@ -277,6 +382,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_manual_parser)
     _ = import_manual_parser.add_argument("--input", required=True, help="已填写的译文表文件")
+    _ = import_manual_parser.add_argument(
+        "--import-valid",
+        action="store_true",
+        help="手动译文表有无效条目时，仍保存通过校验的有效条目",
+    )
+    _ = import_manual_parser.add_argument(
+        "--report-invalid",
+        help="显式部分导入时写出未保存的无效条目报告 JSON",
+    )
 
     reset_translations_parser = subparsers.add_parser(
         "reset-translations",
@@ -435,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_placeholder_source_group = import_placeholder_parser.add_mutually_exclusive_group(required=True)
     _ = import_placeholder_source_group.add_argument("--rules", help="占位符规则 JSON 字符串")
     _ = import_placeholder_source_group.add_argument("--input", help="占位符规则 JSON 文件")
-    _ = import_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有普通占位符候选，允许导入空规则")
+    _ = import_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认已审查当前普通占位符候选，允许导入空规则")
 
     validate_structured_placeholder_parser = subparsers.add_parser(
         "validate-structured-placeholder-rules",
@@ -465,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_optional_target_arguments(import_structured_placeholder_parser)
     _ = import_structured_placeholder_parser.add_argument("--input", required=True, help="结构化占位符规则 JSON 文件")
-    _ = import_structured_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认当前扫描没有结构化占位符候选，允许导入空规则")
+    _ = import_structured_placeholder_parser.add_argument("--confirm-empty", action="store_true", help="确认已审查当前结构化占位符候选，允许导入空规则")
 
     validate_plugin_parser = subparsers.add_parser(
         "validate-plugin-rules",
@@ -585,15 +699,6 @@ def add_setting_override_arguments(
     if not include_text_rules:
         return
     _ = group.add_argument(
-        "--event-command-default-code",
-        action="extend",
-        nargs="+",
-        type=int,
-        dest="event_command_default_codes",
-        metavar="CODE",
-        help="事件指令参数默认编码数组",
-    )
-    _ = group.add_argument(
         "--strip-wrapping-punctuation-pair",
         action="append",
         nargs=2,
@@ -635,6 +740,21 @@ def add_setting_override_arguments(
     _ = group.add_argument("--line-width-count-pattern", help="长文本宽度计数字符正则")
     _ = group.add_argument("--source-text-required-pattern", help="进入正文翻译的源语言字符正则")
     _ = group.add_argument("--source-residual-segment-pattern", help="源文残留片段识别正则")
+    _ = group.add_argument(
+        "--source-residual-detection-profile",
+        choices=["japanese_strict", "english_source_copy"],
+        help="源文残留检测模式",
+    )
+    _ = group.add_argument(
+        "--english-source-copy-min-words",
+        type=int,
+        help="英文源文复制残留最少连续词数",
+    )
+    _ = group.add_argument(
+        "--english-source-copy-min-letters",
+        type=int,
+        help="英文源文复制残留最少拉丁字母数",
+    )
     _ = group.add_argument("--residual-escape-sequence-pattern", help="残留检查前剥离的转义序列正则")
 
 

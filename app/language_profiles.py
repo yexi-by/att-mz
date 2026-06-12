@@ -1,20 +1,10 @@
 """源语言档案。"""
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import cast
 
 from app.config.schemas import TextRulesSetting
-from app.language import SourceLanguage, SourceTextExclusionProfile
-
-JAPANESE_PROMPT_FILE = "prompts/text_translation_ja_to_zh_system.md"
-ENGLISH_PROMPT_FILE = "prompts/text_translation_en_to_zh_system.md"
-BUILTIN_PROMPT_FILES: frozenset[str] = frozenset(
-    {
-        JAPANESE_PROMPT_FILE,
-        ENGLISH_PROMPT_FILE,
-    }
-)
+from app.language import SourceLanguage, SourceResidualDetectionProfile, SourceTextExclusionProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,10 +13,12 @@ class LanguageProfile:
 
     source_language: SourceLanguage
     residual_label: str
-    prompt_file: str
     source_text_required_pattern: str
     source_text_exclusion_profile: SourceTextExclusionProfile
     source_residual_segment_pattern: str
+    source_residual_detection_profile: SourceResidualDetectionProfile
+    english_source_copy_min_words: int = 4
+    english_source_copy_min_letters: int = 12
     source_residual_allowed_chars: tuple[str, ...] = field(default_factory=tuple)
     source_residual_allowed_tail_chars: tuple[str, ...] = field(default_factory=tuple)
     allowed_source_residual_terms: tuple[str, ...] = field(default_factory=tuple)
@@ -36,10 +28,10 @@ class LanguageProfile:
 JAPANESE_PROFILE = LanguageProfile(
     source_language="ja",
     residual_label="日文",
-    prompt_file=JAPANESE_PROMPT_FILE,
-    source_text_required_pattern=r"[\u3040-\u309F\u30A0-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+",
+    source_text_required_pattern=r"[ぁ-んァ-ヶ一-龯ー]+",
     source_text_exclusion_profile="none",
-    source_residual_segment_pattern=r"[\u3040-\u309F\u30A0-\u30FF]+",
+    source_residual_segment_pattern=r"[ぁ-んァ-ヶー]+",
+    source_residual_detection_profile="japanese_strict",
     source_residual_allowed_chars=("っ", "ッ", "ー", "・", "。", "～", "…"),
     source_residual_allowed_tail_chars=(
         "あ",
@@ -61,53 +53,10 @@ JAPANESE_PROFILE = LanguageProfile(
 ENGLISH_PROFILE = LanguageProfile(
     source_language="en",
     residual_label="英文",
-    prompt_file=ENGLISH_PROMPT_FILE,
     source_text_required_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
     source_text_exclusion_profile="english_protocol_noise",
     source_residual_segment_pattern=r"[A-Za-z][A-Za-z0-9'’_-]*",
-    allowed_source_residual_terms=(
-        "HP",
-        "MP",
-        "TP",
-        "AP",
-        "JP",
-        "EXP",
-        "XP",
-        "Lv",
-        "LV",
-        "OK",
-        "BGM",
-        "BGS",
-        "ME",
-        "SE",
-        "NPC",
-        "ATK",
-        "DEF",
-        "MAT",
-        "MDF",
-        "AGI",
-        "LUK",
-        "HIT",
-        "EVA",
-        "CRI",
-        "CEV",
-        "MEV",
-        "MRF",
-        "CNT",
-        "HRG",
-        "MRG",
-        "TRG",
-        "TGR",
-        "GRD",
-        "REC",
-        "PHA",
-        "MCR",
-        "TCR",
-        "PDR",
-        "MDR",
-        "FDR",
-        "EXR",
-    ),
+    source_residual_detection_profile="english_source_copy",
     source_residual_terms_ignore_case=True,
 )
 
@@ -131,6 +80,9 @@ def build_text_rules_setting_for_language_profile(source_language: SourceLanguag
         source_text_required_pattern=profile.source_text_required_pattern,
         source_text_exclusion_profile=profile.source_text_exclusion_profile,
         source_residual_segment_pattern=profile.source_residual_segment_pattern,
+        source_residual_detection_profile=profile.source_residual_detection_profile,
+        english_source_copy_min_words=profile.english_source_copy_min_words,
+        english_source_copy_min_letters=profile.english_source_copy_min_letters,
         source_residual_allowed_chars=list(profile.source_residual_allowed_chars),
         source_residual_allowed_tail_chars=list(profile.source_residual_allowed_tail_chars),
         allowed_source_residual_terms=list(profile.allowed_source_residual_terms),
@@ -143,34 +95,21 @@ def apply_language_profile_to_raw_config(
     raw_config: dict[str, object],
     source_language: SourceLanguage,
 ) -> None:
-    """把语言档案写入原始配置字典，后续 CLI 覆盖仍可继续覆盖这些值。"""
+    """把语言档案的文本规则写入原始配置字典，后续 CLI 覆盖仍可继续覆盖这些值。"""
     profile = language_profile(source_language)
-    text_translation = _read_or_create_section(raw_config, "text_translation")
-    current_prompt_file = text_translation.get("system_prompt_file")
-    if (
-        not isinstance(current_prompt_file, str)
-        or current_prompt_file in BUILTIN_PROMPT_FILES
-    ):
-        text_translation["system_prompt_file"] = profile.prompt_file
-
     text_rules = _read_or_create_section(raw_config, "text_rules")
     text_rules["source_language"] = profile.source_language
     text_rules["source_residual_label"] = profile.residual_label
     text_rules["source_text_required_pattern"] = profile.source_text_required_pattern
     text_rules["source_text_exclusion_profile"] = profile.source_text_exclusion_profile
     text_rules["source_residual_segment_pattern"] = profile.source_residual_segment_pattern
+    text_rules["source_residual_detection_profile"] = profile.source_residual_detection_profile
+    text_rules["english_source_copy_min_words"] = profile.english_source_copy_min_words
+    text_rules["english_source_copy_min_letters"] = profile.english_source_copy_min_letters
     text_rules["source_residual_allowed_chars"] = list(profile.source_residual_allowed_chars)
     text_rules["source_residual_allowed_tail_chars"] = list(profile.source_residual_allowed_tail_chars)
     text_rules["allowed_source_residual_terms"] = list(profile.allowed_source_residual_terms)
     text_rules["source_residual_terms_ignore_case"] = profile.source_residual_terms_ignore_case
-
-
-def resolve_profile_prompt_path(*, base_dir: Path, source_language: SourceLanguage) -> Path:
-    """解析语言档案对应的系统提示词路径。"""
-    prompt_path = Path(language_profile(source_language).prompt_file)
-    if prompt_path.is_absolute():
-        return prompt_path
-    return base_dir / prompt_path
 
 
 def _read_or_create_section(raw_config: dict[str, object], section_name: str) -> dict[str, object]:
@@ -190,5 +129,4 @@ __all__: list[str] = [
     "apply_language_profile_to_raw_config",
     "build_text_rules_setting_for_language_profile",
     "language_profile",
-    "resolve_profile_prompt_path",
 ]

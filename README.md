@@ -9,6 +9,8 @@
 
 你不需要懂编程，也不需要自己判断游戏引擎或原文语言。告诉 AI 你的游戏在哪，它会先检查，再带你完成汉化。
 
+> 得益于 2026 年 Agent 工具和 AI 模型能力的大爆发，项目得以迅速迭代。但个人精力有限，快速迭代下不可避免地只能关注最终目的，以及如何更好地达成目的，无暇顾及每一个实现细节。这必然会带来一些未知的潜在问题——现实世界的复杂性是无穷大的。所以你的反馈体验极为重要，请不要吝惜 Issue，我会听取每一个 Issue，继续打磨迭代项目。
+
 > ⚠️ **目前仅支持 RPG Maker MV / MZ 游戏。** 后续支持 XP、VX、VX Ace 等 RGSS 系列引擎需要新增归档解包、Ruby Marshal 反序列化和 Ruby / RGSS 脚本解析等适配层。如果你有需求，去 [GitHub](https://github.com/yexi-by/att-mz) ⭐ 点个 Star 或提个 Issue，给作者一点更新的动力。
 
 ## ✨ 工具优点
@@ -49,7 +51,7 @@
 | [OpenClaw](https://github.com/openclaw/openclaw) | ⌨️ 命令行 | 开源跨平台个人 AI 助理 |
 | [Hermes](https://github.com/NousResearch/hermes-agent) | ⌨️ 命令行 | Nous Research 出品，支持子代理调度 |
 
-以上只是举例，选择你顺手的即可。如果 Agent 支持调用子代理，翻译流程会跑得更快，但不是必须。
+以上只是举例，选择你顺手的即可。如果 Agent 支持调用子代理，翻译流程会更强地并行分析和交叉审查；不支持子代理时，也能按任务包或串行方式完成。
 
 怎么算装好了？在对话框里输入"你好"，AI 回复你了就说明 OK。
 
@@ -73,7 +75,9 @@ timeout = 600
 
 `base_url`、`api_key`、`model` 这三个值你的 API 服务商会提供。常用的服务商有阿里云百炼、DeepSeek、硅基流动、OpenRouter 等。不知道填什么的话，直接问你的 Agent：「我的 API 服务商是 xxx，帮我填好 A.T.T MZ 的模型配置」。
 
-> 💡 如果你习惯用源码运行，看 [进阶教学与源码编译](docs/advanced-usage.md)。普通使用不需要。
+临时覆盖模型地址和 Key 时，使用当前环境变量：`ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。
+
+> 💡 如果你习惯用源码运行，看仓库里的 [进阶教学与源码编译](https://github.com/yexi-by/att-mz/blob/main/docs/guides/advanced-usage.md)。普通使用不需要。
 
 ## 📂 第三步：用 Agent 打开你的游戏目录
 
@@ -96,11 +100,66 @@ Agent 收到任务后，会自己完成整个流程：
 - 🔍 识别游戏引擎（RPG Maker MV 或 MZ）
 - 🌐 判断原文语言（日文或英文）
 - 📝 注册游戏、导出文本、分析规则
+- ⚡ 大型游戏会建立文本范围索引，后续小批翻译、手动补译和质量检查不必每次全量扫描
 - 🤖 调用模型翻译正文
 - ✅ 检查翻译质量
 - 💾 确认没问题后把译文写进游戏文件
 
 过程中 Agent 会一步步向你报告进度。遇到需要确认的事情（比如要不要换游戏字体），它会主动问你。你只需要回答"可以"或"不行"。
+
+### 当前文本索引与恢复动作
+
+A.T.T MZ 用当前文本索引统一翻译、质量检查、手动补译、覆盖审计和写进游戏文件的文本范围。大型游戏或源文件、规则变化后，Agent 会先建立当前文本索引。
+
+源码运行：
+
+```powershell
+uv run python main.py rebuild-text-index --game <游戏标题>
+```
+
+发行包运行：
+
+```powershell
+.\att-mz.exe rebuild-text-index --game <游戏标题>
+```
+
+索引缺失、过期或范围不一致时，后续翻译、质量检查和写进游戏文件会失败并要求重建当前文本索引。
+
+### 规则正则契约
+
+插件规则、事件指令规则、Note 标签规则、普通占位符规则、结构化占位符规则、MV 虚拟名字框规则、源文残留结构规则和 `setting.toml` 中的用户可写正则都按当前命令导入或校验。
+
+外部可写正则统一使用 PCRE2 当前契约。需要命名 capture 时使用 `(?<name>...)`，例如 `(?<speaker>...)`、`(?<body>...)`。规则保存到当前统一规则模型；旧规则结构不会自动迁移，遇到规则校验失败时让 Agent 按当前命令重新导出并导入规则。
+
+当前工作区校验失败、manifest 不匹配或范围信息不可用时，让 Agent 重新准备工作区。
+
+源码运行：
+
+```powershell
+uv run python main.py prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
+```
+
+发行包运行：
+
+```powershell
+.\att-mz.exe prepare-agent-workspace --game <游戏标题> --output-dir <工作区>
+```
+
+当前运行文件审计或反馈定位缺少可用写回映射时，先重建当前文本索引，再按需要重建当前运行文件。
+
+源码运行：
+
+```powershell
+uv run python main.py rebuild-text-index --game <游戏标题>
+uv run python main.py rebuild-active-runtime --game <游戏标题>
+```
+
+发行包运行：
+
+```powershell
+.\att-mz.exe rebuild-text-index --game <游戏标题>
+.\att-mz.exe rebuild-active-runtime --game <游戏标题>
+```
 
 ## 🎯 第五步：试玩 + 反馈
 

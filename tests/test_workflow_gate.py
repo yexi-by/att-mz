@@ -1,0 +1,271 @@
+"""Workflow Gate 单一事实来源测试。"""
+
+import json
+from pathlib import Path
+from typing import NoReturn, cast
+
+import pytest
+
+from tests.native_rule_seed import (
+    seed_native_empty_rule_review_state,
+    seed_native_event_command_text_rules,
+    seed_native_plugin_text_rules,
+)
+
+from app.agent_toolkit import AgentToolkitService
+from app.application.errors import normalize_native_error_issue
+from app.application.handler import TranslationHandler, TranslationRunLimits
+from app.application.summaries import TextTranslationSummary
+from app.application.flow_gate import (
+    normal_placeholder_scope_hash,
+    note_tag_rule_scope_hash_for_text_rules,
+    structured_placeholder_scope_hash,
+)
+from app.utils.config_loader_utils import load_setting
+from app.llm import LLMHandler
+from app.persistence import GameRegistry
+from app.plugin_text import build_plugin_hash
+from app.rmmz.loader import load_translation_source_game_data
+from app.rmmz.schema import EventCommandParameterFilter, EventCommandTextRuleRecord, PluginTextRuleRecord
+from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
+from app.rule_review import (
+    NOTE_TAG_TEXT_RULE_DOMAIN,
+    PLACEHOLDER_RULE_DOMAIN,
+    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+)
+from app.terminology import TerminologyGlossary, TerminologyRegistry
+from app.text_facts import read_current_text_fact_translation_data_map
+from app.text_index import rebuild_text_index_native_storage
+
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_SETTING_PATH = ROOT / "setting.example.toml"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "text_index_contract_changed",
+        "plugin_source_selector_filtered",
+        "plugin_source_ast_missing",
+        "nonstandard_data_rule_unmatched",
+        "note_tag_rule_unmatched",
+        "path_template_invalid",
+    ],
+)
+def test_native_error_mapping_explains_stable_user_action(code: str) -> None:
+    """Rust 事实相关错误码必须映射为可行动的中文错误。"""
+    mapped = normalize_native_error_issue(code, "native detail")
+
+    assert mapped.code == code
+    assert "下一步" in mapped.message
+    assert "native detail" in mapped.message
+
+
+def _rewrite_plugins_js(path: Path, plugins: list[JsonValue]) -> None:
+    """把插件数组写回测试用 plugins.js。"""
+    _ = path.write_text(
+        f"var $plugins = {json.dumps(plugins, ensure_ascii=False, indent=2)};\n",
+        encoding="utf-8",
+    )
+
+
+def _read_plugins_js(path: Path) -> list[JsonValue]:
+    """读取测试夹具中的 plugins.js 数组。"""
+    raw_text = path.read_text(encoding="utf-8")
+    raw_json = cast(object, json.loads(raw_text.removeprefix("var $plugins = ").rstrip(";\n")))
+    raw_value = coerce_json_value(raw_json)
+    return ensure_json_array(raw_value, "plugins.js")
+
+
+def _add_high_risk_plugin_source(game_dir: Path) -> None:
+    """给测试游戏追加一个高风险启用插件源码文件。"""
+    plugins_path = game_dir / "js" / "plugins.js"
+    plugins = _read_plugins_js(plugins_path)
+    plugins.append({"name": "HighRiskSource", "status": True, "description": "", "parameters": {}})
+    _rewrite_plugins_js(plugins_path, plugins)
+    plugin_source_dir = game_dir / "js" / "plugins"
+    plugin_source_dir.mkdir(exist_ok=True)
+    _ = (plugin_source_dir / "HighRiskSource.js").write_text(
+        "\n".join(
+            f"Window_Base.prototype.drawText('高リスク{i}', 0, 0, 320);"
+            for i in range(301)
+        ),
+        encoding="utf-8",
+    )
+
+
+def _add_high_risk_nonstandard_data(game_dir: Path) -> None:
+    """给测试游戏追加一个高风险非标准 data 文件。"""
+    _ = (game_dir / "data" / "UnknownPluginData.json").write_text(
+        json.dumps([{"id": 1, "name": "これは未分類です"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+async def _install_non_plugin_source_gate_prerequisites(
+    *,
+    registry: GameRegistry,
+    game_title: str,
+    game_dir: Path,
+) -> None:
+    """安装除插件源码支线外的最小 workflow gate 前置状态。"""
+    game_data = await load_translation_source_game_data(game_dir)
+    first_plugin = ensure_json_object(game_data.plugins_js[0], "plugins[0]")
+    plugin_name_value = first_plugin.get("name")
+    if not isinstance(plugin_name_value, str):
+        raise TypeError("测试插件名必须是字符串")
+    setting = load_setting(EXAMPLE_SETTING_PATH, source_language="ja")
+    text_rules = TextRules.from_setting(setting.text_rules)
+    async with await registry.open_game(game_title) as session:
+        await seed_native_plugin_text_rules(session,
+            [
+                PluginTextRuleRecord(
+                    plugin_index=0,
+                    plugin_name=plugin_name_value,
+                    plugin_hash=build_plugin_hash(first_plugin),
+                    path_templates=["$['parameters']['Message']"],
+                )
+            ]
+        )
+        await seed_native_event_command_text_rules(session,
+            [
+                EventCommandTextRuleRecord(
+                    command_code=357,
+                    parameter_filters=[
+                        EventCommandParameterFilter(index=0, value=plugin_name_value),
+                        EventCommandParameterFilter(index=1, value="Show"),
+                    ],
+                    path_templates=["$['parameters'][3]['message']"],
+                )
+            ]
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+            scope_hash=note_tag_rule_scope_hash_for_text_rules(
+                game_data=game_data,
+                text_rules=text_rules,
+            ),
+        )
+        await session.replace_terminology_bundle(
+            registry=TerminologyRegistry(),
+            glossary=TerminologyGlossary(),
+        )
+        _ = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+        )
+        translation_data_map = await read_current_text_fact_translation_data_map(session)
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=normal_placeholder_scope_hash(
+                translation_data_map=translation_data_map,
+                text_rules=text_rules,
+            ),
+        )
+        await seed_native_empty_rule_review_state(
+            session,
+            rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+            scope_hash=structured_placeholder_scope_hash(
+                translation_data_map=translation_data_map,
+                structured_rules=text_rules.structured_placeholder_rules,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_translate_max_items_does_not_run_hidden_plugin_source_discovery(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """小批翻译使用 warm index 时不能隐式扫描插件源码目录。"""
+    _ = app_home_with_example_setting
+    _add_high_risk_plugin_source(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    await _install_non_plugin_source_gate_prerequisites(
+        registry=registry,
+        game_title="テストゲーム",
+        game_dir=minimal_game_dir,
+    )
+
+    async def forbidden_plugin_source_scan(*args: object, **kwargs: object) -> NoReturn:
+        """插件源码发现必须由显式扫描命令触发，翻译热路径不能偷扫。"""
+        _ = (args, kwargs)
+        raise AssertionError("translate --max-items 不能隐式扫描插件源码目录")
+
+    async def fake_batches(*args: object, **kwargs: object) -> TextTranslationSummary:
+        """截断模型调用，只验证翻译热路径已经完成本地准备。"""
+        _ = args
+        batches = cast(list[object], kwargs["batches"])
+        assert isinstance(batches, list)
+        return TextTranslationSummary(
+            total_extracted_items=cast(int, kwargs["total_extracted_items"]),
+            pending_count=cast(int, kwargs["pending_count"]),
+            deduplicated_count=cast(int, kwargs["deduplicated_count"]),
+            batch_count=len(batches),
+            success_count=0,
+            error_count=0,
+            total_pending_count=cast(int, kwargs["total_pending_count"]),
+        )
+
+    monkeypatch.setattr("app.application.flow_gate.build_native_plugin_source_scan", forbidden_plugin_source_scan)
+    monkeypatch.setattr(TranslationHandler, "_run_prepared_translation_batches", fake_batches)
+    handler = TranslationHandler(registry, LLMHandler())
+    try:
+        summary = await handler.translate_text(
+            game_title="テストゲーム",
+            setting_overrides=None,
+            custom_placeholder_rules_text=None,
+            run_limits=TranslationRunLimits(max_items=3),
+            callbacks=(lambda _current, _total: None, lambda _count: None, lambda _status: None),
+        )
+    finally:
+        await handler.close()
+
+    assert summary.blocked_reason is None
+    assert summary.batch_count > 0
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_records_high_risk_plugin_source_without_python_gate(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+) -> None:
+    """重建索引使用当前插件源码风险 gate。"""
+    _ = app_home_with_example_setting
+    _add_high_risk_plugin_source(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title="テストゲーム")
+
+    assert report.status == "ok"
+    assert report.summary["index_status"] == "rebuilt"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_text_index_records_high_risk_nonstandard_data_without_python_gate(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    app_home_with_example_setting: Path,
+) -> None:
+    """重建索引使用当前非标准 data 风险 gate。"""
+    _ = app_home_with_example_setting
+    _add_high_risk_nonstandard_data(minimal_game_dir)
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+    report = await AgentToolkitService(
+        game_registry=registry,
+        setting_path=EXAMPLE_SETTING_PATH,
+    ).rebuild_text_index(game_title="テストゲーム")
+
+    assert report.status == "ok"
+    assert report.summary["index_status"] == "rebuilt"

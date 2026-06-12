@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import cast
 
 import aiofiles
+from pydantic import TypeAdapter
 
+from app.external_input import ExternalStr
 from app.rmmz.json_types import coerce_json_value, ensure_json_object
 from app.rmmz.schema import GameData, MvVirtualNameboxRuleRecord
 from app.rmmz.text_rules import TextRules
@@ -27,6 +29,9 @@ GLOSSARY_FILE_NAME = "glossary.json"
 CONTEXT_DIRECTORY_NAME = "contexts"
 DATABASE_CONTEXT_FILE_NAME = "database_terms.json"
 GLOSSARY_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"terms"})
+_EXTERNAL_TERMINOLOGY_MAPPING_ADAPTER: TypeAdapter[dict[str, dict[str, ExternalStr]]] = TypeAdapter(
+    dict[str, dict[str, ExternalStr]]
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +112,8 @@ async def load_terminology_registry(*, field_terms_path: Path) -> TerminologyReg
     raw_value = coerce_json_value(decoded_value)
     raw_object = ensure_json_object(raw_value, str(resolved_path))
     validate_terms_json_category_keys(raw_object, resolved_path)
-    return TerminologyRegistry.model_validate(raw_object)
+    normalized_object = _EXTERNAL_TERMINOLOGY_MAPPING_ADAPTER.validate_python(raw_object)
+    return TerminologyRegistry.model_validate(normalized_object)
 
 
 async def load_terminology_glossary(*, glossary_path: Path) -> TerminologyGlossary:
@@ -122,7 +128,8 @@ async def load_terminology_glossary(*, glossary_path: Path) -> TerminologyGlossa
     raw_value = coerce_json_value(decoded_value)
     raw_object = ensure_json_object(raw_value, str(resolved_path))
     validate_glossary_json_keys(raw_object, resolved_path)
-    return TerminologyGlossary.model_validate(raw_object)
+    normalized_object = _EXTERNAL_TERMINOLOGY_MAPPING_ADAPTER.validate_python(raw_object)
+    return TerminologyGlossary.model_validate(normalized_object)
 
 
 async def write_field_terms_json(path: Path, registry: TerminologyRegistry) -> None:

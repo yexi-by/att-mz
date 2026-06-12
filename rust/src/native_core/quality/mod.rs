@@ -96,3 +96,139 @@ pub(crate) fn scan_quality_items(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::scan_quality_impl;
+    use serde_json::{Value, json};
+
+    fn quality_payload(items: Value) -> Value {
+        json!({
+            "items": items,
+            "text_rules": {
+                "custom_placeholder_rules": [],
+                "structured_placeholder_rules": [],
+                "source_residual_allowed_chars": ["ぁ-んァ-ヶ一-龯"],
+                "source_residual_allowed_tail_chars": [],
+                "source_residual_segment_pattern": "[ぁ-んァ-ヶ一-龯]+",
+                "source_residual_label": "源文",
+                "allowed_source_residual_terms": [],
+                "source_residual_terms_ignore_case": false,
+                "source_residual_detection_profile": "japanese_strict",
+                "english_source_copy_min_words": 4,
+                "english_source_copy_min_letters": 12,
+                "line_width_count_pattern": "[\\s\\S]",
+                "residual_escape_sequence_pattern": "\\\\[A-Za-z]+(?:\\[[^\\]]*\\])?",
+                "long_text_line_width_limit": 4
+            },
+            "source_residual_rules": []
+        })
+    }
+
+    #[test]
+    fn quality_scan_reports_structure_errors_and_overwide_display_lines() {
+        let payload = quality_payload(json!([
+            {
+                "location_path": "Map001.json/1/short/literal",
+                "item_type": "short_text",
+                "role": null,
+                "original_lines": ["説明\\n本文"],
+                "translation_lines": ["说明"]
+            },
+            {
+                "location_path": "Map001.json/1/short/width",
+                "item_type": "short_text",
+                "role": null,
+                "original_lines": ["元\n短"],
+                "translation_lines": ["甲乙丙丁戊\n短"]
+            },
+            {
+                "location_path": "Map001.json/1/long/artifact",
+                "item_type": "long_text",
+                "role": null,
+                "original_lines": ["原文"],
+                "translation_lines": ["正文", ""]
+            }
+        ]));
+
+        let output_text = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let output: Value = serde_json::from_str(&output_text).expect("输出应是 JSON");
+
+        let structure_reasons = output["text_structure_items"]
+            .as_array()
+            .expect("结构错误应为数组")
+            .iter()
+            .map(|item| item["reason"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>();
+        assert!(
+            structure_reasons
+                .iter()
+                .any(|reason| reason.contains("字面量换行标记数量不一致"))
+        );
+        assert!(
+            structure_reasons
+                .iter()
+                .any(|reason| reason.contains("原文没有空行"))
+        );
+        assert_eq!(output["overwide_line_items"][0]["line_index"], json!(0));
+        assert_eq!(
+            output["overwide_line_items"][0]["line"],
+            json!("甲乙丙丁戊")
+        );
+    }
+
+    #[test]
+    fn quality_scan_reports_control_code_split_hint_on_placeholder_risk() {
+        let payload = quality_payload(json!([
+            {
+                "location_path": "CommonEvents.json/1/0",
+                "item_type": "long_text",
+                "role": null,
+                "original_lines": ["こんにちは"],
+                "translation_lines": [r"\fb21st"]
+            }
+        ]));
+
+        let output_text = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let output: Value = serde_json::from_str(&output_text).expect("输出应是 JSON");
+        let item = &output["placeholder_risk_items"][0];
+
+        assert_eq!(item["location_path"], json!("CommonEvents.json/1/0"));
+        assert_eq!(item["hint"]["hint_kind"], json!("possible_control_split"));
+        assert_eq!(item["hint"]["original"], json!(r"\fb21st"));
+        assert_eq!(item["hint"]["candidate"], json!(r"\fb21"));
+        assert_eq!(item["hint"]["possible_split"]["control"], json!(r"\fb2"));
+        assert_eq!(item["hint"]["possible_split"]["tail"], json!("1st"));
+    }
+
+    #[test]
+    fn quality_scan_reports_english_long_residual_without_original() {
+        let mut payload = quality_payload(json!([
+            {
+                "location_path": "Plugin.js/string@1:1",
+                "item_type": "short_text",
+                "role": null,
+                "original_lines": [],
+                "translation_lines": ["alpha beta gamma delta"]
+            }
+        ]));
+        payload["text_rules"]["source_residual_segment_pattern"] = json!(r"[A-Za-z]+");
+        payload["text_rules"]["source_residual_detection_profile"] = json!("english_source_copy");
+        payload["text_rules"]["english_source_copy_min_words"] = json!(4);
+        payload["text_rules"]["english_source_copy_min_letters"] = json!(12);
+
+        let output_text = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let output: Value = serde_json::from_str(&output_text).expect("输出应是 JSON");
+
+        assert_eq!(
+            output["source_residual_items"][0]["location_path"],
+            json!("Plugin.js/string@1:1")
+        );
+        assert!(
+            output["source_residual_items"][0]["reason"]
+                .as_str()
+                .expect("reason should be text")
+                .contains("alpha beta gamma delta")
+        );
+    }
+}

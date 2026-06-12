@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from app.rmmz.schema import SYSTEM_FILE_NAME, GameData, TranslationItem
+from app.rmmz.schema import SYSTEM_FILE_NAME, GameData, TranslationData, TranslationItem
 
 from .extraction import BASE_NAME_CATEGORIES, SYSTEM_TERM_CATEGORIES
 from .schemas import TerminologyGlossary
@@ -79,6 +79,8 @@ class TerminologyPromptIndex:
         for item in items:
             if item.role is not None:
                 selected.extend(self._entries_by_match_text.get(item.role, []))
+            for owner_term in item.terminology_owner_terms:
+                selected.extend(self._entries_by_match_text.get(owner_term, []))
             selected.extend(self._select_owner_entries(item.location_path))
 
         for match_text, entries in self._entries_by_match_text.items():
@@ -174,6 +176,52 @@ def _entries_matching_text(*, glossary: TerminologyGlossary, text: str) -> list[
     return [TerminologyPromptEntry("glossary", source_text, translated_text)]
 
 
+def filter_glossary_for_translation_data(
+    *,
+    glossary: TerminologyGlossary,
+    translation_data_map: dict[str, TranslationData],
+) -> TerminologyGlossary:
+    """按无 GameData 的 warm index 语义保留可能注入正文 prompt 的术语。"""
+    if not glossary.terms:
+        return glossary
+
+    display_names = {
+        translation_data.display_name
+        for translation_data in translation_data_map.values()
+        if translation_data.display_name
+    }
+    roles = {
+        item.role
+        for translation_data in translation_data_map.values()
+        for item in translation_data.translation_items
+        if item.role is not None
+    }
+    owner_terms = {
+        owner_term
+        for translation_data in translation_data_map.values()
+        for item in translation_data.translation_items
+        for owner_term in item.terminology_owner_terms
+        if owner_term
+    }
+    joined_original_text = "\n".join(
+        line
+        for translation_data in translation_data_map.values()
+        for item in translation_data.translation_items
+        for line in item.original_lines
+    )
+    filtered_terms = {
+        source_text: translated_text
+        for source_text, translated_text in glossary.terms.items()
+        if source_text in display_names
+        or source_text in roles
+        or source_text in owner_terms
+        or source_text in joined_original_text
+    }
+    if len(filtered_terms) == len(glossary.terms):
+        return glossary
+    return TerminologyGlossary(terms=filtered_terms)
+
+
 def format_terminology_prompt_section(entries: list[TerminologyPromptEntry]) -> str:
     """把术语映射格式化为用户提示词片段。"""
     prompt_entries = [
@@ -220,5 +268,6 @@ __all__: list[str] = [
     "TerminologyPromptEntry",
     "TerminologyPromptIndex",
     "deduplicate_prompt_entries",
+    "filter_glossary_for_translation_data",
     "format_terminology_prompt_section",
 ]

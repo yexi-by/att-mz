@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use super::super::details::base_detail;
 use super::super::models::{CompiledRules, NativeSourceResidualRule, NativeTranslationItem};
 use super::super::placeholders::{build_placeholders, mask_translation_controls};
+use super::super::rule_runtime::adapters::source_residual::compile_source_residual_structural_pattern;
+use super::super::rule_runtime::engine::Pcre2Pattern;
 use super::super::rules::PLACEHOLDER_RE;
 
 #[derive(Debug, Clone)]
@@ -19,7 +21,7 @@ pub(super) struct IndexedResidualRules {
 
 #[derive(Debug, Clone)]
 struct CompiledStructuralResidualRule {
-    pattern: Regex,
+    pattern: Pcre2Pattern,
     allowed_terms: Vec<String>,
     check_group: String,
 }
@@ -39,21 +41,11 @@ pub(super) fn index_residual_rules(
                         record.rule_id
                     ));
                 }
-                let pattern = Regex::new(&record.pattern_text).map_err(|error| {
-                    format!(
-                        "结构性源文保留规则正则损坏: {}: {error}",
-                        record.pattern_text
-                    )
-                })?;
-                if !pattern
-                    .capture_names()
-                    .any(|name| name == Some(record.check_group.as_str()))
-                {
-                    return Err(format!(
-                        "结构性源文保留规则缺少命名分组: {}",
-                        record.check_group
-                    ));
-                }
+                let pattern = compile_source_residual_structural_pattern(
+                    &record.rule_id,
+                    &record.pattern_text,
+                    &record.check_group,
+                )?;
                 structural_rules.push(CompiledStructuralResidualRule {
                     pattern,
                     allowed_terms: record.allowed_terms,
@@ -92,6 +84,11 @@ pub(super) fn collect_residual_detail(
     rules: &CompiledRules,
     residual_rules: &IndexedResidualRules,
 ) -> Option<Value> {
+    match translation_has_residual_candidate(&item.translation_lines, rules) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(reason) => return Some(residual_error_detail(item, reason)),
+    }
     let allowed_terms = residual_rules
         .position_rules
         .get(&item.location_path)
@@ -122,7 +119,7 @@ pub(super) fn collect_residual_detail(
         &rules.allowed_source_residual_terms,
         rules.source_residual_terms_ignore_case,
     );
-    match check_source_residual(&checked_lines, rules) {
+    match check_source_residual(&item.original_lines, &checked_lines, rules) {
         Ok(()) => None,
         Err(reason) => {
             let mut detail = base_detail(item);
@@ -136,6 +133,29 @@ pub(super) fn collect_residual_detail(
             Some(Value::Object(detail))
         }
     }
+}
+
+fn residual_error_detail(item: &NativeTranslationItem, reason: String) -> Value {
+    let mut detail = base_detail(item);
+    detail.insert("reason".to_string(), json!(reason));
+    Value::Object(detail)
+}
+
+fn translation_has_residual_candidate(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<bool, String> {
+    for line in lines {
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        if rules
+            .source_residual_segment_re
+            .is_match(&cleaned_line)
+            .map_err(|error| format!("源文残留 PCRE2 pattern 匹配失败: {}", error.message))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn mask_structural_terms(
@@ -170,19 +190,19 @@ fn mask_one_structural_rule_in_line(
     ignore_case: bool,
 ) -> String {
     let mut mask_ranges = Vec::new();
-    for captures in rule.pattern.captures_iter(line) {
-        let Some(full_match) = captures.get(0) else {
+    let Ok(captures) = rule.pattern.captures_iter(line) else {
+        return line.to_string();
+    };
+    for capture_match in captures {
+        let Some(group_span) = capture_match.named_span(&rule.check_group) else {
             continue;
         };
-        let Some(group_match) = captures.name(&rule.check_group) else {
-            continue;
-        };
-        if group_match.as_str().trim().is_empty() {
+        if line[group_span.start..group_span.end].trim().is_empty() {
             continue;
         }
         let outside_ranges = [
-            (full_match.start(), group_match.start()),
-            (group_match.end(), full_match.end()),
+            (capture_match.full_span.start, group_span.start),
+            (group_span.end, capture_match.full_span.end),
         ];
         for term in &rule.allowed_terms {
             mask_ranges.extend(find_term_ranges_outside_group(
@@ -283,19 +303,29 @@ fn mask_case_insensitive_term(text: &str, term: &str) -> String {
         .to_string()
 }
 
-fn check_source_residual(lines: &[String], rules: &CompiledRules) -> Result<(), String> {
+fn check_source_residual(
+    original_lines: &[String],
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<(), String> {
+    if rules.source_residual_detection_profile == "english_source_copy" {
+        return check_english_source_copy_residual(original_lines, lines, rules);
+    }
     for (index, line) in lines.iter().enumerate() {
-        let cleaned_line = strip_non_content_for_residual(line, rules);
-        let segments: Vec<String> = rules
-            .source_residual_segment_re
-            .find_iter(&cleaned_line)
-            .map(|matched| matched.as_str().to_string())
-            .collect();
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        let segments = pcre2_match_texts(
+            &rules.source_residual_segment_re,
+            &cleaned_line,
+            "源文残留 PCRE2 pattern",
+        )?
+        .into_iter()
+        .map(|matched| matched.text)
+        .collect::<Vec<String>>();
         if segments.is_empty() {
             continue;
         }
 
-        let has_non_source_content = has_non_source_content(&cleaned_line, rules);
+        let has_non_source_content = has_non_source_content(&cleaned_line, rules)?;
         let mut real_residual_segments = Vec::new();
         for segment in segments {
             let filtered: Vec<char> = segment
@@ -332,15 +362,306 @@ fn check_source_residual(lines: &[String], rules: &CompiledRules) -> Result<(), 
     Ok(())
 }
 
-fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> String {
-    let stripped_placeholders = PLACEHOLDER_RE.replace_all(text, "");
-    rules
-        .residual_escape_sequence_re
-        .replace_all(&stripped_placeholders, " ")
-        .to_string()
+#[derive(Debug, Clone)]
+struct ResidualToken {
+    text: String,
+    normalized: String,
+    start_index: usize,
+    end_index: usize,
 }
 
-fn has_non_source_content(text: &str, rules: &CompiledRules) -> bool {
-    let text_without_source = rules.source_residual_segment_re.replace_all(text, "");
-    text_without_source.chars().any(char::is_alphanumeric)
+fn check_english_source_copy_residual(
+    original_lines: &[String],
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<(), String> {
+    let original_text = original_lines
+        .iter()
+        .map(|line| strip_non_content_for_residual(line, rules))
+        .collect::<Result<Vec<String>, String>>()?
+        .join("\n");
+    let original_tokens = collect_english_residual_tokens(&original_text, rules)?;
+    if original_tokens.is_empty() {
+        return check_english_long_residual_without_original(lines, rules);
+    }
+    let original_token_values = original_tokens
+        .iter()
+        .map(|token| token.normalized.clone())
+        .collect::<Vec<String>>();
+    for (index, line) in lines.iter().enumerate() {
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules)?;
+        let copied_segments =
+            find_english_source_copy_segments(&original_token_values, &translation_tokens, rules);
+        if !copied_segments.is_empty() {
+            return Err(format!(
+                "发现{}残留(第 {} 行): {:?}",
+                rules.source_residual_label,
+                index + 1,
+                copied_segments
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_english_residual_tokens(
+    text: &str,
+    rules: &CompiledRules,
+) -> Result<Vec<ResidualToken>, String> {
+    Ok(pcre2_match_texts(
+        &rules.source_residual_segment_re,
+        text,
+        "英文源文残留 PCRE2 pattern",
+    )?
+    .into_iter()
+    .filter_map(|matched| {
+        let value = matched.text.as_str();
+        if !has_ascii_letter(value) {
+            return None;
+        }
+        let normalized = if rules.source_residual_terms_ignore_case {
+            value.to_ascii_lowercase()
+        } else {
+            value.to_string()
+        };
+        Some(ResidualToken {
+            text: value.to_string(),
+            normalized,
+            start_index: matched.start,
+            end_index: matched.end,
+        })
+    })
+    .collect())
+}
+
+fn check_english_long_residual_without_original(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Result<(), String> {
+    for (index, line) in lines.iter().enumerate() {
+        let cleaned_line = strip_non_content_for_residual(line, rules)?;
+        let translation_tokens = collect_english_residual_tokens(&cleaned_line, rules)?;
+        let residual_segments =
+            find_english_long_residual_segments(&cleaned_line, &translation_tokens, rules);
+        if !residual_segments.is_empty() {
+            return Err(format!(
+                "发现{}残留(第 {} 行): {:?}",
+                rules.source_residual_label,
+                index + 1,
+                residual_segments
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn find_english_long_residual_segments(
+    cleaned_line: &str,
+    translation_tokens: &[ResidualToken],
+    rules: &CompiledRules,
+) -> Vec<String> {
+    let mut residual_segments = Vec::new();
+    let mut current_run: Vec<&ResidualToken> = Vec::new();
+    let mut previous_token: Option<&ResidualToken> = None;
+    for token in translation_tokens {
+        if let Some(previous) = previous_token {
+            let gap = cleaned_line
+                .get(previous.end_index..token.start_index)
+                .unwrap_or_default();
+            if english_token_gap_breaks_run(gap) {
+                append_english_run_if_residual(&mut residual_segments, &current_run, rules);
+                current_run.clear();
+            }
+        }
+        current_run.push(token);
+        previous_token = Some(token);
+    }
+    append_english_run_if_residual(&mut residual_segments, &current_run, rules);
+    residual_segments
+}
+
+fn english_token_gap_breaks_run(gap: &str) -> bool {
+    for character in gap.chars() {
+        if character.is_whitespace() {
+            continue;
+        }
+        if character.is_ascii() && !character.is_ascii_alphanumeric() {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn append_english_run_if_residual(
+    residual_segments: &mut Vec<String>,
+    tokens: &[&ResidualToken],
+    rules: &CompiledRules,
+) {
+    if tokens.len() < rules.english_source_copy_min_words {
+        return;
+    }
+    let letter_count = tokens
+        .iter()
+        .map(|token| ascii_letter_count(&token.text))
+        .sum::<usize>();
+    if letter_count < rules.english_source_copy_min_letters {
+        return;
+    }
+    residual_segments.push(
+        tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<&str>>()
+            .join(" "),
+    );
+}
+
+fn find_english_source_copy_segments(
+    original_tokens: &[String],
+    translation_tokens: &[ResidualToken],
+    rules: &CompiledRules,
+) -> Vec<String> {
+    let mut copied_segments = Vec::new();
+    let mut start = 0usize;
+    while start < translation_tokens.len() {
+        let mut best_end = 0usize;
+        let first_candidate_end = start + rules.english_source_copy_min_words;
+        if first_candidate_end <= translation_tokens.len() {
+            for end in first_candidate_end..=translation_tokens.len() {
+                let candidate_tokens = &translation_tokens[start..end];
+                let letter_count = candidate_tokens
+                    .iter()
+                    .map(|token| ascii_letter_count(&token.text))
+                    .sum::<usize>();
+                if letter_count < rules.english_source_copy_min_letters {
+                    continue;
+                }
+                let candidate_values = candidate_tokens
+                    .iter()
+                    .map(|token| token.normalized.clone())
+                    .collect::<Vec<String>>();
+                if contains_token_sequence(original_tokens, &candidate_values) {
+                    best_end = end;
+                }
+            }
+        }
+        if best_end > 0 {
+            copied_segments.push(
+                translation_tokens[start..best_end]
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(" "),
+            );
+            start = best_end;
+            continue;
+        }
+        start += 1;
+    }
+    copied_segments
+}
+
+#[derive(Debug)]
+struct Pcre2TextMatch {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+fn strip_non_content_for_residual(text: &str, rules: &CompiledRules) -> Result<String, String> {
+    let stripped_placeholders = PLACEHOLDER_RE.replace_all(text, "");
+    replace_pcre2_matches(
+        &rules.residual_escape_sequence_re,
+        &stripped_placeholders,
+        " ",
+        "残留转义 PCRE2 pattern",
+    )
+}
+
+fn has_non_source_content(text: &str, rules: &CompiledRules) -> Result<bool, String> {
+    let text_without_source = replace_pcre2_matches(
+        &rules.source_residual_segment_re,
+        text,
+        "",
+        "源文残留 PCRE2 pattern",
+    )?;
+    Ok(text_without_source.chars().any(char::is_alphanumeric))
+}
+
+fn pcre2_match_texts(
+    pattern: &Pcre2Pattern,
+    text: &str,
+    context: &str,
+) -> Result<Vec<Pcre2TextMatch>, String> {
+    let spans = pattern
+        .find_spans(text)
+        .map_err(|error| format!("{context} 匹配失败: {}", error.message))?;
+    spans
+        .into_iter()
+        .map(|span| {
+            let matched_text = text
+                .get(span.start..span.end)
+                .ok_or_else(|| format!("{context} 命中范围不是有效 UTF-8 边界"))?;
+            Ok(Pcre2TextMatch {
+                text: matched_text.to_string(),
+                start: span.start,
+                end: span.end,
+            })
+        })
+        .collect()
+}
+
+fn replace_pcre2_matches(
+    pattern: &Pcre2Pattern,
+    text: &str,
+    replacement: &str,
+    context: &str,
+) -> Result<String, String> {
+    let spans = pattern
+        .find_spans(text)
+        .map_err(|error| format!("{context} 匹配失败: {}", error.message))?;
+    if spans.is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut output = String::new();
+    let mut last_end = 0usize;
+    for span in spans {
+        let unchanged = text
+            .get(last_end..span.start)
+            .ok_or_else(|| format!("{context} 替换范围不是有效 UTF-8 边界"))?;
+        output.push_str(unchanged);
+        output.push_str(replacement);
+        last_end = span.end;
+    }
+    let tail = text
+        .get(last_end..)
+        .ok_or_else(|| format!("{context} 替换尾部不是有效 UTF-8 边界"))?;
+    output.push_str(tail);
+    Ok(output)
+}
+
+fn has_ascii_letter(text: &str) -> bool {
+    text.chars()
+        .any(|char_value| char_value.is_ascii_alphabetic())
+}
+
+fn ascii_letter_count(text: &str) -> usize {
+    text.chars()
+        .filter(|char_value| char_value.is_ascii_alphabetic())
+        .count()
+}
+
+fn contains_token_sequence(source_tokens: &[String], candidate_tokens: &[String]) -> bool {
+    if candidate_tokens.is_empty() || candidate_tokens.len() > source_tokens.len() {
+        return false;
+    }
+    let candidate_len = candidate_tokens.len();
+    for start in 0..=(source_tokens.len() - candidate_len) {
+        if &source_tokens[start..start + candidate_len] == candidate_tokens {
+            return true;
+        }
+    }
+    false
 }

@@ -7,7 +7,7 @@ import json
 
 
 def plugin_source_runtime_hash_text(text: str) -> str:
-    """计算插件源码单段可见文本的稳定哈希。"""
+    """计算插件源码单段文本的稳定哈希。"""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

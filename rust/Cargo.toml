@@ -8,8 +8,8 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-fancy-regex = "0.16"
 json5 = "0.4"
+pcre2 = "0.2.11"
 pyo3 = { version = "0.28.3", features = ["extension-module"] }
 rayon = "1.11"
 regex = "1.12"

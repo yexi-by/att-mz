@@ -3,7 +3,8 @@
 //! 本模块负责识别 RMMZ 标准控制符、自定义控制符和未保护控制片段。
 
 use regex::Regex;
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 
 use super::models::{CompiledRules, ControlSpan, SpanSource};
 use super::placeholders::LITERAL_LINE_BREAK_PLACEHOLDER;
@@ -40,14 +41,8 @@ pub(crate) fn iter_control_sequence_spans(
     text: &str,
     rules: &CompiledRules,
 ) -> Result<Vec<ControlSpan>, String> {
-    let mut standard_spans = Vec::new();
-    standard_spans.extend(iter_indexed_standard_spans(text));
-    standard_spans.extend(iter_no_param_standard_spans(text));
-    standard_spans.extend(iter_symbol_standard_spans(text));
-    standard_spans.extend(iter_terms_percent_spans(text));
-    standard_spans.extend(iter_literal_escape_spans(text));
-    let mut base_spans = filter_standard_prefix_conflicts(text, standard_spans);
-    base_spans.extend(iter_custom_placeholder_spans(text, rules));
+    let mut base_spans = iter_standard_control_sequence_spans(text);
+    base_spans.extend(iter_custom_placeholder_spans(text, rules)?);
     let structured_result = iter_structured_placeholder_spans(text, rules)?;
     validate_structured_placeholder_conflicts(
         &base_spans,
@@ -63,14 +58,10 @@ pub(crate) fn iter_control_sequence_spans_lossy(
     text: &str,
     rules: &CompiledRules,
 ) -> Vec<ControlSpan> {
-    let mut standard_spans = Vec::new();
-    standard_spans.extend(iter_indexed_standard_spans(text));
-    standard_spans.extend(iter_no_param_standard_spans(text));
-    standard_spans.extend(iter_symbol_standard_spans(text));
-    standard_spans.extend(iter_terms_percent_spans(text));
-    standard_spans.extend(iter_literal_escape_spans(text));
-    let mut spans = filter_standard_prefix_conflicts(text, standard_spans);
-    spans.extend(iter_custom_placeholder_spans(text, rules));
+    let mut spans = iter_standard_control_sequence_spans(text);
+    if let Ok(custom_spans) = iter_custom_placeholder_spans(text, rules) {
+        spans.extend(custom_spans);
+    }
     if let Ok(structured_result) = iter_structured_placeholder_spans(text, rules)
         && validate_structured_placeholder_conflicts(
             &spans,
@@ -82,6 +73,16 @@ pub(crate) fn iter_control_sequence_spans_lossy(
         spans.extend(structured_result.spans);
     }
     select_non_overlapping_spans(spans)
+}
+
+pub(crate) fn iter_standard_control_sequence_spans(text: &str) -> Vec<ControlSpan> {
+    let mut standard_spans = Vec::new();
+    standard_spans.extend(iter_indexed_standard_spans(text));
+    standard_spans.extend(iter_no_param_standard_spans(text));
+    standard_spans.extend(iter_symbol_standard_spans(text));
+    standard_spans.extend(iter_terms_percent_spans(text));
+    standard_spans.extend(iter_literal_escape_spans(text));
+    filter_standard_prefix_conflicts(text, standard_spans)
 }
 
 pub(crate) fn iter_indexed_standard_spans(text: &str) -> Vec<ControlSpan> {
@@ -251,7 +252,7 @@ pub(crate) fn iter_literal_escape_spans(text: &str) -> Vec<ControlSpan> {
     spans
 }
 
-fn iter_raw_control_sequence_candidates(text: &str) -> Vec<RawControlSequenceCandidate> {
+pub(crate) fn iter_raw_control_sequence_candidates(text: &str) -> Vec<RawControlSequenceCandidate> {
     let mut candidates = Vec::new();
     for matched in RAW_BRACKETED_CONTROL_RE.find_iter(text) {
         append_raw_candidate(
@@ -346,14 +347,26 @@ pub(crate) fn iter_dynamic_literal_escape_spans(
         .collect()
 }
 
-pub(crate) fn iter_custom_placeholder_spans(text: &str, rules: &CompiledRules) -> Vec<ControlSpan> {
+pub(crate) fn iter_custom_placeholder_spans(
+    text: &str,
+    rules: &CompiledRules,
+) -> Result<Vec<ControlSpan>, String> {
     let mut spans = Vec::new();
     for rule in &rules.custom_placeholder_rules {
-        for matched in rule.pattern.find_iter(text).flatten() {
+        let matched_spans = rule.pattern.find_spans(text).map_err(|error| {
+            format!(
+                "自定义占位符规则匹配失败: {}: {}",
+                rule.placeholder_template, error.message
+            )
+        })?;
+        for matched in matched_spans {
+            let original = text
+                .get(matched.start..matched.end)
+                .ok_or_else(|| "自定义占位符命中范围不是有效 UTF-8 边界".to_string())?;
             spans.push(ControlSpan {
-                start: matched.start(),
-                end: matched.end(),
-                original: matched.as_str().to_string(),
+                start: matched.start,
+                end: matched.end,
+                original: original.to_string(),
                 placeholder: None,
                 custom_template: Some(rule.placeholder_template.clone()),
                 custom_index_key: None,
@@ -362,7 +375,7 @@ pub(crate) fn iter_custom_placeholder_spans(text: &str, rules: &CompiledRules) -
             });
         }
     }
-    spans
+    Ok(spans)
 }
 
 pub(crate) fn iter_structured_placeholder_spans(
@@ -372,48 +385,52 @@ pub(crate) fn iter_structured_placeholder_spans(
     let mut spans = Vec::new();
     let mut translatable_ranges = Vec::new();
     for rule in &rules.structured_placeholder_rules {
-        for captures_result in rule.pattern.captures_iter(text) {
-            let captures = captures_result.map_err(|error| {
-                format!("结构化占位符规则 {} 匹配失败: {error}", rule.rule_name)
-            })?;
-            let full_match = captures
-                .get(0)
-                .ok_or_else(|| format!("结构化占位符规则 {} 缺少完整匹配", rule.rule_name))?;
-            let translatable_match = captures.name(&rule.translatable_group).ok_or_else(|| {
-                format!(
-                    "结构化占位符规则 {} 的命名分组未命中: {}",
-                    rule.rule_name, rule.translatable_group
-                )
-            })?;
+        let capture_matches = rule.pattern.captures_iter(text).map_err(|error| {
+            format!(
+                "结构化占位符规则 {} 匹配失败: {}",
+                rule.rule_name, error.message
+            )
+        })?;
+        for captures in capture_matches {
+            let full_match = captures.full_span.clone();
+            let translatable_match =
+                captures
+                    .named_span(&rule.translatable_group)
+                    .ok_or_else(|| {
+                        format!(
+                            "结构化占位符规则 {} 的命名分组未命中: {}",
+                            rule.rule_name, rule.translatable_group
+                        )
+                    })?;
             let translatable_range = ProtectedRange {
-                start: translatable_match.start(),
-                end: translatable_match.end(),
+                start: translatable_match.start,
+                end: translatable_match.end,
             };
             translatable_ranges.push(translatable_range.clone());
+            let matched_text = text
+                .get(full_match.start..full_match.end)
+                .ok_or_else(|| "结构化占位符完整命中范围不是有效 UTF-8 边界".to_string())?;
             let match_key = format!(
                 "structured:{}:{}:{}:{}",
-                rule.rule_name,
-                full_match.start(),
-                full_match.end(),
-                full_match.as_str()
+                rule.rule_name, full_match.start, full_match.end, matched_text
             );
             let mut group_ranges: Vec<ProtectedRange> = Vec::new();
             for (group_name, placeholder_template) in &rule.protected_groups {
-                let group_match = captures.name(group_name).ok_or_else(|| {
+                let group_match = captures.named_span(group_name).ok_or_else(|| {
                     format!(
                         "结构化占位符规则 {} 的命名分组未命中: {}",
                         rule.rule_name, group_name
                     )
                 })?;
-                if group_match.start() == group_match.end() {
+                if group_match.start == group_match.end {
                     return Err(format!(
                         "结构化占位符规则 {} 的保护分组 {} 命中了空文本",
                         rule.rule_name, group_name
                     ));
                 }
                 let protected_range = ProtectedRange {
-                    start: group_match.start(),
-                    end: group_match.end(),
+                    start: group_match.start,
+                    end: group_match.end,
                 };
                 if ranges_overlap_ranges(&protected_range, &translatable_range) {
                     return Err(format!(
@@ -430,10 +447,13 @@ pub(crate) fn iter_structured_placeholder_spans(
                     }
                 }
                 group_ranges.push(protected_range.clone());
+                let group_text = text
+                    .get(protected_range.start..protected_range.end)
+                    .ok_or_else(|| "结构化占位符保护分组范围不是有效 UTF-8 边界".to_string())?;
                 spans.push(ControlSpan {
                     start: protected_range.start,
                     end: protected_range.end,
-                    original: group_match.as_str().to_string(),
+                    original: group_text.to_string(),
                     placeholder: None,
                     custom_template: Some(placeholder_template.clone()),
                     custom_index_key: Some(match_key.clone()),
@@ -596,6 +616,35 @@ pub(crate) fn collect_unprotected_control_sequences(
     Ok(counts)
 }
 
+pub(crate) fn collect_control_code_hints(
+    lines: &[String],
+    rules: &CompiledRules,
+) -> Vec<ControlCodeHint> {
+    let mut hints = Vec::new();
+    let mut seen = HashSet::new();
+    for line in lines {
+        let protected_spans = iter_control_sequence_spans_lossy(line, rules);
+        for candidate in iter_raw_control_sequence_candidates(line) {
+            if is_covered_by_control_span(&candidate, &protected_spans) {
+                continue;
+            }
+            let Some(hint) = possible_control_split_hint(line, &candidate) else {
+                continue;
+            };
+            let key = (
+                hint.original.clone(),
+                hint.candidate.clone(),
+                hint.possible_split.control.clone(),
+                hint.possible_split.tail.clone(),
+            );
+            if seen.insert(key) {
+                hints.push(hint);
+            }
+        }
+    }
+    hints
+}
+
 pub(crate) fn collect_unexpected_escape_fragments(
     lines: &[String],
     rules: &CompiledRules,
@@ -662,6 +711,84 @@ fn is_covered_by_control_span(
     false
 }
 
+fn possible_control_split_hint(
+    line: &str,
+    candidate: &RawControlSequenceCandidate,
+) -> Option<ControlCodeHint> {
+    let marker = candidate.original.strip_prefix('\\')?;
+    let code_end = marker
+        .char_indices()
+        .find_map(|(index, char_value)| {
+            if char_value.is_ascii_alphabetic() {
+                None
+            } else {
+                Some(index)
+            }
+        })
+        .unwrap_or(marker.len());
+    let code = &marker[..code_end];
+    let digits = &marker[code_end..];
+    if code.is_empty()
+        || digits.is_empty()
+        || !digits.chars().all(|char_value| char_value.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let trailing = ascii_alphanumeric_tail(line, candidate.end);
+    let digit_count = digits.chars().count();
+    let (control, tail) = if digit_count >= 2 {
+        let split_index = digits
+            .char_indices()
+            .last()
+            .map(|(index, _char)| index)
+            .unwrap_or(0);
+        (
+            format!("\\{}{}", code, &digits[..split_index]),
+            format!("{}{}", &digits[split_index..], trailing),
+        )
+    } else if !trailing.is_empty() {
+        (candidate.original.clone(), trailing)
+    } else {
+        return None;
+    };
+
+    if tail.is_empty() {
+        return None;
+    }
+    Some(ControlCodeHint {
+        original: format!(
+            "{}{}",
+            candidate.original,
+            tail_suffix_after_candidate(&tail, digit_count)
+        ),
+        candidate: candidate.original.clone(),
+        hint_kind: "possible_control_split".to_string(),
+        possible_split: ControlCodeSplitHint { control, tail },
+        message: "疑似控制符和后续数字或文本粘连，请确认是否需要把控制符写成独立 placeholder。"
+            .to_string(),
+    })
+}
+
+fn ascii_alphanumeric_tail(line: &str, byte_index: usize) -> String {
+    line[byte_index..]
+        .chars()
+        .take_while(|char_value| char_value.is_ascii_alphanumeric())
+        .take(16)
+        .collect()
+}
+
+fn tail_suffix_after_candidate(tail: &str, digit_count: usize) -> &str {
+    if digit_count >= 2 {
+        tail.chars()
+            .next()
+            .map(|first_char| &tail[first_char.len_utf8()..])
+            .unwrap_or("")
+    } else {
+        tail
+    }
+}
+
 pub(crate) fn format_control_counts(counts: &HashMap<String, usize>) -> String {
     if counts.is_empty() {
         return "无".to_string();
@@ -689,14 +816,122 @@ pub(crate) fn encode_upper_hex(text: &str) -> String {
         .collect::<String>()
 }
 
-struct RawControlSequenceCandidate {
-    start: usize,
-    end: usize,
-    original: String,
+pub(crate) struct RawControlSequenceCandidate {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) original: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ControlCodeHint {
+    pub(crate) original: String,
+    pub(crate) candidate: String,
+    pub(crate) hint_kind: String,
+    pub(crate) possible_split: ControlCodeSplitHint,
+    pub(crate) message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ControlCodeSplitHint {
+    pub(crate) control: String,
+    pub(crate) tail: String,
 }
 
 pub(crate) struct UnexpectedEscapeFragment {
     pub(crate) line_number: usize,
     pub(crate) fragment: String,
     pub(crate) trailing: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        collect_control_code_hints, collect_unexpected_escape_fragments,
+        iter_control_sequence_spans, iter_raw_control_sequence_candidates,
+    };
+    use crate::native_core::models::{
+        NativeStructuredPlaceholderRule, NativeTextRules, SpanSource,
+    };
+    use crate::native_core::rules::compile_rules;
+    use std::collections::HashMap;
+
+    fn compile_test_rules(
+        structured_placeholder_rules: Vec<NativeStructuredPlaceholderRule>,
+    ) -> crate::native_core::models::CompiledRules {
+        compile_rules(NativeTextRules {
+            custom_placeholder_rules: Vec::new(),
+            structured_placeholder_rules,
+            source_residual_allowed_chars: vec!["ぁ-ん".to_string()],
+            source_residual_allowed_tail_chars: Vec::new(),
+            source_residual_segment_pattern: r"[ぁ-ん]+".to_string(),
+            source_residual_label: "日文".to_string(),
+            allowed_source_residual_terms: Vec::new(),
+            source_residual_terms_ignore_case: false,
+            source_residual_detection_profile: "japanese_strict".to_string(),
+            english_source_copy_min_words: 4,
+            english_source_copy_min_letters: 12,
+            line_width_count_pattern: r"[\s\S]".to_string(),
+            residual_escape_sequence_pattern: r"\\[A-Za-z]+".to_string(),
+            long_text_line_width_limit: 20,
+        })
+        .expect("测试规则应可编译")
+    }
+
+    #[test]
+    fn structured_placeholder_allows_standard_control_inside_translatable_group() {
+        let mut protected_groups = HashMap::new();
+        protected_groups.insert("label".to_string(), "[CUSTOM_LABEL_{index}]".to_string());
+        let rules = compile_test_rules(vec![NativeStructuredPlaceholderRule {
+            rule_name: "angle-label".to_string(),
+            rule_type: "paired_shell".to_string(),
+            pattern_text: r"<(?P<label>[^:：]+)[:：](?P<body>[^>]+)>".to_string(),
+            translatable_group: "body".to_string(),
+            protected_groups,
+        }]);
+
+        let spans = iter_control_sequence_spans(r"<名前:\C[1]本文>", &rules).expect("扫描应成功");
+
+        assert!(spans.iter().any(|span| {
+            span.original == "名前" && matches!(span.source, SpanSource::Structured)
+        }));
+        assert!(spans.iter().any(|span| {
+            span.original == r"\C[1]" && matches!(span.source, SpanSource::Standard)
+        }));
+    }
+
+    #[test]
+    fn raw_control_candidates_keep_long_custom_marker_as_single_candidate() {
+        let candidates = iter_raw_control_sequence_candidates(r"\F3[66]「ふーん？」");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, r"\F3[66]");
+    }
+
+    #[test]
+    fn unexpected_escape_fragments_ignore_known_controls_and_report_bare_slash() {
+        let rules = compile_test_rules(Vec::new());
+        let lines = vec![r"\C[1]安全".to_string(), "坏尾\\".to_string()];
+
+        let fragments = collect_unexpected_escape_fragments(&lines, &rules).expect("扫描应成功");
+
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].line_number, 2);
+        assert_eq!(fragments[0].fragment, "\\");
+        assert!(fragments[0].trailing);
+    }
+
+    #[test]
+    fn control_code_hints_explain_possible_digit_tail_split() {
+        let rules = compile_test_rules(Vec::new());
+        let lines = vec![r"\fb21st".to_string()];
+
+        let hints = collect_control_code_hints(&lines, &rules);
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].original, r"\fb21st");
+        assert_eq!(hints[0].candidate, r"\fb21");
+        assert_eq!(hints[0].hint_kind, "possible_control_split");
+        assert_eq!(hints[0].possible_split.control, r"\fb2");
+        assert_eq!(hints[0].possible_split.tail, "1st");
+    }
 }

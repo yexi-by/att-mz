@@ -10,16 +10,51 @@ from pydantic import TypeAdapter, ValidationError
 from app.cli import build_parser, read_bool_arg, read_int_set_arg, read_optional_str_arg
 from app.config.schemas import EventCommandTextSetting
 from app.event_command_text import (
-    EventCommandTextExtraction,
     build_event_command_rule_records_from_import,
     export_event_commands_json_file,
     load_event_command_rule_import_file,
     resolve_event_command_codes,
 )
-from app.rmmz import load_game_data
-from app.rmmz.schema import EventCommandTextRuleRecord
-from app.rmmz.text_rules import JsonValue, coerce_json_value, ensure_json_array, ensure_json_object
+from app.event_command_text.native_validation import build_native_event_command_rule_validation_context
+from app.native_scope_index import NativeContractVersions, NativeRuleCandidatesResult
+from app.rmmz.loader import load_active_runtime_game_data
+from app.rmmz.schema import EventCommandTextRuleRecord, GameData, TranslationItem
+from app.rmmz.source_snapshot import create_source_snapshot_for_clean_game
+from app.rmmz.text_rules import (
+    JsonArray,
+    JsonObject,
+    JsonValue,
+    coerce_json_value,
+    ensure_json_array,
+    ensure_json_object,
+    get_default_text_rules,
+)
 from tests._native_write_plan_helper import reset_writable_copies, write_data_text
+
+
+def _create_test_source_snapshot(game_data: GameData) -> None:
+    """为写回测试显式模拟注册流程已经创建的可信源快照。"""
+    layout = game_data.layout
+    if (
+        layout.data_origin_dir.is_dir()
+        and layout.plugins_origin_path.is_file()
+        and layout.plugin_source_origin_dir.is_dir()
+    ):
+        return
+    create_source_snapshot_for_clean_game(layout)
+
+
+def _event_command_rule_items_for_test(
+    game_data: GameData,
+    records: list[EventCommandTextRuleRecord],
+) -> list[TranslationItem]:
+    """从当前 native 事件指令规则命中上下文读取测试写回项。"""
+    context = build_native_event_command_rule_validation_context(
+        records=records,
+        game_data=game_data,
+        text_rules=get_default_text_rules(),
+    )
+    return list(context.extracted_items)
 
 
 @pytest.mark.asyncio
@@ -28,7 +63,7 @@ async def test_event_command_json_export_uses_configured_command_codes(
     tmp_path: Path,
 ) -> None:
     """事件指令导出使用配置数组解析出的编码集合。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     output_path = tmp_path / "event-commands.json"
 
     command_count = await export_event_commands_json_file(
@@ -36,7 +71,7 @@ async def test_event_command_json_export_uses_configured_command_codes(
         output_path=output_path,
         command_codes=resolve_event_command_codes(
             command_codes=None,
-            default_command_codes=[357],
+            configured_command_codes=[357],
         ),
     )
 
@@ -61,15 +96,79 @@ async def test_event_command_json_export_uses_configured_command_codes(
 
 
 @pytest.mark.asyncio
+async def test_event_command_json_export_uses_native_samples(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """事件指令导出消费 Rust samples_by_code，不再执行 Python 全量指令遍历。"""
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
+    output_path = tmp_path / "event-commands-native.json"
+    captured_payloads: list[JsonObject] = []
+
+    def fake_scan_native_rule_candidates(payload: JsonObject) -> NativeRuleCandidatesResult:
+        captured_payloads.append(payload)
+        return NativeRuleCandidatesResult(
+            schema_version=1,
+            contract_versions=NativeContractVersions(
+                rust_scope_facts=1,
+                parser=1,
+                source_branch=1,
+                text_fact_schema=1,
+            ),
+            candidates=cast(JsonArray, []),
+            candidate_summary=[],
+            scan_summary=cast(
+                JsonObject,
+                {
+                    "event_commands": {
+                        "sample_count": 1,
+                        "samples_by_code": {
+                            "357": [["NativePlugin", "ShowNative"]],
+                        },
+                    }
+                },
+            ),
+            timings_ms={},
+            counters={"candidate_count": 0},
+        )
+
+    def forbidden_iter_all_commands(_game_data: GameData) -> None:
+        raise AssertionError("export_event_commands_json_file 必须改用 Rust samples_by_code")
+
+    monkeypatch.setattr("app.event_command_text.exporter.scan_native_rule_candidates", fake_scan_native_rule_candidates)
+    monkeypatch.setattr("app.event_command_text.exporter.iter_all_commands", forbidden_iter_all_commands, raising=False)
+
+    command_count = await export_event_commands_json_file(
+        game_data=game_data,
+        output_path=output_path,
+        command_codes=frozenset({357}),
+    )
+
+    assert command_count == 1
+    json_value_adapter: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+    exported_value = json_value_adapter.validate_json(output_path.read_text(encoding="utf-8"))
+    assert exported_value == {"357": [["NativePlugin", "ShowNative"]]}
+
+    assert len(captured_payloads) == 1
+    payload = captured_payloads[0]
+    assert payload["event_command_codes"] == [357]
+    data_files = ensure_json_array(payload["event_command_data_files"], "event_command_data_files")
+    data_file_names = {str(ensure_json_object(item, f"event_command_data_files[{index}]")["file_name"]) for index, item in enumerate(data_files)}
+    assert "CommonEvents.json" in data_file_names
+    assert "Troops.json" in data_file_names
+    assert any(file_name.startswith("Map") for file_name in data_file_names)
+
+
+@pytest.mark.asyncio
 async def test_mv_event_command_json_export_uses_engine_default_356(
     minimal_mv_game_dir: Path,
     tmp_path: Path,
 ) -> None:
     """MV 未显式传入编码时使用引擎默认的 356 插件命令。"""
-    game_data = await load_game_data(minimal_mv_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_mv_game_dir)
     setting = EventCommandTextSetting.model_validate(
         {
-            "default_command_codes": [357],
             "default_command_codes_by_engine": {"mv": [356], "mz": [357]},
         }
     )
@@ -80,7 +179,7 @@ async def test_mv_event_command_json_export_uses_engine_default_356(
         output_path=output_path,
         command_codes=resolve_event_command_codes(
             command_codes=None,
-            default_command_codes=setting.default_codes_for_engine(game_data.layout.engine_kind),
+            configured_command_codes=setting.default_codes_for_engine(game_data.layout.engine_kind),
         ),
     )
 
@@ -93,23 +192,22 @@ async def test_mv_event_command_json_export_uses_engine_default_356(
     assert parameters == ["ShowMvText text:MVプラグイン本文 name:案内人"]
 
 
-def test_event_command_code_resolution_uses_configured_default_array() -> None:
+def test_event_command_code_resolution_uses_configured_code_array() -> None:
     """事件指令导出编码未传入时使用配置数组，命令参数可覆盖配置。"""
     assert resolve_event_command_codes(
         command_codes=None,
-        default_command_codes=[357, 999, 357],
+        configured_command_codes=[357, 999, 357],
     ) == frozenset({357, 999})
     assert resolve_event_command_codes(
         command_codes={102, 103},
-        default_command_codes=[357],
+        configured_command_codes=[357],
     ) == frozenset({102, 103})
 
 
-def test_event_command_setting_prefers_engine_default_over_common_default() -> None:
-    """按引擎默认编码优先于通用默认编码，显式编码仍由调用方覆盖。"""
+def test_event_command_setting_reads_engine_default_codes() -> None:
+    """事件指令默认编码按引擎读取，显式编码仍由调用方覆盖。"""
     setting = EventCommandTextSetting.model_validate(
         {
-            "default_command_codes": [357],
             "default_command_codes_by_engine": {"mv": [356], "mz": [357]},
         }
     )
@@ -118,8 +216,8 @@ def test_event_command_setting_prefers_engine_default_over_common_default() -> N
     assert setting.default_codes_for_engine("mz") == [357]
 
 
-def test_event_command_text_setting_requires_default_code_array() -> None:
-    """事件指令默认编码数组必须由配置文件显式提供。"""
+def test_event_command_text_setting_requires_engine_code_map() -> None:
+    """事件指令按引擎默认编码必须由配置文件显式提供。"""
     with pytest.raises(ValidationError):
         _ = EventCommandTextSetting.model_validate({})
 
@@ -200,7 +298,7 @@ async def test_event_command_rule_import_extracts_and_writes_back(
     tmp_path: Path,
 ) -> None:
     """事件指令文本由外部规则导入后按数据库规则提取并写回。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -233,9 +331,7 @@ async def test_event_command_rule_import_extracts_and_writes_back(
         "$['parameters'][3]['message']",
         "$['parameters'][3]['file']",
     ]
-
-    extracted = EventCommandTextExtraction(game_data, records).extract_all_text()
-    items = extracted["CommonEvents.json"].translation_items
+    items = _event_command_rule_items_for_test(game_data, records)
     assert [item.location_path for item in items] == [
         "CommonEvents.json/1/4/parameters/3/message",
     ]
@@ -244,6 +340,7 @@ async def test_event_command_rule_import_extracts_and_writes_back(
     assert item.original_lines == ["プラグイン台詞"]
 
     item.translation_lines = ["事件指令译文"]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 
@@ -262,7 +359,7 @@ async def test_event_command_extraction_rejects_stale_command_match(
     tmp_path: Path,
 ) -> None:
     """事件指令参数变化后，已保存规则不能静默变成空命中。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -295,10 +392,10 @@ async def test_event_command_extraction_rejects_stale_command_match(
     parameters = ensure_json_array(command["parameters"], "CommonEvents[1].list[4].parameters")
     parameters[1] = "RenamedAction"
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="事件指令规则已过期"):
-        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+        _ = _event_command_rule_items_for_test(stale_game_data, records)
 
 
 @pytest.mark.asyncio
@@ -307,7 +404,7 @@ async def test_event_command_extraction_rejects_stale_path_template(
     tmp_path: Path,
 ) -> None:
     """事件指令嵌套字段消失后，已保存路径规则必须显式失败。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -341,10 +438,10 @@ async def test_event_command_extraction_rejects_stale_path_template(
     payload = ensure_json_object(parameters[3], "CommonEvents[1].list[4].parameters[3]")
     _ = payload.pop("message")
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
-        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+        _ = _event_command_rule_items_for_test(stale_game_data, records)
 
 
 @pytest.mark.asyncio
@@ -353,7 +450,7 @@ async def test_event_command_extraction_rejects_path_changed_to_non_string_leaf(
     tmp_path: Path,
 ) -> None:
     """事件指令路径仍存在但不再是字符串叶子时，规则必须显式过期。"""
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -387,10 +484,10 @@ async def test_event_command_extraction_rejects_path_changed_to_non_string_leaf(
     payload = ensure_json_object(parameters[3], "CommonEvents[1].list[4].parameters[3]")
     payload["message"] = {"text": "イベントコマンド"}
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
-    stale_game_data = await load_game_data(minimal_game_dir)
+    stale_game_data = await load_active_runtime_game_data(minimal_game_dir)
 
     with pytest.raises(RuntimeError, match="路径没有命中当前字符串叶子"):
-        _ = EventCommandTextExtraction(stale_game_data, records).extract_all_text()
+        _ = _event_command_rule_items_for_test(stale_game_data, records)
 
 
 @pytest.mark.asyncio
@@ -398,8 +495,8 @@ async def test_event_command_nested_write_error_reports_location_path(
     minimal_game_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """事件指令嵌套参数写回失败时报告当前文本路径。"""
-    game_data = await load_game_data(minimal_game_dir)
+    """事件指令嵌套参数路径失效时报告当前文本路径。"""
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -426,19 +523,18 @@ async def test_event_command_nested_write_error_reports_location_path(
         game_data=game_data,
         import_file=import_file,
     )
-    item = EventCommandTextExtraction(game_data, records).extract_all_text()[
-        "CommonEvents.json"
-    ].translation_items[0]
+    item = _event_command_rule_items_for_test(game_data, records)[0]
     item.location_path = "CommonEvents.json/1/4/parameters/3/missing"
     item.translation_lines = ["事件指令译文"]
 
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     with pytest.raises(ValueError) as exc_info:
         write_data_text(game_data, [item])
 
     message = str(exc_info.value)
     assert "CommonEvents.json/1/4/parameters/3/missing" in message
-    assert "参数键不存在 missing" in message
+    assert "已保存译文不再匹配当前文本事实" in message
 
 
 @pytest.mark.asyncio
@@ -459,7 +555,7 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
     payload["message"] = json.dumps(source_message, ensure_ascii=False)
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -486,13 +582,12 @@ async def test_event_command_json_string_leaf_uses_visible_text_protocol(
         game_data=game_data,
         import_file=import_file,
     )
-    item = EventCommandTextExtraction(game_data, records).extract_all_text()[
-        "CommonEvents.json"
-    ].translation_items[0]
+    item = _event_command_rule_items_for_test(game_data, records)[0]
     assert item.original_lines == [source_message.strip()]
 
     translated_message = "\n　" + r"\C[2]任务说明\C[0]\n前往村子。" + "　\n"
     item.translation_lines = [translated_message.strip()]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 
@@ -522,7 +617,7 @@ async def test_event_command_direct_parameter_string_writes_back(
     parameters[2] = "トップパラメータ"
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    game_data = await load_game_data(minimal_game_dir)
+    game_data = await load_active_runtime_game_data(minimal_game_dir)
     input_path = tmp_path / "event-command-rules.json"
     _ = input_path.write_text(
         json.dumps(
@@ -549,8 +644,7 @@ async def test_event_command_direct_parameter_string_writes_back(
         game_data=game_data,
         import_file=import_file,
     )
-    extracted = EventCommandTextExtraction(game_data, records).extract_all_text()
-    items = extracted["CommonEvents.json"].translation_items
+    items = _event_command_rule_items_for_test(game_data, records)
     assert [item.location_path for item in items] == [
         "CommonEvents.json/1/4/parameters/2",
     ]
@@ -558,6 +652,7 @@ async def test_event_command_direct_parameter_string_writes_back(
     assert item.original_lines == ["トップパラメータ"]
 
     item.translation_lines = ["顶层参数译文"]
+    _create_test_source_snapshot(game_data)
     reset_writable_copies(game_data)
     write_data_text(game_data, [item])
 

@@ -2,11 +2,11 @@
 //!
 //! 本模块定义 Python JSON 边界进入 Rust 后使用的载荷、输出和内部共享结构。
 
-use fancy_regex::Regex as FancyRegex;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+
+use super::rule_runtime::engine::Pcre2Pattern;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct QualityPayload {
@@ -88,18 +88,24 @@ pub(crate) struct NativeTextRules {
     pub(crate) source_residual_label: String,
     pub(crate) allowed_source_residual_terms: Vec<String>,
     pub(crate) source_residual_terms_ignore_case: bool,
+    #[serde(default = "default_source_residual_detection_profile")]
+    pub(crate) source_residual_detection_profile: String,
+    #[serde(default = "default_english_source_copy_min_words")]
+    pub(crate) english_source_copy_min_words: usize,
+    #[serde(default = "default_english_source_copy_min_letters")]
+    pub(crate) english_source_copy_min_letters: usize,
     pub(crate) line_width_count_pattern: String,
     pub(crate) residual_escape_sequence_pattern: String,
     pub(crate) long_text_line_width_limit: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NativeCustomPlaceholderRule {
     pub(crate) pattern_text: String,
     pub(crate) placeholder_template: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NativeStructuredPlaceholderRule {
     pub(crate) rule_name: String,
     pub(crate) rule_type: String,
@@ -143,23 +149,26 @@ pub(crate) struct CompiledRules {
     pub(crate) source_residual_allowed_tail_chars: HashSet<char>,
     pub(crate) allowed_source_residual_terms: Vec<String>,
     pub(crate) source_residual_terms_ignore_case: bool,
+    pub(crate) source_residual_detection_profile: String,
+    pub(crate) english_source_copy_min_words: usize,
+    pub(crate) english_source_copy_min_letters: usize,
     pub(crate) source_residual_label: String,
-    pub(crate) source_residual_segment_re: Regex,
-    pub(crate) line_width_count_re: Regex,
-    pub(crate) residual_escape_sequence_re: Regex,
+    pub(crate) source_residual_segment_re: Pcre2Pattern,
+    pub(crate) line_width_count_re: Pcre2Pattern,
+    pub(crate) residual_escape_sequence_re: Pcre2Pattern,
     pub(crate) long_text_line_width_limit: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledCustomRule {
-    pub(crate) pattern: FancyRegex,
+    pub(crate) pattern: Pcre2Pattern,
     pub(crate) placeholder_template: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledStructuredRule {
     pub(crate) rule_name: String,
-    pub(crate) pattern: FancyRegex,
+    pub(crate) pattern: Pcre2Pattern,
     pub(crate) translatable_group: String,
     pub(crate) protected_groups: HashMap<String, String>,
 }
@@ -188,4 +197,16 @@ pub(crate) struct PlaceholderBuild {
     pub(crate) original_lines_with_placeholders: Vec<String>,
     pub(crate) placeholder_map: HashMap<String, String>,
     pub(crate) placeholder_counts: HashMap<String, usize>,
+}
+
+fn default_source_residual_detection_profile() -> String {
+    "japanese_strict".to_string()
+}
+
+fn default_english_source_copy_min_words() -> usize {
+    4
+}
+
+fn default_english_source_copy_min_letters() -> usize {
+    12
 }

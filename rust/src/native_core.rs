@@ -12,7 +12,10 @@ mod note_sources;
 mod placeholders;
 mod pool;
 mod quality;
+mod rule_runtime;
 mod rules;
+mod scope_index;
+pub(crate) mod text_facts;
 mod write_back_plan;
 mod write_protocol;
 
@@ -56,6 +59,11 @@ pub fn parse_javascript_string_spans_batch_impl(payload_json: &str) -> Result<St
     javascript_ast::parse_javascript_string_spans_batch_impl(payload_json)
 }
 
+/// 批量收集当前运行源码字符串审计风险事实。
+pub fn collect_runtime_literal_issue_facts_impl(payload_json: &str) -> Result<String, String> {
+    javascript_ast::collect_runtime_literal_issue_facts_impl(payload_json)
+}
+
 /// 构建写回或重建运行文件计划并返回 JSON 计划。
 pub fn build_write_back_plan_impl(
     game_path: &str,
@@ -73,9 +81,79 @@ pub fn build_write_back_plan_impl(
     )
 }
 
+/// 预检统一规则导入请求。
+pub fn prepare_rule_import_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::api::prepare_rule_import_impl(payload_json)
+}
+
+/// 提交统一规则导入计划。
+pub fn commit_rule_import_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::api::commit_rule_import_impl(payload_json)
+}
+
+/// 执行配置中的用户可写运行时正则。
+pub fn evaluate_runtime_config_patterns_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::adapters::config_patterns::evaluate_runtime_config_patterns_impl(payload_json)
+}
+
+/// 构建统一规则表和配置正则的当前指纹。
+pub fn build_rules_fingerprint_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::api::build_rules_fingerprint_impl(payload_json)
+}
+
+/// 执行用户/Agent 可写控制符规则并返回可保护跨度。
+pub fn collect_control_sequence_spans_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::runtime_match::collect_control_sequence_spans_impl(payload_json)
+}
+
+/// 执行用户/Agent 可写 MV 虚拟名字框规则并返回命中捕获。
+pub fn match_mv_virtual_namebox_rules_impl(payload_json: &str) -> Result<String, String> {
+    rule_runtime::runtime_match::match_mv_virtual_namebox_rules_impl(payload_json)
+}
+
+/// 构建 Scope/Index Engine 范围索引。
+pub fn build_scope_index_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::build_scope_index_impl(payload_json)
+}
+
+/// 扫描 Scope/Index Engine 规则候选。
+pub fn scan_rule_candidates_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::scan_rule_candidates_impl(payload_json)
+}
+
+/// 评估 Scope/Index Engine 范围门禁。
+pub fn evaluate_scope_gate_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::evaluate_scope_gate_impl(payload_json)
+}
+
+/// 返回 Python/Rust 共享 SQLite schema SQL 的 SHA-256 指纹。
+pub fn native_schema_fingerprint_impl() -> String {
+    scope_index::native_schema_fingerprint_impl()
+}
+
+/// 直读 Scope/Index Engine 所需的 DB 状态和游戏文件摘要。
+pub fn inspect_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::inspect_scope_index_storage_impl(payload_json)
+}
+
+/// 由 Rust 直接写入 text index 及摘要表。
+pub fn write_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::write_scope_index_storage_impl(payload_json)
+}
+
+/// Rust 直读 DB 和游戏目录并重建 text index 存储。
+pub fn rebuild_scope_index_storage_impl(payload_json: &str) -> Result<String, String> {
+    scope_index::rebuild_scope_index_storage_impl(payload_json)
+}
+
 /// 读取原生核心配置的线程数覆盖值。
 pub fn read_configured_thread_count() -> Result<Option<usize>, String> {
     pool::read_configured_thread_count()
+}
+
+/// 配置原生核心线程数覆盖值。
+pub fn configure_runtime_threads(thread_count: Option<usize>) -> Result<(), String> {
+    pool::configure_runtime_threads(thread_count)
 }
 
 #[cfg(test)]
@@ -88,10 +166,13 @@ mod tests {
             "custom_placeholder_rules": [],
             "source_residual_allowed_chars": [],
             "source_residual_allowed_tail_chars": [],
-            "source_residual_segment_pattern": r"[\p{Hiragana}\p{Katakana}\p{Han}ー]+",
+            "source_residual_segment_pattern": r"[ぁ-んァ-ヶ一-龯ー]+",
             "source_residual_label": "日文",
             "allowed_source_residual_terms": [],
             "source_residual_terms_ignore_case": false,
+            "source_residual_detection_profile": "japanese_strict",
+            "english_source_copy_min_words": 4,
+            "english_source_copy_min_letters": 12,
             "line_width_count_pattern": r"[^\s]",
             "residual_escape_sequence_pattern": r"\\[A-Za-z0-9_]+\[[^\]]*\]",
             "long_text_line_width_limit": 999
@@ -105,8 +186,11 @@ mod tests {
             "source_residual_allowed_tail_chars": [],
             "source_residual_segment_pattern": r"[A-Za-z][A-Za-z0-9'’_-]*",
             "source_residual_label": "英文",
-            "allowed_source_residual_terms": ["HP", "MP", "TP", "OK"],
+            "allowed_source_residual_terms": [],
             "source_residual_terms_ignore_case": true,
+            "source_residual_detection_profile": "english_source_copy",
+            "english_source_copy_min_words": 4,
+            "english_source_copy_min_letters": 12,
             "line_width_count_pattern": r"[^\s]",
             "residual_escape_sequence_pattern": r"\\[A-Za-z0-9_]+\[[^\]]*\]",
             "long_text_line_width_limit": 999
@@ -114,15 +198,15 @@ mod tests {
     }
 
     #[test]
-    fn quality_scan_reports_source_residual_as_segments() {
+    fn quality_scan_reports_english_source_copy_residual_as_segments() {
         let payload = json!({
             "items": [
                 {
                     "location_path": "Map001.json/1/0/0",
                     "item_type": "long_text",
                     "role": null,
-                    "original_lines": ["Hello Alice"],
-                    "translation_lines": ["你好 Alice"]
+                    "original_lines": ["Press the red switch before opening the old gate."],
+                    "translation_lines": ["不要 Press the red switch before opening 继续。"]
                 }
             ],
             "text_rules": english_text_rules(),
@@ -133,8 +217,28 @@ mod tests {
         let reason = value["source_residual_items"][0]["reason"]
             .as_str()
             .expect("残留明细应包含原因");
-        assert!(reason.contains("Alice"));
+        assert!(reason.contains("Press the red switch before opening"));
         assert!(!reason.contains("'A', 'l'"));
+    }
+
+    #[test]
+    fn quality_scan_ignores_short_english_fragments_without_source_copy() {
+        let payload = json!({
+            "items": [
+                {
+                    "location_path": "Map001.json/1/0/0",
+                    "item_type": "long_text",
+                    "role": null,
+                    "original_lines": ["Press the red switch before opening the old gate."],
+                    "translation_lines": ["按 A 键，CG 已解锁，Alice 加入队伍，Good Ending 开启。"]
+                }
+            ],
+            "text_rules": english_text_rules(),
+            "source_residual_rules": []
+        });
+        let output = scan_quality_impl(&payload.to_string()).expect("质检应成功");
+        let value: Value = serde_json::from_str(&output).expect("输出应是 JSON");
+        assert_eq!(value["source_residual_items"], json!([]));
     }
 
     #[test]
@@ -145,8 +249,8 @@ mod tests {
                     "location_path": "Map001.json/1/0/0",
                     "item_type": "long_text",
                     "role": null,
-                    "original_lines": ["Hello Alice"],
-                    "translation_lines": ["你好 Alice"]
+                    "original_lines": ["Press the red switch before opening the old gate."],
+                    "translation_lines": ["不要 Press the red switch before opening 继续。"]
                 }
             ],
             "text_rules": english_text_rules(),
@@ -277,7 +381,7 @@ mod tests {
                         "location_path": "plugins.js",
                         "item_type": "short_text",
                         "role": null,
-                        "original_lines": ["旧"],
+                        "original_lines": ["原文"],
                         "translation_lines": ["新"]
                     },
                     "mode": "none",
@@ -308,7 +412,7 @@ mod tests {
                         "location_path": "plugins.js",
                         "item_type": "short_text",
                         "role": null,
-                        "original_lines": ["旧"],
+                        "original_lines": ["原文"],
                         "translation_lines": ["新"]
                     },
                     "mode": "none",
@@ -395,9 +499,9 @@ mod tests {
                     null,
                     {
                         "id": 1,
-                        "note": "<说明:旧文本>",
+                        "note": "<说明:原文>",
                         "effects": [
-                            {"note": "<效果:旧文本>"}
+                            {"note": "<效果:原文>"}
                         ]
                     }
                 ],

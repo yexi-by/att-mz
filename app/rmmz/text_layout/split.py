@@ -8,7 +8,7 @@ from app.rmmz.text_rules import TextRules
 
 from .models import ProtectedSpan
 from .protected import collect_protected_spans, is_inside_protected_span, move_split_position_outside_protected_span
-from .width import count_line_width_chars
+from .width import count_line_width_chars, line_width_counted_flags
 from .wrapping import closes_wrapping_pair, find_opening_wrapping_pair, prepend_continuation_prefix
 
 WRAPPING_CONTINUATION_INDENT = "　"
@@ -164,11 +164,12 @@ def _find_preferred_split_position(text: str, text_rules: TextRules) -> int | No
     preferred_before_limit_positions: list[int] = []
     punctuations = set(text_rules.setting.line_split_punctuations)
     line_width_count = 0
+    counted_flags = line_width_counted_flags(text=text, text_rules=text_rules)
 
     for index, char in enumerate(text):
         if is_inside_protected_span(index=index, protected_spans=protected_spans):
             continue
-        if text_rules.is_line_width_counted_char(char):
+        if counted_flags[index]:
             line_width_count += 1
 
         if char in punctuations and line_width_count >= min_preferred_width:
@@ -209,10 +210,11 @@ def _find_hard_split_position(text: str, text_rules: TextRules) -> int | None:
     protected_spans = collect_protected_spans(text=text, text_rules=text_rules)
     line_width_count = 0
     limit = text_rules.setting.long_text_line_width_limit
-    for index, char in enumerate(text):
+    counted_flags = line_width_counted_flags(text=text, text_rules=text_rules)
+    for index, _char in enumerate(text):
         if is_inside_protected_span(index=index, protected_spans=protected_spans):
             continue
-        if not text_rules.is_line_width_counted_char(char):
+        if not counted_flags[index]:
             continue
         line_width_count += 1
         if line_width_count < limit:
@@ -251,7 +253,8 @@ def _find_readable_hard_split_position(
     min_tail_width = min(4, max(1, text_rules.setting.long_text_line_width_limit // 4))
     punctuations = set(text_rules.setting.line_split_punctuations)
     candidates: list[int] = []
-    for index, char in enumerate(text):
+    counted_flags = line_width_counted_flags(text=text, text_rules=text_rules)
+    for index, _char in enumerate(text):
         position = index + 1
         if position > max_position:
             break
@@ -259,7 +262,7 @@ def _find_readable_hard_split_position(
             break
         if is_inside_protected_span(index=index, protected_spans=protected_spans):
             continue
-        if not text_rules.is_line_width_counted_char(char):
+        if not counted_flags[index]:
             continue
         tail = text[position:].lstrip()
         if not tail:

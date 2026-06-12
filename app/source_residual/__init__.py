@@ -8,6 +8,7 @@ from .rules import (
     build_source_residual_rule_records_from_import,
     check_source_residual_for_item,
     load_source_residual_rule_import_file,
+    parse_source_residual_rule_import_payload,
     parse_source_residual_rule_import_text,
 )
 
@@ -19,5 +20,6 @@ __all__: list[str] = [
     "build_source_residual_rule_records_from_import",
     "check_source_residual_for_item",
     "load_source_residual_rule_import_file",
+    "parse_source_residual_rule_import_payload",
     "parse_source_residual_rule_import_text",
 ]

@@ -7,33 +7,43 @@
 import asyncio
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Self
 
-from app.application.errors import ApplicationBusinessError, WriteBackGateError
-from app.application.file_writer import write_planned_text_file_sources
+from app.application.errors import ApplicationBusinessError, WorkflowGateError, WriteBackGateError
+from app.application.file_writer import WriteOperation
 from app.application.font_replacement import (
     collect_replacement_font_names,
     restore_font_references_from_origin_backups,
 )
-from app.application.font_replacement.constants import FONTS_DIRECTORY_NAME
-from app.application.font_replacement.css import replace_gamefont_css_references
-from app.application.font_replacement.files import (
-    collect_replaced_source_font_names,
-    copy_replacement_font,
-    resolve_replacement_font_path,
+from app.application.font_replacement.constants import (
+    FONTS_DIRECTORY_NAME,
+    GAMEFONT_CSS_FILE_NAME,
+    GAMEFONT_CSS_ORIGIN_FILE_NAME,
 )
+from app.application.font_replacement.css import replace_gamefont_css_text
 from app.application.flow_gate import (
-    assert_workflow_gate_passed,
+    collect_indexed_workflow_gate_errors,
     ensure_empty_rule_confirmed,
     event_command_rule_codes_for_setting,
     event_command_rule_scope_hash_for_command_codes,
-    note_tag_rule_scope_hash_for_text_rules,
+    format_workflow_gate_error,
+)
+from app.agent_toolkit.services.rule_identity import (
+    RuleFactProbe,
+    resolve_current_rule_fact_hits,
+)
+from app.agent_toolkit.services.rule_import_runtime import (
+    cleanup_input_from_rule_hits,
+    commit_deleted_translation_count,
+    commit_prepared_rule_import,
+    empty_cleanup_input,
+    write_prepared_cleanup_backup,
 )
 from app.application.runtime import load_runtime_setting
-from app.application.rule_import_backup import write_rule_import_translation_backup
 from app.application.summaries import (
     EventCommandJsonExportSummary,
     EventCommandRuleImportSummary,
@@ -47,84 +57,87 @@ from app.application.summaries import (
     TextTranslationSummary,
     WriteBackSummary,
 )
-from app.application.write_back_gate import assert_write_back_quality_passed
+from app.application.write_plan_applier import RuntimeWritePlan, WritePlanApplier
 from app.config import (
     SettingOverrides,
     load_custom_placeholder_rules_text,
 )
 from app.config.schemas import Setting
-from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
+from app.language import SourceLanguage
 from app.event_command_text import (
-    build_event_command_rule_records_from_import,
-    command_matches_filters,
+    build_event_command_rule_records_from_import_shape,
     event_command_rule_key,
     export_event_commands_json_file,
     load_event_command_rule_import_file,
     resolve_event_command_codes,
 )
+from app.event_command_text.native_validation import (
+    NativeEventCommandRuleValidationContext,
+    build_native_event_command_rule_validation_context,
+)
+from app.native_scope_index import collect_native_plugin_config_scope_hash
 from app.terminology import (
     TerminologyExportSummary,
     TerminologyExtraction,
     TerminologyPromptIndex,
     TerminologyRegistry,
     export_terminology_artifacts,
+    filter_glossary_for_translation_data,
     load_terminology_glossary,
     load_terminology_registry,
     validate_terminology_bundle,
 )
 from app.note_tag_text import (
-    NoteTagTextExtraction,
-    build_note_tag_rule_records_from_import,
     export_note_tag_candidates_file,
-    load_note_tag_rule_import_file,
-    note_tag_location_path_matches_rule,
 )
 from app.persistence import GameRegistry, TargetGameSession
 from app.persistence.repository import current_timestamp_text
-from app.rule_review import (
-    EVENT_COMMAND_TEXT_RULE_DOMAIN,
-    NOTE_TAG_TEXT_RULE_DOMAIN,
-    PLUGIN_TEXT_RULE_DOMAIN,
-    plugin_rule_scope_hash,
-)
 from app.plugin_text import (
-    build_plugin_rule_records_from_import,
+    build_native_plugin_rule_validation_context_from_import,
     export_plugins_json_file,
     load_plugin_rule_import_file,
 )
-from app.plugin_source_text import audit_active_runtime_plugin_source
+from app.plugin_source_text import (
+    ActiveRuntimePluginSourceAudit,
+    audit_active_runtime_plugin_source_with_scan_cache,
+)
+from app.nonstandard_data import audit_active_runtime_nonstandard_data
 from app.application.use_cases.translation_run import (
-    TranslationProgressState,
+    TranslationRunController,
     TranslationRunInterrupted,
     TranslationRunLimits,
+    TranslationRunState,
     build_llm_failure_record,
     build_translation_batches,
     count_translation_items,
     deduplicate_translation_data,
     expand_cached_error_items,
     expand_cached_translation_items,
-    filter_pending_translation_data,
-    limit_translation_data,
 )
-from app.rmmz.commands import iter_all_commands
 from app.rmmz.schema import (
     GameData,
+    GameLayout,
     EventCommandTextRuleRecord,
-    NoteTagTextRuleRecord,
+    NonstandardDataTextRuleRecord,
     PlaceholderRuleRecord,
     PLUGINS_FILE_NAME,
+    FontReplacementRecord,
+    PluginSourceRuntimeScanCacheRecord,
     PluginSourceRuntimeWriteMapRecord,
     PluginTextRuleRecord,
     StructuredPlaceholderRuleRecord,
+    TranslationData,
+    TranslationErrorItem,
     TranslationItem,
     TranslationRunRecord,
 )
 from app.rmmz.control_codes import CustomPlaceholderRule, StructuredPlaceholderRule
-from app.llm import LLMHandler, LLMRequestFailure
-from app.native_quality import build_native_text_rules_payload
-from app.native_write_plan import build_native_write_back_plan
+from app.llm import LLMHandler
+from app.native_quality import native_thread_count
+from app.native_rule_runtime import prepare_rule_import, runtime_config_patterns_from_setting
+from app.native_write_plan import NativeWriteBackPlan, build_native_write_back_plan, build_native_write_back_setting_payload
 from app.rmmz.text_rules import JsonObject, TextRules
-from app.translation import TextTranslation, TranslationBatch, TranslationCache
+from app.translation import TranslationBatch, TranslationCache
 from app.rmmz.game_file_view import GameFileView
 from app.rmmz.loader import (
     load_active_runtime_game_data,
@@ -133,10 +146,27 @@ from app.rmmz.loader import (
     resolve_game_directory,
     resolve_game_layout,
 )
+from app.observability import current_diagnostics
 from app.observability.logging import logger
 from app.utils.config_loader_utils import load_setting
 from app.source_residual import SourceResidualRuleSet
-from app.text_scope import TextScopeResult, TextScopeService, collect_translation_data_paths
+from app.text_index import (
+    collect_text_index_external_rule_gate_errors,
+    collect_text_index_placeholder_gate_errors,
+    collect_text_index_scope_gate_errors,
+    detect_text_index_invalidations,
+    rebuild_text_index_native_storage,
+    text_index_source_branch_gates_prechecked,
+)
+from app.text_facts import (
+    count_current_text_facts,
+    count_pending_text_facts,
+    count_pending_text_fact_quality_errors,
+    count_stale_translations_outside_writable_text_facts,
+    count_translated_text_facts,
+    read_pending_text_fact_translation_data_map,
+)
+from app.text_scope import TextScopeResult
 from app.rmmz.source_snapshot import validate_source_snapshot_manifest
 
 
@@ -151,13 +181,147 @@ type WriteProgressCallbacks = (
 class PreparedWriteOperation:
     """写入游戏文件前已经完成门禁检查的上下文。"""
 
-    game_data: GameData
+    game_data: GameData | None
     setting: Setting
     text_rules: TextRules
     translated_items: list[TranslationItem]
-    writable_location_paths: list[str]
-    scope: TextScopeResult
+    translated_count: int
+    writable_location_paths: list[str] | None
+    scope: TextScopeResult | None
     pre_write_check_ms: int = 0
+
+
+def _translation_stage_timings(
+    *,
+    local_prepare_ms: int,
+    run_state: TranslationRunState,
+    run_batches_wall_ms: int,
+) -> JsonObject:
+    """汇总正文翻译本地阶段计时，并单列模型请求等待。"""
+    save_results_ms = run_state.save_success_ms + run_state.save_error_ms
+    local_total_excluding_model_ms = local_prepare_ms + run_state.response_verify_ms + save_results_ms
+    return {
+        "prepare_local_ms": local_prepare_ms,
+        "model_request_ms": run_state.model_request_ms,
+        "response_verify_ms": run_state.response_verify_ms,
+        "save_success_ms": run_state.save_success_ms,
+        "save_error_ms": run_state.save_error_ms,
+        "save_results_ms": save_results_ms,
+        "local_total_excluding_model_ms": local_total_excluding_model_ms,
+        "run_batches_wall_ms": run_batches_wall_ms,
+    }
+
+
+def _rule_translation_item_text(item: TranslationItem) -> str:
+    """读取规则命中 TranslationItem 对应的可翻译文本。"""
+    if item.item_type in {"long_text", "array"}:
+        return "\n".join(item.original_lines)
+    if not item.original_lines:
+        return ""
+    return item.original_lines[0]
+
+
+def _rule_fact_probes_for_items(
+    *,
+    domain: str,
+    items: list[TranslationItem],
+) -> list[RuleFactProbe]:
+    """把公开规则导入命中转换为当前文本事实 解析探针。"""
+    return [
+        RuleFactProbe(
+            domain=domain,
+            location_path=item.location_path,
+            translatable_text=_rule_translation_item_text(item),
+        )
+        for item in items
+    ]
+
+
+def build_runtime_write_plan(
+    *,
+    native_plan: NativeWriteBackPlan,
+    content_root: Path,
+    source_font_path: Path | None,
+) -> tuple[RuntimeWritePlan, int]:
+    """把 Rust 写回计划补齐为 Python 最终写入计划。"""
+    file_operations = [
+        WriteOperation(
+            target_path=file.target_path,
+            content=file.content,
+            source_path=file.content_path,
+            temp_dir=file.target_path.parent,
+        )
+        for file in native_plan.files
+    ]
+    font_records = list(native_plan.font_replacement_records)
+    css_replaced_count = 0
+    if source_font_path is not None:
+        font_dir = content_root / FONTS_DIRECTORY_NAME
+        target_font_path = font_dir / source_font_path.name
+        if source_font_path.resolve(strict=False) != target_font_path.resolve(strict=False):
+            file_operations.append(
+                WriteOperation(
+                    target_path=target_font_path,
+                    content=None,
+                    source_path=source_font_path,
+                    temp_dir=font_dir,
+                )
+            )
+        css_operations, css_records = build_gamefont_css_write_operations(
+            font_dir=font_dir,
+            replacement_font_name=source_font_path.name,
+        )
+        file_operations.extend(css_operations)
+        font_records.extend(css_records)
+        css_replaced_count = len(css_records)
+    return (
+        RuntimeWritePlan(
+            file_operations=file_operations,
+            plugin_source_runtime_write_maps=list(native_plan.plugin_source_runtime_write_maps),
+            font_replacement_records=font_records,
+        ),
+        css_replaced_count,
+    )
+
+
+def build_gamefont_css_write_operations(
+    *,
+    font_dir: Path,
+    replacement_font_name: str,
+) -> tuple[list[WriteOperation], list[FontReplacementRecord]]:
+    """生成 `gamefont.css` 字体替换文件操作，不直接写入磁盘。"""
+    css_path = font_dir / GAMEFONT_CSS_FILE_NAME
+    if not css_path.exists():
+        return [], []
+    if not css_path.is_file():
+        raise FileNotFoundError(f"游戏字体样式表不是文件: {css_path}")
+    css_text = css_path.read_text(encoding="utf-8")
+    updated_text, records = replace_gamefont_css_text(
+        css_text=css_text,
+        replacement_font_name=replacement_font_name,
+    )
+    if not records:
+        return [], []
+    operations: list[WriteOperation] = []
+    origin_path = css_path.with_name(GAMEFONT_CSS_ORIGIN_FILE_NAME)
+    if not origin_path.exists():
+        operations.append(
+            WriteOperation(
+                target_path=origin_path,
+                content=None,
+                source_path=css_path,
+                temp_dir=font_dir,
+            )
+        )
+    operations.append(
+        WriteOperation(
+            target_path=css_path,
+            content=updated_text,
+            source_path=None,
+            temp_dir=font_dir,
+        )
+    )
+    return operations, records
 
 
 def _unpack_write_progress_callbacks(
@@ -175,21 +339,22 @@ def _unpack_write_progress_callbacks(
     return set_progress, advance_progress, set_status
 
 
-def _translation_paths_matching_note_rules(
-    *,
-    translated_items: list[TranslationItem],
-    rule_records: list[NoteTagTextRuleRecord],
-) -> set[str]:
-    """从已保存译文中找出属于指定 Note 标签规则的定位路径。"""
-    return {
-        item.location_path
-        for item in translated_items
-        for rule_record in rule_records
-        if note_tag_location_path_matches_rule(
-            location_path=item.location_path,
-            rule_record=rule_record,
-        )
-    }
+def _agent_report_summary_int(summary: JsonObject, key: str) -> int:
+    """从 Agent 报告摘要中读取整数计数字段。"""
+    raw_value = summary.get(key)
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise ApplicationBusinessError(f"Agent 报告缺少有效计数字段: {key}")
+    return raw_value
+
+
+def _agent_report_summary_optional_path(summary: JsonObject, key: str) -> str | None:
+    """从 Agent 报告摘要中读取可选路径字段。"""
+    raw_value = summary.get(key)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ApplicationBusinessError(f"Agent 报告缺少有效路径字段: {key}")
+    return raw_value or None
 
 
 class TranslationHandler:
@@ -219,7 +384,7 @@ class TranslationHandler:
     def _load_runtime_setting(
         self,
         setting_overrides: SettingOverrides | None = None,
-        source_language: SourceLanguage = DEFAULT_SOURCE_LANGUAGE,
+        source_language: SourceLanguage | None = None,
     ) -> Setting:
         """加载配置并按本轮命令重置模型服务。"""
         return load_runtime_setting(
@@ -231,7 +396,7 @@ class TranslationHandler:
     def _load_setting(
         self,
         setting_overrides: SettingOverrides | None = None,
-        source_language: SourceLanguage = DEFAULT_SOURCE_LANGUAGE,
+        source_language: SourceLanguage | None = None,
     ) -> Setting:
         """加载当前配置，不改动模型服务连接状态。"""
         return load_setting(overrides=setting_overrides, source_language=source_language)
@@ -302,11 +467,21 @@ class TranslationHandler:
             structured_placeholder_rule_records=structured_placeholder_records,
         )
 
-    async def _load_session_game_data(self, session: TargetGameSession) -> GameData:
+    async def _load_session_game_data(
+        self,
+        session: TargetGameSession,
+        *,
+        include_plugin_source_files: bool = False,
+        include_writable_copies: bool = False,
+        run_dialogue_probe_check: bool = False,
+    ) -> GameData:
         """加载目标游戏数据并绑定到当前命令会话。"""
         game_data = await load_game_data_for_view(
             session.game_path,
-            source_view=GameFileView.TRANSLATION_SOURCE,
+            view=GameFileView.TRANSLATION_SOURCE,
+            include_plugin_source_files=include_plugin_source_files,
+            include_writable_copies=include_writable_copies,
+            run_dialogue_probe_check=run_dialogue_probe_check,
         )
         snapshot_records = await session.read_source_snapshot_records()
         if not snapshot_records:
@@ -321,6 +496,54 @@ class TranslationHandler:
     async def resolve_game_title_by_path(self, game_path: str | Path) -> str:
         """根据已注册游戏目录解析可用于 CLI 的游戏标题。"""
         return await self.game_registry.resolve_registered_title_by_path(game_path)
+
+    async def _rebuild_text_index_for_translation(
+        self,
+        *,
+        session: TargetGameSession,
+        setting: Setting,
+        text_rules: TextRules,
+        callbacks: tuple[
+            Callable[[int, int], None],
+            Callable[[int], None],
+            Callable[[str], None],
+        ],
+    ) -> tuple[JsonObject, str | None]:
+        """为 `translate --max-items` 自动重建索引，返回报告摘要和阻断原因。"""
+        set_progress, advance_progress, set_status = callbacks
+        started_at = time.perf_counter()
+        stage_started_at = started_at
+
+        def finish_stage(stage_name: str) -> None:
+            nonlocal stage_started_at
+            now = time.perf_counter()
+            duration_ms = int((now - stage_started_at) * 1000)
+            current_diagnostics().record_timing(f"translation.text_index_rebuild.{stage_name}", duration_ms)
+            stage_started_at = now
+
+        def rebuild_summary(*, index_status: str, indexed_count: int) -> JsonObject:
+            _ = started_at
+            return {
+                "index_status": index_status,
+                "indexed_count": indexed_count,
+                "index_item_count": indexed_count,
+            }
+
+        set_progress(0, 3)
+        set_status("重建文本范围索引：原生扫描并写入数据库")
+        metadata = await rebuild_text_index_native_storage(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+            include_write_probe=True,
+        )
+        advance_progress(1)
+        finish_stage("rust_rebuild_text_index")
+        diagnostics = current_diagnostics()
+        diagnostics.counter("translation.text_index_rebuild.item_count", metadata.item_count)
+        diagnostics.counter("runtime.native_thread_count", native_thread_count())
+        set_progress(3, 3)
+        return rebuild_summary(index_status="rebuilt", indexed_count=metadata.item_count), None
 
     async def add_game(
         self,
@@ -349,11 +572,12 @@ class TranslationHandler:
             game_data = await self._load_session_game_data(session)
             text_rules = await self._load_session_profile_text_rules(session)
             import_file = await load_plugin_rule_import_file(input_path)
-            rule_records = build_plugin_rule_records_from_import(
+            context = build_native_plugin_rule_validation_context_from_import(
                 game_data=game_data,
                 import_file=import_file,
                 text_rules=text_rules,
             )
+            rule_records = context.records
             if not rule_records:
                 ensure_empty_rule_confirmed(
                     rule_label="插件规则",
@@ -373,27 +597,62 @@ class TranslationHandler:
             new_plugin_indexes = {rule.plugin_index for rule in rule_records}
             for plugin_index in sorted(set(old_rules) - new_plugin_indexes):
                 stale_prefixes.add(f"{PLUGINS_FILE_NAME}/{plugin_index}/")
+            cleanup_input = empty_cleanup_input()
             if stale_prefixes:
-                stale_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
-                backup = await write_rule_import_translation_backup(
-                    game_title=game_title,
-                    domain="plugin-rules",
-                    items=stale_items,
+                old_candidate_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                current_plugin_hits = await resolve_current_rule_fact_hits(
+                    session,
+                    _rule_fact_probes_for_items(
+                        domain="plugin_config",
+                        items=context.extracted_items,
+                    ),
                 )
-                if backup is not None:
-                    deleted_translation_backup_path = backup.backup_path
-                deleted_translation_items = await session.delete_translation_items_by_prefixes(
-                    sorted(stale_prefixes),
+                cleanup_input = cleanup_input_from_rule_hits(
+                    old_items=old_candidate_items,
+                    current_rule_hits=current_plugin_hits,
                 )
-            await session.replace_plugin_text_rules(rule_records)
-            if rule_records:
-                await session.delete_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
-            else:
-                await session.replace_rule_review_state(
-                    rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
-                    scope_hash=plugin_rule_scope_hash(game_data),
-                    reviewed_empty=True,
-                )
+            plugin_scope_hash = collect_native_plugin_config_scope_hash(
+                game_data=game_data,
+                text_rules=text_rules,
+            )
+            prepare_result = prepare_rule_import(
+                {
+                    "mode": "import",
+                    "db_path": str(session.db_path),
+                    "domain": "plugin_config",
+                    "rules_payload": [
+                        rule.model_dump(mode="json")
+                        for rule in rule_records
+                    ],
+                    "game_context": {"scope_hash": plugin_scope_hash},
+                    "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+                    "confirm_empty": confirm_empty,
+                    "cleanup_input": cleanup_input,
+                }
+            )
+            if prepare_result.errors:
+                messages = "；".join(error.message for error in prepare_result.errors)
+                raise ApplicationBusinessError(messages)
+            (
+                deleted_translation_items,
+                deleted_translation_backup_path,
+                _cleanup_plan,
+            ) = await write_prepared_cleanup_backup(
+                session=session,
+                game_title=game_title,
+                backup_domain="plugin-rules",
+                prepare_result=prepare_result,
+            )
+            commit_result = commit_prepared_rule_import(
+                db_path=session.db_path,
+                domain="plugin_config",
+                prepare_result=prepare_result,
+                backup_path=deleted_translation_backup_path,
+            )
+            if commit_result.errors:
+                messages = "；".join(error.message for error in commit_result.errors)
+                raise ApplicationBusinessError(messages)
+            deleted_translation_items = commit_deleted_translation_count(commit_result)
         imported_rule_count = sum(len(record.path_templates) for record in rule_records)
         logger.success(f"[tag.success]插件规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 插件 [tag.count]{len(rule_records)}[/tag.count] 个，规则 [tag.count]{imported_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
@@ -431,15 +690,15 @@ class TranslationHandler:
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
             resolved_output_path = output_path.resolve()
-            default_command_codes: list[int] | None = None
+            configured_command_codes: list[int] | None = None
             if command_codes is None:
                 setting = self._load_setting(source_language=session.source_language)
-                default_command_codes = setting.event_command_text.default_codes_for_engine(
+                configured_command_codes = setting.event_command_text.default_codes_for_engine(
                     game_data.layout.engine_kind
                 )
             effective_command_codes = resolve_event_command_codes(
                 command_codes=command_codes,
-                default_command_codes=default_command_codes,
+                configured_command_codes=configured_command_codes,
             )
             command_count = await export_event_commands_json_file(
                 game_data=game_data,
@@ -450,6 +709,7 @@ class TranslationHandler:
             logger.success(f"[tag.success]事件指令参数 JSON 导出完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 编码 [tag.count]{code_label}[/tag.count] 指令 [tag.count]{command_count}[/tag.count] 条 文件 [tag.path]{resolved_output_path}[/tag.path]")
             return EventCommandJsonExportSummary(
                 output_path=str(resolved_output_path),
+                command_codes=list(sorted(effective_command_codes)),
                 command_count=command_count,
             )
 
@@ -490,10 +750,13 @@ class TranslationHandler:
         """把外部事件指令规则 JSON 导入当前游戏数据库。"""
         async with await self.game_registry.open_game(game_title) as session:
             game_data = await self._load_session_game_data(session)
+            text_rules = await self._load_session_profile_text_rules(session)
             import_file = await load_event_command_rule_import_file(input_path)
-            rule_records = build_event_command_rule_records_from_import(
+            rule_records = build_event_command_rule_records_from_import_shape(import_file=import_file)
+            rule_context = build_native_event_command_rule_validation_context(
+                records=rule_records,
                 game_data=game_data,
-                import_file=import_file,
+                text_rules=text_rules,
             )
             empty_review_scope_hash: str | None = None
             if not rule_records:
@@ -510,16 +773,29 @@ class TranslationHandler:
                 else:
                     effective_command_codes = resolve_event_command_codes(
                         command_codes=command_codes,
-                        default_command_codes=None,
+                        configured_command_codes=None,
                     )
                 empty_review_scope_hash = event_command_rule_scope_hash_for_command_codes(
                     game_data=game_data,
                     command_codes=effective_command_codes,
                 )
-            old_rules = {
-                event_command_rule_key(rule): rule
-                for rule in await session.read_event_command_text_rules()
-            }
+            old_rule_records = await session.read_event_command_text_rules()
+            old_rules = {event_command_rule_key(rule): rule for rule in old_rule_records}
+            old_rule_context = build_native_event_command_rule_validation_context(
+                records=old_rule_records,
+                game_data=game_data,
+                text_rules=text_rules,
+                require_command_hits=False,
+                require_path_hits=False,
+            )
+            old_prefixes_by_key = self._event_command_rule_prefixes_by_key(
+                records=old_rule_records,
+                context=old_rule_context,
+            )
+            new_prefixes_by_key = self._event_command_rule_prefixes_by_key(
+                records=rule_records,
+                context=rule_context,
+            )
             deleted_translation_items = 0
             deleted_translation_backup_path: str | None = None
             stale_prefixes: set[str] = set()
@@ -528,41 +804,70 @@ class TranslationHandler:
                 old_rule = old_rules.get(rule_key)
                 if self._should_refresh_event_command_translation_items(old_rule, rule_record):
                     if old_rule is not None:
-                        stale_prefixes.update(
-                            self._event_command_rule_prefixes(game_data=game_data, rule_record=old_rule),
-                        )
-                    stale_prefixes.update(
-                        self._event_command_rule_prefixes(game_data=game_data, rule_record=rule_record),
-                    )
+                        stale_prefixes.update(old_prefixes_by_key.get(rule_key, ()))
+                    stale_prefixes.update(new_prefixes_by_key.get(rule_key, ()))
             new_rule_keys = {event_command_rule_key(rule) for rule in rule_records}
             for rule_key, old_rule in old_rules.items():
+                _ = old_rule
                 if rule_key not in new_rule_keys:
-                    stale_prefixes.update(
-                        self._event_command_rule_prefixes(game_data=game_data, rule_record=old_rule),
-                    )
+                    stale_prefixes.update(old_prefixes_by_key.get(rule_key, ()))
+            cleanup_input = empty_cleanup_input()
             if stale_prefixes:
-                stale_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
-                backup = await write_rule_import_translation_backup(
-                    game_title=game_title,
-                    domain="event-command-rules",
-                    items=stale_items,
+                old_candidate_items = await session.read_translated_items_by_prefixes(sorted(stale_prefixes))
+                current_event_command_hits = await resolve_current_rule_fact_hits(
+                    session,
+                    _rule_fact_probes_for_items(
+                        domain="event_command",
+                        items=rule_context.extracted_items,
+                    ),
                 )
-                if backup is not None:
-                    deleted_translation_backup_path = backup.backup_path
-                deleted_translation_items = await session.delete_translation_items_by_prefixes(
-                    sorted(stale_prefixes),
+                cleanup_input = cleanup_input_from_rule_hits(
+                    old_items=old_candidate_items,
+                    current_rule_hits=current_event_command_hits,
                 )
-            await session.replace_event_command_text_rules(rule_records)
-            if rule_records:
-                await session.delete_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
-            else:
-                if empty_review_scope_hash is None:
-                    raise RuntimeError("事件指令空规则确认范围未计算")
-                await session.replace_rule_review_state(
-                    rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
-                    scope_hash=empty_review_scope_hash,
-                    reviewed_empty=True,
+            if empty_review_scope_hash is None:
+                empty_review_scope_hash = event_command_rule_scope_hash_for_command_codes(
+                    game_data=game_data,
+                    command_codes=frozenset(rule.command_code for rule in rule_records),
                 )
+            prepare_result = prepare_rule_import(
+                {
+                    "mode": "import",
+                    "db_path": str(session.db_path),
+                    "domain": "event_commands",
+                    "rules_payload": [
+                        rule.model_dump(mode="json")
+                        for rule in rule_records
+                    ],
+                    "game_context": {"scope_hash": empty_review_scope_hash},
+                    "settings_runtime_patterns": runtime_config_patterns_from_setting(text_rules.setting),
+                    "confirm_empty": confirm_empty,
+                    "cleanup_input": cleanup_input,
+                }
+            )
+            if prepare_result.errors:
+                messages = "；".join(error.message for error in prepare_result.errors)
+                raise ApplicationBusinessError(messages)
+            (
+                deleted_translation_items,
+                deleted_translation_backup_path,
+                _cleanup_plan,
+            ) = await write_prepared_cleanup_backup(
+                session=session,
+                game_title=game_title,
+                backup_domain="event-command-rules",
+                prepare_result=prepare_result,
+            )
+            commit_result = commit_prepared_rule_import(
+                db_path=session.db_path,
+                domain="event_commands",
+                prepare_result=prepare_result,
+                backup_path=deleted_translation_backup_path,
+            )
+            if commit_result.errors:
+                messages = "；".join(error.message for error in commit_result.errors)
+                raise ApplicationBusinessError(messages)
+            deleted_translation_items = commit_deleted_translation_count(commit_result)
         imported_path_rule_count = sum(len(record.path_templates) for record in rule_records)
         logger.success(f"[tag.success]事件指令规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 规则组 [tag.count]{len(rule_records)}[/tag.count] 个，路径规则 [tag.count]{imported_path_rule_count}[/tag.count] 条，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
@@ -581,77 +886,32 @@ class TranslationHandler:
         confirm_empty: bool = False,
     ) -> NoteTagRuleImportSummary:
         """把外部 Note 标签规则 JSON 导入当前游戏数据库。"""
-        async with await self.game_registry.open_game(game_title) as session:
-            setting = self._load_setting(source_language=session.source_language)
-            game_data = await self._load_session_game_data(session)
-            text_rules = self._load_text_rules(
-                setting=setting,
-                placeholder_rule_records=await session.read_placeholder_rules(),
-                structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
-            )
-            import_file = await load_note_tag_rule_import_file(input_path)
-            rule_records = build_note_tag_rule_records_from_import(
-                game_data=game_data,
-                import_file=import_file,
-                text_rules=text_rules,
-            )
-            if not rule_records:
-                ensure_empty_rule_confirmed(
-                    rule_label="Note 标签规则",
-                    confirm_empty=confirm_empty,
-                )
-            old_rules = {
-                rule.file_name: rule
-                for rule in await session.read_note_tag_text_rules()
-            }
-            old_note_paths = _translation_paths_matching_note_rules(
-                translated_items=await session.read_translated_items(),
-                rule_records=list(old_rules.values()),
-            )
-            new_note_paths = collect_translation_data_paths(
-                NoteTagTextExtraction(
-                    game_data=game_data,
-                    rule_records=rule_records,
-                    text_rules=text_rules,
-                ).extract_all_text()
-            )
-            changed_rule_count = sum(
-                1
-                for rule_record in rule_records
-                if self._should_refresh_note_tag_translation_items(old_rules.get(rule_record.file_name), rule_record)
-            )
-            removed_rule_count = len(set(old_rules) - {rule.file_name for rule in rule_records})
-            stale_paths = sorted(old_note_paths - new_note_paths)
-            deleted_translation_items = 0
-            deleted_translation_backup_path: str | None = None
-            if stale_paths and (changed_rule_count or removed_rule_count):
-                stale_items = await session.read_translated_items_by_paths(stale_paths)
-                backup = await write_rule_import_translation_backup(
-                    game_title=game_title,
-                    domain="note-tag-rules",
-                    items=stale_items,
-                )
-                if backup is not None:
-                    deleted_translation_backup_path = backup.backup_path
-                deleted_translation_items = await session.delete_translation_items_by_paths(stale_paths)
-            await session.replace_note_tag_text_rules(rule_records)
-            if rule_records:
-                await session.delete_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
-            else:
-                await session.replace_rule_review_state(
-                    rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
-                    scope_hash=note_tag_rule_scope_hash_for_text_rules(
-                        game_data=game_data,
-                        text_rules=text_rules,
-                    ),
-                    reviewed_empty=True,
-                )
-        imported_tag_count = sum(len(record.tag_names) for record in rule_records)
-        logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{len(rule_records)}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
+        from app.agent_toolkit.service import AgentToolkitService
+
+        rules_text = input_path.read_text(encoding="utf-8")
+        service = AgentToolkitService(
+            game_registry=self.game_registry,
+            llm_handler=self.llm_handler,
+        )
+        report = await service.import_note_tag_rules(
+            game_title=game_title,
+            rules_text=rules_text,
+            confirm_empty=confirm_empty,
+        )
+        if report.errors:
+            raise ApplicationBusinessError("；".join(error.message for error in report.errors))
+        imported_file_count = _agent_report_summary_int(report.summary, "file_count")
+        imported_tag_count = _agent_report_summary_int(report.summary, "tag_count")
+        deleted_translation_items = _agent_report_summary_int(report.summary, "deleted_translation_items")
+        deleted_translation_backup_path = _agent_report_summary_optional_path(
+            report.summary,
+            "deleted_translation_backup_path",
+        )
+        logger.success(f"[tag.success]Note 标签规则导入完成[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 文件 [tag.count]{imported_file_count}[/tag.count] 个，标签 [tag.count]{imported_tag_count}[/tag.count] 个，清理失效译文 [tag.count]{deleted_translation_items}[/tag.count] 条")
         if deleted_translation_backup_path is not None:
             logger.warning(f"[tag.warning]已备份被清理的 Note 标签译文[/tag.warning] 文件 [tag.path]{deleted_translation_backup_path}[/tag.path]")
         return NoteTagRuleImportSummary(
-            imported_file_count=len(rule_records),
+            imported_file_count=imported_file_count,
             imported_tag_count=imported_tag_count,
             deleted_translation_items=deleted_translation_items,
             deleted_translation_backup_path=deleted_translation_backup_path,
@@ -695,6 +955,338 @@ class TranslationHandler:
                 callbacks=callbacks,
             )
 
+    async def _translate_text_from_warm_index(
+        self,
+        *,
+        session: TargetGameSession,
+        setting: Setting,
+        text_rules: TextRules,
+        translation_cache: TranslationCache,
+        run_limits: TranslationRunLimits,
+        callbacks: tuple[
+            Callable[[int, int], None],
+            Callable[[int], None],
+            Callable[[str], None],
+        ],
+    ) -> TextTranslationSummary:
+        """使用持久索引准备正文翻译。"""
+        if run_limits.max_items is not None and run_limits.max_items <= 0:
+            raise ValueError("max_items 必须是正整数")
+
+        prepare_started = time.perf_counter()
+        set_progress, advance_progress, set_status = callbacks
+        game_title = session.game_title
+        set_status("检查持久文本范围索引")
+        text_index_status = "used"
+        text_index_rebuild_summary: JsonObject | None = None
+        text_index_invalidations = await detect_text_index_invalidations(
+            session=session,
+            text_rules=text_rules,
+        )
+        if text_index_invalidations:
+            text_index_status = (
+                "cold_rebuilt"
+                if any(item.reason_key == "text_index_missing" for item in text_index_invalidations)
+                else "stale_rebuilt"
+            )
+            text_index_rebuild_summary, rebuild_blocked_reason = await self._rebuild_text_index_for_translation(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
+                callbacks=callbacks,
+            )
+            if rebuild_blocked_reason is not None:
+                blocked_reason = f"当前游戏持久文本范围索引自动重建失败: {rebuild_blocked_reason}"
+                logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
+                return TextTranslationSummary(
+                    total_extracted_items=0,
+                    pending_count=0,
+                    deduplicated_count=0,
+                    batch_count=0,
+                    success_count=0,
+                    error_count=0,
+                    blocked_reason=blocked_reason,
+                    total_pending_count=0,
+                    text_index_status="rebuild_failed",
+                    text_index_rebuild_summary=text_index_rebuild_summary,
+                )
+        metadata = await session.read_text_index_metadata()
+        if metadata is None:
+            blocked_reason = "当前游戏持久文本范围索引自动重建后仍不可读取，请重新运行 rebuild-text-index"
+            logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
+            return TextTranslationSummary(
+                total_extracted_items=0,
+                pending_count=0,
+                deduplicated_count=0,
+                batch_count=0,
+                success_count=0,
+                error_count=0,
+                blocked_reason=blocked_reason,
+                total_pending_count=0,
+                text_index_status="rebuild_failed",
+                text_index_rebuild_summary=text_index_rebuild_summary,
+        )
+
+        set_status("检查正文翻译前置条件")
+        external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+            session=session,
+            metadata=metadata,
+        )
+        placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
+            session=session,
+            metadata=metadata,
+            custom_placeholder_rules_supplied=False,
+        )
+        text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+        workflow_gate_errors = await collect_indexed_workflow_gate_errors(
+            session=session,
+            text_rules=text_rules,
+            custom_placeholder_rules_supplied=False,
+            scope=None,
+            external_rule_gate_errors=external_rule_gate_errors,
+            placeholder_gate_errors=placeholder_gate_errors,
+            text_scope_gate_errors=text_scope_gate_errors,
+        )
+        if workflow_gate_errors:
+            blocked_reason = format_workflow_gate_error(workflow_gate_errors)
+            logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
+            return TextTranslationSummary(
+                total_extracted_items=metadata.item_count,
+                pending_count=0,
+                deduplicated_count=0,
+                batch_count=0,
+                success_count=0,
+                error_count=0,
+                blocked_reason=blocked_reason,
+                total_pending_count=0,
+                text_index_status="rebuild_failed" if text_index_rebuild_summary is not None else text_index_status,
+                text_index_rebuild_summary=text_index_rebuild_summary,
+            )
+
+        total_extracted_items = await count_current_text_facts(session)
+        if total_extracted_items == 0:
+            blocked_reason = "没有提取到任何可翻译正文"
+            logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
+            return TextTranslationSummary(
+                total_extracted_items=0,
+                pending_count=0,
+                deduplicated_count=0,
+                batch_count=0,
+                success_count=0,
+                error_count=0,
+                blocked_reason=blocked_reason,
+                total_pending_count=0,
+                text_index_status=text_index_status,
+                text_index_rebuild_summary=text_index_rebuild_summary,
+            )
+        total_pending_count = await count_pending_text_facts(session)
+        if total_pending_count == 0:
+            logger.info(f"[tag.skip]正文译文已全部存在，跳过翻译[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
+            set_progress(total_extracted_items, total_extracted_items)
+            return TextTranslationSummary(
+                total_extracted_items=total_extracted_items,
+                pending_count=0,
+                deduplicated_count=0,
+                batch_count=0,
+                success_count=0,
+                error_count=0,
+                total_pending_count=0,
+                text_index_status=text_index_status,
+                text_index_rebuild_summary=text_index_rebuild_summary,
+            )
+
+        pending_translation_data_map = await read_pending_text_fact_translation_data_map(
+            session,
+            limit=run_limits.max_items,
+        )
+        pending_count = count_translation_items(pending_translation_data_map)
+        set_progress(0, pending_count)
+
+        terminology_prompt_index = await self._load_terminology_prompt_index(
+            session=session,
+            translation_data_map=pending_translation_data_map,
+        )
+        deduplicated_translation_data_map = deduplicate_translation_data(
+            translation_data_map=pending_translation_data_map,
+            translation_cache=translation_cache,
+        )
+        batches = build_translation_batches(
+            translation_data_map=deduplicated_translation_data_map,
+            setting=setting,
+            text_rules=text_rules,
+            terminology_prompt_index=terminology_prompt_index,
+            max_batches=run_limits.max_batches,
+        )
+        deduplicated_count = sum(len(batch.items) for batch in batches)
+        local_prepare_ms = int((time.perf_counter() - prepare_started) * 1000)
+        return await self._run_prepared_translation_batches(
+            session=session,
+            setting=setting,
+            text_rules=text_rules,
+            translation_cache=translation_cache,
+            run_limits=run_limits,
+            total_extracted_items=total_extracted_items,
+            total_pending_count=total_pending_count,
+            pending_count=pending_count,
+            deduplicated_count=deduplicated_count,
+            batches=batches,
+            set_status=set_status,
+            advance_progress=advance_progress,
+            text_index_status=text_index_status,
+            text_index_rebuild_summary=text_index_rebuild_summary,
+            local_prepare_ms=local_prepare_ms,
+        )
+
+    async def _run_prepared_translation_batches(
+        self,
+        *,
+        session: TargetGameSession,
+        setting: Setting,
+        text_rules: TextRules,
+        translation_cache: TranslationCache,
+        run_limits: TranslationRunLimits,
+        total_extracted_items: int,
+        total_pending_count: int | None,
+        pending_count: int,
+        deduplicated_count: int,
+        batches: list[TranslationBatch],
+        set_status: Callable[[str], None],
+        advance_progress: Callable[[int], None],
+        text_index_status: str = "",
+        text_index_rebuild_summary: JsonObject | None = None,
+        local_prepare_ms: int = 0,
+    ) -> TextTranslationSummary:
+        """执行已经构建好的正文翻译批次，并维护翻译运行记录。"""
+        game_title = session.game_title
+        if not batches:
+            blocked_reason = "相同原文合并后，没有可送入模型的批次"
+            logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
+            return TextTranslationSummary(
+                total_extracted_items=total_extracted_items,
+                pending_count=pending_count,
+                deduplicated_count=deduplicated_count,
+                batch_count=0,
+                success_count=0,
+                error_count=0,
+                blocked_reason=blocked_reason,
+                total_pending_count=total_pending_count,
+                text_index_status=text_index_status,
+                text_index_rebuild_summary=text_index_rebuild_summary,
+                stage_timings=_translation_stage_timings(
+                    local_prepare_ms=local_prepare_ms,
+                    run_state=TranslationRunState(),
+                    run_batches_wall_ms=0,
+                ),
+            )
+
+        run_record = await session.start_translation_run(
+            total_extracted=total_extracted_items,
+            pending_count=pending_count,
+            deduplicated_count=deduplicated_count,
+            batch_count=len(batches),
+        )
+        set_status(f"还没成功保存译文 {pending_count} 条，相同原文合并后 {deduplicated_count} 条，批次 {len(batches)} 个")
+        logger.info(f"[tag.phase]正文翻译开始[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 提取 [tag.count]{total_extracted_items}[/tag.count] 条，还没成功保存译文 [tag.count]{pending_count}[/tag.count] 条，相同原文合并后 [tag.count]{deduplicated_count}[/tag.count] 条，批次 [tag.count]{len(batches)}[/tag.count] 个")
+        source_residual_rule_set = SourceResidualRuleSet.from_records(
+            await session.read_source_residual_rules()
+        )
+        run_batches_started = time.perf_counter()
+        try:
+            run_state = await self._run_text_translation_batches(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
+                source_residual_rule_set=source_residual_rule_set,
+                batches=batches,
+                run_record=run_record,
+                advance_progress=advance_progress,
+                translation_cache=translation_cache,
+                time_limit_seconds=run_limits.time_limit_seconds,
+                stop_on_error_rate=run_limits.stop_on_error_rate,
+            )
+            finished_run = run_record.model_copy(
+                update={
+                    "status": "completed" if run_state.quality_error_count == 0 else "blocked",
+                    "success_count": run_state.success_count,
+                    "quality_error_count": run_state.quality_error_count,
+                    "llm_failure_count": run_state.llm_failure_count,
+                    "finished_at": current_timestamp_text(),
+                    "stop_reason": "" if run_state.quality_error_count == 0 else "存在模型翻了但项目检查没通过的译文",
+                    "last_error": "" if run_state.quality_error_count == 0 else "quality_errors",
+                }
+            )
+            await session.write_translation_run(finished_run)
+        except TranslationRunInterrupted as error:
+            run_state = error.state
+            run_batches_wall_ms = int((time.perf_counter() - run_batches_started) * 1000)
+            if run_state.llm_failure is not None:
+                await session.write_llm_failure(
+                    build_llm_failure_record(
+                        run_id=run_record.run_id,
+                        failure=run_state.llm_failure,
+                    )
+                )
+            interrupted_run = run_record.model_copy(
+                update={
+                    "status": "failed" if run_state.llm_failure is not None else "stopped",
+                    "success_count": run_state.success_count,
+                    "quality_error_count": run_state.quality_error_count,
+                    "llm_failure_count": run_state.llm_failure_count,
+                    "finished_at": current_timestamp_text(),
+                    "stop_reason": run_state.stop_reason,
+                    "last_error": run_state.last_error or str(error),
+                }
+            )
+            await session.write_translation_run(interrupted_run)
+            return TextTranslationSummary(
+                total_extracted_items=total_extracted_items,
+                pending_count=pending_count,
+                deduplicated_count=deduplicated_count,
+                batch_count=len(batches),
+                success_count=run_state.success_count,
+                error_count=run_state.quality_error_count,
+                llm_failure_count=run_state.llm_failure_count,
+                run_id=run_record.run_id,
+                blocked_reason=run_state.stop_reason,
+                total_pending_count=total_pending_count,
+                text_index_status=text_index_status,
+                text_index_rebuild_summary=text_index_rebuild_summary,
+                stage_timings=_translation_stage_timings(
+                    local_prepare_ms=local_prepare_ms,
+                    run_state=run_state,
+                    run_batches_wall_ms=run_batches_wall_ms,
+                ),
+                stopped=run_state.stopped,
+                cancelled_unsent_batch_count=run_state.cancelled_unsent_batch_count,
+                cancelled_unsent_item_count=run_state.cancelled_unsent_item_count,
+                sent_after_stop_completed_batch_count=run_state.sent_after_stop_completed_batch_count,
+                sent_after_stop_completed_item_count=run_state.sent_after_stop_completed_item_count,
+            )
+        run_batches_wall_ms = int((time.perf_counter() - run_batches_started) * 1000)
+        return TextTranslationSummary(
+            total_extracted_items=total_extracted_items,
+            pending_count=pending_count,
+            deduplicated_count=deduplicated_count,
+            batch_count=len(batches),
+            success_count=run_state.success_count,
+            error_count=run_state.quality_error_count,
+            llm_failure_count=run_state.llm_failure_count,
+            run_id=run_record.run_id,
+            total_pending_count=total_pending_count,
+            text_index_status=text_index_status,
+            text_index_rebuild_summary=text_index_rebuild_summary,
+            stage_timings=_translation_stage_timings(
+                local_prepare_ms=local_prepare_ms,
+                run_state=run_state,
+                run_batches_wall_ms=run_batches_wall_ms,
+            ),
+            stopped=run_state.stopped,
+            cancelled_unsent_batch_count=run_state.cancelled_unsent_batch_count,
+            cancelled_unsent_item_count=run_state.cancelled_unsent_item_count,
+            sent_after_stop_completed_batch_count=run_state.sent_after_stop_completed_batch_count,
+            sent_after_stop_completed_item_count=run_state.sent_after_stop_completed_item_count,
+        )
+
     async def _translate_text_in_session(
         self,
         *,
@@ -711,172 +1303,14 @@ class TranslationHandler:
         ],
     ) -> TextTranslationSummary:
         """在单游戏数据库会话中翻译正文。"""
-        set_progress, advance_progress, set_status = callbacks
-        game_title = session.game_title
-        game_data = await self._load_session_game_data(session)
-        scope = await TextScopeService().build(
+        _ = custom_placeholder_rules_supplied
+        return await self._translate_text_from_warm_index(
             session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-        )
-        await assert_workflow_gate_passed(
-            session=session,
-            game_data=game_data,
             setting=setting,
             text_rules=text_rules,
-            custom_placeholder_rules_supplied=custom_placeholder_rules_supplied,
-            scope=scope,
-        )
-        terminology_prompt_index = await self._load_terminology_prompt_index(
-            session=session,
-            game_data=game_data,
-        )
-        translation_data_map = scope.translation_data_map
-
-        total_extracted_items = count_translation_items(translation_data_map)
-        translated_paths = await session.read_translation_location_paths()
-        pending_translation_data_map = filter_pending_translation_data(
-            translation_data_map=translation_data_map,
-            translated_paths=translated_paths,
-        )
-        pending_translation_data_map = limit_translation_data(
-            translation_data_map=pending_translation_data_map,
-            max_items=run_limits.max_items,
-        )
-        pending_count = count_translation_items(pending_translation_data_map)
-        set_progress(0, pending_count)
-
-        if total_extracted_items == 0:
-            blocked_reason = "没有提取到任何可翻译正文"
-            logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
-            return TextTranslationSummary(
-                total_extracted_items=0,
-                pending_count=0,
-                deduplicated_count=0,
-                batch_count=0,
-                success_count=0,
-                error_count=0,
-                blocked_reason=blocked_reason,
-            )
-
-        if pending_count == 0:
-            logger.info(f"[tag.skip]正文译文已全部存在，跳过翻译[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
-            set_progress(total_extracted_items, total_extracted_items)
-            return TextTranslationSummary(
-                total_extracted_items=total_extracted_items,
-                pending_count=0,
-                deduplicated_count=0,
-                batch_count=0,
-                success_count=0,
-                error_count=0,
-            )
-
-        deduplicated_translation_data_map = deduplicate_translation_data(
-            translation_data_map=pending_translation_data_map,
             translation_cache=translation_cache,
-        )
-        deduplicated_count = count_translation_items(deduplicated_translation_data_map)
-        batches = build_translation_batches(
-            translation_data_map=deduplicated_translation_data_map,
-            setting=setting,
-            text_rules=text_rules,
-            terminology_prompt_index=terminology_prompt_index,
-        )
-        if run_limits.max_batches is not None:
-            batches = batches[: run_limits.max_batches]
-        deduplicated_count = sum(len(batch.items) for batch in batches)
-        if not batches:
-            blocked_reason = "相同原文合并后，没有可送入模型的批次"
-            logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
-            return TextTranslationSummary(
-                total_extracted_items=total_extracted_items,
-                pending_count=pending_count,
-                deduplicated_count=deduplicated_count,
-                batch_count=0,
-                success_count=0,
-                error_count=0,
-                blocked_reason=blocked_reason,
-            )
-
-        run_record = await session.start_translation_run(
-            total_extracted=total_extracted_items,
-            pending_count=pending_count,
-            deduplicated_count=deduplicated_count,
-            batch_count=len(batches),
-        )
-        set_status(f"还没成功保存译文 {pending_count} 条，相同原文合并后 {deduplicated_count} 条，批次 {len(batches)} 个")
-        logger.info(f"[tag.phase]正文翻译开始[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 提取 [tag.count]{total_extracted_items}[/tag.count] 条，还没成功保存译文 [tag.count]{pending_count}[/tag.count] 条，相同原文合并后 [tag.count]{deduplicated_count}[/tag.count] 条，批次 [tag.count]{len(batches)}[/tag.count] 个")
-        source_residual_rule_set = SourceResidualRuleSet.from_records(
-            await session.read_source_residual_rules()
-        )
-        text_translation = TextTranslation(
-            setting=setting,
-            text_rules=text_rules,
-            source_residual_rule_set=source_residual_rule_set,
-        )
-        try:
-            success_count, error_count = await self._run_text_translation_batches(
-                text_translation=text_translation,
-                session=session,
-                batches=batches,
-                run_record=run_record,
-                advance_progress=advance_progress,
-                translation_cache=translation_cache,
-                time_limit_seconds=run_limits.time_limit_seconds,
-                stop_on_error_rate=run_limits.stop_on_error_rate,
-            )
-            finished_run = run_record.model_copy(
-                update={
-                    "status": "completed" if error_count == 0 else "blocked",
-                    "success_count": success_count,
-                    "quality_error_count": error_count,
-                    "finished_at": current_timestamp_text(),
-                    "stop_reason": "" if error_count == 0 else "存在模型翻了但项目检查没通过的译文",
-                    "last_error": "" if error_count == 0 else "quality_errors",
-                }
-            )
-            await session.write_translation_run(finished_run)
-        except TranslationRunInterrupted as error:
-            llm_failure_count = 0
-            if error.llm_failure is not None:
-                await session.write_llm_failure(
-                    build_llm_failure_record(
-                        run_id=run_record.run_id,
-                        failure=error.llm_failure,
-                    )
-                )
-                llm_failure_count = 1
-            interrupted_run = run_record.model_copy(
-                update={
-                    "status": "blocked",
-                    "success_count": error.success_count,
-                    "quality_error_count": error.quality_error_count,
-                    "llm_failure_count": llm_failure_count,
-                    "finished_at": current_timestamp_text(),
-                    "stop_reason": error.reason,
-                    "last_error": str(error),
-                }
-            )
-            await session.write_translation_run(interrupted_run)
-            return TextTranslationSummary(
-                total_extracted_items=total_extracted_items,
-                pending_count=pending_count,
-                deduplicated_count=deduplicated_count,
-                batch_count=len(batches),
-                success_count=error.success_count,
-                error_count=error.quality_error_count,
-                llm_failure_count=llm_failure_count,
-                run_id=run_record.run_id,
-                blocked_reason=error.reason,
-            )
-        return TextTranslationSummary(
-            total_extracted_items=total_extracted_items,
-            pending_count=pending_count,
-            deduplicated_count=deduplicated_count,
-            batch_count=len(batches),
-            success_count=success_count,
-            error_count=error_count,
-            run_id=run_record.run_id,
+            run_limits=run_limits,
+            callbacks=callbacks,
         )
 
     async def write_back(
@@ -920,8 +1354,9 @@ class TranslationHandler:
                 setting_overrides=setting_overrides,
                 mode="write_back",
                 require_complete_translation=True,
+                callbacks=callbacks,
             )
-            if not prepared.translated_items and not await session.read_terminology_registry():
+            if prepared.translated_count == 0 and not await session.read_terminology_registry():
                 logger.warning(f"[tag.warning]当前没有可回写译文，也没有已导入术语表[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
                 return WriteBackSummary(
                     data_item_count=0,
@@ -952,10 +1387,10 @@ class TranslationHandler:
         setting_overrides: SettingOverrides | None,
         mode: WriteRuntimeMode,
         require_complete_translation: bool,
+        callbacks: WriteProgressCallbacks,
     ) -> PreparedWriteOperation:
         """为写文件操作统一加载数据、规则、文本范围和质量门禁。"""
         started = time.perf_counter()
-        game_data = await self._load_session_game_data(session)
         setting = self._load_setting(
             setting_overrides=setting_overrides,
             source_language=session.source_language,
@@ -965,51 +1400,143 @@ class TranslationHandler:
             placeholder_rule_records=await session.read_placeholder_rules(),
             structured_placeholder_rule_records=await session.read_structured_placeholder_rules(),
         )
-        translated_items = await session.read_translated_items()
-        scope = await TextScopeService().build(
+        indexed_prepared = await self._prepare_write_operation_from_text_index(
             session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-            translated_items=translated_items,
-            include_write_probe=True,
-        )
-        await assert_workflow_gate_passed(
-            session=session,
-            game_data=game_data,
             setting=setting,
+            setting_overrides=setting_overrides,
+            text_rules=text_rules,
+            mode=mode,
+            require_complete_translation=require_complete_translation,
+            started=started,
+            callbacks=callbacks,
+        )
+        return indexed_prepared
+
+    async def _prepare_write_operation_from_text_index(
+        self,
+        *,
+        session: TargetGameSession,
+        setting: Setting,
+        setting_overrides: SettingOverrides | None,
+        text_rules: TextRules,
+        mode: WriteRuntimeMode,
+        require_complete_translation: bool,
+        started: float,
+        callbacks: WriteProgressCallbacks,
+    ) -> PreparedWriteOperation:
+        """索引有效时复用持久范围事实完成写入前检查。"""
+        _set_progress, _advance_progress, set_status = _unpack_write_progress_callbacks(callbacks)
+        invalidations = await detect_text_index_invalidations(
+            session=session,
+            text_rules=text_rules,
+        )
+        metadata = await session.read_text_index_metadata()
+        needs_rebuild = bool(invalidations) or metadata is None
+        if metadata is not None and not text_index_source_branch_gates_prechecked(metadata):
+            needs_rebuild = True
+        if needs_rebuild:
+            set_status("重建持久文本范围索引")
+            await self._rebuild_text_index_for_write_operation(
+                session=session,
+                setting=setting,
+                setting_overrides=setting_overrides,
+                text_rules=text_rules,
+                callbacks=callbacks,
+            )
+            set_status("检查持久文本范围索引")
+            metadata = await session.read_text_index_metadata()
+        if metadata is None:
+            raise WriteBackGateError("当前游戏持久文本范围索引自动重建后仍不可读取，请重新运行 rebuild-text-index")
+        snapshot_records = await session.read_source_snapshot_records()
+        if not snapshot_records:
+            raise RuntimeError("当前游戏缺少可信源快照 manifest，请使用干净游戏目录重新执行 add-game")
+        validate_source_snapshot_manifest(
+            layout=resolve_game_layout(session.game_path),
+            records=snapshot_records,
+        )
+
+        external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
+            session=session,
+            metadata=metadata,
+        )
+        placeholder_gate_errors = await collect_text_index_placeholder_gate_errors(
+            session=session,
+            metadata=metadata,
+            custom_placeholder_rules_supplied=False,
+        )
+        text_scope_gate_errors = await collect_text_index_scope_gate_errors(session=session)
+        workflow_gate_errors = await collect_indexed_workflow_gate_errors(
+            session=session,
             text_rules=text_rules,
             custom_placeholder_rules_supplied=False,
-            translated_items=translated_items,
-            scope=scope,
+            scope=None,
+            external_rule_gate_errors=external_rule_gate_errors,
+            placeholder_gate_errors=placeholder_gate_errors,
+            text_scope_gate_errors=text_scope_gate_errors,
         )
-        await assert_write_back_quality_passed(
-            session=session,
-            game_data=game_data,
-            setting=setting,
-            text_rules=text_rules,
-            translated_items=translated_items,
-            require_complete_translation=require_complete_translation,
-            scope=scope,
-            include_native_checks=False,
-        )
-        writable_items = await self._filter_writable_translation_items(
-            session=session,
-            game_data=game_data,
-            text_rules=text_rules,
-            translated_items=translated_items,
-            scope=scope,
-        )
+        if workflow_gate_errors:
+            raise WorkflowGateError(format_workflow_gate_error(workflow_gate_errors))
+
+        stale_translation_count = await count_stale_translations_outside_writable_text_facts(session)
+        quality_messages: list[str] = []
+        if stale_translation_count:
+            quality_messages.append(f"发现 {stale_translation_count} 条已保存译文不在当前可写文本范围内")
+        if require_complete_translation:
+            pending_count = await count_pending_text_facts(session)
+            if pending_count:
+                quality_messages.append(f"还有 {pending_count} 条文本没有成功保存译文")
+            latest_run = await session.read_latest_translation_run()
+            if latest_run is not None:
+                quality_error_count = await count_pending_text_fact_quality_errors(
+                    session,
+                    latest_run.run_id,
+                )
+                if quality_error_count:
+                    quality_messages.append(f"最新翻译运行有 {quality_error_count} 条模型翻了但项目检查没通过的译文")
+                if pending_count:
+                    llm_failures = await session.read_llm_failures(latest_run.run_id)
+                    if llm_failures:
+                        quality_messages.append(f"最新翻译运行存在 {len(llm_failures)} 条模型运行故障")
+        if quality_messages:
+            raise WriteBackGateError(f"写进游戏文件前检查没通过：{'；'.join(quality_messages)}")
         if mode == "write_terminology" and await session.read_terminology_registry() is None:
             raise WriteBackGateError("当前游戏数据库中没有已导入术语表，请先执行 import-terminology")
+
+        translated_count = await count_translated_text_facts(session)
         return PreparedWriteOperation(
-            game_data=game_data,
+            game_data=None,
             setting=setting,
             text_rules=text_rules,
-            translated_items=writable_items,
-            writable_location_paths=sorted(item.location_path for item in writable_items),
-            scope=scope,
+            translated_items=[],
+            translated_count=translated_count,
+            writable_location_paths=None,
+            scope=None,
             pre_write_check_ms=int((time.perf_counter() - started) * 1000),
         )
+
+    async def _rebuild_text_index_for_write_operation(
+        self,
+        *,
+        session: TargetGameSession,
+        setting: Setting,
+        setting_overrides: SettingOverrides | None,
+        text_rules: TextRules,
+        callbacks: WriteProgressCallbacks,
+    ) -> None:
+        """写回前置检查索引不可用时重建一次持久索引。"""
+        _set_progress, advance_progress, set_status = _unpack_write_progress_callbacks(callbacks)
+        set_status("原生重建持久文本范围索引")
+        try:
+            _ = await rebuild_text_index_native_storage(
+                session=session,
+                setting=setting,
+                text_rules=text_rules,
+                setting_overrides=setting_overrides,
+                include_write_probe=True,
+            )
+        except RuntimeError as error:
+            raise WriteBackGateError(f"当前游戏持久文本范围索引自动重建失败: {error}") from error
+        advance_progress(1)
 
     async def _assert_latest_translation_run_has_no_failures(
         self,
@@ -1020,9 +1547,9 @@ class TranslationHandler:
         latest_run = await session.read_latest_translation_run()
         if latest_run is None:
             return
-        quality_errors = await session.read_translation_quality_errors(latest_run.run_id)
-        if quality_errors:
-            raise RuntimeError(f"写进游戏文件前检查没通过：最新翻译运行有 {len(quality_errors)} 条模型翻了但项目检查没通过的译文")
+        quality_error_count = await session.count_translation_quality_errors(latest_run.run_id)
+        if quality_error_count:
+            raise RuntimeError(f"写进游戏文件前检查没通过：最新翻译运行有 {quality_error_count} 条模型翻了但项目检查没通过的译文")
         llm_failures = await session.read_llm_failures(latest_run.run_id)
         if llm_failures:
             raise RuntimeError(f"写进游戏文件前检查没通过：最新翻译运行存在 {len(llm_failures)} 条模型运行故障")
@@ -1059,6 +1586,7 @@ class TranslationHandler:
                 setting_overrides=setting_overrides,
                 mode="rebuild_active_runtime",
                 require_complete_translation=True,
+                callbacks=callbacks,
             )
             return await self.write_runtime_files_with_native_plan(
                 session=session,
@@ -1082,7 +1610,7 @@ class TranslationHandler:
         setting: Setting,
         text_rules: TextRules,
         mode: WriteRuntimeMode,
-        writable_location_paths: list[str],
+        writable_location_paths: list[str] | None,
         confirm_font_overwrite: bool,
         success_phase: str,
         pre_write_check_ms: int = 0,
@@ -1090,13 +1618,15 @@ class TranslationHandler:
         """执行 Rust 写回计划，并保留 Python 侧事务替换协议。"""
         set_progress, advance_progress, set_status = _unpack_write_progress_callbacks(callbacks)
         set_status("准备 Rust 写回计划输入")
-        setting_payload, source_font_path, source_font_names = self._build_native_write_back_setting_payload(
+        setting_payload, source_font_path, source_font_names = build_native_write_back_setting_payload(
             setting=setting,
             text_rules=text_rules,
             content_root=session.content_root,
             confirm_font_overwrite=confirm_font_overwrite,
             writable_location_paths=writable_location_paths,
         )
+        if source_font_path is None and setting.write_back.replacement_font_path is not None:
+            logger.info(f"[tag.skip]未确认覆盖字体，已跳过字体替换[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
         with tempfile.TemporaryDirectory(prefix="att_mz_native_plan_") as content_output_dir_text:
             content_output_dir = Path(content_output_dir_text)
             set_status("生成 Rust 写回计划")
@@ -1111,50 +1641,89 @@ class TranslationHandler:
             )
             total_count = max(plan.summary.data_item_count + plan.summary.plugin_item_count, 1)
             set_progress(0, total_count)
-            font_records = list(plan.font_replacement_records)
-            css_replaced_count = 0
-            file_replacement_started = time.perf_counter()
-            set_status("替换游戏运行文件")
-            if source_font_path is not None:
-                font_dir = session.content_root / FONTS_DIRECTORY_NAME
-                copy_replacement_font(source_font_path=source_font_path, font_dir=font_dir)
-                css_replaced_count, css_records = replace_gamefont_css_references(
-                    font_dir=font_dir,
-                    replacement_font_name=source_font_path.name,
-                )
-                font_records.extend(css_records)
-                await session.replace_font_replacement_records(font_records)
-            elif setting.write_back.replacement_font_path is not None:
-                logger.info(f"[tag.skip]未确认覆盖字体，已跳过字体替换[/tag.skip] 游戏 [tag.count]{game_title}[/tag.count]")
-
-            write_planned_text_file_sources(
-                files=[
-                    (file.target_path, file.content, file.content_path)
-                    for file in plan.files
-                ],
-                rollback_dir_parent=session.content_root,
+            runtime_plan, css_replaced_count = build_runtime_write_plan(
+                native_plan=plan,
+                content_root=session.content_root,
+                source_font_path=source_font_path,
             )
-            file_replacement_ms = int((time.perf_counter() - file_replacement_started) * 1000)
+            file_replacement_started = time.perf_counter()
+            runtime_write_map_records = runtime_plan.plugin_source_runtime_write_maps
+            nonstandard_data_rule_records = await session.read_nonstandard_data_text_rules()
+            async with WritePlanApplier(session=session, rollback_dir_parent=session.content_root) as plan_applier:
+                set_status("替换游戏运行文件")
+                plan_applier.apply_files(runtime_plan)
+                file_replacement_ms = int((time.perf_counter() - file_replacement_started) * 1000)
 
-        set_status("保存写入诊断映射")
-        await session.replace_plugin_source_runtime_write_maps(plan.plugin_source_runtime_write_maps)
-        post_write_audit_started = time.perf_counter()
-        set_status("审计写入后的当前运行文件")
-        active_runtime_game_data = await load_active_runtime_game_data(session.game_path)
-        self._assert_post_write_active_runtime_audit_passed(
-            game_data=active_runtime_game_data,
-            text_rules=text_rules,
-            runtime_write_map_records=plan.plugin_source_runtime_write_maps,
-        )
-        post_write_audit_ms = int((time.perf_counter() - post_write_audit_started) * 1000)
+                post_write_audit_started = time.perf_counter()
+                refreshed_scan_cache: list[PluginSourceRuntimeScanCacheRecord] | None = None
+                if runtime_write_map_records or nonstandard_data_rule_records:
+                    set_status("审计写入后的当前运行文件")
+                    plugin_source_audit: ActiveRuntimePluginSourceAudit | None = None
+                    if runtime_write_map_records:
+                        active_runtime_game_data = await load_active_runtime_game_data(
+                            session.game_path,
+                            include_plugin_source_files=True,
+                        )
+                        plugin_source_audit, refreshed_scan_cache = audit_active_runtime_plugin_source_with_scan_cache(
+                            game_data=active_runtime_game_data,
+                            text_rules=text_rules,
+                            cache_records=await session.read_plugin_source_runtime_scan_cache(),
+                            created_at=current_timestamp_text(),
+                            runtime_write_map_records=runtime_write_map_records,
+                            audit_text_issues=True,
+                            text_issue_scope_keys=frozenset(
+                                (record.runtime_file_name, record.runtime_selector)
+                                for record in runtime_write_map_records
+                            ),
+                        )
+                    self._assert_post_write_active_runtime_audit_passed(
+                        plugin_source_audit=plugin_source_audit,
+                        game_layout=resolve_game_layout(session.game_path) if nonstandard_data_rule_records else None,
+                        text_rules=text_rules,
+                        runtime_write_map_records=runtime_write_map_records,
+                        nonstandard_data_rule_records=nonstandard_data_rule_records,
+                    )
+                else:
+                    set_status("跳过写入后的当前运行文件审计")
+                post_write_audit_ms = int((time.perf_counter() - post_write_audit_started) * 1000)
+
+                set_status("保存写入诊断映射")
+                await plan_applier.save_success_records(
+                    runtime_plan,
+                    runtime_scan_cache_records=refreshed_scan_cache,
+                )
         advance_progress(total_count)
 
         replaced_font_reference_count = plan.summary.replaced_font_reference_count + css_replaced_count
         source_font_count = len(source_font_names) if source_font_path is not None else plan.summary.source_font_count
         if plan.summary.target_font_name is not None:
             logger.info(f"[tag.phase]字体引用已同步[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 目标字体 [tag.path]{plan.summary.target_font_name}[/tag.path] 原字体 [tag.count]{source_font_count}[/tag.count] 个，替换引用 [tag.count]{replaced_font_reference_count}[/tag.count] 处")
-        timing_text = "，".join(f"{name} {value}ms" for name, value in plan.timings_ms.items())
-        logger.info(f"[tag.phase]写文件分段耗时[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 模式 [tag.count]{mode}[/tag.count] 写入前检查 [tag.count]{pre_write_check_ms}[/tag.count]ms，Rust 计划 {timing_text}，文件替换 [tag.count]{file_replacement_ms}[/tag.count]ms，写后审计 [tag.count]{post_write_audit_ms}[/tag.count]ms")
+        diagnostics = current_diagnostics()
+        diagnostics_domain = "write_back" if mode == "write_back" else mode
+        diagnostics.record_timing(f"{diagnostics_domain}.pre_write_check", pre_write_check_ms)
+        for name, duration_ms in plan.timings_ms.items():
+            diagnostics.record_timing(f"{diagnostics_domain}.rust_plan.{name}", duration_ms)
+        diagnostics.record_timing(f"{diagnostics_domain}.file_replacement", file_replacement_ms)
+        diagnostics.record_timing(f"{diagnostics_domain}.post_write_audit", post_write_audit_ms)
+        diagnostics.counter(f"{diagnostics_domain}.planned_file_count", plan.summary.planned_file_count)
+        diagnostics.counter(f"{diagnostics_domain}.skipped_file_count", plan.summary.skipped_file_count)
+        diagnostics.counter(f"{diagnostics_domain}.data_item_count", plan.summary.data_item_count)
+        diagnostics.counter(f"{diagnostics_domain}.plugin_item_count", plan.summary.plugin_item_count)
+        diagnostics.counter(
+            f"{diagnostics_domain}.plugin_source_ast_source_scan_file_count",
+            plan.summary.plugin_source_ast_source_scan_file_count,
+        )
+        diagnostics.counter(
+            f"{diagnostics_domain}.plugin_source_ast_runtime_scan_file_count",
+            plan.summary.plugin_source_ast_runtime_scan_file_count,
+        )
+        diagnostics.counter(
+            f"{diagnostics_domain}.plugin_source_runtime_map_count",
+            plan.summary.plugin_source_runtime_map_count,
+        )
+        if diagnostics.timings_enabled:
+            timing_text = "，".join(f"{name} {value}ms" for name, value in plan.timings_ms.items())
+            logger.info(f"[tag.phase]写文件分段耗时[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 模式 [tag.count]{mode}[/tag.count] 写入前检查 [tag.count]{pre_write_check_ms}[/tag.count]ms，Rust 计划 {timing_text}，文件替换 [tag.count]{file_replacement_ms}[/tag.count]ms，写后审计 [tag.count]{post_write_audit_ms}[/tag.count]ms")
         logger.info(f"[tag.phase]Rust 写回计划完成[/tag.phase] 游戏 [tag.count]{game_title}[/tag.count] 模式 [tag.count]{mode}[/tag.count] 写入文件 [tag.count]{plan.summary.planned_file_count}[/tag.count] 个，跳过 [tag.count]{plan.summary.skipped_file_count}[/tag.count] 个，插件源码源 AST 扫描 [tag.count]{plan.summary.plugin_source_ast_source_scan_file_count}[/tag.count] 个，写后 AST 验证 [tag.count]{plan.summary.plugin_source_ast_runtime_scan_file_count}[/tag.count] 个")
         logger.success(f"[tag.success]{success_phase}[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] data 文本 [tag.count]{plan.summary.data_item_count}[/tag.count] 条，插件文本 [tag.count]{plan.summary.plugin_item_count}[/tag.count] 条，术语 [tag.count]{plan.summary.terminology_written_count}[/tag.count] 条")
         return WriteBackSummary(
@@ -1179,78 +1748,60 @@ class TranslationHandler:
     def _assert_post_write_active_runtime_audit_passed(
         self,
         *,
-        game_data: GameData,
+        plugin_source_audit: ActiveRuntimePluginSourceAudit | None,
+        game_layout: GameLayout | None,
         text_rules: TextRules,
         runtime_write_map_records: list[PluginSourceRuntimeWriteMapRecord],
+        nonstandard_data_rule_records: list[NonstandardDataTextRuleRecord],
     ) -> None:
-        """写入后审计当前运行插件源码的可读性和 JS 语法。"""
-        audit = audit_active_runtime_plugin_source(
-            game_data=game_data,
-            text_rules=text_rules,
-            runtime_write_map_records=runtime_write_map_records,
-            audit_text_issues=bool(runtime_write_map_records),
-            text_issue_scope_keys=frozenset(
-                (record.runtime_file_name, record.runtime_selector)
-                for record in runtime_write_map_records
-            ) if runtime_write_map_records else None,
-        )
-        if not audit.issues:
-            return
-        counts = audit.issue_counts
-        summary_parts: list[str] = []
-        for label, code in (
-            ("读取失败", "active_runtime_read_error"),
-            ("JS 语法错误", "active_runtime_syntax_error"),
-            ("源文残留", "active_runtime_source_residual"),
-            ("控制符风险", "active_runtime_placeholder_risk"),
-        ):
-            count = counts.get(code, 0)
-            if count > 0:
-                summary_parts.append(f"{label} {count} 条")
-        first_issue = audit.issues[0]
-        detail = first_issue.syntax_error or first_issue.read_error or first_issue.fragment
-        detail_text = f"；{detail}" if detail else ""
-        summary_text = "、".join(summary_parts) if summary_parts else f"{len(audit.issues)} 条问题"
-        message = (
-            f"写入后当前运行文件审计未通过：{summary_text}。"
-            f"首个问题：{first_issue.message}（文件 {first_issue.file_name}{detail_text}）"
-        )
-        raise WriteBackGateError(message)
-
-    def _build_native_write_back_setting_payload(
-        self,
-        *,
-        setting: Setting,
-        text_rules: TextRules,
-        content_root: Path,
-        confirm_font_overwrite: bool,
-        writable_location_paths: list[str],
-    ) -> tuple[JsonObject, Path | None, list[str]]:
-        """整理 Rust 写回计划需要的配置载荷。"""
-        payload: JsonObject = {
-            "long_text_line_width_limit": setting.text_rules.long_text_line_width_limit,
-            "line_width_count_pattern": setting.text_rules.line_width_count_pattern,
-            "line_split_punctuations": [punctuation for punctuation in setting.text_rules.line_split_punctuations],
-            "preserve_wrapping_punctuation_pairs": [
-                [left, right]
-                for left, right in setting.text_rules.preserve_wrapping_punctuation_pairs
-            ],
-            "quality_text_rules": build_native_text_rules_payload(text_rules),
-            "allowed_translation_paths": [path for path in writable_location_paths],
-        }
-        if not confirm_font_overwrite:
-            return payload, None, []
-        replacement_font_path = setting.write_back.replacement_font_path
-        if replacement_font_path is None or not replacement_font_path.strip():
-            return payload, None, []
-        source_font_path = resolve_replacement_font_path(replacement_font_path)
-        source_font_names = collect_replaced_source_font_names(
-            font_dir=content_root / FONTS_DIRECTORY_NAME,
-            replacement_font_name=source_font_path.name,
-        )
-        payload["replacement_font_path"] = str(source_font_path)
-        payload["source_font_names"] = [font_name for font_name in source_font_names]
-        return payload, source_font_path, source_font_names
+        """写入后审计当前运行插件源码和受管理非标准 data 文件。"""
+        if runtime_write_map_records:
+            if plugin_source_audit is None:
+                raise RuntimeError("写入后插件源码审计缺少当前运行文件视图")
+            blocking_issues = tuple(issue for issue in plugin_source_audit.issues if issue.blocking)
+            if blocking_issues:
+                counts = Counter(issue.code for issue in blocking_issues)
+                summary_parts: list[str] = []
+                for label, code in (
+                    ("读取失败", "active_runtime_read_error"),
+                    ("JS 语法错误", "active_runtime_syntax_error"),
+                    ("源文残留", "active_runtime_source_residual"),
+                    ("控制符风险", "active_runtime_placeholder_risk"),
+                ):
+                    count = counts.get(code, 0)
+                    if count > 0:
+                        summary_parts.append(f"{label} {count} 条")
+                first_issue = blocking_issues[0]
+                detail = first_issue.syntax_error or first_issue.read_error or first_issue.fragment
+                detail_text = f"；{detail}" if detail else ""
+                summary_text = (
+                    "、".join(summary_parts)
+                    if summary_parts
+                    else f"{len(plugin_source_audit.issues)} 条问题"
+                )
+                message = (
+                    f"写入后当前运行文件审计未通过：{summary_text}。"
+                    f"首个问题：{first_issue.message}（文件 {first_issue.file_name}{detail_text}）"
+                )
+                raise WriteBackGateError(message)
+        if nonstandard_data_rule_records:
+            if game_layout is None:
+                raise RuntimeError("写入后非标准 data 审计缺少当前运行文件布局")
+            nonstandard_data_audit = audit_active_runtime_nonstandard_data(
+                layout=game_layout,
+                rule_records=nonstandard_data_rule_records,
+                text_rules=text_rules,
+            )
+            if nonstandard_data_audit.issues:
+                first_issue = nonstandard_data_audit.issues[0]
+                detail = first_issue.read_error or first_issue.fragment
+                detail_text = f"；{detail}" if detail else ""
+                message = (
+                    f"写入后当前运行文件审计未通过：非标准 data 文件问题 {len(nonstandard_data_audit.issues)} 条。"
+                    f"首个问题：{first_issue.message}（文件 {first_issue.file_name}{detail_text}）"
+                )
+                raise WriteBackGateError(message)
+        return
 
     async def export_terminology(
         self,
@@ -1284,11 +1835,11 @@ class TranslationHandler:
             glossary = await load_terminology_glossary(glossary_path=glossary_input_path)
             mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
             text_rules = await self._load_session_profile_text_rules(session)
-            expected_registry, _speaker_contexts, _database_contexts = TerminologyExtraction(
+            expected_registry = TerminologyExtraction(
                 game_data=game_data,
                 mv_virtual_namebox_rule_records=mv_virtual_namebox_rules,
                 text_rules=text_rules,
-            ).extract_registry_and_contexts()
+            ).extract_registry()
             validate_terminology_registry_shape(
                 imported_registry=registry,
                 expected_registry=expected_registry,
@@ -1321,6 +1872,7 @@ class TranslationHandler:
                 setting_overrides=setting_overrides,
                 mode="write_terminology",
                 require_complete_translation=False,
+                callbacks=callbacks,
             )
             summary = await self.write_runtime_files_with_native_plan(
                 session=session,
@@ -1336,7 +1888,7 @@ class TranslationHandler:
             )
             return TerminologyWriteSummary(
                 written_count=summary.terminology_written_count,
-                preserved_translation_count=len(prepared.translated_items),
+                preserved_translation_count=prepared.translated_count,
             )
 
     async def restore_font_replacement(
@@ -1378,49 +1930,12 @@ class TranslationHandler:
                 target_font_name=target_font_name,
             )
 
-    async def _filter_writable_translation_items(
-        self,
-        *,
-        session: TargetGameSession,
-        game_data: GameData,
-        text_rules: TextRules,
-        translated_items: list[TranslationItem],
-        scope: TextScopeResult | None = None,
-    ) -> list[TranslationItem]:
-        """仅保留当前提取规则仍能定位写回位置的译文条目。"""
-        if scope is None:
-            scope = await TextScopeService().build(
-                session=session,
-                game_data=game_data,
-                text_rules=text_rules,
-                translated_items=translated_items,
-                include_write_probe=True,
-            )
-        if scope.stale_plugin_rules:
-            raise WriteBackGateError(
-                f"存在 {len(scope.stale_plugin_rules)} 个过期插件规则，请重新导入插件规则后再写进游戏文件"
-            )
-        if scope.write_back_probe_error:
-            raise WriteBackGateError(scope.write_back_probe_error)
-        writable_paths = scope.writable_paths
-        stale_paths = sorted(
-            item.location_path
-            for item in translated_items
-            if item.location_path not in writable_paths
-        )
-        if stale_paths:
-            samples = "、".join(stale_paths[:5])
-            suffix = "" if len(stale_paths) <= 5 else f" 等 {len(stale_paths)} 条"
-            raise WriteBackGateError(
-                f"发现已保存译文不在当前可写文本范围内，不能继续写进游戏文件: {samples}{suffix}"
-            )
-        return list(translated_items)
-
     async def _load_terminology_prompt_index(
         self,
         *,
         session: TargetGameSession,
-        game_data: GameData,
+        game_data: GameData | None = None,
+        translation_data_map: dict[str, TranslationData] | None = None,
     ) -> TerminologyPromptIndex | None:
         """读取数据库正文术语表，并转换为正文提示词索引。"""
         registry = await session.read_terminology_registry()
@@ -1430,6 +1945,19 @@ class TranslationHandler:
         if registry is None:
             raise RuntimeError("当前游戏尚未导入字段译名表，检查没通过，不能继续")
         validate_terminology_bundle(registry=registry, glossary=glossary)
+
+        if glossary.term_count() == 0:
+            logger.info(f"[tag.phase]已加载正文术语表[/tag.phase] 游戏 [tag.count]{session.game_title}[/tag.count] 可注入译名 [tag.count]0[/tag.count] 条")
+            return None
+
+        if game_data is None and translation_data_map is not None:
+            glossary = filter_glossary_for_translation_data(
+                glossary=glossary,
+                translation_data_map=translation_data_map,
+            )
+            if glossary.term_count() == 0:
+                logger.info(f"[tag.phase]已加载正文术语表[/tag.phase] 游戏 [tag.count]{session.game_title}[/tag.count] 可注入译名 [tag.count]0[/tag.count] 条")
+                return None
 
         index = TerminologyPromptIndex.from_glossary(glossary, game_data=game_data)
         logger.info(f"[tag.phase]已加载正文术语表[/tag.phase] 游戏 [tag.count]{session.game_title}[/tag.count] 可注入译名 [tag.count]{len(index.entries)}[/tag.count] 条")
@@ -1463,189 +1991,97 @@ class TranslationHandler:
         )
 
     @staticmethod
-    def _should_refresh_note_tag_translation_items(
-        old_rule: NoteTagTextRuleRecord | None,
-        new_rule: NoteTagTextRuleRecord,
-    ) -> bool:
-        """判断 Note 标签规则变化后是否需要清理失效译文。"""
-        if old_rule is None:
-            return False
-        return (
-            old_rule.file_name != new_rule.file_name
-            or old_rule.tag_names != new_rule.tag_names
-        )
-
-    @staticmethod
-    def _event_command_rule_prefixes(
+    def _event_command_rule_prefixes_by_key(
         *,
-        game_data: GameData,
-        rule_record: EventCommandTextRuleRecord,
-    ) -> list[str]:
-        """根据事件指令规则找出需要清理的正文路径前缀。"""
-        prefixes: list[str] = []
-        for path, _display_name, command in iter_all_commands(game_data):
-            if command.code != rule_record.command_code:
-                continue
-            if not command_matches_filters(
-                parameters=command.parameters,
-                filters=rule_record.parameter_filters,
-            ):
-                continue
-            prefixes.append("/".join(map(str, path)))
-        return prefixes
+        records: list[EventCommandTextRuleRecord],
+        context: NativeEventCommandRuleValidationContext,
+    ) -> dict[tuple[int, tuple[tuple[int, str], ...]], list[str]]:
+        """按稳定规则键整理 native 命中的事件指令前缀。"""
+        return {
+            event_command_rule_key(record): list(prefixes)
+            for record, prefixes in zip(records, context.translation_prefixes_by_index, strict=True)
+        }
 
     async def _run_text_translation_batches(
         self,
         *,
-        text_translation: TextTranslation,
         session: TargetGameSession,
+        setting: Setting,
+        text_rules: TextRules,
+        source_residual_rule_set: SourceResidualRuleSet,
         batches: list[TranslationBatch],
         run_record: TranslationRunRecord,
         advance_progress: Callable[[int], None],
         translation_cache: TranslationCache,
         time_limit_seconds: int | None,
         stop_on_error_rate: float | None,
-    ) -> tuple[int, int]:
-        """启动正文翻译并并发消费成功/失败队列。"""
+    ) -> TranslationRunState:
+        """通过翻译运行控制器执行批次并维护统一状态。"""
         game_title = session.game_title
-        text_translation.start_translation(llm_handler=self.llm_handler, batches=batches)
-        db_write_lock = asyncio.Lock()
-        progress_state = TranslationProgressState()
-        success_task = asyncio.create_task(
-            self._consume_right_items(
-                session=session,
-                text_translation=text_translation,
-                run_record=run_record,
-                progress_state=progress_state,
-                db_write_lock=db_write_lock,
-                advance_progress=advance_progress,
-                translation_cache=translation_cache,
-            )
+        run_state = TranslationRunState(
+            total_batch_count=len(batches),
+            total_item_count=sum(len(batch.items) for batch in batches),
         )
-        error_task = asyncio.create_task(
-            self._consume_error_items(
-                session=session,
-                text_translation=text_translation,
-                run_record=run_record,
-                progress_state=progress_state,
-                db_write_lock=db_write_lock,
-                advance_progress=advance_progress,
-                translation_cache=translation_cache,
-                stop_on_error_rate=stop_on_error_rate,
-            )
-        )
-        results: tuple[int | BaseException, int | BaseException]
-        try:
-            gather_task = asyncio.gather(success_task, error_task, return_exceptions=True)
-            if time_limit_seconds is None:
-                results = await gather_task
-            else:
-                results = await asyncio.wait_for(gather_task, timeout=time_limit_seconds)
-        except asyncio.TimeoutError as error:
-            raise TranslationRunInterrupted(
-                reason=f"达到本轮翻译时间上限: {time_limit_seconds} 秒",
-                success_count=progress_state.success_count,
-                quality_error_count=progress_state.quality_error_count,
-            ) from error
-        finally:
-            for task in (success_task, error_task):
-                if not task.done():
-                    _ = task.cancel()
-            await text_translation.stop()
-            _ = await asyncio.gather(success_task, error_task, return_exceptions=True)
 
-        runner_error: Exception | None = None
-        for result in results:
-            if isinstance(result, Exception):
-                runner_error = result
-                break
-        if runner_error is not None:
-            if isinstance(runner_error, TranslationRunInterrupted):
-                raise runner_error
-            if isinstance(runner_error, LLMRequestFailure):
-                raise TranslationRunInterrupted(
-                    reason=f"模型请求失败: {runner_error.info.message}",
-                    success_count=progress_state.success_count,
-                    quality_error_count=progress_state.quality_error_count,
-                    llm_failure=runner_error,
-                ) from runner_error
-            raise runner_error
-
-        success_count = progress_state.success_count
-        error_count = progress_state.quality_error_count
-        logger.success(f"[tag.success]正文翻译结束[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 成功 [tag.count]{success_count}[/tag.count] 条，失败 [tag.count]{error_count}[/tag.count] 条")
-        return success_count, error_count
-
-    async def _consume_right_items(
-        self,
-        *,
-        session: TargetGameSession,
-        text_translation: TextTranslation,
-        run_record: TranslationRunRecord,
-        progress_state: TranslationProgressState,
-        db_write_lock: asyncio.Lock,
-        advance_progress: Callable[[int], None],
-        translation_cache: TranslationCache,
-    ) -> int:
-        """消费正文翻译成功队列并写入主翻译表。"""
-        game_title = session.game_title
-        success_count = 0
-        async for items in text_translation.iter_right_items():
+        async def save_success_items(items: list[TranslationItem]) -> int:
+            """保存通过项目检查的译文。"""
+            if not items:
+                return 0
             expanded_items = expand_cached_translation_items(items, translation_cache)
-            async with db_write_lock:
-                await session.write_translation_items(expanded_items)
-                success_count += len(expanded_items)
-                progress_state.success_count += len(expanded_items)
-                await session.write_translation_run(
-                    run_record.model_copy(update={"success_count": progress_state.success_count})
-                )
-            advance_progress(len(expanded_items))
+            await session.write_translation_items(expanded_items)
+            translated_fact_ids = {item.fact_id for item in expanded_items if item.fact_id}
+            _ = await session.delete_translation_quality_errors_by_fact_ids(translated_fact_ids)
             logger.success(f"[tag.success]已写入正文翻译结果[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] [tag.count]{len(expanded_items)}[/tag.count] 条")
-        return success_count
+            return len(expanded_items)
 
-    async def _consume_error_items(
-        self,
-        *,
-        session: TargetGameSession,
-        text_translation: TextTranslation,
-        run_record: TranslationRunRecord,
-        progress_state: TranslationProgressState,
-        db_write_lock: asyncio.Lock,
-        advance_progress: Callable[[int], None],
-        translation_cache: TranslationCache,
-        stop_on_error_rate: float | None,
-    ) -> int:
-        """消费没通过项目检查的译文队列并写入固定错误表。"""
-        game_title = session.game_title
-        error_count = 0
-        async for error_items in text_translation.iter_error_items():
+        async def save_error_items(error_items: list[TranslationErrorItem]) -> int:
+            """保存模型翻了但项目检查没通过的译文。"""
+            if not error_items:
+                return 0
             expanded_error_items = expand_cached_error_items(error_items, translation_cache)
-            async with db_write_lock:
-                await session.write_translation_quality_errors(
-                    run_record.run_id,
-                    expanded_error_items,
-                )
-                error_count += len(expanded_error_items)
-                progress_state.quality_error_count += len(expanded_error_items)
-                await session.write_translation_run(
-                    run_record.model_copy(
-                        update={
-                            "success_count": progress_state.success_count,
-                            "quality_error_count": progress_state.quality_error_count,
-                        }
-                    )
-                )
-            advance_progress(len(expanded_error_items))
+            await session.write_translation_quality_errors(
+                run_record.run_id,
+                expanded_error_items,
+            )
             logger.error(f"[tag.failure]已记录检查没通过的译文[/tag.failure] 游戏 [tag.count]{game_title}[/tag.count] [tag.count]{len(expanded_error_items)}[/tag.count] 条")
-            if stop_on_error_rate is not None:
-                processed_count = progress_state.success_count + progress_state.quality_error_count
-                if processed_count > 0 and progress_state.quality_error_count / processed_count >= stop_on_error_rate:
-                    raise TranslationRunInterrupted(
-                        reason=f"检查没通过的译文比例达到停止阈值: {stop_on_error_rate}",
-                        success_count=progress_state.success_count,
-                        quality_error_count=progress_state.quality_error_count,
-                    )
-        return error_count
+            return len(expanded_error_items)
+
+        controller = TranslationRunController(
+            batches=batches,
+            llm_handler=self.llm_handler,
+            model=setting.llm.model,
+            retry_count=setting.text_translation.retry_count,
+            retry_delay=setting.text_translation.retry_delay,
+            worker_count=setting.text_translation.worker_count,
+            rpm=setting.text_translation.rpm,
+            text_rules=text_rules,
+            source_residual_rule_set=source_residual_rule_set,
+            stop_on_error_rate=stop_on_error_rate,
+            state=run_state,
+            save_success_items=save_success_items,
+            save_error_items=save_error_items,
+            advance_progress=advance_progress,
+        )
+        try:
+            if time_limit_seconds is None:
+                run_state = await controller.run()
+            else:
+                run_state = await asyncio.wait_for(controller.run(), timeout=time_limit_seconds)
+        except asyncio.TimeoutError as error:
+            controller.request_stop(
+                reason=f"达到本轮翻译时间上限: {time_limit_seconds} 秒",
+                last_error="time_limit",
+            )
+            await controller.cancel_running_requests()
+            raise TranslationRunInterrupted(
+                reason=run_state.stop_reason,
+                success_count=run_state.success_count,
+                quality_error_count=run_state.quality_error_count,
+                state=run_state,
+            ) from error
+
+        logger.success(f"[tag.success]正文翻译结束[/tag.success] 游戏 [tag.count]{game_title}[/tag.count] 成功 [tag.count]{run_state.success_count}[/tag.count] 条，失败 [tag.count]{run_state.quality_error_count}[/tag.count] 条")
+        return run_state
 
 
 def validate_terminology_registry_shape(
@@ -1679,7 +2115,6 @@ __all__: list[str] = [
     "TerminologyWriteSummary",
     "TextTranslationSummary",
     "TranslationHandler",
-    "TranslationProgressState",
     "TranslationRunInterrupted",
     "TranslationRunLimits",
     "WriteBackSummary",

@@ -27,39 +27,13 @@ from .font_records import FontRecordSessionMixin
 from .plugin_source_runtime_records import PluginSourceRuntimeRecordSessionMixin
 from .rows import row_str
 from .paths import DB_DIRECTORY, build_db_path, ensure_db_directory, resolve_default_db_directory
-from .records import GameMetadata, GameRecord, LanguageSettings, RuleReviewStateRecord
+from .records import GameMetadata, GameRecord, LanguageSettings, RegistryDatabaseIssue, RuleReviewStateRecord
 from .rule_records import RuleRecordSessionMixin
 from .run_records import RunRecordSessionMixin
 from .source_snapshot_records import SourceSnapshotRecordSessionMixin
 from .session_utils import build_event_command_group_key, current_timestamp_text
 from .sql import (
     CHECK_CONNECTION_READABLE,
-    CREATE_SCHEMA_VERSION_TABLE,
-    CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE,
-    CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE,
-    CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE,
-    CREATE_FONT_REPLACEMENT_RECORDS_TABLE,
-    CREATE_LANGUAGE_SETTINGS_TABLE,
-    CREATE_LLM_FAILURES_TABLE,
-    CREATE_METADATA_TABLE,
-    CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE,
-    CREATE_NOTE_TAG_TEXT_RULES_TABLE,
-    CREATE_PLACEHOLDER_RULES_TABLE,
-    CREATE_PLUGIN_TEXT_RULES_TABLE,
-    CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE,
-    CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE,
-    CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE,
-    CREATE_RULE_REVIEW_STATES_TABLE,
-    CREATE_SOURCE_SNAPSHOT_FILES_TABLE,
-    CREATE_SOURCE_RESIDUAL_RULES_TABLE,
-    CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE,
-    CREATE_STRUCTURED_PLACEHOLDER_RULES_TABLE,
-    CREATE_TRANSLATION_QUALITY_ERRORS_TABLE,
-    CREATE_TRANSLATION_RUNS_TABLE,
-    CREATE_TRANSLATION_TABLE,
-    CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE,
-    CREATE_TEXT_GLOSSARY_TERMS_TABLE,
-    CREATE_FIELD_TRANSLATION_TERMS_TABLE,
     CURRENT_SCHEMA_VERSION,
     EXPECTED_STATIC_TABLE_NAMES,
     DELETE_ALL_SOURCE_SNAPSHOT_FILES,
@@ -74,9 +48,11 @@ from .sql import (
     SELECT_TABLE_NAMES,
     UPSERT_LANGUAGE_SETTINGS,
     UPSERT_METADATA,
-    UPSERT_SCHEMA_VERSION,
+    current_schema_sql,
 )
 from .terminology_records import TerminologyRecordSessionMixin
+from .text_fact_records import TextFactRecordSessionMixin
+from .text_index_records import TextIndexRecordSessionMixin
 from .translation_records import TranslationRecordSessionMixin
 
 type ColumnSchemaSignature = tuple[int, str, str, int, str | None, int]
@@ -134,7 +110,7 @@ def _schema_mismatch_error(db_path: Path, detail: str) -> RuntimeError:
     )
 
 
-async def ensure_schema_compatible(connection: aiosqlite.Connection, db_path: Path) -> None:
+async def ensure_current_schema(connection: aiosqlite.Connection, db_path: Path) -> None:
     """确认已有数据库完整匹配当前 schema。"""
     table_names = await read_table_names(connection)
     expected_table_names = set(EXPECTED_STATIC_TABLE_NAMES)
@@ -305,36 +281,7 @@ def row_int_value(row: aiosqlite.Row, key: str) -> int:
 
 async def create_static_tables(connection: aiosqlite.Connection) -> None:
     """初始化当前数据库要求的全部静态表。"""
-    _ = await connection.execute(CREATE_SCHEMA_VERSION_TABLE)
-    _ = await connection.execute(CREATE_TRANSLATION_TABLE)
-    _ = await connection.execute(CREATE_METADATA_TABLE)
-    _ = await connection.execute(CREATE_LANGUAGE_SETTINGS_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_WRITE_MAP_TABLE)
-    _ = await connection.execute(CREATE_PLUGIN_SOURCE_RUNTIME_SCAN_CACHE_TABLE)
-    _ = await connection.execute(CREATE_SOURCE_SNAPSHOT_FILES_TABLE)
-    _ = await connection.execute(CREATE_NOTE_TAG_TEXT_RULES_TABLE)
-    _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_GROUPS_TABLE)
-    _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_FILTERS_TABLE)
-    _ = await connection.execute(CREATE_EVENT_COMMAND_TEXT_RULE_PATHS_TABLE)
-    _ = await connection.execute(CREATE_FIELD_TRANSLATION_TERMS_TABLE)
-    _ = await connection.execute(CREATE_TEXT_GLOSSARY_TERMS_TABLE)
-    _ = await connection.execute(CREATE_TERMINOLOGY_BUNDLE_STATE_TABLE)
-    _ = await connection.execute(CREATE_PLACEHOLDER_RULES_TABLE)
-    _ = await connection.execute(CREATE_STRUCTURED_PLACEHOLDER_RULES_TABLE)
-    _ = await connection.execute(CREATE_STRUCTURED_PLACEHOLDER_RULE_GROUPS_TABLE)
-    _ = await connection.execute(CREATE_SOURCE_RESIDUAL_RULES_TABLE)
-    _ = await connection.execute(CREATE_MV_VIRTUAL_NAMEBOX_RULES_TABLE)
-    _ = await connection.execute(CREATE_RULE_REVIEW_STATES_TABLE)
-    _ = await connection.execute(CREATE_FONT_REPLACEMENT_RECORDS_TABLE)
-    _ = await connection.execute(CREATE_TRANSLATION_RUNS_TABLE)
-    _ = await connection.execute(CREATE_LLM_FAILURES_TABLE)
-    _ = await connection.execute(CREATE_TRANSLATION_QUALITY_ERRORS_TABLE)
-    _ = await connection.execute(
-        UPSERT_SCHEMA_VERSION,
-        (SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION),
-    )
+    _ = await connection.executescript(current_schema_sql())
     await connection.commit()
 
 
@@ -474,7 +421,7 @@ async def find_registered_game_by_path(
             metadata = await read_metadata(connection=connection, db_path=db_path)
             if metadata.game_path != game_path and metadata.content_root != content_root:
                 continue
-            await ensure_schema_compatible(connection=connection, db_path=db_path)
+            await ensure_current_schema(connection=connection, db_path=db_path)
             return db_path, metadata
         finally:
             await connection.close()
@@ -495,13 +442,32 @@ class GameRegistry:
 
     async def list_games(self) -> list[GameRecord]:
         """扫描数据库目录并读取每个数据库的元数据。"""
+        records, issues = await self.list_games_with_issues()
+        if issues:
+            first_issue = issues[0]
+            raise RuntimeError(f"读取游戏数据库失败: {first_issue.db_path}；{first_issue.message}")
+        return records
+
+    async def list_games_with_issues(self) -> tuple[list[GameRecord], list[RegistryDatabaseIssue]]:
+        """扫描数据库目录，返回可用游戏和不可用数据库问题。"""
         _ = ensure_db_directory(self.db_directory)
         records: list[GameRecord] = []
+        issues: list[RegistryDatabaseIssue] = []
         for db_path in sorted(self.db_directory.glob("*.db")):
-            connection = await open_connection(db_path)
+            connection: aiosqlite.Connection | None = None
             try:
+                connection = await open_connection(db_path)
                 await check_connection_readable(connection=connection, db_path=db_path)
-                await ensure_schema_compatible(connection=connection, db_path=db_path)
+                table_names = await read_table_names(connection)
+                if not _is_att_mz_database_candidate(table_names):
+                    issues.append(
+                        RegistryDatabaseIssue(
+                            db_path=db_path,
+                            message="不是 A.T.T MZ 游戏数据库，已跳过",
+                        )
+                    )
+                    continue
+                await ensure_current_schema(connection=connection, db_path=db_path)
                 metadata = await read_metadata(connection=connection, db_path=db_path)
                 language_settings = await read_language_settings(connection=connection, db_path=db_path)
                 records.append(
@@ -516,9 +482,12 @@ class GameRegistry:
                         target_language=language_settings.target_language,
                     )
                 )
+            except Exception as error:
+                issues.append(RegistryDatabaseIssue(db_path=db_path, message=str(error)))
             finally:
-                await connection.close()
-        return sorted(records, key=lambda record: record.game_title)
+                if connection is not None:
+                    await connection.close()
+        return sorted(records, key=lambda record: record.game_title), issues
 
     async def register_game(
         self,
@@ -547,7 +516,7 @@ class GameRegistry:
         try:
             if db_already_exists:
                 await check_connection_readable(connection=connection, db_path=db_path)
-                await ensure_schema_compatible(connection=connection, db_path=db_path)
+                await ensure_current_schema(connection=connection, db_path=db_path)
                 snapshot_records = await read_source_snapshot_records(
                     connection=connection,
                     db_path=db_path,
@@ -629,7 +598,7 @@ class GameRegistry:
         connection = await open_connection(db_path)
         try:
             await check_connection_readable(connection=connection, db_path=db_path)
-            await ensure_schema_compatible(connection=connection, db_path=db_path)
+            await ensure_current_schema(connection=connection, db_path=db_path)
             metadata = await read_metadata(
                 connection=connection,
                 db_path=db_path,
@@ -659,10 +628,28 @@ class GameRegistry:
     async def resolve_registered_title_by_path(self, game_path: str | Path) -> str:
         """根据已注册游戏目录解析数据库中的游戏标题。"""
         resolved_game_path = resolve_game_directory(game_path)
-        for record in await self.list_games():
-            if record.game_path == resolved_game_path:
-                return record.game_title
+        layout = resolve_game_layout(resolved_game_path)
         title = read_game_title(resolved_game_path)
+        title_db_path = build_db_path(title, self.db_directory)
+        if self.db_directory.is_dir():
+            for db_path in sorted(self.db_directory.glob("*.db")):
+                connection: aiosqlite.Connection | None = None
+                try:
+                    connection = await open_connection(db_path)
+                    await check_connection_readable(connection=connection, db_path=db_path)
+                    table_names = await read_table_names(connection)
+                    if not _is_att_mz_database_candidate(table_names):
+                        continue
+                    metadata = await read_metadata(connection=connection, db_path=db_path)
+                except Exception as error:
+                    if db_path == title_db_path:
+                        raise RuntimeError(f"疑似目标游戏数据库不可读取: {db_path}；{error}") from error
+                    continue
+                finally:
+                    if connection is not None:
+                        await connection.close()
+                if metadata.game_path == resolved_game_path or metadata.content_root == layout.content_root:
+                    return metadata.game_title
         raise ValueError(f"游戏目录尚未注册，请先执行 add-game: {title}")
 
 
@@ -674,6 +661,8 @@ class TargetGameSession(
     PluginSourceRuntimeRecordSessionMixin,
     SourceSnapshotRecordSessionMixin,
     RunRecordSessionMixin,
+    TextFactRecordSessionMixin,
+    TextIndexRecordSessionMixin,
 ):
     """单个目标游戏的数据库会话。"""
 
@@ -682,6 +671,7 @@ class TargetGameSession(
         self.record: GameRecord = record
         self.connection: aiosqlite.Connection = connection
         self.game_data: GameData | None = None
+        self._transaction_depth: int = 0
 
     @property
     def game_title(self) -> str:
@@ -747,6 +737,31 @@ class TargetGameSession(
             raise RuntimeError("当前命令尚未加载游戏数据")
         return self.game_data
 
+    @override
+    async def commit(self) -> None:
+        """普通写入立即提交；UnitOfWork 事务内延迟到外层统一提交。"""
+        if self._transaction_depth == 0:
+            await self.connection.commit()
+
+    async def begin_transaction(self) -> None:
+        """开始外层业务事务。"""
+        if self._transaction_depth == 0:
+            _ = await self.connection.execute("BEGIN")
+        self._transaction_depth += 1
+
+    async def commit_transaction(self) -> None:
+        """提交外层业务事务。"""
+        if self._transaction_depth <= 0:
+            raise RuntimeError("没有正在进行的数据库事务")
+        self._transaction_depth -= 1
+        if self._transaction_depth == 0:
+            await self.connection.commit()
+
+    async def rollback_transaction(self) -> None:
+        """回滚外层业务事务。"""
+        if self._transaction_depth > 0:
+            self._transaction_depth = 0
+            await self.connection.rollback()
 
     async def close(self) -> None:
         """关闭当前游戏数据库连接。"""
@@ -758,6 +773,7 @@ __all__: list[str] = [
     "GameMetadata",
     "GameRecord",
     "GameRegistry",
+    "RegistryDatabaseIssue",
     "LanguageSettings",
     "RuleReviewStateRecord",
     "TargetGameSession",

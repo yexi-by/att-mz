@@ -100,8 +100,9 @@ fn collect_origin_data_file_paths(
             .unwrap_or("");
         if path.is_file()
             && path.extension().is_some_and(|ext| ext == "json")
-            && is_standard_data_file_name(file_name)
             && file_names.is_none_or(|names| names.contains(file_name))
+            && (is_standard_data_file_name(file_name)
+                || file_names.is_some_and(|names| names.contains(file_name)))
         {
             paths.push(path);
         }
@@ -161,9 +162,8 @@ pub(super) fn read_plugins_origin_file(path: &Path) -> Result<Value, String> {
 
 pub(super) fn assert_active_plugin_sources_readable(
     layout: &Layout,
-    plugins_js: &Value,
+    file_names: &[String],
 ) -> Result<(), String> {
-    let file_names = enabled_plugin_source_file_names(plugins_js)?;
     file_names
         .par_iter()
         .try_for_each(|file_name| -> Result<(), String> {

@@ -17,13 +17,25 @@ def app_home_with_example_setting(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     """创建带示例配置的临时应用目录，避免测试依赖开发机私有配置。"""
     app_home = tmp_path / "app-home"
     app_home.mkdir()
-    setting_text = EXAMPLE_SETTING_PATH.read_text(encoding="utf-8").replace(
-        'system_prompt_file = "prompts/text_translation_ja_to_zh_system.md"',
-        f'system_prompt_file = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
-    )
+    setting_text = _example_setting_text_with_absolute_prompt_files()
     _ = (app_home / "setting.toml").write_text(setting_text, encoding="utf-8")
     monkeypatch.setenv(APP_HOME_ENV_NAME, str(app_home))
     return app_home
+
+
+def _example_setting_text_with_absolute_prompt_files() -> str:
+    """读取示例配置，并把测试 app home 中不存在的提示词相对路径改成绝对路径。"""
+    return (
+        EXAMPLE_SETTING_PATH.read_text(encoding="utf-8")
+        .replace(
+            'ja = "prompts/text_translation_ja_to_zh_system.md"',
+            f'ja = "{(ROOT / "prompts" / "text_translation_ja_to_zh_system.md").as_posix()}"',
+        )
+        .replace(
+            'en = "prompts/text_translation_en_to_zh_system.md"',
+            f'en = "{(ROOT / "prompts" / "text_translation_en_to_zh_system.md").as_posix()}"',
+        )
+    )
 
 
 def write_json(path: Path, value: JsonValue) -> None:
@@ -281,7 +293,10 @@ def minimal_game_dir(tmp_path: Path) -> Path:
             },
         ],
     )
-    write_json(data_dir / "UnknownPluginData.json", [{"id": 1, "name": "これは無視される"}])
+    write_json(
+        data_dir / "UnknownPluginData.json",
+        [{"id": "recipe_001", "icon": "img/pictures/Meal.png", "enabled": "true"}],
+    )
     write_complete_standard_data_files(data_dir, map_ids=[1, 2])
 
     plugins: list[JsonValue] = [

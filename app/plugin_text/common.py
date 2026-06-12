@@ -8,17 +8,17 @@
 import hashlib
 import json
 
-from app.rmmz.text_rules import JsonValue
-from app.plugin_text.paths import (
+from app.json_path_protocol import (
     ResolvedLeaf,
     build_json_string_leaf_path_hint,
     collect_plugin_json_string_leaf_candidates,
     expand_rule_to_leaf_paths,
     jsonpath_matches_template,
-    jsonpath_to_location_path,
+    jsonpath_to_plugin_location_path as jsonpath_to_location_path,
     jsonpath_to_path_parts,
     resolve_plugin_leaves,
 )
+from app.rmmz.text_rules import JsonValue
 
 
 def extract_plugin_name(plugin: dict[str, JsonValue], plugin_index: int) -> str:

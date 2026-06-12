@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Self
 
+from app.rmmz.json_types import JsonObject
+
 
 type PlaceholderSource = Literal["standard", "custom", "structured"]
 
@@ -39,7 +41,6 @@ class CustomPlaceholderRule:
 
     pattern_text: str
     placeholder_template: str
-    pattern: re.Pattern[str]
 
     @classmethod
     def create(cls, pattern_text: str, placeholder_template: str) -> Self:
@@ -48,14 +49,6 @@ class CustomPlaceholderRule:
             raise ValueError("自定义占位符规则的正则表达式不能为空")
         if not placeholder_template.strip():
             raise ValueError("自定义占位符规则的占位符模板不能为空")
-
-        try:
-            pattern = re.compile(pattern_text)
-        except re.error as error:
-            raise ValueError(f"自定义占位符正则无效: {pattern_text}") from error
-
-        if pattern.search("") is not None:
-            raise ValueError(f"自定义占位符正则不能匹配空字符串: {pattern_text}")
 
         preview = format_placeholder_template(
             template=placeholder_template,
@@ -72,10 +65,18 @@ class CustomPlaceholderRule:
                 f"自定义占位符模板必须生成形如 [CUSTOM_NAME_1] 的方括号占位符，当前生成: {preview}"
             )
 
+        _validate_external_control_rule_patterns(
+            custom_placeholder_rules=[
+                {
+                    "pattern_text": pattern_text,
+                    "placeholder_template": placeholder_template,
+                }
+            ],
+            structured_placeholder_rules=[],
+        )
         return cls(
             pattern_text=pattern_text,
             placeholder_template=placeholder_template,
-            pattern=pattern,
         )
 
 
@@ -88,7 +89,6 @@ class StructuredPlaceholderRule:
     pattern_text: str
     translatable_group: str
     protected_groups: dict[str, str]
-    pattern: re.Pattern[str]
 
     @classmethod
     def create(
@@ -115,23 +115,11 @@ class StructuredPlaceholderRule:
         if not protected_groups:
             raise ValueError("结构化占位符规则 protected_groups 不能为空")
 
-        try:
-            pattern = re.compile(pattern_text)
-        except re.error as error:
-            raise ValueError(f"结构化占位符正则无效: {pattern_text}") from error
-        if pattern.search("") is not None:
-            raise ValueError(f"结构化占位符正则不能匹配空字符串: {pattern_text}")
-
-        group_names = set(pattern.groupindex)
-        if translatable_group not in group_names:
-            raise ValueError(f"结构化占位符正则缺少可翻译命名分组: {translatable_group}")
         if translatable_group in protected_groups:
             raise ValueError(f"可翻译分组不能同时作为保护分组: {translatable_group}")
 
         normalized_protected_groups: dict[str, str] = {}
         for group_name, placeholder_template in protected_groups.items():
-            if group_name not in group_names:
-                raise ValueError(f"结构化占位符正则缺少保护命名分组: {group_name}")
             if not placeholder_template.strip():
                 raise ValueError(f"结构化占位符保护分组模板不能为空: {group_name}")
             preview = format_placeholder_template(
@@ -150,14 +138,39 @@ class StructuredPlaceholderRule:
                 )
             normalized_protected_groups[group_name] = placeholder_template
 
+        _validate_external_control_rule_patterns(
+            custom_placeholder_rules=[],
+            structured_placeholder_rules=[
+                {
+                    "rule_name": normalized_name,
+                    "rule_type": rule_type,
+                    "pattern_text": pattern_text,
+                    "translatable_group": translatable_group,
+                    "protected_groups": dict(normalized_protected_groups),
+                }
+            ],
+        )
         return cls(
             rule_name=normalized_name,
             rule_type=rule_type,
             pattern_text=pattern_text,
             translatable_group=translatable_group,
             protected_groups=normalized_protected_groups,
-            pattern=pattern,
         )
+
+
+def _validate_external_control_rule_patterns(
+    *,
+    custom_placeholder_rules: list[JsonObject],
+    structured_placeholder_rules: list[JsonObject],
+) -> None:
+    """用 Rust PCRE2 运行时校验外部控制符规则。"""
+    from app.native_rule_runtime import validate_control_sequence_rules
+
+    validate_control_sequence_rules(
+        custom_placeholder_rules=custom_placeholder_rules,
+        structured_placeholder_rules=structured_placeholder_rules,
+    )
 
 
 INDEXED_STANDARD_CODE_NAMES: dict[str, str] = {

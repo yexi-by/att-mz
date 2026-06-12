@@ -1,0 +1,49 @@
+# 开发文档地图
+
+本目录说明 A.T.T MZ 当前源码模块如何协作，供修功能、审查接口、定位测试和发布前验收使用。源码运行与命令教学见 [进阶教学与源码编译](../../guides/advanced-usage.md)，发行包用户入口见 [快速开始](../../../README.md)，项目文案、规则、交付红线见 [项目局部规范](../../../AGENTS.md)。
+
+模块说明文档放在本目录；长期审查方法放在 [Review Spec](../../superpowers/review-specs/README.md)，过程文档沉淀出的长期教训放在 [项目历史记忆](../../history/project-memory.md)，避免和当前模块介绍混在一起。
+
+## 阅读路线
+
+1. 先读 [运行入口与 CLI](runtime-and-cli.md)，理解命令如何解析、输出报告和装配配置；需要逐命令维护事实时读 [CLI 维护事实地图](../cli.md)。
+2. 再读 [应用层与业务流程](application-and-workflows.md)，理解用户用例如何编排。
+3. 涉及外部 Agent 协作时读 [Agent 工具箱](agent-toolkit.md)。
+4. 涉及 RPG Maker 数据、当前文本索引、规则或写入时读 [文本领域模块](text-domains.md)。
+5. 涉及 RPG Maker VX / VX Ace / RGSS 系列引擎适配时读 [RGSS 引擎支持调研记录](../../research/rgss-engine-support-notes.md)。
+6. 涉及模型请求、翻译批次或术语表时读 [翻译、LLM 与术语](translation-llm-terminology.md)。
+7. 涉及数据库时读 [持久化层](persistence.md)。
+8. 涉及 Rust Scope/Index、Rule Runtime、质量检查或写回计划时读 [原生核心](native-core.md)。
+9. 提交、发布或补测试前读 [发布与测试](release-and-tests.md)。
+10. 准备大范围破坏性重构前读 [长期 Review Spec](../../superpowers/review-specs/README.md) 和 [项目历史记忆](../../history/project-memory.md)。
+
+## 模块导航
+
+| 文档 | 覆盖模块 | 主要问题 |
+| --- | --- | --- |
+| [运行入口与 CLI](runtime-and-cli.md) | `app.cli_main`、`app.cli`、`app.config`、`app.runtime_paths`、`app.observability`、`app.utils` | 命令如何进入、参数如何生效、日志和 JSON 如何输出 |
+| [CLI 维护事实地图](../cli.md) | `app.cli.parser`、`app.cli.dispatch`、`app.cli.commands`、`app.cli.reports` | 子命令清单、handler 归属、业务门面、输出模式和测试护栏 |
+| [应用层与业务流程](application-and-workflows.md) | `app.application` | 注册、翻译、写入、字体处理和运行摘要如何编排 |
+| [Agent 工具箱](agent-toolkit.md) | `app.agent_toolkit` | 外部 Agent 如何拿报告、工作区、规则校验和质量修复表 |
+| [文本领域模块](text-domains.md) | `app.rmmz`、`app.text_index`、`app.text_fact_*`、`app.plugin_text`、`app.event_command_text`、`app.note_tag_text`、`app.source_residual` | RPG Maker 文本如何形成当前索引、检查、定位和写入 |
+| [RGSS 引擎支持调研记录](../../research/rgss-engine-support-notes.md) | 未来 RGSS 引擎适配层 | VX / VX Ace 样本为何需要归档解包、Ruby Marshal 反序列化和 Ruby 脚本解析 |
+| [翻译、LLM 与术语](translation-llm-terminology.md) | `app.translation`、`app.llm`、`app.llm_request_body_extra`、`app.language`、`app.language_profiles`、`app.terminology` | 模型请求、批次、质量校验、语言档案和术语如何协作 |
+| [持久化层](persistence.md) | `app.persistence` | 多游戏数据库、会话和记录读写如何组织 |
+| [原生核心](native-core.md) | `rust/`、`app.native_scope_index`、`app.native_rule_runtime`、`app.native_quality`、`app.native_write_plan` | PyO3 入口、当前文本索引、统一规则运行时、质量检查和写回计划如何提供主路径能力 |
+| [发布与测试](release-and-tests.md) | `.github`、`scripts`、`skills`、`prompts`、`tests` | 发行包如何构建、Skill 如何区分、测试如何验收 |
+| [长期 Review Spec](../../superpowers/review-specs/README.md) | 全项目结构、主流程、事实来源、生产链路、冗余源码与测试 | 大范围重构和发布前审查使用的通用尺子 |
+
+## Review 与历史记忆
+
+| 文档 | 内容 |
+| --- | --- |
+| [长期 Review Spec](../../superpowers/review-specs/README.md) | 当前契约、单一事实源、生产链路真实性和冗余删除审查规格 |
+| [项目历史记忆](../../history/project-memory.md) | 从旧 spec、plan、review 和批次记录中压缩出的长期教训 |
+
+## 开发边界
+
+- CLI 是外部协议入口，新增或改动参数必须从定义、解析、校验、应用到测试完整贯通。
+- `TranslationHandler` 和 `AgentToolkitService` 是稳定门面，外部命令优先依赖门面，不直接跨层调用内部实现。
+- 当前文本范围统一由 `app.text_index`、`app.text_fact_*` 和 Rust Scope/Index Engine 生成；应用层和 Agent 层只消费当前索引与当前文本事实，不各自拼接可处理文本、已保存译文和写入可行性。
+- 源文残留能力统一位于 `app.source_residual`，不要新增按单一语言命名的并行模块。
+- 面向发行包用户的文档和 Skill 只使用抽象占位符，不暴露个人目录、测试夹具或内部数据库细节。

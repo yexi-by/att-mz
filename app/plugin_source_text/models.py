@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, cast
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from app.external_input import ExternalInputModel, ExternalStr
 from app.rmmz.text_rules import JsonArray, JsonObject, JsonValue
 
 
@@ -85,6 +86,7 @@ class PluginSourceRisk:
     scanned_file_count: int
     ignored_file_count: int
     read_error_file_count: int
+    syntax_error_file_count: int
     files_score_ge_250: int
     max_file_score: int
 
@@ -98,6 +100,7 @@ class PluginSourceRisk:
             "scanned_file_count": self.scanned_file_count,
             "ignored_file_count": self.ignored_file_count,
             "read_error_file_count": self.read_error_file_count,
+            "syntax_error_file_count": self.syntax_error_file_count,
             "files_score_ge_250": self.files_score_ge_250,
             "max_file_score": self.max_file_score,
             "thresholds": {
@@ -111,13 +114,53 @@ class PluginSourceRisk:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginSourceStaleReason:
+    """Rust 判断出的插件源码 selector 失效原因。"""
+
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceSelectorFact:
+    """Rust 输出的插件源码 selector 当前事实。"""
+
+    file_name: str
+    selector: str
+    role: str
+    active: bool
+    file_hash: str
+    source_text_hash: str
+    stale_reason: PluginSourceStaleReason | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSourceReviewSummary:
+    """Rust 输出的插件源码规则审查覆盖摘要。"""
+
+    total_selector_count: int
+    translated_selector_count: int
+    excluded_selector_count: int
+    filtered_selector_count: int
+    reviewed_selector_count: int
+    stale_selector_count: int
+    active_candidate_count: int
+    unreviewed_selector_count: int
+    review_required: bool
+
+
+@dataclass(frozen=True, slots=True)
 class PluginSourceScan:
     """插件源码扫描总结果。"""
 
     risk: PluginSourceRisk
     files: tuple[PluginSourceFileScan, ...]
     candidates: tuple[PluginSourceCandidate, ...]
+    selector_facts: tuple[PluginSourceSelectorFact, ...] = ()
+    review_summary: PluginSourceReviewSummary | None = None
+    scope_hash: str = ""
     enabled_plugin_files: frozenset[str] = field(default_factory=frozenset)
+    syntax_errors: dict[str, str] = field(default_factory=dict)
 
     def to_json_object(self) -> JsonObject:
         """转换成完整 AST 地图 JSON 对象。"""
@@ -128,6 +171,7 @@ class PluginSourceScan:
             "risk": self.risk.to_json_object(),
             "enabled_plugin_files": enabled_plugin_files,
             "candidate_count": len(self.candidates),
+            "syntax_errors": self.syntax_errors_json(),
             "files": [file_scan.to_json_object() for file_scan in self.files],
         }
 
@@ -141,27 +185,35 @@ class PluginSourceScan:
             "enabled_plugin_files": enabled_plugin_files,
             "candidate_count": len(self.candidates),
             "active_candidate_count": sum(1 for candidate in self.candidates if candidate.active),
+            "syntax_errors": self.syntax_errors_json(),
         }
 
     def candidates_json(self) -> JsonArray:
         """返回插件源码候选数组。"""
         return [candidate.to_json_object() for candidate in self.candidates]
 
+    def syntax_errors_json(self) -> JsonArray:
+        """返回跳过的非法 JS 插件源码明细。"""
+        return [
+            {
+                "file": file_name,
+                "active": file_name in self.enabled_plugin_files,
+                "syntax_error": syntax_error,
+            }
+            for file_name, syntax_error in sorted(self.syntax_errors.items())
+        ]
 
-class PluginSourceRuleImportEntry(BaseModel):
+
+class PluginSourceRuleImportEntry(ExternalInputModel):
     """插件源码规则导入文件中的单文件规则。"""
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-    file: str
-    selectors: list[str] = Field(default_factory=list)
-    excluded_selectors: list[str] = Field(default_factory=list)
+    file: ExternalStr
+    selectors: list[ExternalStr] = Field(default_factory=list)
+    excluded_selectors: list[ExternalStr] = Field(default_factory=list)
 
 
-class PluginSourceRuleImportFile(BaseModel):
+class PluginSourceRuleImportFile(ExternalInputModel):
     """插件源码规则导入文件。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
     rules: list[PluginSourceRuleImportEntry] = Field(default_factory=list)
 
@@ -170,7 +222,10 @@ __all__ = [
     "PluginSourceCandidate",
     "PluginSourceFileScan",
     "PluginSourceRisk",
+    "PluginSourceReviewSummary",
     "PluginSourceRuleImportEntry",
     "PluginSourceRuleImportFile",
     "PluginSourceScan",
+    "PluginSourceSelectorFact",
+    "PluginSourceStaleReason",
 ]

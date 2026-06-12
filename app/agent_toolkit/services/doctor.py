@@ -11,7 +11,7 @@ from .common import (
     TextRules,
     _append_check,
     _current_python_major_minor,
-    count_uncovered_candidates,
+    collect_saved_rule_runtime_errors,
     ensure_db_directory,
     issue,
     load_environment_overrides,
@@ -20,28 +20,21 @@ from .common import (
     resolve_app_path,
     resolve_replacement_font_path,
     resolve_setting_path,
-    scan_placeholder_candidates,
     sys,
 )
-from app.persistence import RuleReviewStateRecord
+from app.persistence import TargetGameSession
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
     NOTE_TAG_TEXT_RULE_DOMAIN,
     PLACEHOLDER_RULE_DOMAIN,
     PLUGIN_TEXT_RULE_DOMAIN,
+    RuleReviewDomain,
     STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
-    mv_virtual_namebox_rule_scope_hash,
-    plugin_rule_scope_hash,
 )
-from app.application.flow_gate import (
-    collect_structured_placeholder_candidate_details,
-    event_command_rule_scope_hash_for_setting,
-    normal_placeholder_scope_hash,
-    note_tag_rule_scope_hash_for_text_rules,
-    structured_placeholder_scope_hash,
-)
-from app.rmmz.mv_namebox import mv_virtual_namebox_candidate_details
+from app.rule_review_decision import RuleReviewDecision, RuleReviewSeverity, build_empty_rule_review_decision
+from app.rmmz.loader import validate_data_directory_integrity
+from app.text_index import collect_text_index_placeholder_gate_decisions, detect_text_index_invalidations
 
 
 class DoctorAgentMixin:
@@ -71,6 +64,7 @@ class DoctorAgentMixin:
             setting = load_setting(self.setting_path)
             _append_check(details, "setting", "ok")
             summary["llm_model"] = setting.llm.model
+            summary["llm_check_performed"] = check_llm
             environment_overrides = load_environment_overrides()
             enabled_names: list[JsonValue] = list(environment_overrides.enabled_names())
             details["environment_overrides"] = enabled_names
@@ -88,9 +82,12 @@ class DoctorAgentMixin:
                     )
                     await self.llm_check(self.llm_handler, setting.llm.model)
                     _append_check(details, "llm", "ok")
+                    summary["llm_connection_status"] = "ok"
                 except Exception as error:
+                    summary["llm_connection_status"] = "failed"
                     errors.append(issue("llm", f"模型连通性检查失败: {type(error).__name__}: {error}"))
             else:
+                summary["llm_connection_status"] = "skipped"
                 warnings.append(issue("llm_skipped", "已跳过模型连通性检查"))
         except Exception as error:
             errors.append(issue("setting", f"配置加载失败: {type(error).__name__}: {error}"))
@@ -133,6 +130,10 @@ class DoctorAgentMixin:
         try:
             async with await self.game_registry.open_game(game_title) as session:
                 setting = load_setting(self.setting_path, source_language=session.source_language)
+                saved_rule_errors = await collect_saved_rule_runtime_errors(session, setting)
+                if saved_rule_errors:
+                    errors.extend(saved_rule_errors)
+                    return
                 custom_rules = await self._resolve_custom_rules(
                     session=session,
                     custom_placeholder_rules_text=None,
@@ -143,109 +144,179 @@ class DoctorAgentMixin:
                     custom_placeholder_rules=custom_rules,
                     structured_placeholder_rules=structured_rules,
                 )
-                plugin_source_rules = await session.read_plugin_source_text_rules()
-                _ = await self._load_active_runtime_game_data(
-                    session,
-                    include_plugin_source_files=False,
+                validate_data_directory_integrity(
+                    data_dir=session.content_root / "data",
+                    role="当前运行 data 目录",
                 )
-                game_data = await self._load_translation_source_game_data(
-                    session,
-                    include_plugin_source_files=bool(plugin_source_rules),
-                )
-                plugin_rules, stale_plugin_rule_count = await self._read_fresh_plugin_text_rules(
+                text_index_status = "used"
+                text_index_invalidations = await detect_text_index_invalidations(
                     session=session,
-                    game_data=game_data,
+                    text_rules=text_rules,
                 )
+                if text_index_invalidations:
+                    text_index_status = "rebuilt"
+                    rebuild_report = await self.rebuild_text_index(game_title=game_title)
+                    if rebuild_report.status == "error":
+                        errors.extend(rebuild_report.errors)
+                        warnings.extend(rebuild_report.warnings)
+                        return
+                    text_index_invalidations = await detect_text_index_invalidations(
+                        session=session,
+                        text_rules=text_rules,
+                    )
+                    if text_index_invalidations:
+                        errors.append(
+                            issue(
+                                "text_index_rebuild_mismatch",
+                                "文本范围索引重建后仍不匹配本次命令配置，不能使用错配索引完成诊断",
+                            )
+                        )
+                        return
+                metadata = await session.read_text_index_metadata()
+                if metadata is None:
+                    errors.append(issue("text_index_metadata_missing", "持久文本范围索引缺少元信息，请重新运行 rebuild-text-index"))
+                    return
+                scope_summary = await session.read_text_index_scope_summary()
+                plugin_rules = await session.read_plugin_text_rules()
                 event_rules = await session.read_event_command_text_rules()
                 note_tag_rules = await session.read_note_tag_text_rules()
                 mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
-                plugin_review_state = await session.read_rule_review_state(rule_domain=PLUGIN_TEXT_RULE_DOMAIN)
-                event_review_state = await session.read_rule_review_state(rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN)
-                note_review_state = await session.read_rule_review_state(rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN)
-                placeholder_review_state = await session.read_rule_review_state(rule_domain=PLACEHOLDER_RULE_DOMAIN)
-                structured_placeholder_review_state = await session.read_rule_review_state(
-                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN
-                )
-                mv_virtual_namebox_review_state = await session.read_rule_review_state(
-                    rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN
-                )
-                mv_virtual_namebox_candidates = (
-                    mv_virtual_namebox_candidate_details(game_data)
-                    if game_data.layout.engine_kind == "mv"
-                    else []
-                )
                 terminology_registry = await session.read_terminology_registry()
                 terminology_glossary = await session.read_terminology_glossary()
                 placeholder_rules = await session.read_placeholder_rules()
                 structured_placeholder_rules = await session.read_structured_placeholder_rules()
-                translation_data_map = await self._extract_active_translation_data_map(
+                placeholder_decisions, placeholder_metadata_errors = await collect_text_index_placeholder_gate_decisions(
                     session=session,
-                    game_data=game_data,
-                    text_rules=text_rules,
+                    metadata=metadata,
+                    custom_placeholder_rules_supplied=False,
+                    stage="doctor",
                 )
-                candidates = scan_placeholder_candidates(translation_data_map, text_rules)
-                uncovered_count = count_uncovered_candidates(candidates)
-                structured_candidate_details = collect_structured_placeholder_candidate_details(
-                    translation_data_map=translation_data_map,
-                    structured_rules=text_rules.structured_placeholder_rules,
+                placeholder_decision = _find_rule_review_decision(
+                    placeholder_decisions,
+                    PLACEHOLDER_RULE_DOMAIN,
                 )
-                structured_uncovered_count = sum(
-                    1
-                    for detail in structured_candidate_details
-                    if isinstance(detail, dict) and detail.get("covered") is not True
+                structured_placeholder_decision = _find_rule_review_decision(
+                    placeholder_decisions,
+                    STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
                 )
-                plugin_rules_reviewed_empty, plugin_rules_review_state_stale = _rule_review_empty_state(
-                    state=plugin_review_state,
-                    current_scope_hash=plugin_rule_scope_hash(game_data),
+                plugin_empty_decision = await _build_text_index_empty_rule_review_decision(
+                    session=session,
+                    metadata_scope_hashes=metadata.workflow_gate_scope_hashes,
+                    rule_domain=PLUGIN_TEXT_RULE_DOMAIN,
+                    label="插件文本规则",
+                    missing_code="plugin_rules",
+                    stale_code="plugin_rules_review_state_stale",
+                    missing_severity="warning",
+                    stale_severity="warning",
+                    missing_message="当前游戏尚未导入插件文本规则",
+                    stale_message="插件文本规则曾确认为空，但当前插件配置已变化，请重新导出并检查插件规则",
                 )
-                event_rules_reviewed_empty, event_rules_review_state_stale = _rule_review_empty_state(
-                    state=event_review_state,
-                    current_scope_hash=event_command_rule_scope_hash_for_setting(
-                        game_data=game_data,
-                        setting=setting,
-                    ),
+                event_empty_decision = await _build_text_index_empty_rule_review_decision(
+                    session=session,
+                    metadata_scope_hashes=metadata.workflow_gate_scope_hashes,
+                    rule_domain=EVENT_COMMAND_TEXT_RULE_DOMAIN,
+                    label="事件指令文本规则",
+                    missing_code="event_command_rules",
+                    stale_code="event_command_rules_review_state_stale",
+                    missing_severity="warning",
+                    stale_severity="warning",
+                    missing_message="当前游戏尚未导入事件指令文本规则",
+                    stale_message="事件指令文本规则曾确认为空，但当前事件指令参数已变化，请重新导出并检查事件指令规则",
                 )
-                note_rules_reviewed_empty, note_rules_review_state_stale = _rule_review_empty_state(
-                    state=note_review_state,
-                    current_scope_hash=note_tag_rule_scope_hash_for_text_rules(
-                        game_data=game_data,
-                        text_rules=text_rules,
-                    ),
+                note_empty_decision = await _build_text_index_empty_rule_review_decision(
+                    session=session,
+                    metadata_scope_hashes=metadata.workflow_gate_scope_hashes,
+                    rule_domain=NOTE_TAG_TEXT_RULE_DOMAIN,
+                    label="Note 标签文本规则",
+                    missing_code="note_tag_rules",
+                    stale_code="note_tag_rules_review_state_stale",
+                    missing_severity="warning",
+                    stale_severity="warning",
+                    missing_message="当前游戏尚未导入 Note 标签文本规则",
+                    stale_message="Note 标签规则曾确认为空，但当前 Note 文本已变化，请重新导出并检查 Note 标签规则",
                 )
-                placeholder_rules_reviewed_empty, placeholder_rules_review_state_stale = _rule_review_empty_state(
-                    state=placeholder_review_state,
-                    current_scope_hash=normal_placeholder_scope_hash(
-                        translation_data_map=translation_data_map,
-                        text_rules=text_rules,
-                    ),
+                placeholder_empty_decision = await _build_text_index_empty_rule_review_decision(
+                    session=session,
+                    metadata_scope_hashes={
+                        PLACEHOLDER_RULE_DOMAIN: placeholder_decision.scope_hash
+                    }
+                    if placeholder_decision is not None
+                    else {},
+                    rule_domain=PLACEHOLDER_RULE_DOMAIN,
+                    label="普通占位符规则",
+                    missing_code="placeholder_rules",
+                    stale_code="placeholder_rules_review_state_stale",
+                    missing_severity="warning",
+                    stale_severity="warning",
+                    missing_message="当前游戏尚未导入自定义占位符规则",
+                    stale_message="普通占位符规则曾确认为空，但当前正文候选已变化，请重新扫描并检查普通占位符规则",
                 )
-                (
-                    structured_placeholder_rules_reviewed_empty,
-                    structured_placeholder_rules_review_state_stale,
-                ) = _rule_review_empty_state(
-                    state=structured_placeholder_review_state,
-                    current_scope_hash=structured_placeholder_scope_hash(
-                        translation_data_map=translation_data_map,
-                        structured_rules=text_rules.structured_placeholder_rules,
-                    ),
+                structured_placeholder_empty_decision = await _build_text_index_empty_rule_review_decision(
+                    session=session,
+                    metadata_scope_hashes={
+                        STRUCTURED_PLACEHOLDER_RULE_DOMAIN: structured_placeholder_decision.scope_hash
+                    }
+                    if structured_placeholder_decision is not None
+                    else {},
+                    rule_domain=STRUCTURED_PLACEHOLDER_RULE_DOMAIN,
+                    label="结构化占位符规则",
+                    missing_code="structured_placeholder_rules",
+                    stale_code="structured_placeholder_rules_review_state_stale",
+                    missing_severity="warning",
+                    stale_severity="warning",
+                    missing_message="当前游戏尚未导入结构化占位符规则",
+                    stale_message="结构化占位符规则曾确认为空，但当前正文候选已变化，请重新扫描并检查结构化占位符规则",
                 )
-                mv_virtual_namebox_rules_reviewed_empty, mv_virtual_namebox_rules_review_state_stale = (
-                    _rule_review_empty_state(
-                        state=mv_virtual_namebox_review_state,
-                        current_scope_hash=mv_virtual_namebox_rule_scope_hash(mv_virtual_namebox_candidates),
+                mv_virtual_namebox_empty_decision: RuleReviewDecision | None = (
+                    await _build_text_index_empty_rule_review_decision(
+                        session=session,
+                        metadata_scope_hashes=metadata.workflow_gate_scope_hashes,
+                        rule_domain=MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
+                        label="MV 虚拟名字框规则",
+                        missing_code="mv_virtual_namebox_rules",
+                        stale_code="mv_virtual_namebox_rules_review_state_stale",
+                        missing_severity="warning",
+                        stale_severity="warning",
+                        missing_message="当前 MV 游戏尚未导入 MV 虚拟名字框规则",
+                        stale_message="MV 虚拟名字框规则曾确认为空，但当前候选已变化，请重新导出并检查 MV 虚拟名字框规则",
                     )
-                    if game_data.layout.engine_kind == "mv"
-                    else (False, False)
+                    if session.engine_kind == "mv"
+                    else None
+                )
+                plugin_rules_reviewed_empty = _decision_reviewed_empty(plugin_empty_decision)
+                plugin_rules_review_state_stale = _decision_state_stale(plugin_empty_decision)
+                event_rules_reviewed_empty = _decision_reviewed_empty(event_empty_decision)
+                event_rules_review_state_stale = _decision_state_stale(event_empty_decision)
+                note_rules_reviewed_empty = _decision_reviewed_empty(note_empty_decision)
+                note_rules_review_state_stale = _decision_state_stale(note_empty_decision)
+                placeholder_rules_reviewed_empty = _decision_reviewed_empty(placeholder_empty_decision)
+                placeholder_rules_review_state_stale = _decision_state_stale(placeholder_empty_decision)
+                structured_placeholder_rules_reviewed_empty = _decision_reviewed_empty(
+                    structured_placeholder_empty_decision
+                )
+                structured_placeholder_rules_review_state_stale = _decision_state_stale(
+                    structured_placeholder_empty_decision
+                )
+                mv_virtual_namebox_rules_reviewed_empty = (
+                    _decision_reviewed_empty(mv_virtual_namebox_empty_decision)
+                    if mv_virtual_namebox_empty_decision is not None
+                    else False
+                )
+                mv_virtual_namebox_rules_review_state_stale = (
+                    _decision_state_stale(mv_virtual_namebox_empty_decision)
+                    if mv_virtual_namebox_empty_decision is not None
+                    else False
                 )
                 summary["game_registered"] = True
                 summary["source_language"] = session.source_language
                 summary["target_language"] = session.target_language
                 summary["plugin_rule_count"] = sum(len(rule.path_templates) for rule in plugin_rules)
-                summary["stale_plugin_rule_count"] = stale_plugin_rule_count
+                summary["stale_plugin_rule_count"] = scope_summary.stale_rule_count if scope_summary is not None else 0
                 summary["event_command_rule_count"] = sum(len(rule.path_templates) for rule in event_rules)
                 summary["note_tag_rule_count"] = sum(len(rule.tag_names) for rule in note_tag_rules)
-                summary["mv_virtual_namebox_candidate_count"] = len(mv_virtual_namebox_candidates)
+                summary["mv_virtual_namebox_candidate_count"] = 0
                 summary["mv_virtual_namebox_rule_count"] = len(mv_virtual_namebox_rules)
+                summary["text_index_status"] = text_index_status
                 summary["plugin_rules_reviewed_empty"] = plugin_rules_reviewed_empty
                 summary["plugin_rules_review_state_stale"] = plugin_rules_review_state_stale
                 summary["event_command_rules_reviewed_empty"] = event_rules_reviewed_empty
@@ -262,54 +333,44 @@ class DoctorAgentMixin:
                 summary["structured_placeholder_rules_review_state_stale"] = structured_placeholder_rules_review_state_stale
                 summary["terminology_imported"] = terminology_registry is not None
                 summary["glossary_imported"] = terminology_glossary is not None
+                stale_plugin_rule_count = scope_summary.stale_rule_count if scope_summary is not None else 0
                 if not plugin_rules and stale_plugin_rule_count == 0:
-                    if plugin_rules_review_state_stale:
-                        warnings.append(issue("plugin_rules_review_state_stale", "插件文本规则曾确认为空，但当前插件配置已变化，请重新导出并检查插件规则"))
-                    elif not plugin_rules_reviewed_empty:
-                        warnings.append(issue("plugin_rules", "当前游戏尚未导入插件文本规则"))
+                    _append_rule_review_decision_warning(warnings, plugin_empty_decision)
                 if stale_plugin_rule_count:
                     warnings.append(issue("stale_plugin_rules", f"发现 {stale_plugin_rule_count} 个过期插件规则，请重新导出并导入插件规则"))
                 if not event_rules:
-                    if event_rules_review_state_stale:
-                        warnings.append(issue("event_command_rules_review_state_stale", "事件指令文本规则曾确认为空，但当前事件指令参数已变化，请重新导出并检查事件指令规则"))
-                    elif not event_rules_reviewed_empty:
-                        warnings.append(issue("event_command_rules", "当前游戏尚未导入事件指令文本规则"))
+                    _append_rule_review_decision_warning(warnings, event_empty_decision)
                 if not note_tag_rules:
-                    if note_rules_review_state_stale:
-                        warnings.append(issue("note_tag_rules_review_state_stale", "Note 标签规则曾确认为空，但当前 Note 文本已变化，请重新导出并检查 Note 标签规则"))
-                    elif not note_rules_reviewed_empty:
-                        warnings.append(issue("note_tag_rules", "当前游戏尚未导入 Note 标签文本规则"))
-                if game_data.layout.engine_kind == "mv" and not mv_virtual_namebox_rules:
-                    if mv_virtual_namebox_rules_review_state_stale:
-                        warnings.append(issue("mv_virtual_namebox_rules_review_state_stale", "MV 虚拟名字框规则曾确认为空，但当前候选已变化，请重新导出并检查 MV 虚拟名字框规则"))
-                    elif not mv_virtual_namebox_rules_reviewed_empty:
-                        warnings.append(issue("mv_virtual_namebox_rules", "当前 MV 游戏尚未导入 MV 虚拟名字框规则"))
+                    _append_rule_review_decision_warning(warnings, note_empty_decision)
+                if session.engine_kind == "mv" and not mv_virtual_namebox_rules:
+                    _append_rule_review_decision_warning(warnings, mv_virtual_namebox_empty_decision)
                 if terminology_registry is None:
                     warnings.append(issue("terminology", "当前游戏尚未导入字段译名表"))
                 if terminology_glossary is None:
                     warnings.append(issue("glossary", "当前游戏尚未导入正文术语表"))
                 if not placeholder_rules:
-                    if placeholder_rules_review_state_stale:
-                        warnings.append(issue("placeholder_rules_review_state_stale", "普通占位符规则曾确认为空，但当前正文候选已变化，请重新扫描并检查普通占位符规则"))
-                    elif not placeholder_rules_reviewed_empty:
-                        warnings.append(issue("placeholder_rules", "当前游戏尚未导入自定义占位符规则"))
+                    _append_rule_review_decision_warning(warnings, placeholder_empty_decision)
                 if not structured_placeholder_rules:
-                    if structured_placeholder_rules_review_state_stale:
-                        warnings.append(issue("structured_placeholder_rules_review_state_stale", "结构化占位符规则曾确认为空，但当前正文候选已变化，请重新扫描并检查结构化占位符规则"))
-                    elif not structured_placeholder_rules_reviewed_empty:
-                        warnings.append(issue("structured_placeholder_rules", "当前游戏尚未导入结构化占位符规则"))
+                    _append_rule_review_decision_warning(warnings, structured_placeholder_empty_decision)
+                warnings.extend(issue(error.code, error.message) for error in placeholder_metadata_errors)
                 font_path = setting.write_back.replacement_font_path
                 if font_path is not None:
                     try:
                         _ = resolve_replacement_font_path(font_path)
                     except (FileNotFoundError, ValueError) as error:
                         warnings.append(issue("replacement_font", f"配置的候选覆盖字体文件不可用: {error}"))
+                uncovered_count = placeholder_decision.uncovered_count if placeholder_decision is not None else 0
+                structured_uncovered_count = (
+                    structured_placeholder_decision.uncovered_count
+                    if structured_placeholder_decision is not None
+                    else 0
+                )
                 summary["uncovered_placeholder_count"] = uncovered_count
                 summary["uncovered_structured_placeholder_count"] = structured_uncovered_count
-                if uncovered_count:
-                    warnings.append(issue("uncovered_placeholder", f"存在 {uncovered_count} 个未覆盖的疑似自定义控制符"))
-                if structured_uncovered_count:
-                    warnings.append(issue("uncovered_structured_placeholder", f"存在 {structured_uncovered_count} 个未覆盖的结构化协议外壳候选"))
+                if uncovered_count and placeholder_decision is not None:
+                    warnings.append(issue(placeholder_decision.code, placeholder_decision.message))
+                if structured_uncovered_count and structured_placeholder_decision is not None:
+                    warnings.append(issue(structured_placeholder_decision.code, structured_placeholder_decision.message))
         except Exception as error:
             errors.append(issue("game", f"目标游戏检查失败: {type(error).__name__}: {error}"))
 
@@ -342,13 +403,68 @@ class DoctorAgentMixin:
             warnings.append(issue("stdout_encoding", f"终端编码检查失败: {type(error).__name__}: {error}"))
 
 
-def _rule_review_empty_state(
+def _decision_reviewed_empty(decision: RuleReviewDecision | None) -> bool:
+    """判断统一决策是否代表仍有效的空规则确认。"""
+    return (
+        decision is not None
+        and decision.confirmed_empty is True
+        and decision.confirmation_status == "confirmed"
+    )
+
+
+def _find_rule_review_decision(
+    decisions: list[RuleReviewDecision],
+    rule_domain: RuleReviewDomain,
+) -> RuleReviewDecision | None:
+    """按规则域从索引 gate 决策中取一条结果。"""
+    for decision in decisions:
+        if decision.rule_domain == rule_domain:
+            return decision
+    return None
+
+
+async def _build_text_index_empty_rule_review_decision(
     *,
-    state: RuleReviewStateRecord | None,
-    current_scope_hash: str,
-) -> tuple[bool, bool]:
-    """判断空规则审查状态是否仍适用于当前输入范围。"""
-    if state is None or not state.reviewed_empty:
-        return False, False
-    state_stale = state.scope_hash != current_scope_hash
-    return not state_stale, state_stale
+    session: TargetGameSession,
+    metadata_scope_hashes: dict[str, str],
+    rule_domain: RuleReviewDomain,
+    label: str,
+    missing_code: str,
+    stale_code: str,
+    missing_severity: RuleReviewSeverity,
+    stale_severity: RuleReviewSeverity,
+    missing_message: str,
+    stale_message: str,
+) -> RuleReviewDecision | None:
+    """用 text index metadata 中的范围 hash 生成空规则确认状态。"""
+    scope_hash = metadata_scope_hashes.get(rule_domain)
+    if not scope_hash:
+        state = await session.read_rule_review_state(rule_domain=rule_domain)
+        scope_hash = state.scope_hash if state is not None else ""
+    return await build_empty_rule_review_decision(
+        session=session,
+        rule_domain=rule_domain,
+        stage="doctor",
+        scope_hash=scope_hash,
+        label=label,
+        missing_code=missing_code,
+        stale_code=stale_code,
+        missing_severity=missing_severity,
+        stale_severity=stale_severity,
+        missing_message=missing_message,
+        stale_message=stale_message,
+    )
+
+
+def _decision_state_stale(decision: RuleReviewDecision | None) -> bool:
+    """判断统一决策是否代表确认范围已失效。"""
+    return decision is not None and decision.confirmation_status == "stale"
+
+
+def _append_rule_review_decision_warning(
+    warnings: list[AgentIssue],
+    decision: RuleReviewDecision | None,
+) -> None:
+    """把非 ok 的规则审查决策追加到 doctor 告警。"""
+    if decision is not None and decision.severity != "ok" and decision.code:
+        warnings.append(issue(decision.code, decision.message))

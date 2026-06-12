@@ -11,7 +11,7 @@ from app.agent_toolkit import AgentToolkitService
 from app.cli.arguments import read_int_set_arg, read_required_path_arg
 from app.cli.progress import build_progress_reporter
 from app.cli.runtime import resolve_target_game_title
-from app.cli.reports import build_sampled_stdout_report, write_report_outputs
+from app.cli.reports import SAMPLED_STDOUT_REPORT_POLICY, write_report_outputs
 
 
 async def run_prepare_agent_workspace_command(args: argparse.Namespace) -> int:
@@ -44,7 +44,7 @@ async def run_validate_agent_workspace_command(args: argparse.Namespace) -> int:
         report=report,
         args=args,
         title="Agent 工作区校验报告",
-        stdout_report=build_sampled_stdout_report(report),
+        detail_policy=SAMPLED_STDOUT_REPORT_POLICY,
     )
     return 1 if report.status == "error" else 0
 

@@ -8,12 +8,20 @@ from importlib import import_module
 from pathlib import Path
 from typing import Protocol, cast
 
+from app.application.font_replacement.constants import FONTS_DIRECTORY_NAME
+from app.application.font_replacement.files import (
+    collect_replaced_source_font_names,
+    resolve_replacement_font_path,
+)
+from app.config.schemas import Setting
+from app.native_quality import build_native_text_rules_payload
 from app.rmmz.schema import (
     FontReplacementRecord,
     PluginSourceRuntimeMappingKind,
     PluginSourceRuntimeWriteMapRecord,
 )
-from app.rmmz.text_rules import JsonObject
+from app.native_contract import NATIVE_CONTRACT_VERSION, ensure_native_contract_version
+from app.rmmz.text_rules import JsonObject, TextRules
 
 
 type RawJsonObject = dict[str, object]
@@ -21,6 +29,10 @@ type RawJsonObject = dict[str, object]
 
 class NativeWritePlanModule(Protocol):
     """PyO3 扩展暴露的写回计划接口。"""
+
+    def native_contract_version(self) -> int:
+        """返回 Rust/Python JSON 契约版本。"""
+        raise NotImplementedError
 
     def build_write_back_plan(
         self,
@@ -71,6 +83,42 @@ class NativeWriteBackPlan:
     font_replacement_records: list[FontReplacementRecord]
     summary: NativeWriteBackSummary
     timings_ms: dict[str, int]
+
+
+def build_native_write_back_setting_payload(
+    *,
+    setting: Setting,
+    text_rules: TextRules,
+    content_root: Path,
+    confirm_font_overwrite: bool,
+    writable_location_paths: list[str] | None,
+) -> tuple[JsonObject, Path | None, list[str]]:
+    """整理 Rust 写回计划和写回级质量 gate 共用的配置载荷。"""
+    payload: JsonObject = {
+        "long_text_line_width_limit": setting.text_rules.long_text_line_width_limit,
+        "line_width_count_pattern": setting.text_rules.line_width_count_pattern,
+        "line_split_punctuations": [punctuation for punctuation in setting.text_rules.line_split_punctuations],
+        "preserve_wrapping_punctuation_pairs": [
+            [left, right]
+            for left, right in setting.text_rules.preserve_wrapping_punctuation_pairs
+        ],
+        "quality_text_rules": build_native_text_rules_payload(text_rules),
+    }
+    if writable_location_paths is not None:
+        payload["allowed_translation_paths"] = [path for path in writable_location_paths]
+    if not confirm_font_overwrite:
+        return payload, None, []
+    replacement_font_path = setting.write_back.replacement_font_path
+    if replacement_font_path is None or not replacement_font_path.strip():
+        return payload, None, []
+    source_font_path = resolve_replacement_font_path(replacement_font_path)
+    source_font_names = collect_replaced_source_font_names(
+        font_dir=content_root / FONTS_DIRECTORY_NAME,
+        replacement_font_name=source_font_path.name,
+    )
+    payload["replacement_font_path"] = str(source_font_path)
+    payload["source_font_names"] = [font_name for font_name in source_font_names]
+    return payload, source_font_path, source_font_names
 
 
 def build_native_write_back_plan(
@@ -124,6 +172,7 @@ def _load_native_module() -> NativeWritePlanModule:
         native_module = import_module("app._native")
     except ImportError as error:
         raise RuntimeError("Rust 原生扩展不可用，请先执行 uv run maturin develop") from error
+    ensure_native_contract_version(cast(object, native_module))
     return cast(NativeWritePlanModule, cast(object, native_module))
 
 
@@ -381,8 +430,10 @@ def _ensure_array(value: object, context: str) -> list[object]:
 
 
 __all__ = [
+    "NATIVE_CONTRACT_VERSION",
     "NativePlannedFile",
     "NativeWriteBackPlan",
     "NativeWriteBackSummary",
+    "build_native_write_back_setting_payload",
     "build_native_write_back_plan",
 ]
