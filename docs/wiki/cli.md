@@ -18,7 +18,7 @@
 3. 在 `app/cli/commands/` 只做适配：读取参数、调用 `TranslationHandler` 或 `AgentToolkitService`、选择报告输出模式、返回退出码。
 4. 如果新增或改变 summary/details、退出码、`--output` 行为、诊断字段或写文件行为，同步测试。
 5. 如果用户执行方式改变，同步 README、开发版 Skill、发行版 Skill 和发行包映射；如果只是内部维护定位，不写进 Skill。
-6. 如果命令影响发行包，检查 `.github/workflows/release.yml`、发行包布局测试和发行版 Skill。
+6. 如果命令影响发行包，检查 `.github/workflows/release.yml`、发行包构建脚本、发行包映射和发行版 Skill；发行布局不再由 pytest 固定。
 
 ## 全局参数与配置
 
