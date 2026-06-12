@@ -21,7 +21,7 @@
 ## 失败策略
 
 - 本机执行发行版构建脚本会失败；正式发行版只能由 GitHub Actions 构建。
-- 发布工作流先执行 `uv run basedpyright`、`uv run pytest`、`cargo fmt --manifest-path rust/Cargo.toml -- --check`、`cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings` 和 `cargo test --manifest-path rust/Cargo.toml`，通过后才构建发行包。
+- 发布工作流先执行 `uv run basedpyright`、设置 `ATT_MZ_RUST_THREADS=1` 后执行 `uv run pytest -q -n 8 --durations=30 --durations-min=0.5`、`cargo fmt --manifest-path rust/Cargo.toml -- --check`、`cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings` 和 `cargo test --manifest-path rust/Cargo.toml`，通过后才构建发行包。
 - 发布工作流必须先从 `CHANGELOG.md` 提取当前 tag 的具体更新说明；找不到对应版本段落时停止发布，不能只使用 GitHub 自动生成的 Release notes。
 - 发行包冒烟测试必须验证 `att-mz.exe --help` 和空注册表读取。
 - 大样本性能门禁不能在 GitHub 托管 runner 上伪造执行；私有样本只能放在本机或持有样本的专用环境。发布前在持有样本的环境运行下面的命令。失败时暂停发布：
@@ -85,7 +85,8 @@ uv run python scripts/benchmark_small_tasks.py `
 ## 测试覆盖
 
 - `uv run basedpyright` 是 Python 静态类型交付红线。
-- `uv run pytest` 是 Python 业务测试交付红线。
+- 设置 `ATT_MZ_RUST_THREADS=1` 后执行 `uv run pytest -q -n 8 --durations=30 --durations-min=0.5` 是当前 Python 业务测试交付红线；测试子集不能替代全量 pytest。
+- 常规 CI 在 pull request 和普通 push 阶段执行 Python 静态类型检查和全量 pytest，发布工作流在构建发行包前再次执行同一全量 pytest 门禁。
 - 改到 Rust 或 PyO3 相关代码时执行 `cargo fmt --manifest-path rust/Cargo.toml -- --check`、`cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings` 和 `cargo test --manifest-path rust/Cargo.toml`。
 - 改到 Skill、README、提示词或工作区协议时同步检查 `tests/test_skill_protocol.py`。
 - 改到写文件、插件源码扫描、当前运行审计、小任务链路或性能脚本时，至少运行对应 benchmark 单测；发布前还要按上面的命令执行真实大样本性能门禁。
