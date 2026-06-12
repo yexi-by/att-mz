@@ -60,7 +60,7 @@
 - `tests/test_rmmz_write_plan.py`、`tests/test_write_back_transactions.py` 和 `tests/test_rmmz_post_write_audit.py` 覆盖标准数据提取后的写回计划、写入事务和写后审计。
 - `tests/test_plugin_text.py` 覆盖插件规则和插件文本写入。
 - `tests/test_event_command_text.py` 覆盖事件指令规则。
-- `tests/test_plugin_source_text.py` 覆盖插件源码风险扫描、规则提取和写入。
-- `tests/test_text_index.py` 和 `tests/test_native_scope_index.py` 覆盖当前文本索引、当前文本事实和 Rust 范围门禁。
+- 插件源码风险扫描、规则提取和写入由 Rust/native owner 测试、写回事务测试和公开报告契约覆盖，不再保留独立 Python 大集成 pytest。
+- `tests/test_text_index.py` 覆盖当前文本索引与当前文本事实的 Python 可观察边界；Rust 范围门禁由 `cargo test --manifest-path rust/Cargo.toml` 覆盖。
 - `tests/test_native_rule_runtime.py` 覆盖统一规则运行时。
-- `tests/test_text_rules.py` 和 `tests/test_translation_line_alignment.py` 覆盖文本协议、控制符、行宽和结构校验。
+- `tests/test_text_rules.py` 覆盖文本协议和控制符的 Python 可观察边界；行宽和结构校验归 Rust/native owner 测试。
