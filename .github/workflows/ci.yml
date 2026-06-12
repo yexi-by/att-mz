@@ -46,4 +46,4 @@ jobs:
 
       - name: Full Python tests
         shell: pwsh
-        run: uv run pytest -q -n 8 --durations=30 --durations-min=0.5
+        run: uv run pytest -q -n 12 --durations=30 --durations-min=0.5
