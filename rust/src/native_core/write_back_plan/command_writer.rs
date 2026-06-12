@@ -1,6 +1,6 @@
 use super::models::{
     COMMON_EVENTS_FILE_NAME, MvVirtualNameboxRule, MvVirtualSpeaker, TROOPS_FILE_NAME,
-    TextPlanRules, TranslationItem,
+    TextFactRenderPart, TextPlanRules, TranslationItem,
 };
 use super::mv_virtual_namebox::{
     ensure_mv_translation_body_is_clean, parse_mv_virtual_speaker_line, read_mv_render_speaker,
@@ -403,39 +403,85 @@ fn render_mv_virtual_speaker_line_from_text_fact_parts(
     if item.render_parts.is_empty() {
         return None;
     }
-    let body_text = translated_body.unwrap_or_default();
-    let mut rendered = String::new();
-    for part in &item.render_parts {
-        if part.part_kind == "speaker" {
-            rendered.push_str(&render_text_fact_speaker_part(
-                item,
-                translated_speaker,
-                &part.raw_text,
-            ));
-            continue;
-        }
-        if part.part_kind == "translated_body" || part.template_key == "body" {
-            rendered.push_str(&render_text_fact_body_part(&part.raw_text, body_text));
-            continue;
-        }
-        rendered.push_str(&part.raw_text);
-    }
-    Some(Ok(rendered))
-}
-
-fn render_text_fact_speaker_part(
-    item: &TranslationItem,
-    translated_speaker: &str,
-    raw_speaker_part: &str,
-) -> String {
     let Some(source_role) = item
         .role
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return translated_speaker.to_string();
+        return Some(Err(format!(
+            "MV 虚拟名字框当前文本事实缺少说话人，不能写进游戏文件: {}",
+            item.location_path
+        )));
     };
+    Some(render_mv_virtual_speaker_line_from_render_parts(
+        &item.location_path,
+        source_role,
+        &item.render_parts,
+        translated_speaker,
+        translated_body,
+    ))
+}
+
+pub(super) fn render_mv_virtual_speaker_line_from_render_parts(
+    location_path: &str,
+    source_role: &str,
+    render_parts: &[TextFactRenderPart],
+    translated_speaker: &str,
+    translated_body: Option<&str>,
+) -> Result<String, String> {
+    if render_parts.is_empty() {
+        return Err(format!(
+            "MV 虚拟名字框当前文本事实缺少写回所需源文结构，不能写进游戏文件: {location_path}"
+        ));
+    }
+    let body_text = translated_body.unwrap_or_default();
+    let mut rendered = String::new();
+    let mut has_speaker_part = false;
+    let mut rendered_body_part = false;
+    for part in render_parts {
+        if part.part_kind == "speaker" {
+            has_speaker_part = true;
+            rendered.push_str(&render_text_fact_speaker_part(
+                source_role,
+                translated_speaker,
+                &part.raw_text,
+            ));
+            continue;
+        }
+        if part.part_kind == "translated_body" || part.template_key == "body" {
+            if rendered_body_part || translated_body.is_none() {
+                break;
+            }
+            if translated_body.is_some() {
+                rendered.push_str(&render_text_fact_body_part(&part.raw_text, body_text));
+            }
+            rendered_body_part = true;
+            continue;
+        }
+        if rendered_body_part && (part.raw_text.contains('\n') || part.raw_text.contains('\r')) {
+            break;
+        }
+        rendered.push_str(&part.raw_text);
+    }
+    if !has_speaker_part {
+        return Err(format!(
+            "MV 虚拟名字框当前文本事实缺少说话人片段，不能写进游戏文件: {location_path}"
+        ));
+    }
+    if translated_body.is_none() {
+        while rendered.ends_with('\n') || rendered.ends_with('\r') {
+            rendered.pop();
+        }
+    }
+    Ok(rendered)
+}
+
+fn render_text_fact_speaker_part(
+    source_role: &str,
+    translated_speaker: &str,
+    raw_speaker_part: &str,
+) -> String {
     let Some(suffix) = raw_speaker_part.strip_prefix(source_role) else {
         return translated_speaker.to_string();
     };

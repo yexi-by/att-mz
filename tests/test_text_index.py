@@ -469,6 +469,17 @@ async def test_agent_service_rebuild_text_index_strips_mv_virtual_namebox_speake
             ],
         })
     )
+    common_events.append(
+        cast(object, {
+            "id": 90,
+            "list": [
+                {"code": 101, "parameters": ["ShionThree", 0, 0, 2]},
+                {"code": 401, "parameters": [r"\n<Shion:>働く機会を得て"]},
+                {"code": 401, "parameters": ["熟練した職人の下で"]},
+                {"code": 0, "parameters": []},
+            ],
+        })
+    )
     _ = common_events_path.write_text(json.dumps(common_events, ensure_ascii=False), encoding="utf-8")
 
     registry = GameRegistry(tmp_path / "db")
@@ -493,6 +504,15 @@ async def test_agent_service_rebuild_text_index_strips_mv_virtual_namebox_speake
                     body_group="body",
                     speaker_policy="translate",
                     render_template="{speaker}「{body}」",
+                ),
+                MvVirtualNameboxRuleRecord(
+                    rule_order=2,
+                    rule_name="mv-angle-inline",
+                    pattern_text=r"^\\n<(?<speaker>[^:：>\r\n]+):>(?<body>.*)$",
+                    speaker_group="speaker",
+                    body_group="body",
+                    speaker_policy="translate",
+                    render_template=r"\n<{speaker}:>{body}",
                 ),
             ]
         )
@@ -519,6 +539,34 @@ async def test_agent_service_rebuild_text_index_strips_mv_virtual_namebox_speake
     assert inline.role == "案内人"
     assert inline.original_lines == ["こんにちは"]
     assert inline.source_line_paths == ["CommonEvents.json/89/1"]
+
+    multiline = items["CommonEvents.json/90/0"]
+    assert multiline.role == "Shion"
+    assert multiline.original_lines == [
+        "働く機会を得て",
+        "熟練した職人の下で",
+    ]
+    assert multiline.source_line_paths == ["CommonEvents.json/90/1", "CommonEvents.json/90/2"]
+
+    async with await registry.open_game(record.game_title) as session:
+        current_facts = await read_current_text_fact_records(session, limit=None)
+        facts_by_path = {fact.location_path: fact for fact in current_facts}
+        multiline_fact = facts_by_path["CommonEvents.json/90/0"]
+        render_parts = await session.read_text_fact_render_parts([multiline_fact.fact_id])
+
+    assert multiline_fact.domain == "mv_virtual_namebox"
+    assert multiline_fact.role == "Shion"
+    assert multiline_fact.raw_text == (
+        r"\n<Shion:>働く機会を得て"
+        "\n"
+        "熟練した職人の下で"
+    )
+    assert multiline_fact.translatable_text == (
+        "働く機会を得て"
+        "\n"
+        "熟練した職人の下で"
+    )
+    assert "".join(part.raw_text for part in render_parts) == multiline_fact.raw_text
 
 
 @pytest.mark.asyncio

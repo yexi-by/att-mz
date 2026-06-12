@@ -1,4 +1,7 @@
-use super::command_writer::{find_mv_virtual_speaker_command_ref, write_command_first_parameter};
+use super::command_writer::{
+    find_mv_virtual_speaker_command_ref, render_mv_virtual_speaker_line_from_render_parts,
+    write_command_first_parameter,
+};
 use super::models::{
     COMMON_EVENTS_FILE_NAME, EngineKind, Layout, MvVirtualNameboxFactTemplate,
     MvVirtualNameboxRule, MvVirtualSpeaker, MvVirtualSpeakerPolicy, SYSTEM_FILE_NAME,
@@ -543,10 +546,12 @@ pub(super) fn collect_mv_virtual_speaker_name_writes_from_commands(
                 virtual_speaker.speaker,
             ));
         }
+        let translated_body =
+            (!virtual_speaker.body_text.is_empty()).then_some(virtual_speaker.body_text.as_str());
         let translated_text = render_mv_virtual_speaker_line_from_fact_template(
             fact_template,
             translated_speaker,
-            !virtual_speaker.body_text.is_empty(),
+            translated_body,
         )?;
         targets.push((speaker_line_path, translated_text));
     }
@@ -581,7 +586,7 @@ fn find_mv_virtual_namebox_fact_template<'a>(
 fn render_mv_virtual_speaker_line_from_fact_template(
     fact_template: &MvVirtualNameboxFactTemplate,
     translated_speaker: &str,
-    include_body: bool,
+    translated_body: Option<&str>,
 ) -> Result<String, String> {
     if fact_template.render_parts.is_empty() {
         return Err(format!(
@@ -589,63 +594,21 @@ fn render_mv_virtual_speaker_line_from_fact_template(
             fact_template.location_path
         ));
     }
-    let mut rendered = String::new();
-    let mut has_speaker_part = false;
-    for part in &fact_template.render_parts {
-        if part.part_kind == "speaker" {
-            has_speaker_part = true;
-            rendered.push_str(&render_text_fact_speaker_part(
-                &fact_template.role,
-                translated_speaker,
-                &part.raw_text,
-            ));
-            continue;
-        }
-        if part.part_kind == "translated_body" || part.template_key == "body" {
-            if !include_body {
-                break;
-            }
-            rendered.push_str(&render_text_fact_body_part(
-                &part.raw_text,
-                &fact_template.body_text,
-            ));
-            continue;
-        }
-        rendered.push_str(&part.raw_text);
-    }
-    if !has_speaker_part {
+    if !fact_template
+        .render_parts
+        .iter()
+        .any(|part| part.part_kind == "speaker")
+    {
         return Err(format!(
             "MV 虚拟名字框当前文本事实缺少说话人片段，不能写入 speaker_names；请重新运行 rebuild-text-index: {}",
             fact_template.location_path
         ));
     }
-    if !include_body {
-        while rendered.ends_with('\n') || rendered.ends_with('\r') {
-            rendered.pop();
-        }
-    }
-    Ok(rendered)
-}
-
-fn render_text_fact_speaker_part(
-    source_role: &str,
-    translated_speaker: &str,
-    raw_speaker_part: &str,
-) -> String {
-    let Some(suffix) = raw_speaker_part.strip_prefix(source_role) else {
-        return translated_speaker.to_string();
-    };
-    format!("{translated_speaker}{suffix}")
-}
-
-fn render_text_fact_body_part(raw_body_part: &str, body_text: &str) -> String {
-    let prefix_len = raw_body_part.len() - raw_body_part.trim_start().len();
-    let suffix_len = raw_body_part.len() - raw_body_part.trim_end().len();
-    let prefix = &raw_body_part[..prefix_len];
-    let suffix = if suffix_len == 0 {
-        ""
-    } else {
-        &raw_body_part[raw_body_part.len() - suffix_len..]
-    };
-    format!("{prefix}{body_text}{suffix}")
+    render_mv_virtual_speaker_line_from_render_parts(
+        &fact_template.location_path,
+        &fact_template.role,
+        &fact_template.render_parts,
+        translated_speaker,
+        translated_body,
+    )
 }

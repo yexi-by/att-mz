@@ -3401,6 +3401,28 @@ fn mv_virtual_namebox_fact_content(
         }
         return mv_virtual_namebox_content_from_parsed(parsed, row.location_path.clone()).map(Some);
     }
+    if let Some((first_source_line_path, first_body_line)) = row
+        .source_line_paths
+        .first()
+        .zip(row.original_lines.first())
+    {
+        let Some(raw_text) = command_text_by_location_path(data_files, first_source_line_path)
+        else {
+            return Ok(None);
+        };
+        if let Some(mut parsed) =
+            parse_mv_virtual_speaker_line(context, &raw_text, first_source_line_path)?
+            && parsed.body_text == *first_body_line
+        {
+            append_mv_virtual_body_continuation_to_fact_parts(
+                &mut parsed.fact_parts,
+                &row.original_lines[1..],
+            );
+            parsed.body_text = translatable_text;
+            return mv_virtual_namebox_content_from_parsed(parsed, row.location_path.clone())
+                .map(Some);
+        }
+    }
     if translatable_text.is_empty() {
         return Ok(None);
     }
@@ -3463,6 +3485,23 @@ fn append_standalone_body_to_mv_fact_parts(
     {
         fact_parts.render_parts.pop();
     }
+    append_mv_virtual_body_text_to_fact_parts(fact_parts, body_text);
+}
+
+fn append_mv_virtual_body_continuation_to_fact_parts(
+    fact_parts: &mut MvVirtualNameboxFactParts,
+    body_lines: &[String],
+) {
+    if body_lines.is_empty() {
+        return;
+    }
+    append_mv_virtual_body_text_to_fact_parts(fact_parts, &body_lines.join("\n"));
+}
+
+fn append_mv_virtual_body_text_to_fact_parts(
+    fact_parts: &mut MvVirtualNameboxFactParts,
+    body_text: &str,
+) {
     append_literal_to_mv_fact_parts(fact_parts, "\n");
     fact_parts
         .render_parts
@@ -3476,7 +3515,12 @@ fn append_standalone_body_to_mv_fact_parts(
     fact_parts.raw_text.push_str(body_text);
     fact_parts.visible_text.push('\n');
     fact_parts.visible_text.push_str(body_text);
-    fact_parts.translatable_text = body_text.to_string();
+    if fact_parts.translatable_text.is_empty() {
+        fact_parts.translatable_text = body_text.to_string();
+    } else {
+        fact_parts.translatable_text.push('\n');
+        fact_parts.translatable_text.push_str(body_text);
+    }
 }
 
 fn append_literal_to_mv_fact_parts(fact_parts: &mut MvVirtualNameboxFactParts, literal: &str) {

@@ -855,6 +855,98 @@ fn build_plan_writes_mv_terminology_virtual_namebox_from_render_parts_preserves_
 }
 
 #[test]
+fn build_plan_writes_mv_multiline_virtual_namebox_from_current_fact() {
+    let fixture = create_fixture_dir("att_mz_write_plan_mv_multiline_namebox");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_mv_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    write_mv_data_origin_and_active(
+        &game_dir,
+        "CommonEvents.json",
+        r#"[null,{"id":1,"list":[{"code":101,"parameters":["ShionThree",0,0,2]},{"code":401,"parameters":["\n<Shion:>And to have an opportunity"]},{"code":401,"parameters":["a skilled baker like Mr.Masaru..."]},{"code":0,"parameters":[]}]}]"#,
+    );
+    insert_mv_angle_namebox_rule_without_space(&db_path);
+    insert_field_term(&db_path, "speaker_names", "Shion", "诗音");
+    insert_mv_multiline_angle_namebox_text_fact(
+        &db_path,
+        "CommonEvents.json/1/0",
+        "Shion",
+        "\n<Shion:>And to have an opportunity\na skilled baker like Mr.Masaru...",
+        "And to have an opportunity\na skilled baker like Mr.Masaru...",
+    );
+    let connection = Connection::open(&db_path).expect("测试数据库应可打开");
+    insert_translation_item_for_current_fact(
+        &connection,
+        "CommonEvents.json/1/0",
+        "long_text",
+        Some("Shion"),
+        r#"["And to have an opportunity","a skilled baker like Mr.Masaru..."]"#,
+        r#"["CommonEvents.json/1/1","CommonEvents.json/1/2"]"#,
+        r#"["译文第一行","译文第二行"]"#,
+    );
+    drop(connection);
+
+    let output = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect("MV 多行虚拟名字框应通过写回计划");
+    let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
+    let content = planned_file_content(&value, "data/CommonEvents.json");
+
+    assert!(content.contains(r#"\n<诗音:>译文第一行"#));
+    assert!(content.contains("译文第二行"));
+    assert!(!content.contains("a skilled baker like Mr.Masaru"));
+
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
+fn build_plan_writes_mv_multiline_virtual_namebox_speaker_term_without_smearing_body() {
+    let fixture = create_fixture_dir("att_mz_write_plan_mv_multiline_namebox_term");
+    let game_dir = fixture.join("game");
+    let db_path = fixture.join("game.db");
+    create_minimal_mv_game_files(&game_dir);
+    create_minimal_database(&db_path);
+    write_mv_data_origin_and_active(
+        &game_dir,
+        "CommonEvents.json",
+        r#"[null,{"id":1,"list":[{"code":101,"parameters":["ShionThree",0,0,2]},{"code":401,"parameters":["\n<Shion:>And to have an opportunity"]},{"code":401,"parameters":["a skilled baker like Mr.Masaru..."]},{"code":0,"parameters":[]}]}]"#,
+    );
+    insert_mv_angle_namebox_rule_without_space(&db_path);
+    insert_field_term(&db_path, "speaker_names", "Shion", "诗音");
+    insert_mv_multiline_angle_namebox_text_fact(
+        &db_path,
+        "CommonEvents.json/1/0",
+        "Shion",
+        "\n<Shion:>And to have an opportunity\na skilled baker like Mr.Masaru...",
+        "And to have an opportunity\na skilled baker like Mr.Masaru...",
+    );
+
+    let output = build_write_back_plan_impl(
+        &game_dir.to_string_lossy(),
+        &db_path.to_string_lossy(),
+        &minimal_setting_payload().to_string(),
+        "rebuild_active_runtime",
+        false,
+    )
+    .expect("MV 多行虚拟名字框 speaker_names 应通过写回计划");
+    let value: Value = serde_json::from_str(&output).expect("写回计划输出应是 JSON");
+    let content = planned_file_content(&value, "data/CommonEvents.json");
+
+    assert_eq!(value["summary"]["terminology_written_count"], 1);
+    assert!(content.contains(r#"\n<诗音:>And to have an opportunity"#));
+    assert!(content.contains("a skilled baker like Mr.Masaru..."));
+    assert!(!content.contains(r#"\n<诗音:>And to have an opportunity\na skilled baker"#));
+
+    fs::remove_dir_all(fixture).expect("测试目录应可清理");
+}
+
+#[test]
 fn build_plan_rejects_mv_terminology_virtual_namebox_without_render_parts() {
     let fixture = create_fixture_dir("att_mz_write_plan_mv_terminology_missing_parts");
     let game_dir = fixture.join("game");
@@ -3115,6 +3207,25 @@ fn insert_mv_angle_namebox_rule(db_path: &Path) {
     );
 }
 
+fn insert_mv_angle_namebox_rule_without_space(db_path: &Path) {
+    let pattern = r"^<(?P<speaker>[^:<>]+):>(?P<body>.*)$";
+    insert_runtime_rule(
+        db_path,
+        "mv_virtual_namebox",
+        0,
+        "pcre2_pattern",
+        pattern,
+        json!({
+            "name": "angle-inline-no-space",
+            "pattern": pattern,
+            "speaker_group": "speaker",
+            "body_group": "body",
+            "speaker_policy": "translate",
+            "render_template": "<{speaker}:>{body}",
+        }),
+    );
+}
+
 fn insert_mv_virtual_namebox_text_fact(
     db_path: &Path,
     location_path: &str,
@@ -3138,7 +3249,7 @@ fn insert_mv_virtual_namebox_text_fact(
     insert_mv_virtual_namebox_text_fact_with_parts(
         db_path,
         location_path,
-        source_line_path,
+        &[source_line_path],
         role,
         raw_text,
         translatable_text,
@@ -3167,7 +3278,43 @@ fn insert_mv_quote_namebox_text_fact(
     insert_mv_virtual_namebox_text_fact_with_parts(
         db_path,
         location_path,
-        source_line_path,
+        &[source_line_path],
+        role,
+        raw_text,
+        translatable_text,
+        Some(render_parts.as_slice()),
+    );
+}
+
+fn insert_mv_multiline_angle_namebox_text_fact(
+    db_path: &Path,
+    location_path: &str,
+    role: &str,
+    raw_text: &str,
+    translatable_text: &str,
+) {
+    let mut translatable_lines = translatable_text.split('\n');
+    let first_line = translatable_lines
+        .next()
+        .expect("测试多行 MV 虚拟名字框至少应有首行正文");
+    let continuation = translatable_lines.collect::<Vec<_>>().join("\n");
+    let render_parts = [
+        ("literal", "\n<", "", "literal"),
+        ("speaker", role, role, "speaker"),
+        ("literal", ":>", "", "literal"),
+        ("translated_body", first_line, first_line, "body"),
+        ("literal", "\n", "\n", "literal"),
+        (
+            "translated_body",
+            continuation.as_str(),
+            continuation.as_str(),
+            "body",
+        ),
+    ];
+    insert_mv_virtual_namebox_text_fact_with_parts(
+        db_path,
+        location_path,
+        &["CommonEvents.json/1/1", "CommonEvents.json/1/2"],
         role,
         raw_text,
         translatable_text,
@@ -3178,7 +3325,7 @@ fn insert_mv_quote_namebox_text_fact(
 fn insert_mv_virtual_namebox_text_fact_with_parts(
     db_path: &Path,
     location_path: &str,
-    source_line_path: &str,
+    source_line_paths: &[&str],
     role: &str,
     raw_text: &str,
     translatable_text: &str,
@@ -3186,15 +3333,18 @@ fn insert_mv_virtual_namebox_text_fact_with_parts(
 ) {
     let connection = Connection::open(db_path).expect("测试数据库应可打开");
     ensure_test_text_fact_schema(&connection);
-    let source_line_paths =
-        serde_json::to_string(&vec![source_line_path]).expect("source_line_paths 应可序列化");
+    let source_line_paths_json =
+        serde_json::to_string(&source_line_paths).expect("source_line_paths 应可序列化");
+    let original_lines_json =
+        serde_json::to_string(&translatable_text.split('\n').collect::<Vec<_>>())
+            .expect("original_lines 应可序列化");
     upsert_test_text_index_item(
         &connection,
         location_path,
         "long_text",
         Some(role),
-        &serde_json::to_string(&vec![translatable_text]).expect("original_lines 应可序列化"),
-        &source_line_paths,
+        &original_lines_json,
+        &source_line_paths_json,
         1,
     );
     let fact_id = test_fact_id(location_path);
