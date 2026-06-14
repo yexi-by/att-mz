@@ -28,10 +28,15 @@ uv run maturin develop --release
 
 ## 模型配置
 
-复制或编辑 `<项目目录>\setting.toml`，填写 OpenAI 兼容接口配置：
+复制或编辑 `<项目目录>\setting.toml`，填写模型客户端配置：
 
 ```toml
 [llm]
+default_client = "main"
+
+[[llm.clients]]
+name = "main"
+provider_type = "openai"
 base_url = "https://<模型服务地址>/v1"
 api_key = "<API Key>"
 model = "<模型名>"
@@ -42,7 +47,9 @@ ja = "prompts/text_translation_ja_to_zh_system.md"
 en = "prompts/text_translation_en_to_zh_system.md"
 ```
 
-也可以用环境变量覆盖敏感配置。源码运行时所有命令都使用开发版入口；所有命令 stdout 默认输出机器可读报告；只导出文件的步骤按 `--output` 文件验收：
+`provider_type` 当前只支持 `openai`，表示 OpenAI 兼容接口。需要配置多个模型服务时，继续追加 `[[llm.clients]]` 并使用不同 `name`；命令行只通过 `--llm-client <客户端名称>` 选择，模型名、超时、地址和 API Key 必须写在所选客户端配置里。
+
+源码运行时所有命令都使用开发版入口；所有命令 stdout 默认输出机器可读报告；只导出文件的步骤按 `--output` 文件验收：
 
 ```powershell
 uv run python main.py <命令> ...
@@ -221,6 +228,12 @@ uv run python main.py rebuild-text-index --game <游戏标题>
 
 ```powershell
 uv run python main.py translate --game <游戏标题> --max-items 3
+```
+
+需要临时切换已配置的模型客户端时：
+
+```powershell
+uv run python main.py translate --game <游戏标题> --llm-client <客户端名称>
 ```
 
 查看状态和范围：
@@ -415,4 +428,4 @@ uv run python scripts/benchmark_small_tasks.py `
   --max-reset-ms 1000
 ```
 
-脚本会复制样本和数据库到临时工作目录，先执行 `rebuild-text-index`，再计时普通 `quality-report`、`translate --max-items`、`import-manual-translations` 和 `reset-translations --input`。默认会启动本地假 OpenAI 兼容服务并通过环境变量覆盖临时配置，不消耗真实模型额度；只有显式传入 `--allow-real-llm` 时才使用当前模型配置。结果里的 `threshold_failures`、`command_failures` 和 `command_warnings` 都应为空；每个 task 都会记录 `elapsed_ms`、`return_code`、`report_status`、索引状态、阶段耗时和 Rust 线程数。样本路径、游戏标题和数据库路径必须通过参数传入，不要把本机私有路径写进脚本或文档。
+脚本会复制样本和数据库到临时工作目录，先执行 `rebuild-text-index`，再计时普通 `quality-report`、`translate --max-items`、`import-manual-translations` 和 `reset-translations --input`。默认会启动本地假 OpenAI 兼容服务，并把临时 `setting.toml` 指向该假服务客户端，不消耗真实模型额度；只有显式传入 `--allow-real-llm` 时才使用当前模型配置。结果里的 `threshold_failures`、`command_failures` 和 `command_warnings` 都应为空；每个 task 都会记录 `elapsed_ms`、`return_code`、`report_status`、索引状态、阶段耗时和 Rust 线程数。样本路径、游戏标题和数据库路径必须通过参数传入，不要把本机私有路径写进脚本或文档。

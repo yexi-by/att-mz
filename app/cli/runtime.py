@@ -151,8 +151,7 @@ def build_setting_overrides(args: argparse.Namespace) -> SettingOverrides:
     """从 CLI 参数构建配置覆盖对象。"""
     rpm_value, rpm_is_set = read_optional_rpm_arg(args, "translation_rpm")
     return SettingOverrides(
-        llm_model=read_optional_str_arg(args, "llm_model"),
-        llm_timeout=read_optional_int_arg(args, "llm_timeout"),
+        llm_client_name=read_optional_str_arg(args, "llm_client"),
         translation_token_size=read_optional_int_arg(args, "translation_token_size"),
         translation_factor=read_optional_float_arg(args, "translation_factor"),
         translation_max_command_items=read_optional_int_arg(

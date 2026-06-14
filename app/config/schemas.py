@@ -6,9 +6,10 @@
 占位符规则由当前游戏数据库或 CLI 显式输入提供。
 """
 
+import re
 from typing import Annotated, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from app.language import (
     DEFAULT_SOURCE_LANGUAGE,
@@ -27,9 +28,16 @@ class StrictBaseModel(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
 
-class LLMSetting(StrictBaseModel):
-    """正文翻译使用的 OpenAI 兼容服务连接配置。"""
+type LLMProviderType = Literal["openai"]
 
+LLM_CLIENT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+class LLMClientSetting(StrictBaseModel):
+    """一个可被命令行选择的模型客户端配置。"""
+
+    name: str = Field(title="客户端名称", description="命令行选择模型客户端时使用的唯一名称。")
+    provider_type: LLMProviderType = Field(title="提供商类型", description="当前只支持 openai。")
     base_url: str = Field(title="服务 URL", description="模型服务地址。")
     api_key: str = Field(title="API 密钥", description="访问模型服务所需凭据。")
     model: str = Field(title="模型名称", description="实际调用的模型标识。")
@@ -44,7 +52,116 @@ class LLMSetting(StrictBaseModel):
     @classmethod
     def _validate_request_body_extra(cls, value: object) -> LLMRequestBodyExtra:
         """解析并校验模型请求体额外参数。"""
-        return normalize_request_body_extra(value, context="llm.request_body_extra")
+        return normalize_request_body_extra(value, context="llm.clients.request_body_extra")
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        """客户端名称必须适合作为稳定命令行标识。"""
+        if not LLM_CLIENT_NAME_PATTERN.fullmatch(value):
+            raise ValueError("llm.clients.name 只能使用小写字母、数字、短横线和下划线")
+        return value
+
+    @field_validator("provider_type", mode="before")
+    @classmethod
+    def _validate_provider_type(cls, value: object) -> object:
+        """当前只开放 OpenAI 兼容协议类型。"""
+        if value != "openai":
+            raise ValueError("llm.clients.provider_type 当前只支持 openai")
+        return value
+
+    def report_payload(self) -> dict[str, str]:
+        """返回适合写入报告的客户端摘要。"""
+        return {
+            "name": self.name,
+            "provider_type": self.provider_type,
+            "model": self.model,
+        }
+
+
+class LLMSetting(StrictBaseModel):
+    """正文翻译可选模型客户端配置。"""
+
+    default_client: str = Field(title="默认客户端名称", description="命令未指定时使用的客户端。")
+    clients: list[LLMClientSetting] = Field(title="模型客户端列表")
+    _active_client: LLMClientSetting = PrivateAttr()
+
+    @model_validator(mode="after")
+    def _validate_clients_and_select_default(self) -> "LLMSetting":
+        """校验客户端集合并选中默认客户端。"""
+        if not self.clients:
+            raise ValueError("llm.clients 至少需要配置一个模型客户端")
+        names = [client.name for client in self.clients]
+        duplicate_names = sorted({name for name in names if names.count(name) > 1})
+        if duplicate_names:
+            raise ValueError(f"llm.clients 存在重复客户端名称: {'、'.join(duplicate_names)}")
+        self.select_active_client(None)
+        return self
+
+    @property
+    def active_client(self) -> LLMClientSetting:
+        """返回本次命令实际使用的模型客户端。"""
+        return self._active_client
+
+    @property
+    def client_names(self) -> list[str]:
+        """返回配置中的客户端名称列表。"""
+        return [client.name for client in self.clients]
+
+    @property
+    def name(self) -> str:
+        """返回本次命令实际使用的客户端名称。"""
+        return self.active_client.name
+
+    @property
+    def provider_type(self) -> LLMProviderType:
+        """返回本次命令实际使用的提供商类型。"""
+        return self.active_client.provider_type
+
+    @property
+    def base_url(self) -> str:
+        """返回本次命令实际使用的模型服务地址。"""
+        return self.active_client.base_url
+
+    @property
+    def api_key(self) -> str:
+        """返回本次命令实际使用的 API Key。"""
+        return self.active_client.api_key
+
+    @property
+    def model(self) -> str:
+        """返回本次命令实际使用的模型名称。"""
+        return self.active_client.model
+
+    @property
+    def timeout(self) -> int:
+        """返回本次命令实际使用的请求超时秒数。"""
+        return self.active_client.timeout
+
+    @property
+    def request_body_extra(self) -> LLMRequestBodyExtra:
+        """返回本次命令实际使用的额外请求体参数。"""
+        return self.active_client.request_body_extra
+
+    def select_active_client(self, client_name: str | None) -> None:
+        """按命令行选择或默认配置选中模型客户端。"""
+        selected_name = client_name or self.default_client
+        clients_by_name = {client.name: client for client in self.clients}
+        selected_client = clients_by_name.get(selected_name)
+        if selected_client is None:
+            available = "、".join(sorted(clients_by_name)) or "无"
+            if client_name is None:
+                raise ValueError(
+                    f"llm.default_client 指向的模型客户端不存在: {selected_name}；可用客户端: {available}"
+                )
+            raise ValueError(
+                f"命令指定的模型客户端不存在: {selected_name}；可用客户端: {available}"
+            )
+        self._active_client = selected_client
+
+    def active_client_report(self) -> dict[str, str]:
+        """返回本次命令所选客户端的报告摘要。"""
+        return self.active_client.report_payload()
 
 
 class TranslationContextSetting(StrictBaseModel):
@@ -286,6 +403,8 @@ __all__: list[str] = [
     "DebugSetting",
     "DebugTimingDetailLevel",
     "DebugTimingsSetting",
+    "LLMClientSetting",
+    "LLMProviderType",
     "LLMSetting",
     "RuntimeRustThreads",
     "RuntimeSetting",

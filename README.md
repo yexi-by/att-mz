@@ -65,6 +65,11 @@
 
 ```toml
 [llm]
+default_client = "main"
+
+[[llm.clients]]
+name = "main"
+provider_type = "openai"
 base_url = "https://你的服务商地址/v1"
 api_key = "你的API Key"
 model = "模型名称"
@@ -73,9 +78,9 @@ timeout = 600
 
 4. 保存、关闭
 
-`base_url`、`api_key`、`model` 这三个值你的 API 服务商会提供。常用的服务商有阿里云百炼、DeepSeek、硅基流动、OpenRouter 等。不知道填什么的话，直接问你的 Agent：「我的 API 服务商是 xxx，帮我填好 A.T.T MZ 的模型配置」。
+`provider_type` 目前填 `openai`，表示 OpenAI 兼容接口。`base_url`、`api_key`、`model` 这三个值你的 API 服务商会提供。常用的服务商有阿里云百炼、DeepSeek、硅基流动、OpenRouter 等。不知道填什么的话，直接问你的 Agent：「我的 API 服务商是 xxx，帮我填好 A.T.T MZ 的模型配置」。
 
-临时覆盖模型地址和 Key 时，使用当前环境变量：`ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。
+如果想准备多个模型客户端，继续追加 `[[llm.clients]]` 并使用不同 `name`。执行翻译时可让 Agent 给 `doctor`、`translate` 或 `run-all` 加 `--llm-client <客户端名称>` 选择；模型名、超时、地址和 Key 都写在对应客户端配置里。
 
 > 💡 如果你习惯用源码运行，看仓库里的 [进阶教学与源码编译](https://github.com/yexi-by/att-mz/blob/main/docs/guides/advanced-usage.md)。普通使用不需要。
 

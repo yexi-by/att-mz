@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="检查项目配置、模型连接和目标游戏状态")
     add_optional_target_arguments(doctor_parser, required=False)
+    add_llm_client_argument(doctor_parser)
     _ = doctor_parser.add_argument("--no-check-llm", action="store_true", help="跳过模型连通性检查")
 
     probe_source_language_parser = subparsers.add_parser(
@@ -661,6 +662,12 @@ def add_translation_limit_arguments(parser: argparse.ArgumentParser) -> None:
     _ = group.add_argument("--stop-on-error-rate", type=float, help="检查没通过的译文比例达到该值时停止本轮")
 
 
+def add_llm_client_argument(parser: argparse.ArgumentParser) -> None:
+    """给会调用模型的命令增加模型客户端选择参数。"""
+    group = parser.add_argument_group("模型客户端")
+    _ = group.add_argument("--llm-client", help="本次命令使用的 setting.toml 模型客户端名称")
+
+
 def add_setting_override_arguments(
     parser: argparse.ArgumentParser,
     *,
@@ -671,8 +678,7 @@ def add_setting_override_arguments(
     """为命令增加可实际生效的 `setting.toml` 覆盖参数。"""
     group = parser.add_argument_group("配置覆盖")
     if include_translation:
-        _ = group.add_argument("--llm-model", help="正文模型名称")
-        _ = group.add_argument("--llm-timeout", type=int, help="正文模型请求超时秒数")
+        add_llm_client_argument(parser)
         _ = group.add_argument("--translation-token-size", type=int, help="每批目标 token 上限")
         _ = group.add_argument("--translation-factor", type=float, help="字符到 token 的换算系数")
         _ = group.add_argument("--translation-max-command-items", type=int, help="同角色连续补充条目上限")

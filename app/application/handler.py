@@ -11,7 +11,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 from app.application.errors import ApplicationBusinessError, WorkflowGateError, WriteBackGateError
 from app.application.file_writer import WriteOperation
@@ -1011,6 +1011,7 @@ class TranslationHandler:
         prepare_started = time.perf_counter()
         set_progress, advance_progress, set_status = callbacks
         game_title = session.game_title
+        llm_client_report = cast(JsonObject, setting.llm.active_client_report())
         set_status("检查持久文本范围索引")
         text_index_status = "used"
         text_index_rebuild_summary: JsonObject | None = None
@@ -1044,6 +1045,7 @@ class TranslationHandler:
                     total_pending_count=0,
                     text_index_status="rebuild_failed",
                     text_index_rebuild_summary=text_index_rebuild_summary,
+                    llm_client=llm_client_report,
                 )
         metadata = await session.read_text_index_metadata()
         if metadata is None:
@@ -1060,7 +1062,8 @@ class TranslationHandler:
                 total_pending_count=0,
                 text_index_status="rebuild_failed",
                 text_index_rebuild_summary=text_index_rebuild_summary,
-        )
+                llm_client=llm_client_report,
+            )
 
         set_status("检查正文翻译前置条件")
         external_rule_gate_errors = await collect_text_index_external_rule_gate_errors(
@@ -1096,6 +1099,7 @@ class TranslationHandler:
                 total_pending_count=0,
                 text_index_status="rebuild_failed" if text_index_rebuild_summary is not None else text_index_status,
                 text_index_rebuild_summary=text_index_rebuild_summary,
+                llm_client=llm_client_report,
             )
 
         total_extracted_items = await count_current_text_facts(session)
@@ -1113,6 +1117,7 @@ class TranslationHandler:
                 total_pending_count=0,
                 text_index_status=text_index_status,
                 text_index_rebuild_summary=text_index_rebuild_summary,
+                llm_client=llm_client_report,
             )
         total_pending_count = await count_pending_text_facts(session)
         if total_pending_count == 0:
@@ -1128,6 +1133,7 @@ class TranslationHandler:
                 total_pending_count=0,
                 text_index_status=text_index_status,
                 text_index_rebuild_summary=text_index_rebuild_summary,
+                llm_client=llm_client_report,
             )
 
         pending_translation_data_map = await read_pending_text_fact_translation_data_map(
@@ -1193,6 +1199,7 @@ class TranslationHandler:
     ) -> TextTranslationSummary:
         """执行已经构建好的正文翻译批次，并维护翻译运行记录。"""
         game_title = session.game_title
+        llm_client_report = cast(JsonObject, setting.llm.active_client_report())
         if not batches:
             blocked_reason = "相同原文合并后，没有可送入模型的批次"
             logger.warning(f"[tag.warning]{blocked_reason}[/tag.warning] 游戏 [tag.count]{game_title}[/tag.count]")
@@ -1212,6 +1219,7 @@ class TranslationHandler:
                     run_state=TranslationRunState(),
                     run_batches_wall_ms=0,
                 ),
+                llm_client=llm_client_report,
             )
 
         run_record = await session.start_translation_run(
@@ -1296,6 +1304,7 @@ class TranslationHandler:
                 cancelled_unsent_item_count=run_state.cancelled_unsent_item_count,
                 sent_after_stop_completed_batch_count=run_state.sent_after_stop_completed_batch_count,
                 sent_after_stop_completed_item_count=run_state.sent_after_stop_completed_item_count,
+                llm_client=llm_client_report,
             )
         run_batches_wall_ms = int((time.perf_counter() - run_batches_started) * 1000)
         return TextTranslationSummary(
@@ -1320,6 +1329,7 @@ class TranslationHandler:
             cancelled_unsent_item_count=run_state.cancelled_unsent_item_count,
             sent_after_stop_completed_batch_count=run_state.sent_after_stop_completed_batch_count,
             sent_after_stop_completed_item_count=run_state.sent_after_stop_completed_item_count,
+            llm_client=llm_client_report,
         )
 
     async def _translate_text_in_session(

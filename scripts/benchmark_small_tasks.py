@@ -15,7 +15,6 @@ from pathlib import Path
 from threading import Thread
 from typing import cast
 
-from app.config.environment import LLM_API_KEY_ENV_NAME, LLM_BASE_URL_ENV_NAME
 from app.rmmz.control_codes import ALL_PLACEHOLDER_PATTERN
 from scripts.benchmark_rebuild_active_runtime import (
     BenchmarkOptions,
@@ -124,8 +123,10 @@ def run_benchmark(options: SmallTaskBenchmarkOptions, prepared: PreparedBenchmar
     if options.use_fake_llm:
         fake_server = FakeOpenAICompatibleServer()
         fake_server.start()
-        env[LLM_BASE_URL_ENV_NAME] = fake_server.base_url
-        env[LLM_API_KEY_ENV_NAME] = "att-mz-benchmark-fake-key"
+        write_fake_llm_client_setting(
+            prepared.app_home / "setting.toml",
+            base_url=fake_server.base_url,
+        )
     runs: list[dict[str, object]] = []
     try:
         for run_index in range(1, options.runs + 1):
@@ -363,6 +364,43 @@ def quality_report_command(game_title: str) -> list[str]:
 def translate_max_items_command(game_title: str, max_items: int) -> list[str]:
     """返回小批翻译命令。"""
     return debug_cli_command("translate", "--game", game_title, "--max-items", str(max_items))
+
+
+def write_fake_llm_client_setting(setting_path: Path, *, base_url: str) -> None:
+    """把临时配置中的模型客户端替换为本地假 OpenAI 兼容服务。"""
+    fake_section = [
+        "[llm]",
+        'default_client = "benchmark-fake"',
+        "",
+        "[[llm.clients]]",
+        'name = "benchmark-fake"',
+        'provider_type = "openai"',
+        f'base_url = "{base_url}"',
+        'api_key = "att-mz-benchmark-fake-key"',
+        'model = "att-mz-benchmark-fake"',
+        "timeout = 30",
+        "",
+    ]
+    lines = setting_path.read_text(encoding="utf-8-sig").splitlines()
+    output_lines: list[str] = []
+    skipping_llm_section = False
+    inserted = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "[llm]":
+            output_lines.extend(fake_section)
+            skipping_llm_section = True
+            inserted = True
+            continue
+        if skipping_llm_section:
+            if stripped.startswith("[") and not stripped.startswith("[llm") and not stripped.startswith("[[llm"):
+                skipping_llm_section = False
+                output_lines.append(line)
+            continue
+        output_lines.append(line)
+    if not inserted:
+        output_lines = [*fake_section, *output_lines]
+    setting_path.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
 
 
 def import_manual_translations_command(game_title: str, input_path: Path) -> list[str]:

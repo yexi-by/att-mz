@@ -15,6 +15,8 @@ def load_runtime_setting(
     """加载配置，并把正文翻译模型服务注册到 LLM 门面。"""
     setting = load_setting(overrides=overrides, source_language=source_language)
     llm_handler.configure(
+        client_name=setting.llm.name,
+        provider_type=setting.llm.provider_type,
         base_url=setting.llm.base_url,
         api_key=setting.llm.api_key,
         timeout=setting.llm.timeout,

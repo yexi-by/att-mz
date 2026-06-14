@@ -179,6 +179,8 @@ def test_llm_message_recorder_writes_markdown_and_index(tmp_path: Path) -> None:
     request = LLMMessageRequest(
         task_key="text-translation",
         task_label="正文|翻译",
+        client_name="file-client",
+        provider_type="openai",
         model="model|x",
         base_url="https://api.example.com/v1",
         api_key_display="<redacted>",
@@ -210,6 +212,10 @@ def test_llm_message_recorder_writes_markdown_and_index(tmp_path: Path) -> None:
     assert "# LLM 调用 000001" in markdown
     assert "- task_key: text-translation" in markdown
     assert "- task_label: 正文|翻译" in markdown
+    assert "- llm_client: file-client" in markdown
+    assert "- provider_type: openai" in markdown
+    assert '"llm_client": {' in markdown
+    assert '"name": "file-client"' in markdown
     assert '"api_key": "<redacted>"' in markdown
     assert '"private_token": "<redacted>"' in markdown
     assert '"authorization": "<redacted>"' in markdown
@@ -244,6 +250,8 @@ def test_llm_message_recorder_write_failure_is_explicit(
     request = LLMMessageRequest(
         task_key="llm",
         task_label="LLM 调用",
+        client_name="file-client",
+        provider_type="openai",
         model="model",
         base_url="https://api.example.com/v1",
         api_key_display="<redacted>",

@@ -23,8 +23,6 @@ from .structured_placeholder_rules import (
     parse_structured_placeholder_rules_import,
 )
 from .environment import (
-    LLM_API_KEY_ENV_NAME,
-    LLM_BASE_URL_ENV_NAME,
     RUNTIME_RUST_THREADS_ENV_NAME,
     EnvironmentOverrides,
     apply_environment_overrides,
@@ -39,6 +37,8 @@ from .schemas import (
     DebugTimingDetailLevel,
     DebugTimingsSetting,
     EventCommandTextSetting,
+    LLMClientSetting,
+    LLMProviderType,
     LLMSetting,
     RuntimeRustThreads,
     RuntimeSetting,
@@ -59,8 +59,8 @@ __all__: list[str] = [
     "DebugTimingsSetting",
     "EnvironmentOverrides",
     "EventCommandTextSetting",
-    "LLM_API_KEY_ENV_NAME",
-    "LLM_BASE_URL_ENV_NAME",
+    "LLMClientSetting",
+    "LLMProviderType",
     "LLMSetting",
     "RUNTIME_RUST_THREADS_ENV_NAME",
     "RuntimeRustThreads",

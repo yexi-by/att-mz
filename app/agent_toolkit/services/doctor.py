@@ -2,19 +2,21 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
+from typing import cast
+
 from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
     JsonObject,
     JsonValue,
+    SettingOverrides,
     TextRules,
     _append_check,
     _current_python_major_minor,
     collect_saved_rule_runtime_errors,
     ensure_db_directory,
     issue,
-    load_environment_overrides,
     load_setting,
     platform,
     resolve_app_path,
@@ -43,7 +45,13 @@ from app.text_index import collect_text_index_placeholder_gate_decisions, detect
 class DoctorAgentMixin:
     """承载 AgentToolkitService 的 DoctorAgentMixin 命令族。"""
 
-    async def doctor(self: AgentServiceContext, *, game_title: str | None, check_llm: bool) -> AgentReport:
+    async def doctor(
+        self: AgentServiceContext,
+        *,
+        game_title: str | None,
+        check_llm: bool,
+        setting_overrides: SettingOverrides | None = None,
+    ) -> AgentReport:
         """检查项目配置、模型连接和可选目标游戏状态。"""
         errors: list[AgentIssue] = []
         warnings: list[AgentIssue] = []
@@ -53,7 +61,6 @@ class DoctorAgentMixin:
             "setting_path": str(resolve_setting_path(self.setting_path)),
         }
         details: JsonObject = {
-            "environment_overrides": [],
             "checks": [],
         }
 
@@ -64,13 +71,10 @@ class DoctorAgentMixin:
             _append_check(details, "python_version", "ok")
 
         try:
-            setting = load_setting(self.setting_path)
+            setting = load_setting(self.setting_path, overrides=setting_overrides)
             _append_check(details, "setting", "ok")
-            summary["llm_model"] = setting.llm.model
+            summary["llm_client"] = cast(JsonObject, setting.llm.active_client_report())
             summary["llm_check_performed"] = check_llm
-            environment_overrides = load_environment_overrides()
-            enabled_names: list[JsonValue] = list(environment_overrides.enabled_names())
-            details["environment_overrides"] = enabled_names
             if not setting.llm.base_url.strip():
                 errors.append(issue("llm_base_url", "模型服务地址为空"))
             if not setting.llm.api_key.strip():
@@ -78,6 +82,8 @@ class DoctorAgentMixin:
             if check_llm:
                 try:
                     self.llm_handler.configure(
+                        client_name=setting.llm.name,
+                        provider_type=setting.llm.provider_type,
                         base_url=setting.llm.base_url,
                         api_key=setting.llm.api_key,
                         timeout=setting.llm.timeout,

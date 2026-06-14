@@ -12,7 +12,7 @@ from app.agent_toolkit import AgentReport, AgentToolkitService
 from app.agent_toolkit.reports import issue
 from app.cli.arguments import read_bool_arg, read_optional_path_arg, read_optional_str_arg, read_str_arg
 from app.cli.errors import CliBusinessError
-from app.cli.runtime import HandlerSession, resolve_optional_target_game_title
+from app.cli.runtime import HandlerSession, build_setting_overrides, resolve_optional_target_game_title
 from app.cli.reports import print_report, write_report_outputs
 from app.game_reset import reset_registered_game
 from app.language import parse_source_language
@@ -114,6 +114,10 @@ async def run_doctor_command(args: argparse.Namespace) -> int:
     game_title = await resolve_optional_target_game_title(args)
     check_llm = not read_bool_arg(args, "no_check_llm")
     service = AgentToolkitService()
-    report = await service.doctor(game_title=game_title, check_llm=check_llm)
+    report = await service.doctor(
+        game_title=game_title,
+        check_llm=check_llm,
+        setting_overrides=build_setting_overrides(args),
+    )
     write_report_outputs(report=report, args=args, title="环境诊断报告")
     return 1 if report.status == "error" else 0

@@ -33,6 +33,8 @@ class LLMHandler:
         """初始化尚未配置的 LLM 客户端。"""
         self.client: AsyncOpenAI | None = None
         self.request_body_extra: LLMRequestBodyExtra = {}
+        self.client_name: str = ""
+        self.provider_type: str = "openai"
         self.base_url: str = ""
         self.api_key_display: str = "<redacted>"
 
@@ -40,12 +42,16 @@ class LLMHandler:
         """清空已配置客户端。"""
         self.client = None
         self.request_body_extra = {}
+        self.client_name = ""
+        self.provider_type = "openai"
         self.base_url = ""
         self.api_key_display = "<redacted>"
 
     def configure(
         self,
         *,
+        client_name: str = "",
+        provider_type: str = "openai",
         base_url: str,
         api_key: str,
         timeout: int,
@@ -62,6 +68,8 @@ class LLMHandler:
             timeout=timeout,
         )
         self.request_body_extra = normalized_request_body_extra
+        self.client_name = client_name
+        self.provider_type = provider_type
         self.base_url = base_url
         self.api_key_display = _redact_api_key(api_key)
 
@@ -122,6 +130,8 @@ class LLMHandler:
             request=LLMMessageRequest(
                 task_key=task_key,
                 task_label=task_label,
+                client_name=self.client_name,
+                provider_type=self.provider_type,
                 model=model,
                 base_url=self.base_url,
                 api_key_display=self.api_key_display,

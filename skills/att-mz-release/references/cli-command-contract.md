@@ -26,7 +26,8 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 - 第一次执行某个阶段时，业务参数和可调开关默认使用 `setting.toml` 与本地配置；命令行只传必需定位参数，例如 `--game`、`--path`、`--input`、`--output`、`--workspace`、`--output-dir`，以及已满足前置条件的确认参数。
 - 用户明确指定值、CLI 输出说明默认配置缺失或不适合当前阶段，或 CLI 契约要求显式传入时，才做最小范围覆盖。一次性差异用 CLI 参数，运行时性能差异用环境变量，长期稳定差异再调整本地配置。
-- 模型地址和 API Key 使用 `ATT_MZ_LLM_BASE_URL`、`ATT_MZ_LLM_API_KEY`。
+- 模型客户端只来自 `setting.toml` 的 `[llm]` / `[[llm.clients]]` 配置；默认使用 `default_client`。需要切换模型服务时，给 `doctor`、`translate` 或 `run-all` 加 `--llm-client <客户端名称>`。
+- 命令行不传模型名、超时、地址和密钥；这些值必须写在所选客户端配置里。
 - Rust 热路径线程数由 `ATT_MZ_RUST_THREADS` 控制；不设置或设为 `0` 时使用默认线程池。不要把性能基线里的 `4` 当运行上限。
 - 需要解释重建索引或翻译阶段耗时时，使用 `--debug --debug-timings`，读取 `summary.diagnostics` 或完整诊断 JSON 中的 `text_index.rebuild.*` 计时与 `runtime.native_thread_count` 计数。普通 summary 只作为业务结果。
 

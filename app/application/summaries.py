@@ -104,6 +104,7 @@ class TextTranslationSummary:
     cancelled_unsent_item_count: int = 0
     sent_after_stop_completed_batch_count: int = 0
     sent_after_stop_completed_item_count: int = 0
+    llm_client: JsonObject | None = None
 
     @property
     def is_blocked(self) -> bool:

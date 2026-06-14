@@ -28,7 +28,7 @@
 | 目标游戏选择 | `add_optional_target_arguments`、`app/cli/runtime.py` | 需要目标游戏的命令使用 `--game` / `--game-path` 二选一；无需目标游戏的命令不要伪造默认目标。 |
 | 配置覆盖 | `add_setting_override_arguments`、`build_setting_overrides` | 每个覆盖参数必须完成定义、读取、校验、应用和测试链路。 |
 | 翻译运行限制 | `add_translation_limit_arguments`、`build_translation_run_limits` | `--max-items`、`--max-batches`、`--time-limit-seconds`、`--stop-on-error-rate` 只用于翻译运行命令。 |
-| 模型环境变量 | `app/config` | 当前契约只使用 `ATT_MZ_LLM_BASE_URL` 和 `ATT_MZ_LLM_API_KEY`。 |
+| 模型客户端 | `app/config/schemas.py`、`add_llm_client_argument` | 模型服务只通过 `setting.toml` 的 `[llm]` / `[[llm.clients]]` 配置；`doctor`、`translate`、`run-all` 只允许用 `--llm-client` 选择客户端。 |
 | Rust 线程 | Rust native / observability | `ATT_MZ_RUST_THREADS` 控制热路径线程数；线程数和阶段耗时通过 diagnostics 表达。 |
 
 ## 输出模式

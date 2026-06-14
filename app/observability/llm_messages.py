@@ -43,6 +43,8 @@ class LLMMessageRequest:
 
     task_key: str
     task_label: str
+    client_name: str
+    provider_type: str
     model: str
     base_url: str
     api_key_display: str
@@ -237,6 +239,11 @@ def _render_message_markdown(
 ) -> str:
     metadata_json: dict[str, object] = {
         "model": request.model,
+        "llm_client": {
+            "name": request.client_name,
+            "provider_type": request.provider_type,
+            "model": request.model,
+        },
         "temperature": request.temperature,
         "base_url": request.base_url,
         "api_key": request.api_key_display,
@@ -250,6 +257,8 @@ def _render_message_markdown(
                 f"- command: {command}",
                 f"- task_key: {request.task_key}",
                 f"- task_label: {request.task_label}",
+                f"- llm_client: {request.client_name}",
+                f"- provider_type: {request.provider_type}",
                 f"- model: {request.model}",
                 f"- base_url: {request.base_url}",
                 f"- temperature: {_format_optional_number(request.temperature)}",

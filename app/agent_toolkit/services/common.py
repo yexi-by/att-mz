@@ -30,7 +30,6 @@ from app.config import (
     load_structured_placeholder_rules_import_text,
     load_structured_placeholder_rules_text,
 )
-from app.config.environment import load_environment_overrides
 from app.external_input import normalize_external_str_list
 from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.llm import ChatMessage, LLMHandler
@@ -3429,7 +3428,6 @@ __all__: list[str] = [
     'load_structured_placeholder_rules_import_text',
     'load_structured_placeholder_rules_import_payload',
     'load_structured_placeholder_rules_text',
-    'load_environment_overrides',
     'DEFAULT_SOURCE_LANGUAGE',
     'SourceLanguage',
     'ChatMessage',
