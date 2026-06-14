@@ -272,6 +272,8 @@ async def test_llm_handler_records_successful_messages_when_recorder_bound(tmp_p
 
     handler = LLMHandler()
     handler.configure(
+        client_name="file-client",
+        provider_type="openai",
         base_url="https://api.example.com/v1",
         api_key="sk-test-secret",
         timeout=10,
@@ -299,6 +301,8 @@ async def test_llm_handler_records_successful_messages_when_recorder_bound(tmp_p
     assert "系统提示词" in markdown
     assert "用户提示词" in markdown
     assert "成功" in markdown
+    assert "- llm_client: file-client" in markdown
+    assert '"provider_type": "openai"' in markdown
     assert "https://api.example.com/v1" in markdown
     assert "sk-test-secret" not in markdown
     assert '"private_token": "<redacted>"' in markdown

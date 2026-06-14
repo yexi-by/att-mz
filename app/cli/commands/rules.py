@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 
 from app.agent_toolkit import AgentIssue, AgentReport, AgentToolkitService
+from app.agent_toolkit.import_impact import rule_import_impact
 from app.agent_toolkit.reports import issue
 from app.cli.arguments import (
     read_bool_arg,
@@ -68,6 +69,12 @@ async def run_import_plugin_rules_command(args: argparse.Namespace) -> int:
         backup_path=summary.deleted_translation_backup_path,
         rule_label="插件规则",
     )
+    impact = rule_import_impact(
+        deleted_translation_count=summary.deleted_translation_items,
+        deleted_translation_backup_path=summary.deleted_translation_backup_path,
+    )
+    details = build_deleted_translation_backup_details(summary.deleted_translation_backup_path)
+    details["import_impact"] = impact.detail_fields()
     report = AgentReport.from_parts(
         errors=[],
         warnings=warnings,
@@ -78,8 +85,9 @@ async def run_import_plugin_rules_command(args: argparse.Namespace) -> int:
             "imported_rule_count": summary.imported_rule_count,
             "deleted_translation_items": summary.deleted_translation_items,
             "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
+            **impact.summary_fields(),
         },
-        details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
+        details=details,
     )
     write_report_outputs(report=report, args=args, title="插件规则导入报告")
     return 0
@@ -139,6 +147,12 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
         backup_path=summary.deleted_translation_backup_path,
         rule_label="事件指令规则",
     )
+    impact = rule_import_impact(
+        deleted_translation_count=summary.deleted_translation_items,
+        deleted_translation_backup_path=summary.deleted_translation_backup_path,
+    )
+    details = build_deleted_translation_backup_details(summary.deleted_translation_backup_path)
+    details["import_impact"] = impact.detail_fields()
     report = AgentReport.from_parts(
         errors=[],
         warnings=warnings,
@@ -149,8 +163,9 @@ async def run_import_event_command_rules_command(args: argparse.Namespace) -> in
             "imported_path_rule_count": summary.imported_path_rule_count,
             "deleted_translation_items": summary.deleted_translation_items,
             "deleted_translation_backup_path": summary.deleted_translation_backup_path or "",
+            **impact.summary_fields(),
         },
-        details=build_deleted_translation_backup_details(summary.deleted_translation_backup_path),
+        details=details,
     )
     write_report_outputs(report=report, args=args, title="事件指令规则导入报告")
     return 0

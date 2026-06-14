@@ -22,7 +22,7 @@ from app.plugin_source_text import (
 )
 from app.rmmz.loader import load_active_runtime_game_data
 from app.rmmz.schema import PlaceholderRuleRecord, PluginSourceRuntimeWriteMapRecord, TranslationItem
-from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array
+from app.rmmz.text_rules import JsonValue, TextRules, coerce_json_value, ensure_json_array, ensure_json_object
 from app.text_facts import read_current_text_fact_translation_items_by_paths
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +93,12 @@ async def test_rule_import_writes_backup_before_commit(
 
     assert report.status in {"ok", "warning"}
     assert report.summary["cleanup_count"] == 1
+    assert report.summary["impact_requires_doctor"] is True
+    assert report.summary["impact_requires_text_index_rebuild"] is True
+    assert report.summary["impact_write_back_probe_affected"] is True
+    assert report.summary["impact_deleted_translation_count"] == 1
+    import_impact = ensure_json_object(report.details["import_impact"], "import_impact")
+    assert import_impact["deleted_translation_count"] == 1
     backup_path = Path(str(report.summary["deleted_translation_backup_path"]))
     assert backup_path.exists()
     assert json.loads(backup_path.read_text(encoding="utf-8"))

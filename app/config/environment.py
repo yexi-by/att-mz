@@ -5,8 +5,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
-LLM_BASE_URL_ENV_NAME = "ATT_MZ_LLM_BASE_URL"
-LLM_API_KEY_ENV_NAME = "ATT_MZ_LLM_API_KEY"
 RUNTIME_RUST_THREADS_ENV_NAME = "ATT_MZ_RUST_THREADS"
 type RuntimeRustThreadsOverride = Literal["auto"] | int
 
@@ -15,25 +13,15 @@ type RuntimeRustThreadsOverride = Literal["auto"] | int
 class EnvironmentOverrides:
     """从环境变量读取到的运行配置覆盖值。"""
 
-    llm_base_url: str | None = None
-    llm_api_key: str | None = None
     rust_threads: RuntimeRustThreadsOverride | None = None
 
     def has_any(self) -> bool:
         """判断当前环境是否提供了覆盖值。"""
-        return (
-            self.llm_base_url is not None
-            or self.llm_api_key is not None
-            or self.rust_threads is not None
-        )
+        return self.rust_threads is not None
 
     def enabled_names(self) -> list[str]:
         """返回已经生效的环境变量名。"""
         names: list[str] = []
-        if self.llm_base_url is not None:
-            names.append(LLM_BASE_URL_ENV_NAME)
-        if self.llm_api_key is not None:
-            names.append(LLM_API_KEY_ENV_NAME)
         if self.rust_threads is not None:
             names.append(RUNTIME_RUST_THREADS_ENV_NAME)
         return names
@@ -42,11 +30,9 @@ class EnvironmentOverrides:
 def load_environment_overrides(
     environ: Mapping[str, str] | None = None,
 ) -> EnvironmentOverrides:
-    """读取模型连接相关环境变量。"""
+    """读取运行环境变量覆盖。"""
     source = os.environ if environ is None else environ
     return EnvironmentOverrides(
-        llm_base_url=_read_non_empty_env(source, LLM_BASE_URL_ENV_NAME),
-        llm_api_key=_read_non_empty_env(source, LLM_API_KEY_ENV_NAME),
         rust_threads=_read_rust_threads_env(source),
     )
 
@@ -59,11 +45,6 @@ def apply_environment_overrides(
     if not overrides.has_any():
         return
 
-    llm = _read_or_create_section(raw_config, "llm")
-    if overrides.llm_base_url is not None:
-        llm["base_url"] = overrides.llm_base_url
-    if overrides.llm_api_key is not None:
-        llm["api_key"] = overrides.llm_api_key
     if overrides.rust_threads is not None:
         runtime = _read_or_create_section(raw_config, "runtime")
         runtime["rust_threads"] = overrides.rust_threads
@@ -117,8 +98,6 @@ def _read_or_create_section(
 
 __all__: list[str] = [
     "EnvironmentOverrides",
-    "LLM_API_KEY_ENV_NAME",
-    "LLM_BASE_URL_ENV_NAME",
     "RUNTIME_RUST_THREADS_ENV_NAME",
     "apply_environment_overrides",
     "load_environment_overrides",

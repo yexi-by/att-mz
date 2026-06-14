@@ -30,7 +30,6 @@ from app.config import (
     load_structured_placeholder_rules_import_text,
     load_structured_placeholder_rules_text,
 )
-from app.config.environment import load_environment_overrides
 from app.external_input import normalize_external_str_list
 from app.language import DEFAULT_SOURCE_LANGUAGE, SourceLanguage
 from app.llm import ChatMessage, LLMHandler
@@ -275,6 +274,27 @@ class AgentServiceContext(Protocol):
         callbacks: QualityProgressCallbacks | None = None,
     ) -> AgentReport:
         """重建当前游戏的持久文本范围索引。"""
+        ...
+
+    async def quality_report(
+        self,
+        *,
+        game_title: str,
+        setting_overrides: SettingOverrides | None = None,
+        callbacks: QualityProgressCallbacks | None = None,
+        include_write_probe: bool = False,
+    ) -> AgentReport:
+        """生成目标游戏当前翻译状态和质量风险报告。"""
+        ...
+
+    async def translation_status(
+        self,
+        *,
+        game_title: str,
+        refresh_scope: bool = False,
+        callbacks: QualityProgressCallbacks | None = None,
+    ) -> AgentReport:
+        """读取最新正文翻译运行状态。"""
         ...
 
     async def _build_source_residual_rule_records(
@@ -1457,10 +1477,28 @@ async def collect_saved_rule_runtime_errors(
     structured_placeholder_rules = await session.read_structured_placeholder_rules()
     mv_virtual_namebox_rules = await session.read_mv_virtual_namebox_rules()
     return [
-        *validate_placeholder_rule_records(placeholder_rules, setting),
-        *validate_structured_placeholder_rule_records(structured_placeholder_rules, setting),
-        *validate_mv_virtual_namebox_rule_records(mv_virtual_namebox_rules, setting),
+        *saved_rule_contract_issues_to_agent_issues(
+            validate_placeholder_rule_records(placeholder_rules, setting),
+            invalid_code="placeholder_rules_invalid",
+        ),
+        *saved_rule_contract_issues_to_agent_issues(
+            validate_structured_placeholder_rule_records(structured_placeholder_rules, setting),
+            invalid_code="structured_placeholder_rules_invalid",
+        ),
+        *saved_rule_contract_issues_to_agent_issues(
+            validate_mv_virtual_namebox_rule_records(mv_virtual_namebox_rules, setting),
+            invalid_code="mv_virtual_namebox_rules_invalid",
+        ),
     ]
+
+
+def saved_rule_contract_issues_to_agent_issues(
+    items: Sequence[AgentIssue],
+    *,
+    invalid_code: str,
+) -> list[AgentIssue]:
+    """把已保存规则运行时错误归到对应规则域，便于 Agent 直接修规则。"""
+    return [issue(invalid_code, item.message) for item in items]
 
 
 def rule_contract_issues_to_agent_issues(items: Sequence[RuleRuntimeIssue]) -> list[AgentIssue]:
@@ -3390,7 +3428,6 @@ __all__: list[str] = [
     'load_structured_placeholder_rules_import_text',
     'load_structured_placeholder_rules_import_payload',
     'load_structured_placeholder_rules_text',
-    'load_environment_overrides',
     'DEFAULT_SOURCE_LANGUAGE',
     'SourceLanguage',
     'ChatMessage',

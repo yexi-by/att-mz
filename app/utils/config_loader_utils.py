@@ -87,6 +87,8 @@ def load_setting(
     raw_config_snapshot = copy.deepcopy(raw_config)
 
     setting = Setting.model_validate(raw_config)
+    if overrides is not None and overrides.llm_client_name is not None:
+        setting.llm.select_active_client(overrides.llm_client_name)
     configure_native_runtime_threads(setting.runtime.rust_threads)
     logger.info(
         _build_setting_summary(
@@ -260,7 +262,7 @@ def _build_setting_summary(
 ) -> str:
     """构造适合直接输出到日志的配置摘要。"""
     _ = raw_config
-    text_service = setting.llm
+    text_service = setting.llm.active_client
     if configured_source_language is None:
         language_line = (
             f"语言档案: 默认 [tag.count]{effective_source_language}[/tag.count]"
@@ -285,7 +287,7 @@ def _build_setting_summary(
     lines = [
         "[tag.phase]当前正在使用的配置[/tag.phase]",
         f"配置文件: [tag.path]{setting_path}[/tag.path]",
-        f"正文接口: OpenAI 兼容 / 模型 [tag.count]{text_service.model}[/tag.count] / 地址 [tag.path]{text_service.base_url}[/tag.path] / 超时 [tag.count]{text_service.timeout}[/tag.count] 秒",
+        f"正文接口: [tag.count]{text_service.provider_type}[/tag.count] / 客户端 [tag.count]{text_service.name}[/tag.count] / 模型 [tag.count]{text_service.model}[/tag.count] / 地址 [tag.path]{text_service.base_url}[/tag.path] / 超时 [tag.count]{text_service.timeout}[/tag.count] 秒",
         f"模型请求额外参数: [tag.count]{len(text_service.request_body_extra)}[/tag.count] 项",
         language_line,
         f"正文切块: 目标 [tag.count]{setting.translation_context.token_size}[/tag.count] token，换算系数 [tag.count]{setting.translation_context.factor}[/tag.count]，同角色最多连续 [tag.count]{setting.translation_context.max_command_items}[/tag.count] 条",

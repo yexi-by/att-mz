@@ -2,19 +2,21 @@
 # pyright: reportPrivateUsage=false
 # mixin 通过 AgentToolkitService 组合成同一个服务边界，允许调用同门面的受保护核心方法。
 
+from typing import cast
+
 from .common import (
     AgentIssue,
     AgentReport,
     AgentServiceContext,
     JsonObject,
     JsonValue,
+    SettingOverrides,
     TextRules,
     _append_check,
     _current_python_major_minor,
     collect_saved_rule_runtime_errors,
     ensure_db_directory,
     issue,
-    load_environment_overrides,
     load_setting,
     platform,
     resolve_app_path,
@@ -22,7 +24,10 @@ from .common import (
     resolve_setting_path,
     sys,
 )
+from app.agent_toolkit.flow_decision import build_flow_decision
 from app.persistence import TargetGameSession
+from app.rmmz.json_types import coerce_json_value, ensure_json_object
+from app.rmmz.schema import TranslationRunRecord
 from app.rule_review import (
     EVENT_COMMAND_TEXT_RULE_DOMAIN,
     MV_VIRTUAL_NAMEBOX_RULE_DOMAIN,
@@ -40,7 +45,13 @@ from app.text_index import collect_text_index_placeholder_gate_decisions, detect
 class DoctorAgentMixin:
     """承载 AgentToolkitService 的 DoctorAgentMixin 命令族。"""
 
-    async def doctor(self: AgentServiceContext, *, game_title: str | None, check_llm: bool) -> AgentReport:
+    async def doctor(
+        self: AgentServiceContext,
+        *,
+        game_title: str | None,
+        check_llm: bool,
+        setting_overrides: SettingOverrides | None = None,
+    ) -> AgentReport:
         """检查项目配置、模型连接和可选目标游戏状态。"""
         errors: list[AgentIssue] = []
         warnings: list[AgentIssue] = []
@@ -50,7 +61,6 @@ class DoctorAgentMixin:
             "setting_path": str(resolve_setting_path(self.setting_path)),
         }
         details: JsonObject = {
-            "environment_overrides": [],
             "checks": [],
         }
 
@@ -61,13 +71,10 @@ class DoctorAgentMixin:
             _append_check(details, "python_version", "ok")
 
         try:
-            setting = load_setting(self.setting_path)
+            setting = load_setting(self.setting_path, overrides=setting_overrides)
             _append_check(details, "setting", "ok")
-            summary["llm_model"] = setting.llm.model
+            summary["llm_client"] = cast(JsonObject, setting.llm.active_client_report())
             summary["llm_check_performed"] = check_llm
-            environment_overrides = load_environment_overrides()
-            enabled_names: list[JsonValue] = list(environment_overrides.enabled_names())
-            details["environment_overrides"] = enabled_names
             if not setting.llm.base_url.strip():
                 errors.append(issue("llm_base_url", "模型服务地址为空"))
             if not setting.llm.api_key.strip():
@@ -75,6 +82,8 @@ class DoctorAgentMixin:
             if check_llm:
                 try:
                     self.llm_handler.configure(
+                        client_name=setting.llm.name,
+                        provider_type=setting.llm.provider_type,
                         base_url=setting.llm.base_url,
                         api_key=setting.llm.api_key,
                         timeout=setting.llm.timeout,
@@ -104,6 +113,40 @@ class DoctorAgentMixin:
                 summary=summary,
                 details=details,
             )
+            quality_report: AgentReport | None = None
+            translation_status_report: AgentReport | None = None
+            recent_run_payloads: list[dict[str, JsonValue]] = []
+            if not errors:
+                quality_report = await self.quality_report(
+                    game_title=game_title,
+                    include_write_probe=True,
+                )
+                translation_status_report = await self.translation_status(
+                    game_title=game_title,
+                    refresh_scope=True,
+                )
+                async with await self.game_registry.open_game(game_title) as session:
+                    recent_run_payloads = _recent_run_payloads(
+                        await session.read_recent_translation_runs(limit=5)
+                    )
+            decision = build_flow_decision(
+                base_error_codes={item.code for item in errors},
+                base_warning_codes={item.code for item in warnings},
+                quality_report=quality_report,
+                translation_status=translation_status_report,
+                recent_runs=recent_run_payloads,
+            )
+            summary.update(decision.summary_fields())
+            recent_runs_json: list[JsonValue] = [payload for payload in recent_run_payloads]
+            flow_reports: JsonObject = {
+                "quality": _report_payload(quality_report),
+                "translation_status": _report_payload(translation_status_report),
+                "recent_runs": recent_runs_json,
+            }
+            details["flow_decision"] = decision.detail_fields()
+            details["flow_reports"] = flow_reports
+            if not decision.can_continue and not errors:
+                errors.append(issue("flow_blocked", decision.reason))
 
         return AgentReport.from_parts(
             errors=errors,
@@ -468,3 +511,25 @@ def _append_rule_review_decision_warning(
     """把非 ok 的规则审查决策追加到 doctor 告警。"""
     if decision is not None and decision.severity != "ok" and decision.code:
         warnings.append(issue(decision.code, decision.message))
+
+
+def _report_payload(report: AgentReport | None) -> JsonObject | None:
+    """把 Agent 报告转成项目 JSON 对象。"""
+    if report is None:
+        return None
+    return ensure_json_object(coerce_json_value(report.model_dump(mode="json")), "agent-report")
+
+
+def _recent_run_payloads(records: list[TranslationRunRecord]) -> list[dict[str, JsonValue]]:
+    """把最近运行记录转成流程裁决只读输入。"""
+    payloads: list[dict[str, JsonValue]] = []
+    for record in records:
+        payloads.append(
+            {
+                "run_id": record.run_id,
+                "pending_count": record.pending_count,
+                "success_count": record.success_count,
+                "quality_error_count": record.quality_error_count,
+            }
+        )
+    return payloads

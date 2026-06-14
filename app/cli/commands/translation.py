@@ -214,6 +214,7 @@ async def run_import_manual_translations_command(args: argparse.Namespace) -> in
         game_title=game_title,
         input_path=input_path,
         import_valid=read_bool_arg(args, "import_valid"),
+        check_only=read_bool_arg(args, "check_only"),
         report_invalid_path=report_invalid_path,
     )
     write_report_outputs(report=report, args=args, title="手动填写译文表导入报告")

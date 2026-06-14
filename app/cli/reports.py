@@ -134,6 +134,8 @@ def build_run_all_summary_report(
         "write_back_plugin_item_count": 0,
         "write_back_terminology_written_count": 0,
     }
+    if text_summary.llm_client is not None:
+        summary["llm_client"] = text_summary.llm_client
     details: JsonObject = {
         "translation": _build_translation_summary_object(text_summary),
         "write_back": None,
@@ -335,6 +337,8 @@ def _build_translation_summary_object(summary: TextTranslationSummary) -> JsonOb
         payload["text_index_status"] = summary.text_index_status
     if summary.text_index_rebuild_summary is not None:
         payload["text_index_rebuild_summary"] = summary.text_index_rebuild_summary
+    if summary.llm_client is not None:
+        payload["llm_client"] = summary.llm_client
     return payload
 
 

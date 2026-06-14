@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 
 from app.agent_toolkit import AgentReport
+from app.agent_toolkit.import_impact import terminology_import_impact
 from app.agent_toolkit.reports import issue
 from app.cli.arguments import read_required_path_arg
 from app.cli.runtime import HandlerSession, resolve_target_game_title
@@ -64,6 +65,7 @@ async def run_import_terminology_command(args: argparse.Namespace) -> int:
         )
         write_report_outputs(report=report, args=args, title="术语表导入报告")
         return 1
+    impact = terminology_import_impact()
     report = AgentReport.from_parts(
         errors=[],
         warnings=[],
@@ -74,8 +76,9 @@ async def run_import_terminology_command(args: argparse.Namespace) -> int:
             "imported_entry_count": summary.imported_entry_count,
             "filled_entry_count": summary.filled_entry_count,
             "glossary_term_count": summary.glossary_term_count,
+            **impact.summary_fields(),
         },
-        details={},
+        details={"import_impact": impact.detail_fields()},
     )
     write_report_outputs(report=report, args=args, title="术语表导入报告")
     return 0

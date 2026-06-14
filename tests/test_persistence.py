@@ -744,6 +744,41 @@ async def test_registry_and_target_session_use_injected_directory(minimal_game_d
 
 
 @pytest.mark.asyncio
+async def test_read_recent_translation_runs_orders_newest_first(
+    minimal_game_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """最近正文翻译运行必须按最新优先返回，并遵守数量限制。"""
+    registry = GameRegistry(tmp_path / "db")
+    _ = await registry.register_game(minimal_game_dir, source_language="ja")
+
+    async with await registry.open_game("テストゲーム") as session:
+        first = await session.start_translation_run(
+            total_extracted=10,
+            pending_count=10,
+            deduplicated_count=10,
+            batch_count=1,
+        )
+        second = await session.start_translation_run(
+            total_extracted=10,
+            pending_count=7,
+            deduplicated_count=7,
+            batch_count=1,
+        )
+        third = await session.start_translation_run(
+            total_extracted=10,
+            pending_count=7,
+            deduplicated_count=7,
+            batch_count=1,
+        )
+
+        recent_runs = await session.read_recent_translation_runs(limit=2)
+
+    assert [record.run_id for record in recent_runs] == [third.run_id, second.run_id]
+    assert first.run_id not in {record.run_id for record in recent_runs}
+
+
+@pytest.mark.asyncio
 async def test_translation_quality_errors_require_fact_id(
     minimal_game_dir: Path,
     tmp_path: Path,

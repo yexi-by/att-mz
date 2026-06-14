@@ -17,6 +17,7 @@ from .sql import (
     INSERT_TRANSLATION_QUALITY_ERROR,
     SELECT_LATEST_TRANSLATION_RUN,
     SELECT_LLM_FAILURES_BY_RUN,
+    SELECT_RECENT_TRANSLATION_RUNS,
     SELECT_TRANSLATION_QUALITY_ERROR_TYPE_COUNTS_BY_RUN,
     SELECT_TRANSLATION_QUALITY_ERRORS_BY_RUN,
     SELECT_TRANSLATION_RUN,
@@ -91,6 +92,14 @@ class RunRecordSessionMixin(SessionMixinBase):
         if row is None:
             return None
         return self._decode_translation_run(row)
+
+    async def read_recent_translation_runs(self, *, limit: int) -> list[TranslationRunRecord]:
+        """读取最近若干轮正文翻译状态，最新运行排在最前。"""
+        if limit <= 0:
+            return []
+        async with self.connection.execute(SELECT_RECENT_TRANSLATION_RUNS, (limit,)) as cursor:
+            rows = await cursor.fetchall()
+        return [self._decode_translation_run(row) for row in rows]
 
     async def read_translation_run(self, run_id: str) -> TranslationRunRecord | None:
         """按运行 ID 读取正文翻译状态。"""

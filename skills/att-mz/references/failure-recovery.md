@@ -1,6 +1,6 @@
 # 翻译失败与手动修复
 
-`translate` 返回 0 只表示本轮命令正常结束，不代表所有文本都已经成功保存译文。还没成功保存译文和检查没通过译文都是翻译循环里的正常现象，不是阶段失败。先看翻译进度报告和质量检查报告，再决定继续翻译、补规则、换模型、手动修复或精确重置。
+`translate` 返回 0 只表示本轮命令正常结束，不代表所有文本都已经成功保存译文。还没成功保存译文和检查没通过译文都是翻译循环里的正常现象，不是阶段失败。每轮后先运行 `doctor --game <游戏标题> --no-check-llm`，按 `flow_decision` 决定继续翻译、补规则、换模型、手动修复或精确重置。
 
 ## 小批量定位
 
@@ -10,10 +10,11 @@
 
 ## 续跑判断
 
-- 每轮 `translate` 后运行 `translation-status --game <游戏标题>` 和 `quality-report --game <游戏标题>`。
+- 每轮 `translate` 后运行 `doctor --game <游戏标题> --no-check-llm`；需要拆细证据时再看 `translation-status --game <游戏标题> --refresh-scope` 和 `quality-report --game <游戏标题> --include-write-probe`。
 - 记录本轮开始数量、当前剩余数量、检查没通过的译文数量和主要错误类型。
-- 全量续跑时，只要剩余数量明显下降，且没有新的规则性事故，就继续下一轮。
-- 连续多轮同类失败不下降时，停止无证据续跑并自动进入诊断：统计剩余数量、主要错误类型和最近几轮下降情况，先尝试修规则、补占位符/结构化占位符、导出质量修复表或待补译表、精确重置坏译文，或在已授权模型策略内换模型。只有需要用户承担额外额度/时间成本、接受风险、跳过问题或完整重译时才询问用户。
+- `flow_decision=ready_to_translate` 时继续下一轮。
+- `flow_decision=should_stop_retrying` 时禁止继续撞同一轮重试；先按质量错误补规则、补占位符/结构化占位符、导出质量修复表或待补译表、精确重置坏译文，或在已授权模型策略内换模型。
+- 只有需要用户承担额外额度/时间成本、接受风险、跳过问题或完整重译时才询问用户。
 
 ## 质量报告分类
 
@@ -39,6 +40,7 @@ uv run python main.py export-quality-fix-template --game <游戏标题> --output
 修复表里只改 `translation_lines`。改完后运行：
 
 ```powershell
+uv run python main.py import-manual-translations --game <游戏标题> --input <工作区>/quality-fix-template.json --check-only
 uv run python main.py import-manual-translations --game <游戏标题> --input <工作区>/quality-fix-template.json
 ```
 
@@ -49,6 +51,8 @@ uv run python main.py export-pending-translations --game <游戏标题> --output
 ```
 
 需要抽样或分批时追加 `--limit N`。不传 `--limit` 时导出全部剩余文本，但全量导出必须满足“已经降到适合手动处理或多轮不下降”的前置条件。
+
+待补译表改完后也先运行 `import-manual-translations --check-only`。只有保存前校验通过，才去掉 `--check-only` 正式导入；失败时修文件本身，不把半包译文写进数据库。
 
 ## 源文残留
 
